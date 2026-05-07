@@ -79,29 +79,32 @@ Slack, CLI) — Markdown is fine there; ignore this skill.
 
 Assume Hermes and NapCat may be running on different machines. A local path that
 exists on the Hermes host is not automatically readable by the NapCat/QQ host.
-For outgoing media, prefer `https://...`, `http://...`, `base64://...`, or a
-shared mounted path that NapCat can read on its own machine. Do not invent or
-echo placeholder local paths like `/path/to/...`, `/abs/path/to/...`, or
-`/home/user/cache/...` in final replies.
-
-Only use a local `MEDIA:` path or `file://` URI when you know that exact path
-exists on the NapCat machine, not merely inside the Hermes workspace.
+For outgoing media through `MEDIA:`, the Hermes gateway can stream-upload an
+existing Hermes-local file to NapCat first when NapCat supports
+`upload_file_stream` (NapCat v4.8.115+). Remote URLs, `base64://...`, and
+`data:` are still passed through directly. Do not invent or echo placeholder
+local paths like `/path/to/...`, `/abs/path/to/...`, or `/home/user/cache/...`
+in final replies.
 
 If you need to send a Hermes-side local file:
 
-1. Prefer creating a public or LAN-reachable HTTP(S) URL for the file, then use
+1. If the file really exists on Hermes, you may use `MEDIA:/absolute/path` and
+   let the gateway stream-upload it to NapCat before sending.
+2. Prefer creating a public or LAN-reachable HTTP(S) URL for the file, then use
    `MEDIA:https://...`.
-2. For small media, encode the file as base64 and use NapCat's supported
+3. For small media, encode the file as base64 and use NapCat's supported
    `base64://...` form if size limits allow it.
-3. If both hosts share storage, copy the file into the shared mount and use the
+4. If both hosts share storage, copy the file into the shared mount and use the
    path exactly as NapCat sees it on the NapCat machine.
-4. If none of those are available, do not send a `MEDIA:` tag. Reply in text
+5. If none of those are available, do not send a `MEDIA:` tag. Reply in text
    that the file is only local to Hermes and needs to be exposed or copied to
    the NapCat host first.
 
 If a previous media send failed and the conversation contains a
 `[Hermes gateway delivery feedback]` message, treat it as authoritative. Fix
-the path/URL strategy before trying to send the same media again.
+the path/URL strategy before trying to send the same media again. If the
+feedback says `upload_file_stream` is unsupported or failed, switch to an
+HTTP(S) URL, `base64://...`, or a NapCat-readable shared path.
 
 ---
 
@@ -206,6 +209,7 @@ voice, and video. Use these only when you specifically need NapCat actions:
 | `get_record`            | `file`, `out_format?` (`mp3`/`amr`/`wav`)               | resolve an inbound `[语音:…]`        |
 | `get_file`              | `file_id`                                               | resolve `[文件:…]` to a local path   |
 | `download_file`         | `url`, `headers?`, `thread_count?`                      | pre-cache a remote file              |
+| `upload_file_stream` *(NapCat v4.8.115+)* | chunked stream params; gateway normally handles this | transfer Hermes-local files to NapCat |
 | `upload_group_file`     | `group_id`, `file` (abs path), `name`, `folder?`        | post a file to a group               |
 | `upload_private_file`   | `user_id`, `file` (abs path), `name`                    | DM a file to a user                  |
 | `can_send_image`        | (none)                                                  | capability probe                     |
@@ -245,16 +249,16 @@ A short caption written before the tag is sent first as text. Don't wrap
 `MEDIA:` paths in backticks or quotes — the extractor handles bare paths.
 
 If the image was created or downloaded by Hermes on a different machine, first
-make it reachable to NapCat: publish it as an HTTP(S) URL, convert it to
-`base64://...`, or place it in a directory mounted at the same path on the
-NapCat host. Never send a Hermes-only temp/cache path and assume NapCat can
-open it.
+make sure it exists at the path you put after `MEDIA:`. For existing
+Hermes-local files, the gateway will try NapCat's stream upload API and then
+send the returned NapCat-local temp path. If stream upload feedback reports a
+failure, publish it as an HTTP(S) URL, convert it to `base64://...`, or place it
+in a directory mounted at the same path on the NapCat host.
 
 For Hermes-generated local files, a safe pattern is:
-create/download file on Hermes → expose it as URL or copy it to a shared
-NapCat-readable path → include only that URL/path in `MEDIA:`. If you cannot
-make the file reachable to NapCat, explain the limitation in text instead of
-emitting `MEDIA:/tmp/...` or another Hermes-only path.
+create/download file on Hermes → include `MEDIA:/absolute/path/to/file` if it
+exists → if delivery feedback says stream upload failed, expose it as URL or
+copy it to a shared NapCat-readable path and retry with that URL/path.
 
 If you really need to control the segment array yourself (e.g. inline image +
 text in one bubble), call:
@@ -270,7 +274,8 @@ napcat_call("send_group_msg", {
 ```
 
 Local paths must be absolute paths or `file://` URIs that are valid on the
-NapCat machine. URLs work unchanged.
+NapCat machine, or existing Hermes-local files that the gateway can stream
+upload to NapCat. URLs work unchanged.
 
 ---
 

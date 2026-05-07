@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -342,6 +343,97 @@ class TestSendImageFile:
         assert result.success is False
         assert result.message_id == "text_msg_1"
         assert result.error == "BAD_FILE"
+
+    def test_existing_local_image_is_stream_uploaded_before_send(self, tmp_path):
+        adapter = self._setup_adapter()
+        adapter._stream_upload_chunk_size = 4
+        image_path = tmp_path / "cat.png"
+        image_bytes = b"napcat-image-bytes"
+        image_path.write_bytes(image_bytes)
+        uploaded_path = r"C:\NapCat\Temp\stream-cat.png"
+        calls = []
+
+        async def fake_call_action(action, params, *, timeout=None):
+            calls.append((action, params))
+            if action == "upload_file_stream" and params.get("is_complete"):
+                return {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {
+                        "status": "file_complete",
+                        "file_path": uploaded_path,
+                        "file_size": len(image_bytes),
+                        "sha256": hashlib.sha256(image_bytes).hexdigest(),
+                    },
+                }
+            if action == "upload_file_stream":
+                return {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {"received_chunks": params["chunk_index"] + 1},
+                }
+            return _ok(message_id="img_msg_streamed")
+
+        adapter.call_action = fake_call_action
+        adapter._call_action = fake_call_action
+        result = _run(adapter.send_image_file("555", str(image_path), caption="meow"))
+
+        assert result.success is True
+        upload_calls = [params for action, params in calls if action == "upload_file_stream"]
+        assert len(upload_calls) > 1
+        first_chunk = upload_calls[0]
+        assert first_chunk["stream_id"]
+        assert first_chunk["chunk_index"] == 0
+        assert first_chunk["total_chunks"] == 5
+        assert first_chunk["filename"] == "cat.png"
+        assert first_chunk["file_size"] == len(image_bytes)
+        assert first_chunk["file_retention"] == 30_000
+        assert "chunk_data" in first_chunk
+        assert "chunk" not in first_chunk
+        assert upload_calls[-2]["expected_sha256"] == hashlib.sha256(image_bytes).hexdigest()
+        assert upload_calls[-1] == {"stream_id": first_chunk["stream_id"], "is_complete": True}
+        send_params = next(params for action, params in calls if action == "send_group_msg")
+        image_seg = next(s for s in send_params["message"] if s["type"] == "image")
+        assert image_seg["data"]["file"] == uploaded_path
+
+    def test_remote_image_url_is_not_stream_uploaded(self):
+        adapter = self._setup_adapter()
+        calls = []
+
+        async def fake_call_action(action, params, *, timeout=None):
+            calls.append((action, params))
+            return _ok(message_id="img_url")
+
+        adapter.call_action = fake_call_action
+        adapter._call_action = fake_call_action
+        result = _run(adapter.send_image_file("555", "https://example.test/cat.png"))
+
+        assert result.success is True
+        assert [action for action, _ in calls] == ["send_group_msg"]
+        image_seg = next(s for s in calls[0][1]["message"] if s["type"] == "image")
+        assert image_seg["data"]["file"] == "https://example.test/cat.png"
+
+    def test_stream_upload_failure_is_returned_with_send_failure(self, tmp_path):
+        adapter = self._setup_adapter()
+        image_path = tmp_path / "cat.png"
+        image_path.write_bytes(b"not-on-napcat")
+
+        async def fake_call_action(action, params, *, timeout=None):
+            if action == "upload_file_stream":
+                return {"status": "failed", "retcode": 404, "message": "STREAM_UNSUPPORTED"}
+            if action == "send_group_msg" and any(
+                seg["type"] == "image" for seg in params.get("message", [])
+            ):
+                return {"status": "failed", "retcode": 100, "message": "ENOENT"}
+            return _ok(message_id="fallback_text")
+
+        adapter.call_action = fake_call_action
+        adapter._call_action = fake_call_action
+        result = _run(adapter.send_image_file("555", str(image_path)))
+
+        assert result.success is False
+        assert "STREAM_UNSUPPORTED" in result.error
+        assert "ENOENT" in result.error
 
 
 class TestSendVoice:

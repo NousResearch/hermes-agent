@@ -33,13 +33,18 @@ Reference: https://mintlify.wiki/NapNeko/NapCatQQ/api/onebot/overview
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote, urlparse
 
 try:
     from aiohttp import WSCloseCode, WSMsgType, web
@@ -69,6 +74,8 @@ DEFAULT_SEND_TIMEOUT = 20.0
 DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 2000
 MAX_MESSAGE_LENGTH = 4500  # OneBot has no strict cap; keep generous & chunk safely
+DEFAULT_STREAM_UPLOAD_CHUNK_SIZE = 64 * 1024
+DEFAULT_STREAM_UPLOAD_RETENTION_MS = 30 * 1000
 
 
 def check_napcat_requirements() -> bool:
@@ -109,6 +116,14 @@ class NapCatAdapter(BasePlatformAdapter):
         self._chat_type_map: Dict[str, str] = {}
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
+        self._stream_upload_chunk_size = self._coerce_positive_int(
+            extra.get("stream_upload_chunk_size") or os.getenv("NAPCAT_STREAM_UPLOAD_CHUNK_SIZE"),
+            DEFAULT_STREAM_UPLOAD_CHUNK_SIZE,
+        )
+        self._stream_upload_retention_ms = self._coerce_positive_int(
+            extra.get("stream_upload_retention_ms") or os.getenv("NAPCAT_STREAM_UPLOAD_RETENTION_MS"),
+            DEFAULT_STREAM_UPLOAD_RETENTION_MS,
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -671,6 +686,145 @@ class NapCatAdapter(BasePlatformAdapter):
             normalized = "/" + normalized
         return f"file://{normalized}"
 
+    @staticmethod
+    def _local_stream_upload_path(path_or_url: str) -> Optional[Path]:
+        """Return an existing Hermes-local file path that NapCat should stream-upload.
+
+        ``http(s)``, ``base64://`` and ``data:`` are already cross-machine safe.
+        ``file://`` is only safe when it points at NapCat's filesystem; if it
+        points at a file that exists on the Hermes host, stream it across the
+        reverse WebSocket first so NapCat receives a local path it can open.
+        """
+        if not path_or_url:
+            return None
+        text = str(path_or_url).strip()
+        lowered = text.lower()
+        if lowered.startswith(("http://", "https://", "base64://", "data:")):
+            return None
+        candidate = text
+        if lowered.startswith("file://"):
+            parsed = urlparse(text)
+            candidate = unquote(parsed.path or "")
+            if os.name == "nt" and re.match(r"^/[a-zA-Z]:/", candidate):
+                candidate = candidate[1:]
+        try:
+            path = Path(os.path.abspath(os.path.expanduser(candidate)))
+        except Exception:
+            return None
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            return None
+        return None
+
+    @staticmethod
+    def _extract_stream_uploaded_file(response: Dict[str, Any]) -> Optional[str]:
+        """Extract the NapCat-side temp path from an ``upload_file_stream`` reply."""
+        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        for key in ("file_path", "path", "file", "url"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        if isinstance(data.get("file_info"), dict):
+            for key in ("file_path", "path", "file", "url"):
+                value = data["file_info"].get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
+
+    @staticmethod
+    def _combine_errors(*errors: Optional[str]) -> Optional[str]:
+        parts = [str(error).strip() for error in errors if str(error or "").strip()]
+        if not parts:
+            return None
+        deduped: List[str] = []
+        for part in parts:
+            if part not in deduped:
+                deduped.append(part)
+        return "; ".join(deduped)
+
+    async def _upload_local_file_stream(self, file_path: Path) -> tuple[Optional[str], Optional[str]]:
+        """Upload a Hermes-local file to NapCat via NapCat's stream API.
+
+        NapCat v4.8.115+ documents ``upload_file_stream`` for cross-device
+        deployments.  The final chunk returns a NapCat-local temp file path;
+        media segments and file-upload actions should use that returned path,
+        not the original Hermes filesystem path.
+        """
+        try:
+            stat = file_path.stat()
+            file_size = stat.st_size
+            sha256 = hashlib.sha256()
+            chunk_size = max(1, int(self._stream_upload_chunk_size))
+            total_chunks = max(1, math.ceil(file_size / chunk_size))
+            stream_id = uuid.uuid4().hex
+            base_params: Dict[str, Any] = {
+                "stream_id": stream_id,
+                "filename": file_path.name,
+                "file_size": file_size,
+                "total_chunks": total_chunks,
+                "file_retention": int(self._stream_upload_retention_ms),
+            }
+
+            final_response: Optional[Dict[str, Any]] = None
+            with file_path.open("rb") as fh:
+                for chunk_index in range(total_chunks):
+                    chunk = fh.read(chunk_size)
+                    sha256.update(chunk)
+                    params = dict(base_params)
+                    params.update(
+                        {
+                            "chunk_index": chunk_index,
+                            "chunk_data": base64.b64encode(chunk).decode("ascii"),
+                        }
+                    )
+                    if chunk_index == total_chunks - 1:
+                        params["expected_sha256"] = sha256.hexdigest()
+                    response = await self._call_action("upload_file_stream", params)
+                    if response.get("status") != "ok" or response.get("retcode", 0) != 0:
+                        return None, (
+                            response.get("message")
+                            or response.get("wording")
+                            or "upload_file_stream failed"
+                        )
+            final_response = await self._call_action(
+                "upload_file_stream", {"stream_id": stream_id, "is_complete": True}
+            )
+            if final_response.get("status") != "ok" or final_response.get("retcode", 0) != 0:
+                return None, (
+                    final_response.get("message")
+                    or final_response.get("wording")
+                    or "upload_file_stream complete failed"
+                )
+        except asyncio.TimeoutError:
+            return None, "NapCat upload_file_stream timed out"
+        except RuntimeError as exc:
+            return None, str(exc)
+        except OSError as exc:
+            return None, f"Cannot read local file for NapCat stream upload: {exc}"
+
+        if not final_response:
+            return None, "upload_file_stream returned no response"
+        uploaded_file = self._extract_stream_uploaded_file(final_response)
+        if not uploaded_file:
+            return None, "upload_file_stream response did not include file_path"
+        return uploaded_file, None
+
+    async def _resolve_media_file_reference(self, media_path: str) -> tuple[str, Optional[str]]:
+        """Return a NapCat-readable media reference and optional upload warning."""
+        local_path = self._local_stream_upload_path(media_path)
+        if local_path is None:
+            return self._media_file_uri(media_path), None
+        uploaded, error = await self._upload_local_file_stream(local_path)
+        if uploaded:
+            return uploaded, None
+        logger.warning(
+            "[%s] upload_file_stream failed for %s (%s); falling back to file URI.",
+            self.name, local_path, error,
+        )
+        return self._media_file_uri(str(local_path)), error
+
     async def _send_media_message(
         self,
         chat_id: str,
@@ -689,7 +843,8 @@ class NapCatAdapter(BasePlatformAdapter):
         if reply_to:
             segments.append({"type": "reply", "data": {"id": str(reply_to)}})
 
-        media_data: Dict[str, Any] = {"file": self._media_file_uri(media_path)}
+        media_file, upload_error = await self._resolve_media_file_reference(media_path)
+        media_data: Dict[str, Any] = {"file": media_file}
         if extra_data:
             media_data.update(extra_data)
         segments.append({"type": seg_type, "data": media_data})
@@ -697,7 +852,10 @@ class NapCatAdapter(BasePlatformAdapter):
         if caption and caption.strip():
             segments.append({"type": "text", "data": {"text": caption.strip()}})
 
-        return await self._dispatch_message_segments(chat_type, normalized_id, segments)
+        result = await self._dispatch_message_segments(chat_type, normalized_id, segments)
+        if upload_error and not result.success:
+            result.error = self._combine_errors(upload_error, result.error)
+        return result
 
     async def send_image_file(
         self,
@@ -916,6 +1074,14 @@ class NapCatAdapter(BasePlatformAdapter):
             return int(str(value).strip())
         except (TypeError, ValueError):
             return value
+
+    @staticmethod
+    def _coerce_positive_int(value: Any, default: int) -> int:
+        try:
+            parsed = int(str(value).strip())
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
 
     @staticmethod
     def _is_retryable_runtime_send_error(error: str) -> bool:

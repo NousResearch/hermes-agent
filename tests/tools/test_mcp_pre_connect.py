@@ -3,7 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
+import pytest  # ty: ignore[unresolved-import]
 
 
 @pytest.fixture(autouse=True)

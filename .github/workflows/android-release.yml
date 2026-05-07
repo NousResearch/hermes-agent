@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build-release:
-    runs-on: [self-hosted, hermes-wsl]
+    runs-on: ubuntu-22.04
     timeout-minutes: 45
     permissions:
       contents: write

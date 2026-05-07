@@ -426,6 +426,64 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     return resolved_command, resolved_env
 
 
+# ---------------------------------------------------------------------------
+# MCP ImageContent block → Hermes MEDIA tag
+# ---------------------------------------------------------------------------
+
+
+def _mcp_image_extension_for_mime_type(mime_type: str) -> str:
+    """Return a reasonable file extension for an MCP image MIME type."""
+    import mimetypes
+    normalized = (mime_type or "").split(";", 1)[0].strip().lower()
+    if normalized in {"image/jpeg", "image/jpg"}:
+        return ".jpg"
+    return mimetypes.guess_extension(normalized) or ".png"
+
+
+def _cache_mcp_image_block(block) -> str:
+    """Cache an MCP ``ImageContent`` block to the shared image cache and
+    return a ``MEDIA:<path>`` tag that Hermes gateways know how to render.
+
+    Returns an empty string when *block* is not an image, when the base64
+    payload is malformed, or when the cache helper rejects the bytes (e.g.
+    non-image MIME masquerading as an image). Errors are logged, not raised:
+    a single bad block shouldn't kill the tool result, and the caller will
+    fall through to any text blocks that did parse.
+    """
+    import base64
+
+    data = getattr(block, "data", None)
+    mime_type = getattr(block, "mimeType", None)
+    normalized_mime = str(mime_type or "").split(";", 1)[0].strip().lower()
+    if data is None or not normalized_mime.startswith("image/"):
+        return ""
+
+    try:
+        raw_bytes = base64.b64decode(data)
+    except (TypeError, ValueError) as exc:
+        logger.warning("MCP image block decode failed (%s): %s", normalized_mime, exc)
+        return ""
+
+    try:
+        from gateway.platforms.base import cache_image_from_bytes
+
+        image_path = cache_image_from_bytes(
+            raw_bytes,
+            ext=_mcp_image_extension_for_mime_type(normalized_mime),
+        )
+    except ImportError:
+        # gateway.platforms.base not importable in this process (e.g. cron
+        # without gateway deps). Fall back to silently dropping — callers
+        # get any text blocks that did parse.
+        logger.debug("MCP image caching skipped — gateway.platforms.base unavailable")
+        return ""
+    except Exception as exc:
+        logger.warning("MCP image block cache failed: %s", exc)
+        return ""
+
+    return f"MEDIA:{image_path}"
+
+
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
 
@@ -2146,11 +2204,25 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
                 }, ensure_ascii=False)
 
-            # Collect text from content blocks
+            # Collect text from content blocks. MCP tool results can also
+            # include ImageContent blocks (screenshot / Blockbench / Playwright
+            # etc.); cache those via the gateway's image-cache helper so they
+            # flow through Hermes' MEDIA: tag convention and out to messaging
+            # adapters that render images natively. Without this, image blocks
+            # were silently dropped and the agent got an empty response.
+            #
+            # Distilled from #17915 (c3115644151) and #10848 (gnanirahulnutakki),
+            # both too stale to cherry-pick. #10848's approach (integrate with
+            # Hermes' MEDIA tag + cache_image_from_bytes) was the cleaner of
+            # the two — plugs into existing infrastructure.
             parts: List[str] = []
             for block in (result.content or []):
-                if hasattr(block, "text"):
+                if hasattr(block, "text") and block.text:
                     parts.append(block.text)
+                    continue
+                image_tag = _cache_mcp_image_block(block)
+                if image_tag:
+                    parts.append(image_tag)
             text_result = "\n".join(parts) if parts else ""
 
             # Combine content + structuredContent when both are present.

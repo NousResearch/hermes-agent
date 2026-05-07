@@ -2305,7 +2305,16 @@ class DiscordAdapter(BasePlatformAdapter):
             return (True, None)
 
         user_id = str(user.id)
-        if not self._is_allowed_user(user_id, author=user):
+        # Pass guild + is_dm so role check is scoped to the originating
+        # guild and cross-guild DM bypass (#12136) can't land via the
+        # slash surface either.
+        interaction_guild = getattr(interaction, "guild", None)
+        if not self._is_allowed_user(
+            user_id,
+            author=user,
+            guild=interaction_guild,
+            is_dm=in_dm,
+        ):
             return (
                 False,
                 "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES",

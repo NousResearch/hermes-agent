@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/hermes_widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/hermes_widget_background"
+    android:gravity="center_vertical"
+    android:minHeight="72dp"
+    android:orientation="horizontal"
+    android:padding="12dp">
+
+    <ImageView
+        android:id="@+id/hermes_widget_icon"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:layout_marginEnd="10dp"
+        android:contentDescription="@string/hermes_automation_widget_label"
+        android:src="@drawable/ic_nav_hermes"
+        android:tint="@color/hermes_primary" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/hermes_widget_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/hermes_automation_widget_default_title"
+            android:textColor="@color/hermes_on_surface"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/hermes_widget_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/hermes_automation_widget_empty_status"
+            android:textColor="@color/hermes_secondary"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/hermes_widget_button"
+        android:layout_width="wrap_content"
+        android:layout_height="36dp"
+        android:layout_marginStart="8dp"
+        android:background="@color/hermes_primary"
+        android:gravity="center"
+        android:minWidth="56dp"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:text="@string/hermes_automation_widget_run"
+        android:textColor="@color/hermes_on_primary"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+</LinearLayout>

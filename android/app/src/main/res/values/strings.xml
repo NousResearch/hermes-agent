@@ -6,4 +6,9 @@
     <string name="hermes_notification_listener_service_label">Hermes notification automations</string>
     <string name="hermes_notification_listener_service_description">Lets Hermes run saved automations when selected apps post notifications after you enable notification access.</string>
     <string name="hermes_quick_settings_tile_label">Hermes task</string>
+    <string name="hermes_automation_widget_label">Hermes task</string>
+    <string name="hermes_automation_widget_default_title">Hermes task</string>
+    <string name="hermes_automation_widget_empty_status">No automation set</string>
+    <string name="hermes_automation_widget_ready_status">Tap to run</string>
+    <string name="hermes_automation_widget_run">Run</string>
 </resources>

@@ -12771,17 +12771,37 @@ class GatewayRunner:
         # no history for this session yet, include what we have locally
         # so the first exchange has context.
         #
-        # We always include the current message.  For history, send a
-        # compact version (text-only user/assistant turns) — the remote
-        # handles tool replay and system prompts.
-        api_messages: List[Dict[str, str]] = []
+        # We always include the current message. For history, keep regular
+        # text turns plus the assistant/tool records needed to preserve
+        # multi-turn tool continuity on the remote session.
+        api_messages: List[Dict[str, Any]] = []
 
         if context_prompt:
             api_messages.append({"role": "system", "content": context_prompt})
 
         for msg in history:
             role = msg.get("role")
+            if not role or role in ("session_meta", "system"):
+                continue
+
             content = msg.get("content")
+            has_tool_calls = "tool_calls" in msg
+            has_tool_call_id = "tool_call_id" in msg
+            is_tool_message = role == "tool"
+
+            if has_tool_calls or has_tool_call_id or is_tool_message:
+                forwarded_msg: Dict[str, Any] = {"role": role}
+                if "content" in msg:
+                    forwarded_msg["content"] = content
+                if has_tool_calls:
+                    forwarded_msg["tool_calls"] = msg.get("tool_calls")
+                if has_tool_call_id:
+                    forwarded_msg["tool_call_id"] = msg.get("tool_call_id")
+                if msg.get("name"):
+                    forwarded_msg["name"] = msg.get("name")
+                api_messages.append(forwarded_msg)
+                continue
+
             if role in ("user", "assistant") and content:
                 api_messages.append({"role": role, "content": content})
 

@@ -338,7 +338,7 @@ class TestRunAgentViaProxy:
         assert "Proxy connection error" in result["final_response"]
 
     @pytest.mark.asyncio
-    async def test_skips_tool_messages_in_history(self, monkeypatch):
+    async def test_preserves_tool_messages_in_history(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
         monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
         runner = _make_runner()
@@ -368,12 +368,14 @@ class TestRunAgentViaProxy:
                         session_id="test",
                     )
 
-        # Only user and assistant with content should be forwarded
         messages = session.captured_json["messages"]
-        roles = [m["role"] for m in messages]
-        assert "tool" not in roles
-        # assistant with None content should be skipped
-        assert all(m.get("content") for m in messages)
+        assert messages == [
+            {"role": "user", "content": "search for X"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "tc1"}]},
+            {"role": "tool", "content": "search results...", "tool_call_id": "tc1"},
+            {"role": "assistant", "content": "Found results."},
+            {"role": "user", "content": "tell me more"},
+        ]
 
     @pytest.mark.asyncio
     async def test_result_shape_matches_run_agent(self, monkeypatch):

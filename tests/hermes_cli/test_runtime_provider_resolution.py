@@ -1333,6 +1333,48 @@ def test_opencode_go_glm_defaults_to_chat_completions(monkeypatch):
     assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
+def test_opencode_go_chat_endpoint_base_url_from_config_is_normalized(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "kimi-k2.6",
+            "base_url": "https://opencode.ai/zen/go/v1/chat/completions",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+
+
+def test_opencode_go_messages_endpoint_base_url_from_config_is_normalized(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "minimax-m2.7",
+            "base_url": "https://opencode.ai/zen/go/v1/messages",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go"
+
+
 def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch):
     """opencode-zen/go re-derive api_mode from the effective model on every
     resolve, ignoring any persisted ``api_mode`` in config. Refs #16878 /

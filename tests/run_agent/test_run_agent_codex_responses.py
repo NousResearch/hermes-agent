@@ -520,6 +520,36 @@ def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     assert result["final_response"] == "Hello from Codex"
 
 
+
+def test_normalize_codex_response_extracts_raw_dict_message_parts():
+    """Copilot Responses can return raw dict output items; recover text."""
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "OK"}],
+            }
+        ],
+    }
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "OK"
+    assert assistant_message.codex_message_items == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "OK"}],
+        }
+    ]
+
 def test_run_conversation_codex_empty_output_no_output_text_retries(monkeypatch):
     """When both output and output_text are empty, validation should
     correctly mark the response as invalid and trigger retry."""

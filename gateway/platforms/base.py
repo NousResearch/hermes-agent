@@ -788,6 +788,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".gif": "image/gif",
+    ".html": "text/html",
 }
 
 

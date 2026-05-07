@@ -360,7 +360,7 @@ class TestTeamsInteractiveSetup:
         assert "TEAMS_TENANT_ID=tenant-id" in env_text
 
 class TestTeamsConnect:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_connect_fails_without_sdk(self, monkeypatch):
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
         adapter = TeamsAdapter(_make_config(
@@ -369,7 +369,7 @@ class TestTeamsConnect:
         result = await adapter.connect()
         assert result is False
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_connect_fails_without_credentials(self):
         adapter = TeamsAdapter(_make_config())
         adapter._client_id = ""
@@ -378,7 +378,7 @@ class TestTeamsConnect:
         result = await adapter.connect()
         assert result is False
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_disconnect_cleans_up(self):
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
@@ -400,7 +400,7 @@ class TestTeamsConnect:
 # ---------------------------------------------------------------------------
 
 class TestTeamsSend:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_send_returns_error_without_app(self):
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
@@ -410,7 +410,7 @@ class TestTeamsSend:
         assert result.success is False
         assert "not initialized" in result.error
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_send_calls_app_send(self):
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
@@ -426,7 +426,7 @@ class TestTeamsSend:
         assert result.message_id == "msg-123"
         mock_app.send.assert_awaited_once_with("conv-id", "Hello")
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_send_handles_error(self):
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
@@ -439,7 +439,7 @@ class TestTeamsSend:
         assert result.success is False
         assert "Network error" in result.error
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_send_typing(self):
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
@@ -594,7 +594,7 @@ class TestTeamsMessageHandling:
         ctx.activity = activity
         return ctx
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_personal_message_creates_dm_event(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -610,7 +610,7 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "dm"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_group_message_creates_group_event(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -625,7 +625,7 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_channel_message_creates_channel_event(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -640,7 +640,7 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "channel"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_user_id_uses_aad_object_id(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -655,7 +655,7 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.user_id == "aad-stable-id"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_self_message_filtered(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -669,7 +669,7 @@ class TestTeamsMessageHandling:
 
         adapter.handle_message.assert_not_awaited()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_bot_mention_stripped_from_text(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -687,7 +687,7 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.text == "what is the weather?"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_deduplication(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",

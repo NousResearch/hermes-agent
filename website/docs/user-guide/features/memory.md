@@ -73,13 +73,14 @@ If the substring matches multiple entries, an error is returned asking for a mor
 
 ### `memory` — Agent's Personal Notes
 
-For information the agent needs to remember about the environment, workflows, and lessons learned:
+For compact operating facts that should influence nearly every future session:
 
-- Environment facts (OS, tools, project structure)
-- Project conventions and configuration
-- Tool quirks and workarounds discovered
-- Completed task diary entries
-- Skills and techniques that worked
+- Broad safety and approval boundaries
+- Model/tool routing constraints that prevent harmful defaults
+- Cross-human namespace or authority boundaries
+- Durable environment facts only when they are global to how the agent operates
+
+For multi-project or ops-heavy agents, do **not** use built-in memory as a project notebook. Project structure, service topology, repo paths, ports, cron IDs, bot setup, task progress, and completed-work diary entries belong in project docs, context files, skills, session search, or an external memory provider.
 
 ### `user` — User Profile
 
@@ -98,14 +99,16 @@ For information about the user's identity, preferences, and communication style:
 The agent saves automatically — you don't need to ask. It saves when it learns:
 
 - **User preferences:** "I prefer TypeScript over JavaScript" → save to `user`
-- **Environment facts:** "This server runs Debian 12 with PostgreSQL 16" → save to `memory`
-- **Corrections:** "Don't use `sudo` for Docker commands, user is in docker group" → save to `memory`
-- **Conventions:** "Project uses tabs, 120-char line width, Google-style docstrings" → save to `memory`
-- **Completed work:** "Migrated database from MySQL to PostgreSQL on 2026-01-15" → save to `memory`
-- **Explicit requests:** "Remember that my API key rotation happens monthly" → save to `memory`
+- **Approval/safety boundaries:** "Ask before destructive VPS actions" → save to `user` or `memory`, depending on scope
+- **Broad routing constraints:** "Use provider X as default; provider Y only for task-specific reasons" → save to `memory`
+- **Namespace boundaries:** "Agent/profile Z belongs to another human" → save to `memory` if it prevents cross-human contamination
+- **Explicit core-memory requests:** "Remember this as a standing preference" → save if it belongs in always-loaded context
 
 ### Skip These
 
+- **Project/service state:** repo paths, service topology, ports, cron IDs, bot setup, store setup, roadmap state — put these in project docs/wiki/context files
+- **Task progress and completed-work diary entries:** use session search or a project log with provenance
+- **Secrets and credential material:** API keys, tokens, OAuth material, cookies, DSNs, passwords, private key paths, or exact credential locations
 - **Trivial/obvious info:** "User asked about Python" — too vague to be useful
 - **Easily re-discovered facts:** "Python 3.12 supports f-string nesting" — can web search this
 - **Raw data dumps:** Large code blocks, log files, data tables — too big for memory
@@ -140,28 +143,27 @@ The agent should then:
 3. Use `replace` to merge related entries into shorter versions
 4. Then `add` the new entry
 
-**Best practice:** When memory is above 80% capacity (visible in the system prompt header), consolidate entries before adding new ones. For example, merge three separate "project uses X" entries into one comprehensive project description entry.
+**Best practice:** When memory is above 80% capacity (visible in the system prompt header), first question whether the candidate belongs in built-in memory at all. If it is project/service/task detail, move it to project docs, wiki, skills, or session history. Consolidate only the truly always-relevant L1 entries.
 
 ### Practical Examples of Good Memory Entries
 
-**Compact, information-dense entries work best:**
+**Compact, always-relevant entries work best:**
 
 ```
-# Good: Packs multiple related facts
-User runs macOS 14 Sonoma, uses Homebrew, has Docker Desktop and Podman. Shell: zsh with oh-my-zsh. Editor: VS Code with Vim keybindings.
+# Good: user preference
+User prefers concise answers with no tables unless they materially improve clarity.
 
-# Good: Specific, actionable convention
+# Good: safety/approval boundary
+Ask before destructive production/VPS actions; back up config before risky edits.
+
+# Good: routing constraint
+Use provider X as the default route; provider Y only for task-specific reasons.
+
+# Bad: project notebook entry
 Project ~/code/api uses Go 1.22, sqlc for DB queries, chi router. Run tests with 'make test'. CI via GitHub Actions.
 
-# Good: Lesson learned with context
-The staging server (10.0.1.50) needs SSH port 2222, not 22. Key is at ~/.ssh/staging_ed25519.
-
-# Bad: Too vague
-User has a project.
-
-# Bad: Too verbose
-On January 5th, 2026, the user asked me to look at their project which is
-located at ~/code/api. I discovered it uses Go version 1.22 and...
+# Bad: secret-adjacent operational detail
+The staging server uses host 10.0.1.50, SSH port 2222, key at ~/.ssh/staging_ed25519.
 ```
 
 ## Duplicate Prevention

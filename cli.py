@@ -70,6 +70,13 @@ try:
     _STEADY_CURSOR = CursorShape.BLOCK  # Non-blinking block cursor
 except (ImportError, AttributeError):
     _STEADY_CURSOR = None
+
+try:
+    from hermes_cli.pt_input_extras import install_shift_enter_alias
+    install_shift_enter_alias()
+    del install_shift_enter_alias
+except Exception:
+    pass
 import threading
 import queue
 

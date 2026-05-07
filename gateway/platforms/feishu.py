@@ -423,6 +423,7 @@ RejectReason = Literal[
     "bots_disabled",
     "bot_not_mentioned",
     "group_policy_rejected",
+    "mention_required",
 ]
 
 
@@ -2262,6 +2263,14 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         reason = self._admit(sender, message)
+        if reason == "mention_required" and self._might_mention_self(message):
+            hydrated = await self._hydrate_mentions_for_admit(message_id)
+            if hydrated and self._message_mentions_bot(hydrated):
+                logger.debug(
+                    "[Feishu] Admission recovered via REST hydration: %s",
+                    message_id,
+                )
+                reason = None
         if reason is not None:
             logger.debug("[Feishu] dropping inbound event: %s", reason)
             return
@@ -3656,6 +3665,31 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Failed to fetch bot names for %s", bot_ids, exc_info=True)
             return None
 
+    async def _hydrate_mentions_for_admit(self, message_id: str) -> Optional[list]:
+        """Fetch message via REST to obtain ``mentions[]`` for admission gating.
+
+        Returns the hydrated mentions list or ``None`` on failure.
+        """
+        if not self._client or not message_id:
+            return None
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await asyncio.to_thread(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                return None
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            msg = items[0] if items else None
+            if not msg:
+                return None
+            return getattr(msg, "mentions", None) or []
+        except Exception:
+            logger.debug(
+                "[Feishu] Failed to hydrate mentions for admission %s",
+                message_id,
+                exc_info=True,
+            )
+            return None
+
     async def _fetch_message_text(self, message_id: str) -> Optional[str]:
         if not self._client or not message_id:
             return None
@@ -3755,7 +3789,7 @@ class FeishuAdapter(BasePlatformAdapter):
         ):
             return "group_policy_rejected"
         if require_mention and not self._mentions_self(message):
-            return "group_policy_rejected"
+            return "mention_required"
         return None
 
     def _require_mention_for(self, chat_id: str) -> bool:
@@ -3810,6 +3844,21 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     # --- Mention detection ----------------------------------------------------
+
+    def _might_mention_self(self, message: Any) -> bool:
+        """Check if message *might* mention the bot but lacks mapped mentions.
+
+        Feishu reply messages via websocket may omit ``message.mentions`` even
+        when the user explicitly @mentioned the bot.  This heuristic detects
+        ambiguous cases worth hydrating via REST before admission rejection.
+        """
+        raw_content = getattr(message, "content", "") or ""
+        if _MENTION_RE.search(raw_content):
+            return True
+        for attr in ("parent_id", "root_id", "thread_id", "upper_message_id"):
+            if getattr(message, attr, None):
+                return True
+        return False
 
     def _mentions_self(self, message: Any) -> bool:
         # @_all is Feishu's @everyone placeholder.

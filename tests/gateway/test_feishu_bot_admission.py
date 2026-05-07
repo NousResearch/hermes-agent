@@ -445,7 +445,7 @@ def test_admit_per_group_require_mention_overrides_global():
     assert adapter._admit(sender, make_message(chat_id="oc_free", chat_type="group")) is None
     assert (
         adapter._admit(sender, make_message(chat_id="oc_other", chat_type="group"))
-        == "group_policy_rejected"
+        == "mention_required"
     )
 
 
@@ -743,3 +743,171 @@ def test_handle_message_event_data_forwards_sender_when_admitted():
     assert captured.get("sender_id") is sender.sender_id
     assert captured.get("is_bot") is True
     assert captured.get("message_id") == "om_bot_ok"
+
+
+# --- _might_mention_self ---------------------------------------------------
+
+
+def test_might_mention_self_detects_at_user_placeholder():
+    adapter = make_adapter_skeleton()
+    msg = make_message()
+    msg.content = '{"text":"@_user_1 hello"}'
+    assert adapter._might_mention_self(msg) is True
+
+
+def test_might_mention_self_detects_parent_id():
+    adapter = make_adapter_skeleton()
+    msg = make_message()
+    msg.parent_id = "om_parent"
+    assert adapter._might_mention_self(msg) is True
+
+
+def test_might_mention_self_detects_root_id():
+    adapter = make_adapter_skeleton()
+    msg = make_message()
+    msg.root_id = "om_root"
+    assert adapter._might_mention_self(msg) is True
+
+
+def test_might_mention_self_false_for_plain_message():
+    adapter = make_adapter_skeleton()
+    msg = make_message()
+    assert adapter._might_mention_self(msg) is False
+
+
+# --- _admit returns mention_required ---------------------------------------
+
+
+def test_admit_returns_mention_required_not_group_policy_rejected():
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self", require_mention=True, group_policy="open",
+    )
+    stub_mention(adapter, False)
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    msg = make_message(chat_type="group")
+    assert adapter._admit(sender, msg) == "mention_required"
+
+
+def test_admit_returns_none_when_mention_present():
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self", require_mention=True, group_policy="open",
+    )
+    stub_mention(adapter, True)
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    msg = make_message(chat_type="group")
+    assert adapter._admit(sender, msg) is None
+
+
+# --- Hydration recovery in _handle_message_event_data ----------------------
+
+
+def test_handle_message_event_data_recovers_admission_via_hydration():
+    import asyncio
+
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self", require_mention=True, group_policy="open",
+    )
+    install_dedup_state(adapter)
+    processed = []
+
+    # _mentions_self returns False (no mentions on websocket message)
+    adapter._mentions_self = lambda _msg: False
+    # _might_mention_self returns True (has @_user_1 placeholder)
+    adapter._might_mention_self = lambda _msg: True
+
+    async def _fake_hydrate(message_id):
+        # Simulate REST returning a mention for the bot
+        return [SimpleNamespace(id=SimpleNamespace(open_id="ou_self", user_id=None), name="bot")]
+
+    async def _fake_process(**kwargs):
+        processed.append(kwargs)
+
+    adapter._hydrate_mentions_for_admit = _fake_hydrate
+    adapter._process_inbound_message = _fake_process
+
+    msg = make_message(
+        message_id="om_hydrate", chat_type="group",
+    )
+    msg.content = '{"text":"@_user_1"}'
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            sender=make_sender(sender_type="user", open_id="ou_human"),
+            message=msg,
+        )
+    )
+
+    asyncio.run(adapter._handle_message_event_data(data))
+    assert len(processed) == 1
+    assert processed[0]["message_id"] == "om_hydrate"
+
+
+def test_handle_message_event_data_still_drops_when_hydration_fails():
+    import asyncio
+
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self", require_mention=True, group_policy="open",
+    )
+    install_dedup_state(adapter)
+    processed = []
+
+    adapter._mentions_self = lambda _msg: False
+    adapter._might_mention_self = lambda _msg: True
+
+    async def _fake_hydrate_fail(message_id):
+        return None  # REST call failed
+
+    async def _fake_process(**kwargs):
+        processed.append(kwargs)
+
+    adapter._hydrate_mentions_for_admit = _fake_hydrate_fail
+    adapter._process_inbound_message = _fake_process
+
+    msg = make_message(
+        message_id="om_no_hydrate", chat_type="group",
+    )
+    msg.content = '{"text":"@_user_1"}'
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            sender=make_sender(sender_type="user", open_id="ou_human"),
+            message=msg,
+        )
+    )
+
+    asyncio.run(adapter._handle_message_event_data(data))
+    assert processed == []
+
+
+def test_handle_message_event_data_skips_hydration_when_not_ambiguous():
+    import asyncio
+
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self", require_mention=True, group_policy="open",
+    )
+    install_dedup_state(adapter)
+    processed = []
+    hydration_called = []
+
+    adapter._mentions_self = lambda _msg: False
+    adapter._might_mention_self = lambda _msg: False  # not ambiguous
+
+    async def _fake_hydrate(message_id):
+        hydration_called.append(message_id)
+        return None
+
+    async def _fake_process(**kwargs):
+        processed.append(kwargs)
+
+    adapter._hydrate_mentions_for_admit = _fake_hydrate
+    adapter._process_inbound_message = _fake_process
+
+    msg = make_message(message_id="om_plain", chat_type="group")
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            sender=make_sender(sender_type="user", open_id="ou_human"),
+            message=msg,
+        )
+    )
+
+    asyncio.run(adapter._handle_message_event_data(data))
+    assert processed == []
+    assert hydration_called == []  # hydration not attempted

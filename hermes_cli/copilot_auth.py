@@ -212,9 +212,9 @@ def copilot_device_code_login(
     print("  Waiting for authorization...", end="", flush=True)
 
     # Step 3: Poll for completion
-    deadline = time.time() + timeout_seconds
+    deadline = time.monotonic() + timeout_seconds
 
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         time.sleep(interval + _DEVICE_CODE_POLL_SAFETY_MARGIN)
 
         poll_data = urllib.parse.urlencode({

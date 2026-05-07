@@ -331,6 +331,61 @@ It picks `no_agent=True` automatically when the message content is fully determi
 
 See the [Script-Only Cron Jobs guide](/docs/guides/cron-script-only) for worked examples.
 
+## Chaining jobs with `context_from`
+
+Cron jobs run in isolated sessions with no memory of previous runs. But sometimes one job's output is exactly what the next job needs. The `context_from` parameter wires that connection automatically — Job B's prompt gets Job A's most recent output prepended as context at runtime.
+
+```python
+# Job 1: Collect raw data
+cronjob(
+    action="create",
+    prompt="Fetch the top 10 AI/ML stories from Hacker News. Save them to ~/.hermes/data/briefs/raw.md in markdown format with title, URL, and score.",
+    schedule="0 7 * * *",
+    name="AI News Collector",
+)
+
+# Job 2: Triage — receives Job 1's output as context
+# Get Job 1's ID from: cronjob(action="list")
+cronjob(
+    action="create",
+    prompt="Read ~/.hermes/data/briefs/raw.md. Score each story 1–10 for engagement potential and novelty. Output the top 5 to ~/.hermes/data/briefs/ranked.md.",
+    schedule="30 7 * * *",
+    context_from="<job1_id>",
+    name="AI News Triage",
+)
+
+# Job 3: Ship — receives Job 2's output as context
+cronjob(
+    action="create",
+    prompt="Read ~/.hermes/data/briefs/ranked.md. Write 3 tweet drafts (hook + body + hashtags). Deliver to telegram:7976161601.",
+    schedule="0 8 * * *",
+    context_from="<job2_id>",
+    name="AI News Brief",
+)
+```
+
+**How it works:**
+
+- When Job 2 fires, Hermes reads Job 1's most recent output from `~/.hermes/cron/output/{job1_id}/*.md`
+- That output is prepended to Job 2's prompt automatically
+- Job 2 doesn't need to hardcode "read this file" — it receives the content as context
+- The chain can be any length: Job 1 → Job 2 → Job 3 → ...
+
+**What `context_from` accepts:**
+
+| Format | Example |
+|--------|---------|
+| Single job ID (string) | `context_from="a1b2c3d4"` |
+| Multiple job IDs (list) | `context_from=["job_a", "job_b"]` |
+
+Outputs are concatenated in the order listed.
+
+**When to use it:**
+
+- Multi-stage pipelines (collect → filter → format → deliver)
+- Dependent tasks where step N's work depends on step N−1's output
+- Fan-out/fan-in patterns where one job aggregates results from several others
+
 ## Provider recovery
 
 Cron jobs inherit your configured fallback providers and credential pool rotation. If the primary API key is rate-limited or the provider returns an error, the cron agent can:

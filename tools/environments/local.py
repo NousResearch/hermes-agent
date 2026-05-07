@@ -3,6 +3,7 @@
 import logging
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -403,6 +404,12 @@ class LocalEnvironment(BaseEnvironment):
             )
             self.cwd = safe_cwd
 
+        # On Windows, self.cwd may be a Git Bash-style path (/c/Users/...)
+        # from pwd output. subprocess.Popen needs a native Windows path.
+        _popen_cwd = self.cwd
+        if _IS_WINDOWS and _popen_cwd and re.match(r'^/[a-zA-Z]/', _popen_cwd):
+            _popen_cwd = _popen_cwd[1].upper() + ':' + _popen_cwd[2:].replace('/', '\\')
+
         proc = subprocess.Popen(
             args,
             text=True,
@@ -413,7 +420,7 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            cwd=self.cwd,
+            cwd=_popen_cwd,
         )
         if not _IS_WINDOWS:
             try:

@@ -302,3 +302,61 @@ def test_strip_none_returns_zero():
     tools, stripped = strip_pattern_and_format(None)
     assert tools is None
     assert stripped == 0
+
+
+def test_top_level_allof_stripped_for_codex_backend_compat():
+    """OpenAI Codex backend rejects top-level allOf/oneOf/anyOf/enum/not."""
+    tools = [_tool("memory", {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["add", "replace"]},
+            "content": {"type": "string"},
+        },
+        "required": ["action"],
+        "allOf": [
+            {
+                "if": {"properties": {"action": {"const": "add"}}, "required": ["action"]},
+                "then": {"required": ["content"]},
+            },
+        ],
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    assert "allOf" not in params
+    # Properties and required survive.
+    assert params["required"] == ["action"]
+    assert "content" in params["properties"]
+
+
+def test_top_level_oneof_anyof_enum_not_stripped():
+    """All five forbidden top-level combinators are dropped."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"x": {"type": "string"}},
+        "oneOf": [{"required": ["x"]}],
+        "anyOf": [{"required": ["x"]}],
+        "enum": ["bogus-top-level"],
+        "not": {"required": ["y"]},
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    for key in ("oneOf", "anyOf", "enum", "not"):
+        assert key not in params, f"{key} should be stripped from top level"
+
+
+def test_nested_allof_preserved():
+    """Combinators inside a property's schema are preserved (only top is strict)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "config": {
+                "type": "object",
+                "properties": {"mode": {"type": "string"}},
+                "allOf": [{"required": ["mode"]}],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    nested = out[0]["function"]["parameters"]["properties"]["config"]
+    assert "allOf" in nested
+    assert nested["allOf"] == [{"required": ["mode"]}]

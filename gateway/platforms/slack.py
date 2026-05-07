@@ -1887,6 +1887,12 @@ class SlackAdapter(BasePlatformAdapter):
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
         if not is_dm and bot_uid:
+            # Check allowed channels — if set, only respond in these channels (whitelist)
+            allowed_channels = self._slack_allowed_channels()
+            if allowed_channels and channel_id not in allowed_channels:
+                logger.debug("[Slack] Ignoring message in non-allowed channel: %s", channel_id)
+                return
+
             if channel_id in self._slack_free_response_channels():
                 pass  # Free-response channel — always process
             elif not self._slack_require_mention():
@@ -2923,4 +2929,20 @@ class SlackAdapter(BasePlatformAdapter):
         s = str(raw).strip() if raw is not None else ""
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _slack_allowed_channels(self) -> set:
+        """Return the whitelist of channel IDs the bot will respond in.
+
+        When non-empty, messages from channels NOT in this set are silently
+        ignored — even if the bot is @mentioned.  DMs are never filtered.
+        Empty set means no restriction (fully backward compatible).
+        """
+        raw = self.config.extra.get("allowed_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_ALLOWED_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
         return set()

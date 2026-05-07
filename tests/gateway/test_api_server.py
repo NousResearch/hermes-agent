@@ -587,6 +587,10 @@ class TestCapabilitiesEndpoint:
             assert data["model"] == "hermes-agent"
             assert data["auth"]["type"] == "bearer"
             assert data["auth"]["required"] is False
+            assert data["runtime"]["mode"] == "server_agent"
+            assert data["runtime"]["tool_execution"] == "server"
+            assert data["runtime"]["split_runtime"] is False
+            assert "API-server host" in data["runtime"]["description"]
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
@@ -1361,6 +1365,146 @@ class TestResponsesEndpoint:
             assert call_kwargs["user_message"] == "Now add 1 more"
 
     @pytest.mark.asyncio
+    async def test_previous_response_id_stores_full_agent_transcript_once(self, adapter):
+        """Chained Responses storage must not append result["messages"] twice."""
+        first_history = [
+            {"role": "user", "content": "What is 1+1?"},
+            {"role": "assistant", "content": "2"},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "2",
+                        "messages": list(first_history),
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp1 = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "What is 1+1?"},
+                )
+
+            assert resp1.status == 200
+            resp1_data = await resp1.json()
+            stored_first = adapter._response_store.get(resp1_data["id"])
+            assert stored_first["conversation_history"] == first_history
+
+            second_history = first_history + [
+                {"role": "user", "content": "Now add 1 more"},
+                {"role": "assistant", "content": "3"},
+            ]
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "3",
+                        "messages": list(second_history),
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Now add 1 more",
+                        "previous_response_id": resp1_data["id"],
+                    },
+                )
+
+            assert resp2.status == 200
+            resp2_data = await resp2.json()
+            stored_second = adapter._response_store.get(resp2_data["id"])
+            stored_history = stored_second["conversation_history"]
+            assert stored_history == second_history
+            assert stored_history.count(first_history[0]) == 1
+            assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_outputs_only_current_turn_items(self, adapter):
+        """Response output must not replay previous tool artifacts."""
+        prior_history = [
+            {"role": "user", "content": "Read old file"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_old",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"old.txt"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_old",
+                "content": '{"content":"old"}',
+            },
+            {"role": "assistant", "content": "old"},
+        ]
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+        full_agent_transcript = prior_history + [
+            {"role": "user", "content": "Read new file"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_new",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"new.txt"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_new",
+                "content": '{"content":"new"}',
+            },
+            {"role": "assistant", "content": "new"},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "new",
+                        "messages": list(full_agent_transcript),
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Read new file",
+                        "previous_response_id": "resp_prev",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        output_json = json.dumps(data["output"])
+        assert "call_new" in output_json
+        assert "call_old" not in output_json
+        assert "old.txt" not in output_json
+
+    @pytest.mark.asyncio
     async def test_previous_response_id_preserves_session(self, adapter):
         """Chained responses via previous_response_id reuse the same session_id."""
         mock_result = {
@@ -1626,6 +1770,71 @@ class TestResponsesStreaming:
                 assert data["id"] == response_id
                 assert data["status"] == "completed"
                 assert data["output"][-1]["content"][0]["text"] == "Stored response"
+
+    @pytest.mark.asyncio
+    async def test_streamed_previous_response_id_stores_full_agent_transcript_once(self, adapter):
+        prior_history = [
+            {"role": "user", "content": "What is 1+1?"},
+            {"role": "assistant", "content": "2"},
+        ]
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+
+        expected_history = prior_history + [
+            {"role": "user", "content": "Now add 1 more"},
+            {"role": "assistant", "content": "3"},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("3")
+                return (
+                    {
+                        "final_response": "3",
+                        "messages": list(expected_history),
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Now add 1 more",
+                        "previous_response_id": "resp_prev",
+                        "stream": True,
+                    },
+                )
+                body = await resp.text()
+
+        assert resp.status == 200
+        response_id = None
+        for line in body.splitlines():
+            if line.startswith("data: "):
+                try:
+                    payload = json.loads(line[len("data: "):])
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("type") == "response.completed":
+                    response_id = payload["response"]["id"]
+                    break
+
+        assert response_id
+        stored_history = adapter._response_store.get(response_id)["conversation_history"]
+        assert stored_history == expected_history
+        assert stored_history.count(prior_history[0]) == 1
+        assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
 
     @pytest.mark.asyncio
     async def test_stream_cancelled_persists_incomplete_snapshot(self, adapter):

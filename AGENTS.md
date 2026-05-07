@@ -42,6 +42,7 @@ hermes-agent/
 ├── plugins/              # Plugin system (see "Plugins" section below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
 │   ├── context_engine/   # Context-engine plugins
+│   ├── model-providers/  # Inference backend plugins (openrouter, anthropic, gmi, ...)
 │   ├── kanban/           # Multi-agent board dispatcher + worker plugin
 │   ├── hermes-achievements/  # Gamified achievement tracking
 │   ├── observability/    # Metrics / traces / logs plugin
@@ -511,6 +512,31 @@ If a plugin needs a capability the framework doesn't expose, expand the
 generic plugin surface (new hook, new ctx method) — never hardcode
 plugin-specific logic into core. PR #5295 removed 95 lines of hardcoded
 honcho argparse from `main.py` for exactly this reason.
+
+### Model-provider plugins (`plugins/model-providers/<name>/`)
+
+Every inference backend (openrouter, anthropic, gmi, deepseek, nvidia, …)
+ships as a plugin here. Each plugin's `__init__.py` calls
+`providers.register_provider(ProviderProfile(...))` at module load.
+`providers/__init__.py._discover_providers()` is a **lazy, separate
+discovery system** — scanned on first `get_provider_profile()` or
+`list_providers()` call, NOT by the general PluginManager.
+
+Scan order:
+1. Bundled: `<repo>/plugins/model-providers/<name>/`
+2. User: `$HERMES_HOME/plugins/model-providers/<name>/`
+3. Legacy: `<repo>/providers/<name>.py` (back-compat)
+
+User plugins of the same name override bundled ones — `register_provider()`
+is last-writer-wins. This lets third parties swap out any built-in
+profile without a repo patch.
+
+The general PluginManager records `kind: model-provider` manifests but does
+NOT import them (would double-instantiate `ProviderProfile`). Plugins
+without an explicit `kind:` get auto-coerced via a source-text heuristic
+(`register_provider` + `ProviderProfile` in `__init__.py`).
+
+Full authoring guide: `website/docs/developer-guide/model-provider-plugin.md`.
 
 ### Dashboard / context-engine / image-gen plugin directories
 

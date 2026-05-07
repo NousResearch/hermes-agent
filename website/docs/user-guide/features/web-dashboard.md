@@ -334,6 +334,7 @@ Built-in themes:
 | Theme | Character |
 |-------|-----------|
 | **Hermes Teal** (`default`) | Dark teal + cream, system fonts, comfortable spacing |
+| **Hermes Teal (Large)** (`default-large`) | Same as default with 18px text and roomier spacing |
 | **Midnight** (`midnight`) | Deep blue-violet, Inter + JetBrains Mono |
 | **Ember** (`ember`) | Warm crimson + bronze, Spectral serif + IBM Plex Mono |
 | **Mono** (`mono`) | Grayscale, IBM Plex, compact |

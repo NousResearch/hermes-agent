@@ -191,6 +191,30 @@ class TestNonStringContent:
         kwargs = mock_call.call_args.kwargs
         assert "temperature" not in kwargs
 
+    def test_summary_prompt_avoids_filter_sensitive_handoff_framing(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ok"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert "Your output will be injected" not in prompt
+        assert "Do NOT respond" not in prompt
+        assert "DIFFERENT assistant" not in prompt
+        assert "different assistant" not in prompt
+        assert "Treat the conversation turns below as source material" in prompt
+        assert "structured checkpoint summary" in prompt
+
     def test_summary_call_passes_live_main_runtime(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

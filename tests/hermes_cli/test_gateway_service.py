@@ -2,6 +2,7 @@
 
 import os
 import pwd
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -90,6 +91,13 @@ class TestSystemdServiceRefresh:
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
 
         calls = []
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda system=False, previous_pid=None: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None: calls.append(("wait", system, previous_pid)) or True,
+        )
 
         def fake_run(cmd, check=True, **kwargs):
             calls.append(cmd)
@@ -100,11 +108,12 @@ class TestSystemdServiceRefresh:
         gateway_cli.systemd_restart()
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
-        assert calls[:4] == [
+        assert calls[:5] == [
             ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "show", gateway_cli.get_service_name(), "--no-pager", "--property", "ActiveState,SubState,Result,ExecMainStatus"],
+            ["systemctl", "--user", "show", gateway_cli.get_service_name(), "--no-pager", "--property", "ActiveState,SubState,Result,ExecMainStatus,MainPID"],
             ["systemctl", "--user", "reset-failed", gateway_cli.get_service_name()],
-            ["systemctl", "--user", "reload-or-restart", gateway_cli.get_service_name()],
+            ["systemctl", "--user", "restart", gateway_cli.get_service_name()],
+            ("wait", False, None),
         ]
 
     def test_systemd_stop_marks_running_gateway_as_planned_stop(self, monkeypatch):
@@ -611,62 +620,141 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
-    def test_systemd_restart_self_requests_graceful_restart_and_waits(self, monkeypatch, capsys):
+    def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 654,
         )
         monkeypatch.setattr(
             gateway_cli,
-            "_request_gateway_self_restart",
-            lambda pid: calls.append(("self", pid)) or True,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
         )
 
-        # Simulate: old process dies immediately, new process becomes active
-        kill_call_count = [0]
-        def fake_kill(pid, sig):
-            kill_call_count[0] += 1
-            if kill_call_count[0] >= 2:  # first call checks, second = dead
-                raise ProcessLookupError()
-        monkeypatch.setattr(os, "kill", fake_kill)
-
-        # Simulate systemctl reset-failed/start followed by an active unit
-        new_pid = [None]
+        # Simulate systemctl reset-failed/restart followed by an active unit.
+        # A plain start does not break systemd's auto-restart timer once the
+        # old gateway has exited with the planned restart code.
         def fake_subprocess_run(cmd, **kwargs):
             if "reset-failed" in cmd:
                 calls.append(("reset-failed", cmd))
                 return SimpleNamespace(stdout="", returncode=0)
-            if "start" in cmd:
-                calls.append(("start", cmd))
+            if "restart" in cmd:
+                calls.append(("restart", cmd))
                 return SimpleNamespace(stdout="", returncode=0)
-            if "show" in cmd:
-                new_pid[0] = 999
-                return SimpleNamespace(
-                    stdout="ActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\n",
-                    returncode=0,
-                )
             raise AssertionError(f"Unexpected systemctl call: {cmd}")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
-        # get_running_pid returns new PID after restart
-        pid_calls = [0]
-        def fake_get_pid():
-            pid_calls[0] += 1
-            return 999 if pid_calls[0] > 1 else 654
-        monkeypatch.setattr("gateway.status.get_running_pid", fake_get_pid)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None: calls.append(("wait", system, previous_pid)) or True,
+        )
 
         gateway_cli.systemd_restart()
 
-        assert ("self", 654) in calls
+        assert ("graceful", 654, 17.0) in calls
         assert any(call[0] == "reset-failed" for call in calls)
-        assert any(call[0] == "start" for call in calls)
+        assert any(call[0] == "restart" for call in calls)
+        assert ("wait", False, 654) in calls
         out = capsys.readouterr().out.lower()
-        assert "restarted" in out
+        assert "restarting gracefully" in out
+
+    def test_systemd_restart_uses_systemd_main_pid_when_pid_file_is_missing(self, monkeypatch, capsys):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 10.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False: {
+                "ActiveState": "active",
+                "SubState": "running",
+                "Result": "success",
+                "ExecMainStatus": "0",
+                "MainPID": "777",
+            },
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+        )
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda args, **kwargs: calls.append(args) or SimpleNamespace(stdout="", returncode=0))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None: calls.append(("wait", system, previous_pid)) or True,
+        )
+
+        gateway_cli.systemd_restart()
+
+        assert ("graceful", 777, 15.0) in calls
+        assert ("wait", False, 777) in calls
+        assert "restarting gracefully (pid 777)" in capsys.readouterr().out.lower()
+
+    def test_wait_for_systemd_restart_waits_for_runtime_running(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False: {
+                "ActiveState": "active",
+                "SubState": "running",
+                "Result": "success",
+                "ExecMainStatus": "0",
+                "MainPID": "999",
+            },
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_gateway_runtime_status_for_pid",
+            lambda pid: {"pid": pid, "gateway_state": "running"},
+        )
+
+        assert gateway_cli._wait_for_systemd_service_restart(previous_pid=777, timeout=0.1) is True
+        assert "restarted (pid 999)" in capsys.readouterr().out.lower()
+
+    def test_systemd_restart_reports_start_limit_hit(self, monkeypatch, capsys):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda system=False, previous_pid=None: False)
+
+        def fake_run_systemctl(args, **kwargs):
+            calls.append(args)
+            if args[0] == "show":
+                return SimpleNamespace(stdout="ActiveState=inactive\nSubState=dead\nResult=success\nExecMainStatus=0\nMainPID=0\n", stderr="", returncode=0)
+            if args[0] == "reset-failed":
+                return SimpleNamespace(stdout="", stderr="", returncode=0)
+            if args[0] == "restart":
+                raise subprocess.CalledProcessError(
+                    1,
+                    ["systemctl", "--user", *args],
+                    stderr="Job failed. See result 'start-limit-hit'.",
+                )
+            raise AssertionError(f"Unexpected args: {args}")
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_restart()
+
+        assert ["restart", gateway_cli.get_service_name()] in calls
+        out = capsys.readouterr().out.lower()
+        assert "rate-limited by systemd" in out
+        assert "reset-failed" in out
 
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
@@ -710,6 +798,11 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 999 if started["value"] else None,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_gateway_runtime_status_for_pid",
+            lambda pid: {"pid": pid, "gateway_state": "running"},
         )
 
         gateway_cli.systemd_restart()
@@ -2177,3 +2270,171 @@ class TestSystemdInstallOffersLegacyRemoval:
 
         assert prompt_called["count"] == 0
         assert remove_called["invoked"] is False
+
+
+class TestSystemScopeRequiresRootError:
+    """Tests for the SystemScopeRequiresRootError replacement of sys.exit(1).
+
+    Before this change, ``_require_root_for_system_service`` called
+    ``sys.exit(1)`` when non-root code tried a system-scope systemd
+    operation. The wizard's ``except Exception`` guards don't catch
+    ``SystemExit`` (it's a ``BaseException`` subclass), so the user was
+    dumped at a bare shell prompt mid-setup. The fix raises a typed
+    exception instead, which the wizard intercepts and handles with
+    actionable remediation.
+    """
+
+    def test_require_root_raises_when_non_root(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+
+        with pytest.raises(gateway_cli.SystemScopeRequiresRootError) as excinfo:
+            gateway_cli._require_root_for_system_service("start")
+
+        assert excinfo.value.args[0] == "System gateway start requires root. Re-run with sudo."
+        assert excinfo.value.args[1] == "start"
+        # str(e) renders only the message, not the tuple repr, so that
+        # wizard format strings like f"Failed: {e}" print cleanly.
+        assert str(excinfo.value) == "System gateway start requires root. Re-run with sudo."
+        assert f"Failed: {excinfo.value}" == "Failed: System gateway start requires root. Re-run with sudo."
+
+    def test_require_root_noop_when_root(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 0)
+
+        # Should not raise, should not exit
+        gateway_cli._require_root_for_system_service("start")
+
+    def test_error_is_runtime_error_subclass(self):
+        """Wizards use ``except Exception`` guards — the error must be a
+        ``RuntimeError`` (catchable by ``Exception``), NOT a ``SystemExit``
+        (``BaseException``), so the wizard can recover from it.
+        """
+        err = gateway_cli.SystemScopeRequiresRootError("msg", "start")
+        assert isinstance(err, RuntimeError)
+        assert isinstance(err, Exception)
+        assert not isinstance(err, SystemExit)
+
+
+class TestSystemScopeWizardPreCheck:
+    """Tests for _system_scope_wizard_would_need_root — the guard the
+    wizard uses to detect the dead-end BEFORE prompting the user to start
+    a service that will fail without sudo.
+    """
+
+    @staticmethod
+    def _setup_units(tmp_path, monkeypatch, system_present: bool, user_present: bool):
+        sys_dir = tmp_path / "sys"
+        usr_dir = tmp_path / "usr"
+        sys_dir.mkdir()
+        usr_dir.mkdir()
+        if system_present:
+            (sys_dir / "hermes-gateway.service").write_text("[Unit]\n")
+        if user_present:
+            (usr_dir / "hermes-gateway.service").write_text("[Unit]\n")
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: (sys_dir if system else usr_dir) / "hermes-gateway.service",
+        )
+
+    def test_non_root_with_only_system_unit_returns_true(self, tmp_path, monkeypatch):
+        self._setup_units(tmp_path, monkeypatch, system_present=True, user_present=False)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+
+        assert gateway_cli._system_scope_wizard_would_need_root() is True
+
+    def test_root_never_needs_root(self, tmp_path, monkeypatch):
+        self._setup_units(tmp_path, monkeypatch, system_present=True, user_present=False)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 0)
+
+        assert gateway_cli._system_scope_wizard_would_need_root() is False
+
+    def test_non_root_with_user_unit_present_returns_false(self, tmp_path, monkeypatch):
+        # User-scope unit present — user can start it themselves, no sudo needed.
+        self._setup_units(tmp_path, monkeypatch, system_present=True, user_present=True)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+
+        assert gateway_cli._system_scope_wizard_would_need_root() is False
+
+    def test_non_root_with_no_units_returns_false(self, tmp_path, monkeypatch):
+        self._setup_units(tmp_path, monkeypatch, system_present=False, user_present=False)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+
+        assert gateway_cli._system_scope_wizard_would_need_root() is False
+
+    def test_non_root_with_explicit_system_arg_returns_true(self, tmp_path, monkeypatch):
+        # Caller passed system=True explicitly (e.g. ``hermes gateway start --system``).
+        self._setup_units(tmp_path, monkeypatch, system_present=False, user_present=False)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+
+        assert gateway_cli._system_scope_wizard_would_need_root(system=True) is True
+
+
+class TestSystemScopeRemediationOutput:
+    """Tests for _print_system_scope_remediation — the actionable guidance
+    shown when the wizard detects a system-scope-only setup as non-root.
+    """
+
+    def test_start_remediation_mentions_sudo_systemctl_and_uninstall(self, capsys, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway")
+
+        gateway_cli._print_system_scope_remediation("start")
+        out = capsys.readouterr().out
+
+        assert "system-wide service" in out
+        assert "start requires root" in out
+        assert "sudo systemctl start hermes-gateway" in out
+        assert "sudo hermes gateway uninstall --system" in out
+        assert "hermes gateway install" in out
+
+    def test_restart_remediation_uses_systemctl_restart(self, capsys, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway")
+
+        gateway_cli._print_system_scope_remediation("restart")
+        out = capsys.readouterr().out
+
+        assert "restart requires root" in out
+        assert "sudo systemctl restart hermes-gateway" in out
+
+    def test_stop_remediation_uses_systemctl_stop(self, capsys, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway")
+
+        gateway_cli._print_system_scope_remediation("stop")
+        out = capsys.readouterr().out
+
+        assert "stop requires root" in out
+        assert "sudo systemctl stop hermes-gateway" in out
+
+
+class TestGatewayCommandCatchesSystemScopeError:
+    """The direct CLI path (``hermes gateway start --system`` etc.) must
+    still exit 1 with a clean message when non-root. The top-level
+    ``gateway_command`` catches ``SystemScopeRequiresRootError`` and
+    converts it back to ``sys.exit(1)``, preserving existing CLI behavior.
+    """
+
+    def test_non_root_system_start_exits_one_with_clean_message(self, tmp_path, monkeypatch, capsys):
+        sys_dir = tmp_path / "sys"
+        usr_dir = tmp_path / "usr"
+        sys_dir.mkdir()
+        usr_dir.mkdir()
+        (sys_dir / "hermes-gateway.service").write_text("[Unit]\n")
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: (sys_dir if system else usr_dir) / "hermes-gateway.service",
+        )
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda **kw: 0)
+
+        args = SimpleNamespace(gateway_command="start", system=True, all=False)
+
+        with pytest.raises(SystemExit) as excinfo:
+            gateway_cli.gateway_command(args)
+
+        assert excinfo.value.code == 1
+        out = capsys.readouterr().out
+        # Renders the message, NOT the ``('msg', 'action')`` tuple repr
+        assert "System gateway start requires root. Re-run with sudo." in out
+        assert "('" not in out  # no tuple repr leaking through

@@ -89,6 +89,12 @@ def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("Deutsch") == "de"
     assert i18n._normalize_lang("español") == "es"
     assert i18n._normalize_lang("jp") == "ja"
+    assert i18n._normalize_lang("Ukrainian") == "uk"
+    assert i18n._normalize_lang("uk-UA") == "uk"
+    assert i18n._normalize_lang("ua") == "uk"
+    assert i18n._normalize_lang("Turkish") == "tr"
+    assert i18n._normalize_lang("tr-TR") == "tr"
+    assert i18n._normalize_lang("türkçe") == "tr"
 
 
 def test_normalize_lang_unknown_falls_back():
@@ -126,6 +132,8 @@ def test_default_when_nothing_set(monkeypatch):
 def test_t_explicit_lang():
     assert i18n.t("approval.denied", lang="en").endswith("Denied")
     assert i18n.t("approval.denied", lang="zh").endswith("已拒绝")
+    assert i18n.t("approval.denied", lang="uk").endswith("Відхилено")
+    assert i18n.t("approval.denied", lang="tr").endswith("Reddedildi")
 
 
 def test_t_formats_placeholders():

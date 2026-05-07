@@ -9,6 +9,57 @@
   width: 100%;
 }
 
+/* ---- Code/pre reset (theme-immune default) --------------------------- *
+ *
+ * Themes (shipped AND user-installable) routinely paint every <code> and
+ * <pre> on the page with an opaque accent-color fill. That's fine for a
+ * Markdown doc page; it's wrong for the kanban plugin, which uses <code>
+ * for event payloads, run metadata, log panes, and similar raw-data
+ * surfaces that must read as plain text on the board's own background.
+ *
+ * Rather than play whack-a-mole with theme rules (the pre-#21086 approach
+ * was a single ``.hermes-kanban code { background: transparent }`` rule
+ * that lost specificity fights in the drawer context), reset EVERY
+ * <code>/<pre> inside the kanban plugin container to transparent with
+ * ``!important``, then opt back in ONLY on the class that carries
+ * intentional styling (``.hermes-kanban-md code``, the inline code pill
+ * inside rendered task-body Markdown).
+ *
+ * Net effect: any new theme, shipped or third-party, can introduce
+ * whatever global code-fill rule it wants — kanban surfaces stay clean
+ * unless the theme deliberately targets our internal class names.
+ * Regression coverage: #21086 (task-drawer event payloads unreadable
+ * across every shipped theme).
+ */
+.hermes-kanban code,
+.hermes-kanban pre,
+.hermes-kanban-drawer code,
+.hermes-kanban-drawer pre {
+  background: transparent !important;
+  color: inherit;
+}
+/* The Markdown renderer intentionally paints a subtle code pill behind
+ * inline ``<code>`` inside task-body prose — but NOT inside a fenced
+ * block (those are a ``<pre class="hermes-kanban-md-code">`` with a
+ * bare ``<code>`` inside, and the pill would double up with the pre
+ * background). ``:not()`` scopes this opt-back-in to inline code only.
+ *
+ * Uses ``color-mix(currentColor ...)`` rather than ``--color-foreground``
+ * so the pill renders consistently even when a theme forgets to set
+ * ``--color-foreground`` (pre-existing safeguard from #18576).
+ */
+.hermes-kanban .hermes-kanban-md code:not(.hermes-kanban-md-code *) {
+  background: color-mix(in srgb, currentColor 8%, transparent) !important;
+}
+/* Tighten contrast on the drawer-specific payload class — it lives on
+ * its own line in the events list, so matching the muted-foreground
+ * color keeps it visually distinct from the event title without
+ * screaming for attention. */
+.hermes-kanban-event-payload,
+.hermes-kanban-drawer .hermes-kanban-event-payload {
+  color: var(--color-muted-foreground) !important;
+}
+
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {
@@ -659,7 +710,9 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.8rem;
   padding: 0.05rem 0.3rem;
-  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+  /* Background is set in the code/pre reset block at the top of this
+   * file with !important, so theme-level global code rules can't knock
+   * out this intentional pill. See #21086. */
   border-radius: 3px;
   color: inherit;
 }
@@ -669,10 +722,15 @@
  * UA default on <code> elements — otherwise themes that don't set
  * --color-foreground leave code text rendering near-black on dark themes
  * (see issue #18576). */
-.hermes-kanban-md-code {
+.hermes-kanban pre.hermes-kanban-md-code {
   margin: 0.35rem 0;
   padding: 0.5rem 0.6rem;
-  background: color-mix(in srgb, currentColor 6%, transparent);
+  /* Higher specificity (``.hermes-kanban pre.hermes-kanban-md-code`` vs
+   * the reset's ``.hermes-kanban pre``) so this intentional pill wins
+   * over our own ``<pre>`` reset. ``!important`` also needed so theme
+   * rules that drop their own ``code``/``pre`` fill don't knock it out
+   * either. #21086. */
+  background: color-mix(in srgb, currentColor 6%, transparent) !important;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm, 0.25rem);
   overflow-x: auto;
@@ -1099,4 +1157,174 @@
   background: rgba(255, 107, 107, 0.12);
   color: #ff8b8b;
   border: 1px solid rgba(255, 107, 107, 0.3);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Diagnostics — generic, severity-coloured distress signals on tasks.    */
+/* Three rungs: warning (amber), error (orange), critical (red).          */
+/* ---------------------------------------------------------------------- */
+
+/* Severity token variables so every diagnostic-coloured surface uses the */
+/* same palette. */
+.hermes-kanban-diag,
+.hermes-kanban-attention,
+.hermes-kanban-warning-badge,
+.hermes-kanban-attention-row {
+  --hermes-diag-warning: #ff9e3b;
+  --hermes-diag-error:   #ff6b3d;
+  --hermes-diag-critical: #ff4d4d;
+}
+
+/* Warning-badge severity variants (overrides the base colour). */
+.hermes-kanban-warning-badge--warning { color: var(--hermes-diag-warning); }
+.hermes-kanban-warning-badge--error   { color: var(--hermes-diag-error); font-weight: 700; }
+.hermes-kanban-warning-badge--critical { color: var(--hermes-diag-critical); font-weight: 700; }
+
+/* Attention-strip severity variants. */
+.hermes-kanban-attention--warning {
+  border-color: rgba(255, 158, 59, 0.35);
+  background: rgba(255, 158, 59, 0.06);
+}
+.hermes-kanban-attention--error {
+  border-color: rgba(255, 107, 61, 0.45);
+  background: rgba(255, 107, 61, 0.08);
+}
+.hermes-kanban-attention--critical {
+  border-color: rgba(255, 77, 77, 0.55);
+  background: rgba(255, 77, 77, 0.10);
+}
+.hermes-kanban-attention--error .hermes-kanban-attention-icon { color: var(--hermes-diag-error); }
+.hermes-kanban-attention--critical .hermes-kanban-attention-icon { color: var(--hermes-diag-critical); }
+
+/* Per-row severity marker in the expanded attention list. */
+.hermes-kanban-attention-row-sev {
+  display: inline-block;
+  min-width: 1.5rem;
+  font-weight: 600;
+}
+.hermes-kanban-attention-row--warning .hermes-kanban-attention-row-sev { color: var(--hermes-diag-warning); }
+.hermes-kanban-attention-row--error    .hermes-kanban-attention-row-sev { color: var(--hermes-diag-error); font-weight: 700; }
+.hermes-kanban-attention-row--critical .hermes-kanban-attention-row-sev { color: var(--hermes-diag-critical); font-weight: 700; }
+
+/* Individual diagnostic card inside the drawer's Diagnostics section. */
+.hermes-kanban-diag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.hermes-kanban-diag {
+  border-left: 3px solid var(--hermes-diag-warning);
+  background: rgba(255, 158, 59, 0.05);
+  border-radius: 0.35rem;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.hermes-kanban-diag--error {
+  border-left-color: var(--hermes-diag-error);
+  background: rgba(255, 107, 61, 0.06);
+}
+.hermes-kanban-diag--critical {
+  border-left-color: var(--hermes-diag-critical);
+  background: rgba(255, 77, 77, 0.07);
+}
+.hermes-kanban-diag-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.hermes-kanban-diag-sev {
+  font-weight: 700;
+  min-width: 1.5rem;
+}
+.hermes-kanban-diag--warning .hermes-kanban-diag-sev { color: var(--hermes-diag-warning); }
+.hermes-kanban-diag--error    .hermes-kanban-diag-sev { color: var(--hermes-diag-error); }
+.hermes-kanban-diag--critical .hermes-kanban-diag-sev { color: var(--hermes-diag-critical); }
+.hermes-kanban-diag-title {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+.hermes-kanban-diag-detail {
+  font-size: 0.8125rem;
+  color: var(--color-foreground, #ccc);
+  line-height: 1.4;
+}
+.hermes-kanban-diag-data {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+}
+.hermes-kanban-diag-data-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.hermes-kanban-diag-data-key {
+  color: var(--color-muted-foreground, #888);
+  font-weight: 500;
+}
+.hermes-kanban-diag-data-val {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.hermes-kanban-diag-reassign-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+}
+.hermes-kanban-diag-reassign-label {
+  color: var(--color-muted-foreground, #888);
+}
+.hermes-kanban-diag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.1rem;
+}
+.hermes-kanban-diag-action-btn {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+.hermes-kanban-diag-action-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.3);
+}
+.hermes-kanban-diag-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.hermes-kanban-diag-action-btn--suggested {
+  background: rgba(255, 158, 59, 0.15);
+  border-color: rgba(255, 158, 59, 0.4);
+  font-weight: 600;
+}
+.hermes-kanban-diag-action-btn--suggested:hover:not(:disabled) {
+  background: rgba(255, 158, 59, 0.25);
+}
+.hermes-kanban-diag-action-btn--unknown {
+  opacity: 0.6;
+  cursor: default;
+}
+.hermes-kanban-diag-msg {
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.3rem;
+}
+.hermes-kanban-diag-msg--ok {
+  background: rgba(120, 200, 120, 0.12);
+  color: #6bc46b;
+  border: 1px solid rgba(120, 200, 120, 0.3);
+}
+.hermes-kanban-diag-msg--err {
+  background: rgba(255, 107, 61, 0.12);
+  color: #ff8b6b;
+  border: 1px solid rgba(255, 107, 61, 0.3);
 }

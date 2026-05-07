@@ -1963,6 +1963,45 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_metadata_reply_target_for_threaded_feishu_topic(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="status update",
+                    metadata={
+                        "thread_id": "omt-thread",
+                        "reply_to_message_id": "om_trigger",
+                    },
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].message_id, "om_trigger")
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -3196,6 +3235,37 @@ class TestDedupTTL(unittest.TestCase):
         adapter._seen_message_order = ["om_old"]
         with patch.object(adapter, "_persist_seen_message_ids"):
             self.assertFalse(adapter._is_duplicate("om_old"))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_load_tolerates_malformed_timestamp_values(self):
+        """Regression #13632 — a non-numeric timestamp in the persisted
+        dedup state must not crash adapter startup.  The bad key is
+        skipped; the rest of the state loads.
+        """
+        import tempfile
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        with tempfile.TemporaryDirectory() as temp_home:
+            with patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=True):
+                adapter = FeishuAdapter(PlatformConfig())
+                adapter._dedup_state_path.parent.mkdir(parents=True, exist_ok=True)
+                adapter._dedup_state_path.write_text(
+                    json.dumps(
+                        {
+                            "message_ids": {
+                                "om_good": time.time(),
+                                "om_bad_str": "not-a-timestamp",
+                                "om_bad_null": None,
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                adapter._load_seen_message_ids()
+                assert "om_good" in adapter._seen_message_ids
+                assert "om_bad_str" not in adapter._seen_message_ids
+                assert "om_bad_null" not in adapter._seen_message_ids
 
     @patch.dict(os.environ, {}, clear=True)
     def test_persist_saves_timestamps_as_dict(self):

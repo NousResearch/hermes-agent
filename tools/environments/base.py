@@ -489,6 +489,26 @@ class BaseEnvironment(ABC):
 
         def _drain():
             fd = proc.stdout.fileno()
+            # select.select does NOT work on pipe fds on Windows (only sockets).
+            # Use blocking os.read in a daemon thread instead — safe because
+            # EOF arrives promptly when bash exits.
+            if os.name == "nt":
+                try:
+                    while True:
+                        chunk = os.read(fd, 4096)
+                        if not chunk:
+                            break
+                        output_chunks.append(decoder.decode(chunk))
+                except (ValueError, OSError):
+                    pass
+                finally:
+                    try:
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            output_chunks.append(tail)
+                    except Exception:
+                        pass
+                return
             idle_after_exit = 0
             try:
                 while True:

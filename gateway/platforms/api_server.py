@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
+MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -917,6 +917,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 "type": "bearer",
                 "required": bool(self._api_key),
             },
+            "runtime": {
+                "mode": "server_agent",
+                "tool_execution": "server",
+                "split_runtime": False,
+                "description": (
+                    "The API server creates a server-side Hermes AIAgent; "
+                    "tools execute on the API-server host unless a future "
+                    "explicit split-runtime mode is enabled."
+                ),
+            },
             "features": {
                 "chat_completions": True,
                 "chat_completions_streaming": True,
@@ -1316,8 +1326,8 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
 
             # Finish chunk
             finish_chunk = {
@@ -1349,6 +1359,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 except (asyncio.CancelledError, Exception):
                     pass
             logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
+        except Exception as _exc:
+            # Agent crashed mid-stream.  Try to emit an error chunk
+            # so the client gets a proper response instead of a
+            # TransferEncodingError from incomplete chunked encoding.
+            import traceback as _tb
+            logger.error("Agent crashed mid-stream for %s: %s", completion_id, _tb.format_exc()[:300])
+            try:
+                error_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
+                }
+                await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
+                await response.write(b"data: [DONE]\n\n")
+            except Exception:
+                pass
 
         return response
 
@@ -1669,20 +1695,54 @@ class APIServerAdapter(BasePlatformAdapter):
             async def _dispatch(it) -> None:
                 """Route a queue item to the correct SSE emitter.
 
-                Plain strings are text deltas.  Tagged tuples with
-                ``__tool_started__`` / ``__tool_completed__`` prefixes
-                are tool lifecycle events.
+                Plain strings are text deltas — they are batched (50ms)
+                to reduce Open WebUI re-render storms.  Tagged tuples
+                with ``__tool_started__`` / ``__tool_completed__``
+                prefixes are tool lifecycle events and flush the buffer
+                before emitting.
                 """
+                nonlocal _batch_timer
                 if isinstance(it, tuple) and len(it) == 2 and isinstance(it[0], str):
                     tag, payload = it
+                    # Flush batched text before tool events
+                    if _batch_buf:
+                        await _flush_batch()
                     if tag == "__tool_started__":
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
-                    # Unknown tags are silently ignored (forward-compat).
                 elif isinstance(it, str):
-                    await _emit_text_delta(it)
-                # Other types (non-string, non-tuple) are silently dropped.
+                    # Batch text deltas — append to buffer, flush on timer
+                    _batch_buf.append(it)
+                    if _batch_timer is None:
+                        _batch_timer = asyncio.create_task(_batch_flush_after(0.05))
+                # Other types are silently dropped.
+
+            # ── Batching state ──
+            _batch_buf: List[str] = []
+            _batch_timer: Optional[asyncio.Task] = None
+            _batch_lock = asyncio.Lock()
+
+            async def _batch_flush_after(delay: float) -> None:
+                """Wait delay seconds, then flush accumulated text deltas."""
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    return
+                # Clear timer reference BEFORE flush so new deltas
+                # can start a fresh timer while we emit
+                nonlocal _batch_buf, _batch_timer
+                _batch_timer = None
+                await _flush_batch()
+
+            async def _flush_batch() -> None:
+                """Emit a single SSE delta for all accumulated text."""
+                nonlocal _batch_buf
+                async with _batch_lock:
+                    if _batch_buf:
+                        combined = "".join(_batch_buf)
+                        _batch_buf = []
+                        await _emit_text_delta(combined)
 
             loop = asyncio.get_running_loop()
             while True:
@@ -1707,10 +1767,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     continue
 
                 if item is None:  # EOS sentinel
+                    # Cancel pending timer and flush remaining batched text
+                    if _batch_timer and not _batch_timer.done():
+                        _batch_timer.cancel()
+                        _batch_timer = None
+                    if _batch_buf:
+                        await _flush_batch()
                     break
 
                 await _dispatch(item)
                 last_activity = time.monotonic()
+
+            # Flush any final batched text before processing result
+            if _batch_buf:
+                await _flush_batch()
 
             # Pick up agent result + usage from the completed task
             try:
@@ -1762,6 +1832,31 @@ class APIServerAdapter(BasePlatformAdapter):
             # payload still see the assistant text.  This mirrors the
             # shape produced by _extract_output_items in the batch path.
             final_items: List[Dict[str, Any]] = list(emitted_items)
+
+            # Trim large content from tool call arguments to keep the
+            # response.completed event under ~100KB.  Clients already
+            # received full details via incremental events.
+            for _item in final_items:
+                if _item.get("type") == "function_call":
+                    try:
+                        _args = json.loads(_item.get("arguments", "{}")) if isinstance(_item.get("arguments"), str) else _item.get("arguments", {})
+                        if isinstance(_args, dict):
+                            for _k in ("content", "query", "pattern", "old_string", "new_string"):
+                                if isinstance(_args.get(_k), str) and len(_args[_k]) > 500:
+                                    _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
+                            _item["arguments"] = json.dumps(_args)
+                    except Exception:
+                        pass
+                elif _item.get("type") == "function_call_output":
+                    _output = _item.get("output", [])
+                    if isinstance(_output, list) and _output:
+                        _first = _output[0]
+                        if isinstance(_first, dict) and _first.get("type") == "input_text":
+                            _text = _first.get("text", "")
+                            if len(_text) > 1000:
+                                _first["text"] = _text[:500] + "...[" + str(len(_text) - 500) + " more chars]"
+                                _item["output"] = [_first]
+
             final_items.append({
                 "type": "message",
                 "role": "assistant",
@@ -1803,12 +1898,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
                 }
-                full_history = list(conversation_history)
-                full_history.append({"role": "user", "content": user_message})
-                if isinstance(result, dict) and result.get("messages"):
-                    full_history.extend(result["messages"])
-                else:
-                    full_history.append({"role": "assistant", "content": final_response_text})
+                full_history = self._build_response_conversation_history(
+                    conversation_history,
+                    user_message,
+                    result,
+                    final_response_text,
+                )
                 _persist_response_snapshot(
                     completed_env,
                     conversation_history_snapshot=full_history,
@@ -1852,6 +1947,30 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_task.cancel()
             logger.info("SSE task cancelled; persisted incomplete snapshot for %s", response_id)
             raise
+        except Exception as _exc:
+            # Agent crashed with an unhandled error (e.g. model API error like
+            # BadRequestError, AuthenticationError).  Emit a response.failed
+            # event and properly terminate the SSE stream so the client doesn't
+            # get a TransferEncodingError from incomplete chunked encoding.
+            import traceback as _tb
+            _persist_incomplete_if_needed()
+            agent_error = _tb.format_exc()
+            try:
+                failed_env = _envelope("failed")
+                failed_env["output"] = list(emitted_items)
+                failed_env["error"] = {"message": str(_exc)[:500], "type": "server_error"}
+                failed_env["usage"] = {
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                }
+                await _write_event("response.failed", {
+                    "type": "response.failed",
+                    "response": failed_env,
+                })
+            except Exception:
+                pass
+            logger.error("Agent crashed mid-stream for %s: %s", response_id, str(agent_error)[:300])
 
         return response
 
@@ -2083,17 +2202,22 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Build the full conversation history for storage
         # (includes tool calls from the agent run)
-        full_history = list(conversation_history)
-        full_history.append({"role": "user", "content": user_message})
-        # Add agent's internal messages if available
-        agent_messages = result.get("messages", [])
-        if agent_messages:
-            full_history.extend(agent_messages)
-        else:
-            full_history.append({"role": "assistant", "content": final_response})
+        full_history = self._build_response_conversation_history(
+            conversation_history,
+            user_message,
+            result,
+            final_response,
+        )
 
-        # Build output items (includes tool calls + final message)
-        output_items = self._extract_output_items(result)
+        # Build output items from the current turn only.  AIAgent returns a
+        # full transcript in result["messages"], while older/mocked paths may
+        # return only the current turn suffix.
+        output_start_index = self._response_messages_turn_start_index(
+            conversation_history,
+            user_message,
+            result,
+        )
+        output_items = self._extract_output_items(result, start_index=output_start_index)
 
         response_data = {
             "id": response_id,
@@ -2385,17 +2509,70 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_output_items(result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Build the full output item array from the agent's messages.
+    def _build_response_conversation_history(
+        conversation_history: List[Dict[str, Any]],
+        user_message: Any,
+        result: Dict[str, Any],
+        final_response: Any,
+    ) -> List[Dict[str, Any]]:
+        """Build the stored Responses transcript without duplicating history."""
+        prior = list(conversation_history)
+        current_user = {"role": "user", "content": user_message}
+        agent_messages = result.get("messages") if isinstance(result, dict) else None
 
-        Walks *result["messages"]* and emits:
+        if isinstance(agent_messages, list) and agent_messages:
+            turn_start = APIServerAdapter._response_messages_turn_start_index(
+                conversation_history,
+                user_message,
+                result,
+            )
+            if turn_start:
+                return list(agent_messages)
+
+            full_history = prior
+            full_history.append(current_user)
+            full_history.extend(agent_messages)
+            return full_history
+
+        full_history = prior
+        full_history.append(current_user)
+        full_history.append({"role": "assistant", "content": final_response})
+        return full_history
+
+    @staticmethod
+    def _response_messages_turn_start_index(
+        conversation_history: List[Dict[str, Any]],
+        user_message: Any,
+        result: Dict[str, Any],
+    ) -> int:
+        """Detect transcript-shaped result["messages"] and return turn start."""
+        agent_messages = result.get("messages") if isinstance(result, dict) else None
+        if not isinstance(agent_messages, list) or not agent_messages:
+            return 0
+
+        prior = list(conversation_history)
+        current_user = {"role": "user", "content": user_message}
+        expected_prefix = prior + [current_user]
+        if agent_messages[:len(expected_prefix)] == expected_prefix:
+            return len(expected_prefix)
+        if prior and agent_messages[:len(prior)] == prior:
+            return len(prior)
+        return 0
+
+    @staticmethod
+    def _extract_output_items(result: Dict[str, Any], start_index: int = 0) -> List[Dict[str, Any]]:
+        """
+        Build the output item array from the agent's messages.
+
+        Walks *result["messages"]* starting at *start_index* and emits:
         - ``function_call`` items for each tool_call on assistant messages
         - ``function_call_output`` items for each tool-role message
         - a final ``message`` item with the assistant's text reply
         """
         items: List[Dict[str, Any]] = []
         messages = result.get("messages", [])
+        if start_index > 0:
+            messages = messages[start_index:]
 
         for msg in messages:
             role = msg.get("role")
@@ -2935,7 +3112,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws)
+            self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)

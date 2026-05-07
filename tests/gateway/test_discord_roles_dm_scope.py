@@ -252,3 +252,93 @@ def test_empty_allowlists_allow_everyone():
         adapter._is_allowed_user("42", author=None, guild=None, is_dm=True)
         is True
     )
+
+
+# ---------------------------------------------------------------------------
+# Slash-surface sibling site: _evaluate_slash_authorization must pass
+# guild/is_dm through so the cross-guild bypass can't land via slash either.
+# ---------------------------------------------------------------------------
+
+
+def test_slash_authorization_rejects_cross_guild_role_dm(monkeypatch):
+    """Slash interaction in a DM must not be authorized by a role held in
+    any mutual guild (parallel to the on_message cross-guild bypass)."""
+    import discord as _discord  # type: ignore
+    monkeypatch.delenv("DISCORD_DM_ROLE_AUTH_GUILD", raising=False)
+
+    public_guild, _ = _guild_with_member(
+        guild_id=111111,
+        member_id=42,
+        role_ids=[5555],
+    )
+    adapter = _make_adapter(
+        allowed_roles=[5555],
+        guilds=[public_guild],
+    )
+
+    # Fake a DM interaction: user is Member-like, channel is DMChannel,
+    # interaction.guild is None.
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=42),
+        channel=MagicMock(spec=_discord.DMChannel),
+        channel_id=None,
+        guild=None,
+    )
+
+    allowed, reason = adapter._evaluate_slash_authorization(interaction)
+    assert allowed is False
+    assert "ALLOWED" in (reason or "")
+
+
+def test_slash_authorization_rejects_cross_guild_role_in_guild(monkeypatch):
+    """Slash in guild B must not be authorized by a role held in guild A."""
+    monkeypatch.delenv("DISCORD_DM_ROLE_AUTH_GUILD", raising=False)
+
+    public_guild, _ = _guild_with_member(
+        guild_id=111111,
+        member_id=42,
+        role_ids=[5555],
+    )
+    # Interaction arrives in trusted_guild where user 42 has no role
+    trusted_guild = SimpleNamespace(id=222222, get_member=lambda uid: None)
+    adapter = _make_adapter(
+        allowed_roles=[5555],
+        guilds=[public_guild, trusted_guild],
+    )
+
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=42),
+        channel=SimpleNamespace(id=9999),  # not a DMChannel instance
+        channel_id=9999,
+        guild=trusted_guild,
+    )
+
+    allowed, reason = adapter._evaluate_slash_authorization(interaction)
+    assert allowed is False
+    assert "ALLOWED" in (reason or "")
+
+
+def test_slash_authorization_allows_in_scope_guild_role(monkeypatch):
+    """Positive control: slash in guild B, user has role in guild B → allowed."""
+    monkeypatch.delenv("DISCORD_DM_ROLE_AUTH_GUILD", raising=False)
+
+    trusted_guild, _ = _guild_with_member(
+        guild_id=222222,
+        member_id=42,
+        role_ids=[5555],
+    )
+    adapter = _make_adapter(
+        allowed_roles=[5555],
+        guilds=[trusted_guild],
+    )
+
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=42),
+        channel=SimpleNamespace(id=9999),
+        channel_id=9999,
+        guild=trusted_guild,
+    )
+
+    allowed, reason = adapter._evaluate_slash_authorization(interaction)
+    assert allowed is True
+    assert reason is None

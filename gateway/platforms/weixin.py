@@ -129,7 +129,10 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     if not AIOHTTP_AVAILABLE:
         return None
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-    return aiohttp.TCPConnector(ssl=ssl_ctx)
+    # Use ThreadedResolver to avoid aiohttp 3.13+ aiohappyeyeballs
+    # "Future attached to a different loop" error when send() is called
+    # via asyncio.run_coroutine_threadsafe() from worker threads (cron/agent).
+    return aiohttp.TCPConnector(ssl=ssl_ctx, resolver=aiohttp.resolver.ThreadedResolver())
 
 ITEM_TEXT = 1
 ITEM_IMAGE = 2
@@ -2062,7 +2065,17 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if live_adapter is not None and send_session is not None and not send_session.closed:
+    # Check loop compatibility: aiohttp sessions are bound to the event loop
+    # they were created on.  When _run_async() spins up a worker thread with
+    # its own loop, using the gateway-loop session triggers "Future attached
+    # to a different loop" in aiohttp 3.13+ (aiohappyeyeballs DNS resolution).
+    _loop_ok = False
+    if send_session is not None and not send_session.closed:
+        try:
+            _loop_ok = (send_session._loop is asyncio.get_running_loop())
+        except (AttributeError, RuntimeError):
+            _loop_ok = False
+    if live_adapter is not None and send_session is not None and _loop_ok:
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:

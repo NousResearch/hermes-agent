@@ -70,6 +70,7 @@ AUTHOR_MAP = {
     "godnanijatin@gmail.com": "jatingodnani",
     "252811164+adybag14-cyber@users.noreply.github.com": "adybag14-cyber",
     "14046872+tmimmanuel@users.noreply.github.com": "tmimmanuel",
+    "112875006+donramon77@users.noreply.github.com": "donramon77",
     "657290301@qq.com": "IMHaoyan",
     "revar@users.noreply.github.com": "revaraver",
     "dengtaoyuan@dengtaoyuandeMac-mini.local": "dengtaoyuan450-a11y",

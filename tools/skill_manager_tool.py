@@ -40,7 +40,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
-from typing import Dict, Any, Optional, Tuple
+from typing import Callable, Dict, Any, Optional, Tuple
 
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
@@ -216,6 +216,42 @@ def _validate_skill_manage_required_args(
     if action == "remove_file" and not file_path:
         return "file_path is required for 'remove_file'."
     return None
+
+
+def _record_skill_manage_success(
+    action: str,
+    name: str,
+    *,
+    background_review: Optional[bool] = None,
+) -> None:
+    """Run cache and curator side effects after a successful skill mutation."""
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception:
+        pass
+
+    # Curator telemetry: bump patch_count on edit/patch/write_file/remove_file
+    # (the actions that mutate an existing skill's guidance), drop the record on
+    # delete. Only mark create as agent-authored for background review changes.
+    try:
+        from tools.skill_usage import bump_patch, forget, mark_agent_created
+        if background_review is None:
+            try:
+                from tools.skill_provenance import is_background_review
+                background_review = is_background_review()
+            except Exception:
+                background_review = False
+
+        if action == "create":
+            if background_review:
+                mark_agent_created(name)
+        elif action in ("patch", "edit", "write_file", "remove_file"):
+            bump_patch(name)
+        elif action == "delete":
+            forget(name)
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -411,6 +447,218 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         except OSError:
             logger.error("Failed to remove temporary file %s during atomic write", temp_path, exc_info=True)
         raise
+
+
+def _validation_result(error: str, **extra: Any) -> Dict[str, Any]:
+    result = {"success": False, "error": error}
+    result.update(extra)
+    return result
+
+
+def _scan_skill_preview(
+    existing_dir: Optional[Path],
+    name: str,
+    mutate_preview: Callable[[Path], Optional[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    """Apply a proposed change in a temp skill dir and scan before queueing."""
+    with tempfile.TemporaryDirectory(prefix="hermes-skill-evolution-") as tmp:
+        preview_dir = Path(tmp) / name
+        if existing_dir is None:
+            preview_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            shutil.copytree(existing_dir, preview_dir, symlinks=True)
+
+        mutation_error = mutate_preview(preview_dir)
+        if mutation_error:
+            return mutation_error
+
+        scan_error = _security_scan_skill(preview_dir)
+        if scan_error:
+            return _validation_result(scan_error)
+    return None
+
+
+def _validate_pending_skill_change(
+    action: str,
+    name: str,
+    *,
+    content: str = None,
+    category: str = None,
+    file_path: str = None,
+    file_content: str = None,
+    old_string: str = None,
+    new_string: str = None,
+    replace_all: bool = False,
+    absorbed_into: str = None,
+) -> Optional[Dict[str, Any]]:
+    """Validate and scan a confirm-mode proposal before it enters the queue."""
+    if action == "create":
+        err = _validate_name(name)
+        if err:
+            return _validation_result(err)
+        err = _validate_category(category)
+        if err:
+            return _validation_result(err)
+        err = _validate_frontmatter(content)
+        if err:
+            return _validation_result(err)
+        err = _validate_content_size(content)
+        if err:
+            return _validation_result(err)
+        existing = _find_skill(name)
+        if existing:
+            return _validation_result(f"A skill named '{name}' already exists at {existing['path']}.")
+
+        def _write_preview(preview_dir: Path) -> Optional[Dict[str, Any]]:
+            _atomic_write_text(preview_dir / "SKILL.md", content)
+            return None
+
+        return _scan_skill_preview(None, name, _write_preview)
+
+    if action == "edit":
+        err = _validate_frontmatter(content)
+        if err:
+            return _validation_result(err)
+        err = _validate_content_size(content)
+        if err:
+            return _validation_result(err)
+        existing = _find_skill(name)
+        if not existing:
+            return _validation_result(f"Skill '{name}' not found. Use skills_list() to see available skills.")
+
+        def _write_preview(preview_dir: Path) -> Optional[Dict[str, Any]]:
+            _atomic_write_text(preview_dir / "SKILL.md", content)
+            return None
+
+        return _scan_skill_preview(existing["path"], name, _write_preview)
+
+    if action == "patch":
+        existing = _find_skill(name)
+        if not existing:
+            return _validation_result(f"Skill '{name}' not found.")
+
+        skill_dir = existing["path"]
+        if file_path:
+            err = _validate_file_path(file_path)
+            if err:
+                return _validation_result(err)
+            target, err = _resolve_skill_target(skill_dir, file_path)
+            if err:
+                return _validation_result(err)
+        else:
+            target = skill_dir / "SKILL.md"
+
+        if not target.exists():
+            return _validation_result(f"File not found: {target.relative_to(skill_dir)}")
+
+        original_content = target.read_text(encoding="utf-8")
+        from tools.fuzzy_match import fuzzy_find_and_replace
+
+        new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
+            original_content, old_string, new_string, replace_all
+        )
+        if match_error:
+            preview = original_content[:500] + ("..." if len(original_content) > 500 else "")
+            err_msg = match_error
+            try:
+                from tools.fuzzy_match import format_no_match_hint
+                err_msg += format_no_match_hint(match_error, match_count, old_string, original_content)
+            except Exception:
+                pass
+            return _validation_result(err_msg, file_preview=preview)
+
+        target_label = "SKILL.md" if not file_path else file_path
+        err = _validate_content_size(new_content, label=target_label)
+        if err:
+            return _validation_result(err)
+        if not file_path:
+            err = _validate_frontmatter(new_content)
+            if err:
+                return _validation_result(f"Patch would break SKILL.md structure: {err}")
+
+        def _write_preview(preview_dir: Path) -> Optional[Dict[str, Any]]:
+            if file_path:
+                preview_target, err = _resolve_skill_target(preview_dir, file_path)
+                if err:
+                    return _validation_result(err)
+            else:
+                preview_target = preview_dir / "SKILL.md"
+            _atomic_write_text(preview_target, new_content)
+            return None
+
+        return _scan_skill_preview(skill_dir, name, _write_preview)
+
+    if action == "delete":
+        existing = _find_skill(name)
+        if not existing:
+            return _validation_result(f"Skill '{name}' not found.")
+        pinned_err = _pinned_guard(name)
+        if pinned_err:
+            return _validation_result(pinned_err)
+        if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
+            target_name = absorbed_into.strip()
+            if target_name == name:
+                return _validation_result(
+                    f"absorbed_into='{target_name}' cannot equal the skill being deleted."
+                )
+            target = _find_skill(target_name)
+            if not target:
+                return _validation_result(
+                    f"absorbed_into='{target_name}' does not exist. "
+                    f"Create or patch the umbrella skill first, then retry the delete."
+                )
+        return None
+
+    if action == "write_file":
+        err = _validate_file_path(file_path)
+        if err:
+            return _validation_result(err)
+        if not file_content and file_content != "":
+            return _validation_result("file_content is required.")
+        content_bytes = len(file_content.encode("utf-8"))
+        if content_bytes > MAX_SKILL_FILE_BYTES:
+            return _validation_result(
+                f"File content is {content_bytes:,} bytes "
+                f"(limit: {MAX_SKILL_FILE_BYTES:,} bytes / 1 MiB). "
+                f"Consider splitting into smaller files."
+            )
+        err = _validate_content_size(file_content, label=file_path)
+        if err:
+            return _validation_result(err)
+        existing = _find_skill(name)
+        if not existing:
+            return _validation_result(f"Skill '{name}' not found. Create it first with action='create'.")
+        target, err = _resolve_skill_target(existing["path"], file_path)
+        if err:
+            return _validation_result(err)
+
+        def _write_preview(preview_dir: Path) -> Optional[Dict[str, Any]]:
+            preview_target, err = _resolve_skill_target(preview_dir, file_path)
+            if err:
+                return _validation_result(err)
+            _atomic_write_text(preview_target, file_content)
+            return None
+
+        return _scan_skill_preview(existing["path"], name, _write_preview)
+
+    if action == "remove_file":
+        err = _validate_file_path(file_path)
+        if err:
+            return _validation_result(err)
+        existing = _find_skill(name)
+        if not existing:
+            return _validation_result(f"Skill '{name}' not found.")
+        skill_dir = existing["path"]
+        target, err = _resolve_skill_target(skill_dir, file_path)
+        if err:
+            return _validation_result(err)
+        if not target.exists():
+            return _validation_result(f"File '{file_path}' not found in skill '{name}'.")
+        return None
+
+    return _validation_result(
+        f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"
+    )
 
 
 # =============================================================================
@@ -805,6 +1053,20 @@ def skill_manage(
                 }
                 return json.dumps(result, ensure_ascii=False)
             if mode == "confirm":
+                validation_error = _validate_pending_skill_change(
+                    action,
+                    name,
+                    content=content,
+                    category=category,
+                    file_path=file_path,
+                    file_content=file_content,
+                    old_string=old_string,
+                    new_string=new_string,
+                    replace_all=replace_all,
+                    absorbed_into=absorbed_into,
+                )
+                if validation_error:
+                    return json.dumps(validation_error, ensure_ascii=False)
                 payload = {
                     "content": content,
                     "category": category,
@@ -852,29 +1114,7 @@ def skill_manage(
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
 
     if result.get("success"):
-        try:
-            from agent.prompt_builder import clear_skills_system_prompt_cache
-            clear_skills_system_prompt_cache(clear_snapshot=True)
-        except Exception:
-            pass
-        # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
-        # that mutate an existing skill's guidance), drop the record on delete.
-        # Only mark a skill as agent-created when the background self-improvement
-        # review fork creates it — foreground `skill_manage(create)` calls are
-        # user-directed, and those skills belong to the user (the curator must
-        # not touch them). Best-effort; telemetry failures never break the tool.
-        try:
-            from tools.skill_usage import bump_patch, forget, mark_agent_created
-            from tools.skill_provenance import is_background_review
-            if action == "create":
-                if is_background_review():
-                    mark_agent_created(name)
-            elif action in ("patch", "edit", "write_file", "remove_file"):
-                bump_patch(name)
-            elif action == "delete":
-                forget(name)
-        except Exception:
-            pass
+        _record_skill_manage_success(action, name)
 
     return json.dumps(result, ensure_ascii=False)
 

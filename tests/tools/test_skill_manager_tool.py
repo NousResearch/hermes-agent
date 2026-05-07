@@ -620,6 +620,94 @@ class TestSkillManageDispatcher:
         assert "old_string" in result["error"]
         mock_queue.assert_not_called()
 
+    def test_background_review_confirm_validates_create_before_queueing(self, tmp_path):
+        from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
+
+        invalid_content = """\
+---
+name: review-sediment
+---
+
+# Review Sediment
+
+Missing description.
+"""
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_manager_tool.get_evolution_mode", return_value="confirm"), \
+                 patch("tools.skill_manager_tool.queue_pending_change") as mock_queue:
+                raw = skill_manage(
+                    action="create",
+                    name="review-sediment",
+                    content=invalid_content,
+                )
+                exists = (tmp_path / "review-sediment" / "SKILL.md").exists()
+        finally:
+            from tools.skill_provenance import reset_current_write_origin
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "description" in result["error"]
+        assert exists is False
+        mock_queue.assert_not_called()
+
+    def test_background_review_confirm_scans_create_before_queueing(self, tmp_path):
+        from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_manager_tool.get_evolution_mode", return_value="confirm"), \
+                 patch("tools.skill_manager_tool._security_scan_skill", return_value="Security scan blocked") as mock_scan, \
+                 patch("tools.skill_manager_tool.queue_pending_change") as mock_queue:
+                raw = skill_manage(
+                    action="create",
+                    name="review-sediment",
+                    content=VALID_SKILL_CONTENT,
+                )
+                exists = (tmp_path / "review-sediment" / "SKILL.md").exists()
+        finally:
+            from tools.skill_provenance import reset_current_write_origin
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Security scan blocked" in result["error"]
+        assert exists is False
+        mock_scan.assert_called_once()
+        mock_queue.assert_not_called()
+
+    def test_background_review_confirm_validates_patch_match_before_queueing(self, tmp_path):
+        from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
+
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="review-sediment", content=VALID_SKILL_CONTENT)
+
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                with patch("tools.skill_manager_tool.get_evolution_mode", return_value="confirm"), \
+                     patch("tools.skill_manager_tool.queue_pending_change") as mock_queue:
+                    raw = skill_manage(
+                        action="patch",
+                        name="review-sediment",
+                        old_string="not in the skill",
+                        new_string="replacement",
+                    )
+            finally:
+                from tools.skill_provenance import reset_current_write_origin
+                reset_current_write_origin(token)
+
+            content_after = (tmp_path / "review-sediment" / "SKILL.md").read_text()
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "match" in result["error"].lower()
+        assert content_after == VALID_SKILL_CONTENT
+        mock_queue.assert_not_called()
+
     def test_background_review_readonly_skips_create_without_queueing(self, tmp_path):
         from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
 

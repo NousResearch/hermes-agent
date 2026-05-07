@@ -156,42 +156,50 @@ def _apply_pending_skill_change(change: Dict[str, Any]) -> Dict[str, Any]:
     payload = _skill_evolution_payload(change)
 
     if action == "create":
-        return skill_manager_tool._create_skill(
+        result = skill_manager_tool._create_skill(
             name,
             payload.get("content"),
             payload.get("category") or None,
         )
-    if action == "edit":
-        return skill_manager_tool._edit_skill(name, payload.get("content"))
-    if action == "patch":
-        return skill_manager_tool._patch_skill(
+    elif action == "edit":
+        result = skill_manager_tool._edit_skill(name, payload.get("content"))
+    elif action == "patch":
+        result = skill_manager_tool._patch_skill(
             name,
             payload.get("old_string"),
             payload.get("new_string"),
             payload.get("file_path") or None,
             bool(payload.get("replace_all", False)),
         )
-    if action == "delete":
-        return skill_manager_tool._delete_skill(
+    elif action == "delete":
+        result = skill_manager_tool._delete_skill(
             name,
             absorbed_into=payload.get("absorbed_into"),
         )
-    if action == "write_file":
-        return skill_manager_tool._write_file(
+    elif action == "write_file":
+        result = skill_manager_tool._write_file(
             name,
             payload.get("file_path"),
             payload.get("file_content"),
         )
-    if action == "remove_file":
-        return skill_manager_tool._remove_file(name, payload.get("file_path"))
+    elif action == "remove_file":
+        result = skill_manager_tool._remove_file(name, payload.get("file_path"))
+    else:
+        result = {
+            "success": False,
+            "error": (
+                f"Unknown pending skill evolution action {action!r}. "
+                "Use: create, edit, patch, delete, write_file, remove_file."
+            ),
+        }
 
-    return {
-        "success": False,
-        "error": (
-            f"Unknown pending skill evolution action {action!r}. "
-            "Use: create, edit, patch, delete, write_file, remove_file."
-        ),
-    }
+    if result.get("success"):
+        skill_manager_tool._record_skill_manage_success(
+            action,
+            name,
+            background_review=True,
+        )
+    return result
 
 
 def _format_pending_change_detail(change: Dict[str, Any]) -> str:

@@ -250,6 +250,83 @@ def test_do_review_approve_applies_with_low_level_skill_manager_functions(
     assert "Approved pending skill evolution change change-1." in console.export_text()
 
 
+def test_do_review_approve_records_skill_manage_success_side_effects(monkeypatch):
+    from hermes_cli.skills_hub import do_review
+    from tools import skill_manager_tool
+
+    side_effects = []
+
+    def fake_approve(change_id, apply_func):
+        change = {
+            "id": change_id,
+            "action": "create",
+            "name": "writer",
+            "payload": {"content": "skill content", "category": ""},
+        }
+        return apply_func(change)
+
+    monkeypatch.setattr(
+        skill_manager_tool,
+        "_create_skill",
+        lambda *args, **kwargs: {"success": True, "message": "created"},
+    )
+    monkeypatch.setattr(
+        skill_manager_tool,
+        "_record_skill_manage_success",
+        lambda action, name, **kwargs: side_effects.append((action, name, kwargs)),
+    )
+    _install_fake_skill_evolution(
+        monkeypatch,
+        approve_pending_change=fake_approve,
+    )
+
+    console = _capture_console()
+    do_review(approve_id="change-1", console=console)
+
+    assert side_effects == [
+        ("create", "writer", {"background_review": True}),
+    ]
+    assert "Approved pending skill evolution change change-1." in console.export_text()
+
+
+def test_do_review_approve_skips_success_side_effects_when_apply_fails(monkeypatch):
+    from hermes_cli.skills_hub import do_review
+    from tools import skill_manager_tool
+
+    side_effects = []
+
+    def fake_approve(change_id, apply_func):
+        change = {
+            "id": change_id,
+            "action": "create",
+            "name": "writer",
+            "payload": {"content": "skill content", "category": ""},
+        }
+        apply_result = apply_func(change)
+        return {"success": False, "error": "apply failed", "apply_result": apply_result}
+
+    monkeypatch.setattr(
+        skill_manager_tool,
+        "_create_skill",
+        lambda *args, **kwargs: {"success": False, "error": "blocked"},
+    )
+    monkeypatch.setattr(
+        skill_manager_tool,
+        "_record_skill_manage_success",
+        lambda action, name, **kwargs: side_effects.append((action, name, kwargs)),
+    )
+    _install_fake_skill_evolution(
+        monkeypatch,
+        approve_pending_change=fake_approve,
+    )
+
+    console = _capture_console()
+    do_review(approve_id="change-1", console=console)
+
+    assert side_effects == []
+    assert "Failed to approve pending skill evolution change change-1" in console.export_text()
+
+
 def test_confirm_mode_queue_can_be_approved_into_skill_directory(tmp_path, monkeypatch):
     from hermes_cli.skills_hub import do_review
     from tools import skill_manager_tool

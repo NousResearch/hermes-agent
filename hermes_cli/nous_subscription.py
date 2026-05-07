@@ -332,6 +332,8 @@ def get_nous_subscription_features(
             # Per-capability overrides: search_backend or extract_backend may be set
             # without web.backend (using the new split config from #20061)
             or (web_search_backend == "searxng" and direct_searxng)
+            or web_backend == "brave"
+            or web_search_backend == "brave"
             or (web_search_backend == "exa" and direct_exa)
             or (web_search_backend == "firecrawl" and direct_firecrawl)
             or (web_search_backend == "parallel" and direct_parallel)

@@ -308,6 +308,10 @@ TOOL_CATEGORIES = {
                     {"key": "SEARXNG_URL", "prompt": "Your SearXNG instance URL (e.g., http://localhost:8080)", "url": "https://searxng.github.io/searxng/"},
                 ],
             },
+            {
+                "web_backend": "brave",
+                "BRAVE_API_KEY": "",
+            },
         ],
     },
     "image_gen": {

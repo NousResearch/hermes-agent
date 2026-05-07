@@ -42,7 +42,8 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
-    SUPPORTED_DOCUMENT_TYPES,
+    get_document_extension_for_mime,
+    get_document_mime_type,
     is_host_excluded_by_no_proxy,
     resolve_proxy_url,
     safe_url_for_log,
@@ -2037,10 +2038,10 @@ class SlackAdapter(BasePlatformAdapter):
 
                     # Fallback: reverse-lookup from MIME type
                     if not ext and mimetype:
-                        mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
-                        ext = mime_to_ext.get(mimetype, "")
+                        ext = get_document_extension_for_mime(mimetype)
 
-                    if ext not in SUPPORTED_DOCUMENT_TYPES:
+                    doc_mime = get_document_mime_type(ext)
+                    if doc_mime is None:
                         continue  # Skip unsupported file types silently
 
                     # Check file size (Slack limit: 20 MB for bots)
@@ -2055,7 +2056,6 @@ class SlackAdapter(BasePlatformAdapter):
                     cached_path = cache_document_from_bytes(
                         raw_bytes, original_filename or f"document{ext}"
                     )
-                    doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
                     media_urls.append(cached_path)
                     media_types.append(doc_mime)
                     logger.debug("[Slack] Cached user document: %s", cached_path)

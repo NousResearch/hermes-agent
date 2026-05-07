@@ -786,6 +786,67 @@ SUPPORTED_DOCUMENT_TYPES = {
 }
 
 
+def _get_extra_document_types() -> Dict[str, str]:
+    """Return YAML-configured extra document types.
+
+    Reads ``gateway.extra_document_types`` lazily from config.yaml.  This avoids
+    loading config while this module is imported and lets config reloads affect
+    document handling without rebuilding the module-level constant.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception as exc:
+        logger.debug("Could not load extra document types from config: %s", exc)
+        return {}
+
+    gateway_cfg = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
+    extra_raw = gateway_cfg.get("extra_document_types") if isinstance(gateway_cfg, dict) else None
+    if not isinstance(extra_raw, dict):
+        return {}
+
+    extra: Dict[str, str] = {}
+    for ext, mime in extra_raw.items():
+        if not isinstance(ext, str) or not isinstance(mime, str):
+            logger.warning("Ignoring invalid document type entry: %r -> %r", ext, mime)
+            continue
+        ext = ext.strip().lower()
+        mime = mime.strip()
+        if not ext.startswith(".") or "/" not in mime:
+            logger.warning("Ignoring invalid document type entry: %r -> %r", ext, mime)
+            continue
+        extra[ext] = mime
+    return extra
+
+
+def get_supported_document_types() -> Dict[str, str]:
+    """Return built-in document types plus YAML-configured extensions."""
+    document_types = dict(SUPPORTED_DOCUMENT_TYPES)
+    document_types.update(_get_extra_document_types())
+    return document_types
+
+
+def get_document_extension_for_mime(mime_type: Optional[str]) -> str:
+    """Return the configured document extension for a MIME type, if any."""
+    if not mime_type:
+        return ""
+    mime_to_ext = {mime: ext for ext, mime in get_supported_document_types().items()}
+    return mime_to_ext.get(mime_type, "")
+
+
+def get_document_mime_type(ext: str) -> Optional[str]:
+    """Return the configured MIME type for a document extension, if supported."""
+    if not ext:
+        return None
+    return get_supported_document_types().get(ext.lower())
+
+
+def is_supported_document_type(ext: str) -> bool:
+    """Return whether a document extension is built-in or configured in YAML."""
+    return get_document_mime_type(ext) is not None
+
+
 def get_document_cache_dir() -> Path:
     """Return the document cache directory, creating it if it doesn't exist."""
     DOCUMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)

@@ -75,7 +75,9 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
-    SUPPORTED_DOCUMENT_TYPES,
+    get_document_extension_for_mime,
+    get_document_mime_type,
+    get_supported_document_types,
     utf16_len,
     _prefix_within_utf16_limit,
 )
@@ -3284,12 +3286,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 # uppercase like "IMAGE/PNG").
                 doc_mime = (doc.mime_type or "").lower()
 
-                # If no extension from filename, reverse-lookup from MIME type
+                # If no extension from filename, reverse-lookup from MIME type.
+                # Prefer image/video special handling, otherwise use the lazily
+                # loaded document type map (built-ins + gateway.extra_document_types).
                 if not ext and doc_mime:
                     ext = _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, "")
                     if not ext:
-                        mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
-                        ext = mime_to_ext.get(doc_mime, "")
+                        ext = get_document_extension_for_mime(doc_mime)
+
+                if not ext and doc_mime:
+                    video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
+                    ext = video_mime_to_ext.get(doc_mime, "")
 
                 # Check file size early so image documents cannot bypass the
                 # document size limit by taking the image path.
@@ -3334,10 +3341,6 @@ class TelegramAdapter(BasePlatformAdapter):
                         self._enqueue_photo_event(batch_key, event)
                     return
 
-                if not ext and doc.mime_type:
-                    video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
-                    ext = video_mime_to_ext.get(doc.mime_type, "")
-
                 if ext in SUPPORTED_VIDEO_TYPES:
                     file_obj = await doc.get_file()
                     video_bytes = await file_obj.download_as_bytearray()
@@ -3349,9 +3352,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
+                mime_type = get_document_mime_type(ext)
+
                 # Check if supported
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
-                    supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
+                if mime_type is None:
+                    supported_list = ", ".join(sorted(get_supported_document_types().keys()))
                     event.text = (
                         f"Unsupported document type '{ext or 'unknown'}'. "
                         f"Supported types: {supported_list}"
@@ -3365,7 +3370,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
                 cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s", cached_path)

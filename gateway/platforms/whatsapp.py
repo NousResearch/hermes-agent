@@ -165,9 +165,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
+    get_document_mime_type,
 )
 
 
@@ -1133,7 +1133,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     # Local file path — bridge already downloaded the document
                     cached_urls.append(url)
                     ext = Path(url).suffix.lower()
-                    mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
+                    mime = get_document_mime_type(ext) or "application/octet-stream"
                     media_types.append(mime)
                     print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
                 elif msg_type == MessageType.VIDEO and os.path.isabs(url):

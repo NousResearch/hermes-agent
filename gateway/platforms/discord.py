@@ -63,7 +63,8 @@ from gateway.platforms.base import (
     cache_audio_from_url,
     cache_audio_from_bytes,
     cache_document_from_bytes,
-    SUPPORTED_DOCUMENT_TYPES,
+    get_document_extension_for_mime,
+    get_document_mime_type,
 )
 from tools.url_safety import is_safe_url
 
@@ -4150,7 +4151,8 @@ class DiscordAdapter(BasePlatformAdapter):
                         if att.filename:
                             _, doc_ext = os.path.splitext(att.filename)
                             doc_ext = doc_ext.lower()
-                        if doc_ext in SUPPORTED_DOCUMENT_TYPES:
+                        doc_mime = get_document_mime_type(doc_ext)
+                        if doc_mime is not None:
                             msg_type = MessageType.DOCUMENT
                     break
 
@@ -4233,9 +4235,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     _, ext = os.path.splitext(att.filename)
                     ext = ext.lower()
                 if not ext and content_type:
-                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
-                    ext = mime_to_ext.get(content_type, "")
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
+                    ext = get_document_extension_for_mime(content_type)
+                doc_mime = get_document_mime_type(ext)
+                if doc_mime is None:
                     logger.warning(
                         "[Discord] Unsupported document type '%s' (%s), skipping",
                         ext or "unknown", content_type,
@@ -4253,7 +4255,6 @@ class DiscordAdapter(BasePlatformAdapter):
                             cached_path = cache_document_from_bytes(
                                 raw_bytes, att.filename or f"document{ext}"
                             )
-                            doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
                             media_urls.append(cached_path)
                             media_types.append(doc_mime)
                             logger.info("[Discord] Cached user document: %s", cached_path)

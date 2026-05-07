@@ -16,6 +16,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cleanup_document_cache,
     get_document_cache_dir,
+    get_supported_document_types,
 )
 
 # ---------------------------------------------------------------------------
@@ -155,3 +156,61 @@ class TestSupportedDocumentTypes:
     )
     def test_expected_extensions_present(self, ext):
         assert ext in SUPPORTED_DOCUMENT_TYPES
+
+    def test_get_supported_document_types_includes_yaml_extra_types(self, monkeypatch):
+        def fake_load_config():
+            return {
+                "gateway": {
+                    "extra_document_types": {
+                        ".torrent": "application/x-bittorrent",
+                    }
+                }
+            }
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        document_types = get_supported_document_types()
+
+        assert document_types[".torrent"] == "application/x-bittorrent"
+        assert document_types[".pdf"] == "application/pdf"
+
+    def test_get_supported_document_types_is_lazy_and_reflects_config_changes(self, monkeypatch):
+        configs = [
+            {"gateway": {"extra_document_types": {".foo": "application/x-foo"}}},
+            {"gateway": {"extra_document_types": {".bar": "application/x-bar"}}},
+        ]
+
+        def fake_load_config():
+            return configs.pop(0)
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        first = get_supported_document_types()
+        second = get_supported_document_types()
+
+        assert ".foo" in first
+        assert ".bar" not in first
+        assert ".bar" in second
+        assert ".foo" not in second
+
+    def test_get_supported_document_types_ignores_invalid_extra_types(self, monkeypatch):
+        def fake_load_config():
+            return {
+                "gateway": {
+                    "extra_document_types": {
+                        ".torrent": "application/x-bittorrent",
+                        "bad": "application/x-bad",
+                        ".badmime": "not-a-mime",
+                        ".notstr": 123,
+                    }
+                }
+            }
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        document_types = get_supported_document_types()
+
+        assert document_types[".torrent"] == "application/x-bittorrent"
+        assert "bad" not in document_types
+        assert ".badmime" not in document_types
+        assert ".notstr" not in document_types

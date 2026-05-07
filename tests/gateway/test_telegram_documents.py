@@ -295,6 +295,36 @@ class TestDocumentDownloadBlock:
         assert "could not be read as an image" in event.text
 
     @pytest.mark.asyncio
+    async def test_yaml_extra_document_type_cached(self, adapter, monkeypatch):
+        """gateway.extra_document_types should be honored when the document arrives."""
+        def fake_load_config():
+            return {
+                "gateway": {
+                    "extra_document_types": {
+                        ".torrent": "application/x-bittorrent",
+                    }
+                }
+            }
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = b"torrent bytes"
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name="movie.torrent",
+            mime_type="application/x-bittorrent",
+            file_size=len(content),
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+
+        assert event.media_urls and event.media_urls[0].endswith("movie.torrent")
+        assert event.media_types == ["application/x-bittorrent"]
+
+    @pytest.mark.asyncio
     async def test_oversized_file_rejected(self, adapter):
         doc = _make_document(file_name="huge.pdf", file_size=25 * 1024 * 1024)
         msg = _make_message(document=doc)

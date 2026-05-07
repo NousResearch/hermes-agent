@@ -307,6 +307,29 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
 
 
+def test_detect_project_venv_dir_prefers_dot_venv(monkeypatch, tmp_path):
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    (tmp_path / ".venv" / "bin").mkdir(parents=True)
+    (tmp_path / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+    (tmp_path / "venv" / "bin" / "python").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(hermes_main.sys, "executable", "/usr/bin/python3")
+
+    assert hermes_main._detect_project_venv_dir() == tmp_path / ".venv"
+
+
+def test_detect_project_venv_dir_uses_active_project_interpreter(monkeypatch, tmp_path):
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    active = tmp_path / "venv" / "bin"
+    active.mkdir(parents=True)
+    (active / "python").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(hermes_main.sys, "executable", str(active / "python"))
+
+    assert hermes_main._detect_project_venv_dir() == tmp_path / "venv"
+
+
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
     """When .[all] fails, update should keep base deps and retry extras individually."""
     _setup_update_mocks(monkeypatch, tmp_path)

@@ -381,6 +381,90 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
     assert "docker not found (optional)" not in out
 
 
+def test_run_doctor_prefers_dot_venv_entrypoint_for_expected_symlink(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    home = helper._make_hermes_home(tmp_path, provider="")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    # Create both envs; .venv should win for expected link target.
+    (project / ".venv" / "bin").mkdir(parents=True)
+    (project / "venv" / "bin").mkdir(parents=True)
+    dot_venv_hermes = project / ".venv" / "bin" / "hermes"
+    dot_venv_hermes.write_text("#!/bin/sh\n", encoding="utf-8")
+    (project / "venv" / "bin" / "hermes").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    termux_bin = tmp_path / "termux-prefix" / "bin"
+    termux_bin.mkdir(parents=True)
+    (termux_bin / "hermes").symlink_to(dot_venv_hermes)
+
+    monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+    monkeypatch.setenv("PREFIX", str(tmp_path / "termux-prefix"))
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "$PREFIX/bin/hermes → correct target" in out
+    assert "points to wrong target" not in out
+
+
+def test_run_doctor_termux_tinker_is_info_not_issue(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    home = helper._make_hermes_home(tmp_path, provider="")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+    (project / "tinker-atropos").mkdir()
+    (project / "tinker-atropos" / "pyproject.toml").write_text("[project]\nname='tinker-atropos'\n", encoding="utf-8")
+
+    monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tinker_atropos":
+            raise ImportError("not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "tinker-atropos not installed (optional on Termux)" in out
+    assert "Install tinker-atropos:" not in out
+
+
 def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

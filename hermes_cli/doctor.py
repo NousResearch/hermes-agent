@@ -821,13 +821,22 @@ def run_doctor(args):
         print()
         print(color("◆ Command Installation", Colors.CYAN, Colors.BOLD))
 
-        # Determine the venv entry point location
+        # Determine the venv entry point location.
+        # Prefer the active interpreter's environment when it is in PROJECT_ROOT,
+        # then .venv, then legacy venv.
         _venv_bin = None
-        for _venv_name in ("venv", ".venv"):
-            _candidate = PROJECT_ROOT / _venv_name / "bin" / "hermes"
-            if _candidate.exists():
-                _venv_bin = _candidate
-                break
+        _active_candidate = Path(sys.executable).resolve().parent / "hermes"
+        try:
+            if PROJECT_ROOT in _active_candidate.parents and _active_candidate.exists():
+                _venv_bin = _active_candidate
+        except Exception:
+            pass
+        if _venv_bin is None:
+            for _venv_name in (".venv", "venv"):
+                _candidate = PROJECT_ROOT / _venv_name / "bin" / "hermes"
+                if _candidate.exists():
+                    _venv_bin = _candidate
+                    break
 
         # Determine the expected command link directory (mirrors install.sh logic)
         _prefix = os.environ.get("PREFIX", "")
@@ -843,10 +852,10 @@ def run_doctor(args):
         if _venv_bin is None:
             check_warn(
                 "Venv entry point not found",
-                "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
+                "(hermes not in .venv/bin/ or venv/bin/ — reinstall with pip install -e '.[all]')"
             )
             manual_issues.append(
-                f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
+                f"Reinstall entry point: cd {PROJECT_ROOT} && source .venv/bin/activate && pip install -e '.[all]'"
             )
         else:
             check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
@@ -1285,8 +1294,13 @@ def run_doctor(args):
                 check_ok("tinker-atropos", "(RL training backend)")
             except ImportError:
                 install_cmd = f"{_python_install_cmd()} -e ./tinker-atropos"
-                check_warn("tinker-atropos found but not installed", f"(run: {install_cmd})")
-                issues.append(f"Install tinker-atropos: {install_cmd}")
+                if _is_termux():
+                    check_info(
+                        f"tinker-atropos not installed (optional on Termux) (install later if needed: {install_cmd})"
+                    )
+                else:
+                    check_warn("tinker-atropos found but not installed", f"(run: {install_cmd})")
+                    issues.append(f"Install tinker-atropos: {install_cmd}")
         else:
             check_warn("tinker-atropos requires Python 3.11+", f"(current: {py_version.major}.{py_version.minor})")
     else:

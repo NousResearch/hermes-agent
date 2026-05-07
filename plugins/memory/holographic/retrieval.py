@@ -161,7 +161,7 @@ class FactRetriever:
         rows = conn.execute(
             f"""
             SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at,
+                   helpful_count, created_at, updated_at,
                    hrr_vector
             FROM facts
             {where}
@@ -220,7 +220,7 @@ class FactRetriever:
         rows = conn.execute(
             f"""
             SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at,
+                   helpful_count, created_at, updated_at,
                    hrr_vector
             FROM facts
             {where}
@@ -288,7 +288,7 @@ class FactRetriever:
         rows = conn.execute(
             f"""
             SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at,
+                   helpful_count, created_at, updated_at,
                    hrr_vector
             FROM facts
             {where}

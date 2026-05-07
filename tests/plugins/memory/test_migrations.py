@@ -128,6 +128,9 @@ def test_legacy_db_without_schema_version_migrates(tmp_db_path):
         ).fetchall()}
         assert "encoding_version" in cols
 
+        # ADR-002: retrieval_count column dropped by v1→v2 migration.
+        assert "retrieval_count" not in cols
+
         # Pre-existing row defaulted to 1.
         row = store._conn.execute(
             "SELECT encoding_version FROM facts WHERE content LIKE 'Pre-migration%'"

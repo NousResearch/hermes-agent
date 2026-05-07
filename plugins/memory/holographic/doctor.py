@@ -120,6 +120,14 @@ def _finalize(checks: list[dict], t0: float, *, db_path: str) -> dict:
 
 
 def _check_schema_version(conn: sqlite3.Connection, expected: int) -> dict:
+    """Assert version row matches code AND post-migration structural invariants.
+
+    The version-row check tells us whether the migration runner has been
+    given a chance to run. The structural assertions (ADR-002: column
+    drops, ADR-003: table drops) tell us whether the migration actually
+    succeeded — a reachable failure mode if a migration aborted partway
+    or the user restored an older DB on top of a current schema_version.
+    """
     try:
         row = conn.execute(
             "SELECT version FROM schema_version LIMIT 1"
@@ -136,6 +144,29 @@ def _check_schema_version(conn: sqlite3.Connection, expected: int) -> dict:
                       f"DB at v{current}, code expects v{expected} — "
                       f"open the DB once via MemoryStore() to upgrade",
                       current=current, expected=expected)
+
+    # Post-migration structural invariants. Any column or table that
+    # should have been dropped but is still present indicates a botched
+    # migration — version row says "we're here," structure says otherwise.
+    structural_failures: list[str] = []
+
+    # ADR-002: facts.retrieval_count must be absent at v2+.
+    facts_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(facts)").fetchall()
+    }
+    if "retrieval_count" in facts_cols:
+        structural_failures.append(
+            "facts.retrieval_count column still present (ADR-002)"
+        )
+
+    if structural_failures:
+        return _check(
+            "schema_version", "error",
+            f"v{current} but post-migration invariants failed: "
+            + "; ".join(structural_failures),
+            current=current, expected=expected,
+            structural_failures=structural_failures,
+        )
     return _check("schema_version", "ok", f"v{current}")
 
 

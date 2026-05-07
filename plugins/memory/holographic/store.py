@@ -8,13 +8,14 @@ import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 try:
     from . import holographic as hrr
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
 
-_CURRENT_SCHEMA_VERSION = 1
+_CURRENT_SCHEMA_VERSION = 2
 _CURRENT_ENCODING_VERSION = 1
 
 _SCHEMA = """
@@ -28,7 +29,6 @@ CREATE TABLE IF NOT EXISTS facts (
     category         TEXT DEFAULT 'general',
     tags             TEXT DEFAULT '',
     trust_score      REAL DEFAULT 0.5,
-    retrieval_count  INTEGER DEFAULT 0,
     helpful_count    INTEGER DEFAULT 0,
     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -88,6 +88,124 @@ CREATE TABLE IF NOT EXISTS plugin_state (
     value TEXT
 );
 """
+
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """v1 → v2 schema migration.
+
+    Drops `facts.retrieval_count` (ADR-002) via the SQLite table-rebuild
+    dance: capture surviving columns, drop the FTS5 virtual table and
+    its triggers (they reference `facts`), rebuild `facts` without the
+    column, copy data, swap names, recreate indexes/FTS5/triggers, and
+    rebuild the FTS5 index from the surviving content. Wrapped in a
+    single transaction so a mid-flight crash leaves v1 intact.
+
+    Idempotent: returns early if `retrieval_count` is already absent.
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(facts)").fetchall()]
+    if "retrieval_count" not in cols:
+        return
+    keep = [c for c in cols if c != "retrieval_count"]
+    keep_csv = ", ".join(keep)
+
+    # Python sqlite3's legacy isolation mode auto-issues BEGIN before DML
+    # and treats DDL as auto-commit. Switch to manual mode so the rebuild
+    # below runs as one explicit transaction, then restore the caller's
+    # mode in finally. Commit any pending implicit transaction first so
+    # the caller's prior writes aren't tangled with our atomic block.
+    if conn.in_transaction:
+        conn.commit()
+    prev_isolation_level = conn.isolation_level
+    conn.isolation_level = None
+
+    try:
+        conn.execute("BEGIN")
+
+        # FTS5 + triggers reference `facts` — drop before rebuilding.
+        for stmt in (
+            "DROP TRIGGER IF EXISTS facts_ai",
+            "DROP TRIGGER IF EXISTS facts_ad",
+            "DROP TRIGGER IF EXISTS facts_au",
+            "DROP TABLE IF EXISTS facts_fts",
+        ):
+            conn.execute(stmt)
+
+        conn.execute("""
+            CREATE TABLE facts_new (
+                fact_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                content          TEXT NOT NULL UNIQUE,
+                category         TEXT DEFAULT 'general',
+                tags             TEXT DEFAULT '',
+                trust_score      REAL DEFAULT 0.5,
+                helpful_count    INTEGER DEFAULT 0,
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                hrr_vector       BLOB,
+                encoding_version INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        conn.execute(
+            f"INSERT INTO facts_new ({keep_csv}) SELECT {keep_csv} FROM facts"
+        )
+        conn.execute("DROP TABLE facts")
+        conn.execute("ALTER TABLE facts_new RENAME TO facts")
+
+        # Recreate non-FTS indexes.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_facts_trust ON facts(trust_score DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category)"
+        )
+
+        # Recreate FTS5 + triggers, then rebuild the FTS index from facts.
+        conn.execute("""
+            CREATE VIRTUAL TABLE facts_fts USING fts5(
+                content, tags, content=facts, content_rowid=fact_id
+            )
+        """)
+        conn.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
+        conn.execute("""
+            CREATE TRIGGER facts_ai AFTER INSERT ON facts BEGIN
+                INSERT INTO facts_fts(rowid, content, tags)
+                    VALUES (new.fact_id, new.content, new.tags);
+            END
+        """)
+        conn.execute("""
+            CREATE TRIGGER facts_ad AFTER DELETE ON facts BEGIN
+                INSERT INTO facts_fts(facts_fts, rowid, content, tags)
+                    VALUES ('delete', old.fact_id, old.content, old.tags);
+            END
+        """)
+        conn.execute("""
+            CREATE TRIGGER facts_au AFTER UPDATE ON facts BEGIN
+                INSERT INTO facts_fts(facts_fts, rowid, content, tags)
+                    VALUES ('delete', old.fact_id, old.content, old.tags);
+                INSERT INTO facts_fts(rowid, content, tags)
+                    VALUES (new.fact_id, new.content, new.tags);
+            END
+        """)
+
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            # No transaction to roll back (BEGIN itself failed) — nothing
+            # to undo, but we still want the original exception.
+            pass
+        raise
+    finally:
+        conn.isolation_level = prev_isolation_level
+
+
+# Registry of schema migrations keyed by target version. Each entry is a
+# function ``(conn) -> None`` that mutates the DB in a single transaction
+# and is idempotent (safe to re-run if the prior bump didn't land). The
+# runner in ``_init_db`` invokes them in version order.
+_MIGRATIONS: "dict[int, Callable[[sqlite3.Connection], None]]" = {
+    2: _migrate_v1_to_v2,
+}
+
 
 # Trust adjustment constants
 _HELPFUL_DELTA   =  0.05
@@ -171,19 +289,39 @@ class MemoryStore:
             "SELECT version FROM schema_version LIMIT 1"
         ).fetchone()
         if row is None:
+            # No version row yet. Two cases:
+            #   1. Truly fresh DB — _SCHEMA just built v2 tables; migrations
+            #      are no-ops (idempotency guard inside each).
+            #   2. Legacy DB that predates schema_version — needs migrations
+            #      to run from v1 forward.
+            # Both are handled by stamping current=1 and letting the runner
+            # advance us; a truly fresh DB will pass through every migration
+            # as a no-op since the post-migration shape already matches.
             self._conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?)",
-                (_CURRENT_SCHEMA_VERSION,),
+                "INSERT INTO schema_version (version) VALUES (?)", (1,)
             )
+            current = 1
         else:
             current = row["version"] if isinstance(row, sqlite3.Row) else row[0]
-            # Future row-level data migrations gate on `current` here.
-            # Column additions are handled declaratively above.
-            if current < _CURRENT_SCHEMA_VERSION:
+
+        # Run any registered migrations from current+1 up to the target,
+        # in version order. Column additions are still handled declaratively
+        # above; _MIGRATIONS is for changes that cannot be expressed that
+        # way (column drops, table drops, data rewrites).
+        for target in sorted(_MIGRATIONS):
+            if current < target <= _CURRENT_SCHEMA_VERSION:
+                _MIGRATIONS[target](self._conn)
                 self._conn.execute(
-                    "UPDATE schema_version SET version = ?",
-                    (_CURRENT_SCHEMA_VERSION,),
+                    "UPDATE schema_version SET version = ?", (target,)
                 )
+                current = target
+        if current < _CURRENT_SCHEMA_VERSION:
+            # No registered migration for the trailing gap — record the
+            # version bump so subsequent boots don't re-attempt the search.
+            self._conn.execute(
+                "UPDATE schema_version SET version = ?",
+                (_CURRENT_SCHEMA_VERSION,),
+            )
         self._conn.commit()
 
     @staticmethod
@@ -310,7 +448,7 @@ class MemoryStore:
         """Full-text search over facts using FTS5.
 
         Returns a list of fact dicts ordered by FTS5 rank, then trust_score
-        descending. Also increments retrieval_count for matched facts.
+        descending.
         """
         with self._lock:
             query = query.strip()
@@ -326,7 +464,7 @@ class MemoryStore:
 
             sql = f"""
                 SELECT f.fact_id, f.content, f.category, f.tags,
-                       f.trust_score, f.retrieval_count, f.helpful_count,
+                       f.trust_score, f.helpful_count,
                        f.created_at, f.updated_at
                 FROM facts f
                 JOIN facts_fts fts ON fts.rowid = f.fact_id
@@ -338,18 +476,7 @@ class MemoryStore:
             """
 
             rows = self._conn.execute(sql, params).fetchall()
-            results = [self._row_to_dict(r) for r in rows]
-
-            if results:
-                ids = [r["fact_id"] for r in results]
-                placeholders = ",".join("?" * len(ids))
-                self._conn.execute(
-                    f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                    ids,
-                )
-                self._conn.commit()
-
-            return results
+            return [self._row_to_dict(r) for r in rows]
 
     def update_fact(
         self,
@@ -452,7 +579,7 @@ class MemoryStore:
 
             sql = f"""
                 SELECT fact_id, content, category, tags, trust_score,
-                       retrieval_count, helpful_count, created_at, updated_at
+                       helpful_count, created_at, updated_at
                 FROM facts
                 WHERE trust_score >= ?
                   {category_clause}

@@ -1563,8 +1563,9 @@ class GatewayRunner:
         """Resolve model/runtime for a session, honoring session-scoped /model overrides.
 
         If the session override already contains a complete provider bundle
-        (provider/api_key/base_url/api_mode), prefer it directly instead of
-        resolving fresh global runtime state first.
+        (provider/api_key/base_url/api_mode), prefer it directly. If the
+        override only names a provider, resolve that provider explicitly so a
+        global HERMES_INFERENCE_PROVIDER cannot leak into the session switch.
         """
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
@@ -1590,11 +1591,10 @@ class GatewayRunner:
                     override_runtime.get("provider"),
                 )
                 return override_model, override_runtime
-            # Override exists but has no api_key — fall through to env-based
-            # resolution and apply model/provider from the override on top.
             logger.debug(
-                "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
+                "Session model override (no api_key): session=%s config_model=%s override_model=%s provider=%s",
                 resolved_session_key or "", model, override_model,
+                override_runtime.get("provider"),
             )
         else:
             logger.debug(
@@ -1603,7 +1603,42 @@ class GatewayRunner:
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_kwargs = None
+        if override and resolved_session_key and override.get("provider"):
+            try:
+                from hermes_cli.runtime_provider import (
+                    resolve_runtime_provider,
+                    format_runtime_provider_error,
+                )
+
+                runtime = resolve_runtime_provider(
+                    requested=override.get("provider"),
+                    explicit_api_key=override.get("api_key"),
+                    explicit_base_url=override.get("base_url"),
+                    target_model=override.get("model", model),
+                )
+            except Exception as exc:
+                try:
+                    message = format_runtime_provider_error(exc)
+                except Exception:
+                    message = str(exc)
+                raise RuntimeError(
+                    "Failed to resolve session model override provider "
+                    f"{override.get('provider')!r}: {message}"
+                ) from exc
+            runtime_kwargs = {
+                "api_key": runtime.get("api_key"),
+                "base_url": runtime.get("base_url"),
+                "provider": runtime.get("provider"),
+                "api_mode": runtime.get("api_mode"),
+                "command": runtime.get("command"),
+                "args": list(runtime.get("args") or []),
+                "credential_pool": runtime.get("credential_pool"),
+            }
+
+        if runtime_kwargs is None:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs

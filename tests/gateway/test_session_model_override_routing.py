@@ -82,6 +82,77 @@ def _explode_runtime_resolution():
     )
 
 
+def test_partial_session_override_resolves_requested_provider_not_env(monkeypatch):
+    import hermes_cli.runtime_provider as runtime_provider
+
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "custom:provider-a")
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", _explode_runtime_resolution
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_gateway_model",
+        lambda user_config=None: "default-model",
+    )
+
+    calls = []
+
+    def fake_resolve_runtime_provider(
+        *,
+        requested=None,
+        explicit_api_key=None,
+        explicit_base_url=None,
+        target_model=None,
+    ):
+        calls.append(
+            {
+                "requested": requested,
+                "explicit_api_key": explicit_api_key,
+                "explicit_base_url": explicit_base_url,
+                "target_model": target_model,
+            }
+        )
+        return {
+            "provider": "custom:provider-c",
+            "api_key": "provider-c-key",
+            "base_url": "https://provider-c.example/v1",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        }
+
+    monkeypatch.setattr(
+        runtime_provider, "resolve_runtime_provider", fake_resolve_runtime_provider
+    )
+
+    runner = _make_runner()
+    session_key = "agent:main:local:dm"
+    runner._session_model_overrides[session_key] = {
+        "model": "provider-c-model",
+        "provider": "custom:provider-c",
+        "api_key": None,
+        "base_url": None,
+        "api_mode": "chat_completions",
+    }
+
+    model, runtime = runner._resolve_session_agent_runtime(session_key=session_key)
+
+    assert calls == [
+        {
+            "requested": "custom:provider-c",
+            "explicit_api_key": None,
+            "explicit_base_url": None,
+            "target_model": "provider-c-model",
+        }
+    ]
+    assert model == "provider-c-model"
+    assert runtime["provider"] == "custom:provider-c"
+    assert runtime["api_key"] == "provider-c-key"
+    assert runtime["base_url"] == "https://provider-c.example/v1"
+    assert runtime["api_mode"] == "chat_completions"
+
+
 def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)

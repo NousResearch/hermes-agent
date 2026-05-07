@@ -23,8 +23,13 @@ import threading
 import time
 from pathlib import Path
 
-from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
+from hermes_message_content import (
+    content_identity as _content_identity,
+    deserialize_message_content as _deserialize_message_content,
+    normalize_replay_content as _normalize_replay_content,
+    serialize_message_content as _serialize_message_content,
+)
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -76,6 +81,8 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL REFERENCES sessions(id),
     role TEXT NOT NULL,
     content TEXT,
+    content_format TEXT,
+    content_payload TEXT,
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
@@ -1223,30 +1230,26 @@ class SessionDB:
     _CONTENT_JSON_PREFIX = "\x00json:"
 
     @classmethod
-    def _encode_content(cls, content: Any) -> Any:
-        """Serialize structured (list/dict) message content for sqlite.
+    def _encode_content(cls, content: Any) -> tuple[Any, Optional[str], Optional[str]]:
+        """Serialize message content for sqlite storage.
 
-        sqlite3 can only bind ``str``, ``bytes``, ``int``, ``float``, and ``None``
-        to query parameters. Multimodal messages have ``content`` as a list of
-        parts (``[{"type": "text", ...}, {"type": "image_url", ...}]``), which
-        raises ``ProgrammingError: Error binding parameter N: type 'list' is
-        not supported`` when bound directly.
-
-        Returns the value unchanged when it's already a safe scalar, or a
-        sentinel-prefixed JSON string for lists/dicts. Paired with
-        :meth:`_decode_content` on read.
+        Returns indexed/display text plus optional structured replay payload.
+        Kept as a method so storage tests can monkeypatch serialization errors
+        and verify transaction rollback behavior.
         """
-        if content is None or isinstance(content, (str, bytes, int, float)):
-            return content
-        try:
-            return cls._CONTENT_JSON_PREFIX + json.dumps(content)
-        except (TypeError, ValueError):
-            # Last-resort fallback: stringify so persistence never fails.
-            return str(content)
+        return _serialize_message_content(content)
 
     @classmethod
-    def _decode_content(cls, content: Any) -> Any:
-        """Reverse :meth:`_encode_content`; returns scalars unchanged."""
+    def _decode_content(
+        cls,
+        content: Any,
+        content_format: Optional[str] = None,
+        content_payload: Optional[str] = None,
+    ) -> Any:
+        """Reverse :meth:`_encode_content`; also reads legacy prefixed rows."""
+        decoded = _deserialize_message_content(content, content_format, content_payload)
+        if decoded is not content:
+            return decoded
         if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
             try:
                 return json.loads(content[len(cls._CONTENT_JSON_PREFIX):])
@@ -1262,7 +1265,7 @@ class SessionDB:
         self,
         session_id: str,
         role: str,
-        content: str = None,
+        content: Any = None,
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
@@ -1281,6 +1284,7 @@ class SessionDB:
         if role is 'tool' or tool_calls is present).
         """
         # Serialize structured fields to JSON before entering the write txn
+        content_text, content_format, content_payload = self._encode_content(content)
         reasoning_details_json = (
             json.dumps(reasoning_details)
             if reasoning_details else None
@@ -1294,10 +1298,6 @@ class SessionDB:
             if codex_message_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-        # Multimodal content (list of parts) must be JSON-encoded: sqlite3
-        # cannot bind list/dict parameters directly.
-        stored_content = self._encode_content(content)
-
         # Pre-compute tool call count
         num_tool_calls = 0
         if tool_calls is not None:
@@ -1305,15 +1305,17 @@ class SessionDB:
 
         def _do(conn):
             cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO messages (session_id, role, content, content_format,
+                   content_payload, tool_call_id, tool_calls, tool_name, timestamp,
+                   token_count, finish_reason, reasoning, reasoning_content,
+                   reasoning_details, codex_reasoning_items, codex_message_items)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
-                    stored_content,
+                    content_text,
+                    content_format,
+                    content_payload,
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
@@ -1367,6 +1369,9 @@ class SessionDB:
             total_tool_calls = 0
             for msg in messages:
                 role = msg.get("role", "unknown")
+                content_text, content_format, content_payload = self._encode_content(
+                    msg.get("content")
+                )
                 tool_calls = msg.get("tool_calls")
                 reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
                 codex_reasoning_items = (
@@ -1388,15 +1393,17 @@ class SessionDB:
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
 
                 conn.execute(
-                    """INSERT INTO messages (session_id, role, content, tool_call_id,
-                       tool_calls, tool_name, timestamp, token_count, finish_reason,
-                       reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO messages (session_id, role, content, content_format,
+                       content_payload, tool_call_id, tool_calls, tool_name, timestamp,
+                       token_count, finish_reason, reasoning, reasoning_content,
+                       reasoning_details, codex_reasoning_items, codex_message_items)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
-                        self._encode_content(msg.get("content")),
+                        content_text,
+                        content_format,
+                        content_payload,
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
@@ -1435,13 +1442,46 @@ class SessionDB:
         result = []
         for row in rows:
             msg = dict(row)
-            if "content" in msg:
-                msg["content"] = self._decode_content(msg["content"])
+            content_format = msg.pop("content_format", None)
+            content_payload = msg.pop("content_payload", None)
+            msg["content"] = self._decode_content(
+                msg.get("content"),
+                content_format,
+                content_payload,
+            )
             if msg.get("tool_calls"):
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
+                    msg["tool_calls"] = []
+            result.append(msg)
+        return result
+
+    def get_messages_for_display(self, session_id: str) -> List[Dict[str, Any]]:
+        """Load display-safe message rows without deserializing structured payloads."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT id, session_id, role, content, tool_call_id, tool_calls,
+                       tool_name, timestamp, token_count, finish_reason,
+                       reasoning, reasoning_content, reasoning_details,
+                       codex_reasoning_items, codex_message_items
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY timestamp, id
+                """,
+                (session_id,),
+            )
+            rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            msg = dict(row)
+            if msg.get("tool_calls"):
+                try:
+                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to deserialize tool_calls in display messages, falling back to []")
                     msg["tool_calls"] = []
             result.append(msg)
         return result
@@ -1525,19 +1565,26 @@ class SessionDB:
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                "SELECT role, content, tool_call_id, tool_calls, tool_name, "
-                "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items "
+                "SELECT role, content, content_format, content_payload, tool_call_id, tool_calls, tool_name, "
+                "finish_reason, reasoning, reasoning_content, reasoning_details, codex_reasoning_items, "
+                "codex_message_items "
                 f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
                 tuple(session_ids),
             ).fetchall()
 
         messages = []
         for row in rows:
-            content = self._decode_content(row["content"])
-            if row["role"] in {"user", "assistant"} and isinstance(content, str):
-                content = sanitize_context(content).strip()
-            msg = {"role": row["role"], "content": content}
+            content = self._decode_content(
+                row["content"],
+                row["content_format"],
+                row["content_payload"],
+            )
+            if row["role"] in {"user", "assistant"}:
+                content = _normalize_replay_content(content)
+            msg = {
+                "role": row["role"],
+                "content": content,
+            }
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:
@@ -1607,11 +1654,11 @@ class SessionDB:
     def _is_duplicate_replayed_user_message(messages: List[Dict[str, Any]], msg: Dict[str, Any]) -> bool:
         if msg.get("role") != "user":
             return False
-        content = msg.get("content")
-        if not isinstance(content, str) or not content:
+        content_key = _content_identity(msg.get("content"))
+        if not content_key:
             return False
         for prev in reversed(messages):
-            if prev.get("role") == "user" and prev.get("content") == content:
+            if prev.get("role") == "user" and _content_identity(prev.get("content")) == content_key:
                 return True
             if prev.get("role") == "assistant" and (prev.get("content") or prev.get("tool_calls")):
                 return False
@@ -2666,4 +2713,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

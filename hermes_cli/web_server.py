@@ -48,6 +48,7 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from hermes_message_content import content_to_text
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -2195,7 +2196,12 @@ async def get_session_messages(session_id: str):
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        messages = db.get_messages(sid)
+        messages = []
+        for msg in db.get_messages_for_display(sid):
+            item = dict(msg)
+            content = item.get("content")
+            item["content"] = None if content is None else content_to_text(content)
+            messages.append(item)
         return {"session_id": sid, "messages": messages}
     finally:
         db.close()

@@ -261,6 +261,36 @@ class TestHistoryDisplay:
         assert "/resume" in output
         assert "Current preview" not in output
 
+    def test_history_redacts_structured_attachment_payloads(self, capsys):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "DATA:image/png;base64,raw-image"},
+                    },
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": {
+                    "type": "document",
+                    "source": {"type": "base64", "data": "raw-document"},
+                },
+            },
+        ]
+
+        cli.show_history()
+        output = capsys.readouterr().out
+
+        assert "look [image]" in output
+        assert "[attachment]" in output
+        assert "raw-image" not in output
+        assert "raw-document" not in output
+
     def test_resume_without_target_lists_recent_sessions(self, capsys):
         cli = _make_cli()
         cli.session_id = "current"

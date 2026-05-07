@@ -34,6 +34,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+from hermes_message_content import content_to_text
+
 logger = logging.getLogger(__name__)
 
 # Suppress startup messages for clean CLI experience
@@ -4114,22 +4116,13 @@ class HermesCLI:
                 continue
 
             if role == "user":
-                text = "" if content is None else str(content)
-                # Handle multimodal content (list of dicts)
-                if isinstance(content, list):
-                    parts = []
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            parts.append(part.get("text", ""))
-                        elif isinstance(part, dict) and part.get("type") == "image_url":
-                            parts.append("[image]")
-                    text = " ".join(parts)
+                text = content_to_text(content, separator=" ", attachment_style="compact")
                 if len(text) > MAX_USER_LEN:
                     text = text[:MAX_USER_LEN] + "..."
                 entries.append(("user", text))
 
             elif role == "assistant":
-                text = "" if content is None else str(content)
+                text = content_to_text(content, separator=" ", attachment_style="compact")
                 text = _strip_reasoning_tags(text)
                 parts = []
                 full_parts = []  # un-truncated version
@@ -5175,7 +5168,7 @@ class HermesCLI:
             visible_index += 1
 
             content = msg.get("content")
-            content_text = "" if content is None else str(content)
+            content_text = content_to_text(content, separator=" ", attachment_style="compact")
 
             if role == "user":
                 print(f"\n  [You #{visible_index}]")
@@ -5624,8 +5617,9 @@ class HermesCLI:
         # Extract the message text and remove everything from that point forward
         last_message = self.conversation_history[last_user_idx].get("content", "")
         self.conversation_history = self.conversation_history[:last_user_idx]
-        
-        print(f"(^_^)b Retrying: \"{last_message[:60]}{'...' if len(last_message) > 60 else ''}\"")
+
+        preview = content_to_text(last_message, separator=" ", attachment_style="compact")
+        print(f"(^_^)b Retrying: \"{preview[:60]}{'...' if len(preview) > 60 else ''}\"")
         return last_message
     
     def undo_last(self):
@@ -5656,7 +5650,8 @@ class HermesCLI:
         # Truncate history to before the last user message
         self.conversation_history = self.conversation_history[:last_user_idx]
         
-        print(f"(^_^)b Undid {removed_count} message(s). Removed: \"{removed_msg[:60]}{'...' if len(removed_msg) > 60 else ''}\"")
+        preview = content_to_text(removed_msg, separator=" ", attachment_style="compact")
+        print(f"(^_^)b Undid {removed_count} message(s). Removed: \"{preview[:60]}{'...' if len(preview) > 60 else ''}\"")
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
     

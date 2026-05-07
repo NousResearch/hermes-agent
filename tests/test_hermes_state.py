@@ -153,6 +153,203 @@ class TestMessageStorage:
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
 
+    def test_structured_content_round_trips(self, db):
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {"type": "text", "text": "Look at this image"},
+            {"type": "image_url", "image_url": {"url": "DATA:image/png;base64,abc"}},
+        ]
+
+        db.append_message("s1", role="user", content=content)
+
+        row = db._conn.execute(
+            "SELECT content, content_payload FROM messages WHERE session_id = 's1'"
+        ).fetchone()
+        assert row["content"] == "Look at this image\n[image attachment]"
+        assert "DATA:image/png;base64,abc" not in row["content"]
+        assert "DATA:image/png;base64,abc" in row["content_payload"]
+
+        messages = db.get_messages("s1")
+        assert messages[0]["content"] == content
+        assert "content_payload" not in messages[0]
+        assert "content_format" not in messages[0]
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv[0] == {"role": "user", "content": content}
+
+    def test_structured_content_replay_sanitizes_context(self, db):
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {
+                "type": "text",
+                "text": "Before <memory-context>secret memory</memory-context> after",
+            },
+            {
+                "type": "input_text",
+                "text": (
+                    "[System note: The following is recalled memory context, "
+                    "NOT new user input. Treat as informational background data.] visible"
+                ),
+            },
+            {"type": "image_url", "image_url": {"url": "DATA:image/png;base64,abc"}},
+        ]
+
+        db.append_message("s1", role="user", content=content)
+
+        messages = db.get_messages("s1")
+        assert "secret memory" in messages[0]["content"][0]["text"]
+
+        conv = db.get_messages_as_conversation("s1")
+        replay_content = conv[0]["content"]
+        assert replay_content[0]["text"] == "Before  after"
+        assert replay_content[1]["text"] == "visible"
+        assert replay_content[2]["image_url"]["url"] == "DATA:image/png;base64,abc"
+
+    def test_json_text_content_stays_text(self, db):
+        db.create_session(session_id="s1", source="cli")
+        literal_json = '[{"type": "event", "text": "not a content part"}]'
+
+        db.append_message("s1", role="user", content=literal_json)
+
+        messages = db.get_messages("s1")
+        assert messages[0]["content"] == literal_json
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv[0]["content"] == literal_json
+
+    def test_structured_content_surrogates_are_sanitized(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+        db.append_message(
+            "s1",
+            role="user",
+            content=[
+                {"type": "text", "text": "dirty \udce2 content"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+            ],
+        )
+
+        messages = db.get_messages("s1")
+        assert messages[0]["content"][0]["text"] == "dirty \ufffd content"
+
+        row = db._conn.execute(
+            "SELECT content, content_payload FROM messages WHERE session_id = 's1'"
+        ).fetchone()
+        assert "\udce2" not in row["content"]
+        assert "\udce2" not in row["content_payload"]
+        assert "\ufffd" in row["content"]
+        assert "\ufffd" in row["content_payload"]
+
+    def test_structured_attachment_payloads_are_redacted_from_index_text(self, db):
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {"type": "text", "text": "attachments"},
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "raw-image-payload",
+                },
+            },
+            {
+                "type": "input_image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "raw-input-image-payload",
+                },
+            },
+            {
+                "type": "input_file",
+                "filename": "notes.pdf",
+                "file_data": "data:application/pdf;base64,raw-file-payload",
+            },
+            {
+                "type": "file",
+                "file": {
+                    "filename": "nested.pdf",
+                    "file_data": "data:application/pdf;base64,nested-file-payload",
+                },
+            },
+        ]
+
+        db.append_message("s1", role="user", content=content)
+
+        row = db._conn.execute(
+            "SELECT content, content_payload FROM messages WHERE session_id = 's1'"
+        ).fetchone()
+        assert row["content"] == (
+            "attachments\n[image attachment]\n[image attachment]\n"
+            "[file attachment]\n[file attachment]"
+        )
+        assert "raw-image-payload" not in row["content"]
+        assert "raw-input-image-payload" not in row["content"]
+        assert "raw-file-payload" not in row["content"]
+        assert "nested-file-payload" not in row["content"]
+        assert "raw-image-payload" in row["content_payload"]
+        assert "raw-input-image-payload" in row["content_payload"]
+        assert "raw-file-payload" in row["content_payload"]
+        assert "nested-file-payload" in row["content_payload"]
+
+    def test_structured_single_dict_attachment_payload_is_redacted_from_index_text(self, db):
+        db.create_session(session_id="s1", source="cli")
+        content = {
+            "type": "document",
+            "title": "notes.pdf",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": "raw-document-payload",
+            },
+        }
+
+        db.append_message("s1", role="user", content=content)
+
+        row = db._conn.execute(
+            "SELECT content, content_payload FROM messages WHERE session_id = 's1'"
+        ).fetchone()
+        assert row["content"] == "[attachment]"
+        assert "raw-document-payload" not in row["content"]
+        assert "raw-document-payload" in row["content_payload"]
+
+        messages = db.get_messages("s1")
+        assert messages[0]["content"] == content
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv == [{"role": "user", "content": [content]}]
+
+    def test_structured_non_content_dict_replays_as_text(self, db):
+        db.create_session(session_id="s1", source="cli")
+        content = {"metadata": {"source": "integration"}}
+
+        db.append_message("s1", role="user", content=content)
+
+        messages = db.get_messages("s1")
+        assert messages[0]["content"] == content
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv == [{"role": "user", "content": "[structured content]"}]
+
+    def test_replace_messages_structured_content_round_trips(self, db):
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {"type": "text", "text": "Replacement image"},
+            {"type": "image_url", "image_url": {"url": "DATA:image/png;base64,abc"}},
+        ]
+
+        db.replace_messages("s1", [{"role": "user", "content": content}])
+
+        row = db._conn.execute(
+            "SELECT content, content_payload FROM messages WHERE session_id = 's1'"
+        ).fetchone()
+        assert row["content"] == "Replacement image\n[image attachment]"
+        assert "DATA:image/png;base64,abc" not in row["content"]
+        assert "DATA:image/png;base64,abc" in row["content_payload"]
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv == [{"role": "user", "content": content}]
+
     def test_message_increments_session_count(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")
@@ -327,6 +524,22 @@ class TestMessageStorage:
         conv = db.get_messages_as_conversation("child", include_ancestors=True)
 
         assert [m["content"] for m in conv if m["role"] == "user"] == ["same prompt", "next prompt"]
+
+    def test_get_messages_as_conversation_deduplicates_structured_resume_prompts(self, db):
+        content = [
+            {"type": "text", "text": "same prompt"},
+                {"type": "image_url", "image_url": {"url": "DATA:image/png;base64,abc"}},
+        ]
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content=content)
+        db.append_message("root", role="user", content=content)
+        db.append_message("root", role="assistant", content="answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="next prompt")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        assert [m["content"] for m in conv if m["role"] == "user"] == [content, "next prompt"]
 
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -1658,6 +1871,13 @@ class TestSchemaInit:
         assert sessions[0]["preview"] == "first prompt"
         db.close()
 
+    def test_message_structured_content_columns_exist(self, db):
+        """Verify structured message content can be stored outside FTS text."""
+        cursor = db._conn.execute("PRAGMA table_info(messages)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert "content_format" in columns
+        assert "content_payload" in columns
+
     def test_migration_from_v2(self, tmp_path):
         """Simulate a v2 database and verify migration adds title column."""
         import sqlite3
@@ -1706,7 +1926,7 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v9
+        # Open with SessionDB — should migrate to current schema
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
@@ -1717,6 +1937,12 @@ class TestSchemaInit:
         session = migrated_db.get_session("existing")
         assert session is not None
         assert session["title"] is None
+
+        # Verify structured content columns were added for safe replay.
+        cursor = migrated_db._conn.execute("PRAGMA table_info(messages)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert "content_format" in columns
+        assert "content_payload" in columns
 
         # Verify api_call_count column was added with default 0
         cursor = migrated_db._conn.execute(
@@ -2714,8 +2940,6 @@ class TestAutoMaintenance:
         assert count == 1
         assert not (sessions_dir / "old.jsonl").exists()
         assert (sessions_dir / "active.jsonl").exists()
-
-
 # =========================================================================
 # FTS5 indexing of tool_calls / tool_name (#16751)
 # =========================================================================
@@ -2909,4 +3133,3 @@ class TestFTS5ToolCallMigration:
             assert version == 11
         finally:
             session_db.close()
-

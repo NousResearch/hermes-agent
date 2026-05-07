@@ -246,6 +246,30 @@ class TestHelpers:
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
         assert mcp_serve._load_sessions_index() == {}
 
+    def test_get_display_messages_prefers_display_fetcher(self):
+        import mcp_serve
+
+        class DB:
+            def __init__(self):
+                self.display_calls = 0
+                self.full_calls = 0
+
+            def get_messages_for_display(self, session_id):
+                self.display_calls += 1
+                return [{"content": "safe display text", "session_id": session_id}]
+
+            def get_messages(self, _session_id):
+                self.full_calls += 1
+                return [{"content": [{"type": "image_url", "image_url": {"url": "DATA:image/png;base64,raw"}}]}]
+
+        db = DB()
+
+        messages = mcp_serve._get_display_messages(db, "s1")
+
+        assert messages == [{"content": "safe display text", "session_id": "s1"}]
+        assert db.display_calls == 1
+        assert db.full_calls == 0
+
 
 class TestContentExtraction:
     def test_text(self):

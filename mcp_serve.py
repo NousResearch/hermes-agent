@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from hermes_message_content import content_to_text
+
 logger = logging.getLogger("hermes.mcp_serve")
 
 # ---------------------------------------------------------------------------
@@ -76,6 +78,14 @@ def _get_session_db():
     except Exception as e:
         logger.debug("SessionDB unavailable: %s", e)
         return None
+
+
+def _get_display_messages(db, session_id: str) -> List[dict]:
+    """Load display-safe messages without materializing structured payloads."""
+    display_getter = getattr(db, "get_messages_for_display", None)
+    if callable(display_getter):
+        return display_getter(session_id)
+    return db.get_messages(session_id)
 
 
 def _load_sessions_index() -> dict:
@@ -120,11 +130,13 @@ def _extract_message_content(msg: dict) -> str:
     content = msg.get("content", "")
     if isinstance(content, list):
         text_parts = [
-            p.get("text", "") for p in content
-            if isinstance(p, dict) and p.get("type") == "text"
+            content_to_text(part)
+            for part in content
+            if isinstance(part, dict)
+            and str(part.get("type") or "").strip().lower() in {"text", "input_text", "output_text"}
         ]
         return "\n".join(text_parts)
-    return str(content) if content else ""
+    return content_to_text(content)
 
 
 def _extract_attachments(msg: dict) -> List[dict]:
@@ -367,7 +379,7 @@ class EventBridge:
             last_seen = self._last_poll_timestamps.get(session_key, 0.0)
 
             try:
-                messages = db.get_messages(session_id)
+                messages = _get_display_messages(db, session_id)
             except Exception:
                 continue
 
@@ -566,7 +578,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps({"error": "Session database unavailable"})
 
         try:
-            all_messages = db.get_messages(session_id)
+            all_messages = _get_display_messages(db, session_id)
         except Exception as e:
             return json.dumps({"error": f"Failed to read messages: {e}"})
 

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_message_content import content_to_text
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tui_gateway.transport import (
@@ -2008,7 +2009,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
-            if not (m.get("content") or "").strip():
+            if not content_to_text(m.get("content")).strip():
                 continue
         if role == "tool":
             tc_id = m.get("tool_call_id", "")
@@ -2019,9 +2020,10 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                 {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
             )
             continue
-        if not (m.get("content") or "").strip():
+        text = content_to_text(m.get("content"))
+        if not text.strip():
             continue
-        messages.append({"role": role, "text": m.get("content") or ""})
+        messages.append({"role": role, "text": text})
 
     return messages
 

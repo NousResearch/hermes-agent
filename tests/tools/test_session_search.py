@@ -110,6 +110,43 @@ class TestFormatConversation:
         assert "web_search" in result
         assert "terminal" in result
 
+    def test_structured_content_redacts_inline_image_payloads(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": "DATA:image/png;base64,abc"}},
+                    {"type": "input_image", "image_url": "https://example.com/p.png"},
+                    {"type": "image", "source": {"type": "base64", "data": "raw-image"}},
+                    {"type": "input_image", "source": {"type": "base64", "data": "raw-input-image"}},
+                    {"type": "input_file", "filename": "notes.pdf", "file_data": "raw-file"},
+                    {
+                        "type": "file",
+                        "file": {"filename": "nested.pdf", "file_data": "raw-nested-file"},
+                    },
+                    {
+                        "type": "document",
+                        "source": {"type": "base64", "data": "raw-document"},
+                    },
+                ],
+            },
+        ]
+
+        result = _format_conversation(msgs)
+
+        assert (
+            "[USER]: look\n[image attachment]\n[image: https://example.com/p.png]\n"
+            "[image attachment]\n[image attachment]\n"
+            "[file attachment]\n[file attachment]\n[attachment]"
+        ) in result
+        assert "DATA:image/png;base64,abc" not in result
+        assert "raw-image" not in result
+        assert "raw-input-image" not in result
+        assert "raw-file" not in result
+        assert "raw-nested-file" not in result
+        assert "raw-document" not in result
+
     def test_empty_messages(self):
         result = _format_conversation([])
         assert result == ""

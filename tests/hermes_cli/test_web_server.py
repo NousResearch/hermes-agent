@@ -125,6 +125,49 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_session_messages_stringify_structured_content(self, monkeypatch):
+        import hermes_state
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session("s1", "cli")
+            db.append_message(
+                "s1",
+                role="user",
+                content=[
+                    {"type": "text", "text": "look at this"},
+                    {"type": "image_url", "image_url": {"url": "DATA:image/png;base64,abc"}},
+                    {"type": "image", "source": {"type": "base64", "data": "raw-image"}},
+                    {"type": "input_image", "source": {"type": "base64", "data": "raw-input-image"}},
+                    {"type": "input_file", "filename": "notes.pdf", "file_data": "raw-file"},
+                    {
+                        "type": "file",
+                        "file": {"filename": "nested.pdf", "file_data": "raw-nested-file"},
+                    },
+                ],
+            )
+        finally:
+            db.close()
+
+        def _fail_deserialize(*_args, **_kwargs):
+            raise AssertionError("dashboard messages should not deserialize content_payload")
+
+        monkeypatch.setattr(hermes_state, "_deserialize_message_content", _fail_deserialize)
+
+        resp = self.client.get("/api/sessions/s1/messages")
+
+        assert resp.status_code == 200
+        messages = resp.json()["messages"]
+        assert messages[0]["content"] == (
+            "look at this\n[image attachment]\n[image attachment]\n"
+            "[image attachment]\n[file attachment]\n[file attachment]"
+        )
+        assert "raw-image" not in messages[0]["content"]
+        assert "raw-input-image" not in messages[0]["content"]
+        assert "raw-file" not in messages[0]["content"]
+        assert "raw-nested-file" not in messages[0]["content"]
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

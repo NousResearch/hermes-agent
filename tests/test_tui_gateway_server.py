@@ -526,6 +526,46 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
 
+def test_history_to_messages_renders_structured_content_parts():
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look at this"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/p.png"}},
+                {"type": "input_image", "image_url": "DATA:image/png;base64,abc"},
+                {"type": "image", "source": {"type": "base64", "data": "raw-image"}},
+                {"type": "input_image", "source": {"type": "base64", "data": "raw-input-image"}},
+                {"type": "input_file", "filename": "notes.pdf", "file_data": "raw-file"},
+                {
+                    "type": "file",
+                    "file": {"filename": "nested.pdf", "file_data": "raw-nested-file"},
+                },
+                {
+                    "type": "document",
+                    "source": {"type": "base64", "data": "raw-document"},
+                },
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": {"type": "output_text", "text": "I can see it."},
+        },
+    ]
+
+    assert server._history_to_messages(history) == [
+        {
+            "role": "user",
+            "text": (
+                "look at this\n[image: https://example.com/p.png]\n"
+                "[image attachment]\n[image attachment]\n[image attachment]\n"
+                "[file attachment]\n[file attachment]\n[attachment]"
+            ),
+        },
+        {"role": "assistant", "text": "I can see it."},
+    ]
+
+
 def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     captured = {}
 

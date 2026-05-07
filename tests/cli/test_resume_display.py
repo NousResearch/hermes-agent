@@ -108,6 +108,11 @@ def _multimodal_history():
             "content": [
                 {"type": "text", "text": "What's in this image?"},
                 {"type": "image_url", "image_url": {"url": "https://example.com/cat.jpg"}},
+                {"type": "input_image", "image_url": "DATA:image/png;base64,raw-image"},
+                {
+                    "type": "file",
+                    "file": {"filename": "notes.pdf", "file_data": "raw-file"},
+                },
             ],
         },
         {"role": "assistant", "content": "I see a cat in the image."},
@@ -263,6 +268,9 @@ class TestDisplayResumedHistory:
 
         assert "What's in this image?" in output
         assert "[image]" in output
+        assert "[file]" in output
+        assert "raw-image" not in output
+        assert "raw-file" not in output
 
     def test_empty_history_no_output(self):
         cli = _make_cli()

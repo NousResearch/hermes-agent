@@ -1307,6 +1307,103 @@ class TestRunJobConfigLogging:
             f"Expected 'failed to parse prefill messages' warning in logs, got: {[r.message for r in caplog.records]}"
 
 
+class TestRunJobConfigEnvVarExpansion:
+    """Verify that ${VAR} references in config.yaml are expanded when running cron jobs."""
+
+    _RUNTIME = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+    }
+
+    def test_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
+        """${VAR} in config.yaml model: is expanded using env after .env is loaded."""
+        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_MODEL}\n")
+        monkeypatch.setenv("_HERMES_TEST_CRON_MODEL", "gpt-4o-mini-cron-test")
+
+        job = {"id": "env-job", "name": "env test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["model"] == "gpt-4o-mini-cron-test", (
+            f"Expected model='gpt-4o-mini-cron-test', got {kwargs['model']!r}. "
+            "config.yaml ${VAR} was not expanded in the cron execution path."
+        )
+
+    def test_fallback_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
+        """${VAR} in config.yaml fallback_providers model: is expanded."""
+        (tmp_path / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: ${_HERMES_TEST_CRON_FALLBACK}\n"
+        )
+        monkeypatch.setenv("_HERMES_TEST_CRON_FALLBACK", "gpt-4o-fallback-test")
+
+        job = {"id": "fb-job", "name": "fallback test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        fb = kwargs.get("fallback_model") or []
+        fb_list = fb if isinstance(fb, list) else [fb]
+        expanded = [e.get("model") for e in fb_list if isinstance(e, dict)]
+        assert "gpt-4o-fallback-test" in expanded, (
+            f"Expected expanded fallback model in {expanded!r}. "
+            "config.yaml ${VAR} in fallback_providers was not expanded."
+        )
+
+    def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
+        """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
+        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")
+        monkeypatch.delenv("_HERMES_TEST_CRON_UNSET_VAR", raising=False)
+
+        job = {"id": "unset-job", "name": "unset var test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        kwargs = mock_agent_cls.call_args.kwargs
+        # Unresolved refs are kept verbatim — _expand_env_vars contract
+        assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
+
+
 class TestRunJobSkillBacked:
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
         job = {
@@ -1958,8 +2055,8 @@ class TestParallelTick:
         """Point the tick file lock at a per-test temp dir to avoid xdist contention."""
         lock_dir = tmp_path / "cron"
         lock_dir.mkdir()
-        with patch("cron.scheduler._LOCK_DIR", lock_dir), \
-             patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
+        lock_file = lock_dir / ".tick.lock"
+        with patch("cron.scheduler._get_lock_paths", return_value=(lock_dir, lock_file)):
             yield
 
     def test_parallel_jobs_run_concurrently(self):

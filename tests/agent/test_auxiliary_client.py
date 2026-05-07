@@ -20,6 +20,7 @@ from agent.auxiliary_client import (
     _read_codex_access_token,
     _get_provider_chain,
     _is_payment_error,
+    _is_rate_limit_error,
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
@@ -789,6 +790,65 @@ class TestIsPaymentError:
         assert _is_payment_error(exc) is False
 
 
+class TestIsRateLimitError:
+    """_is_rate_limit_error detects 429 rate-limit errors warranting fallback."""
+
+    def test_429_with_rate_limit_message(self):
+        exc = Exception("Rate limit exceeded, try again in 2 seconds")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_with_resets_in_message(self):
+        """Nous-style 429: 'resets in 3508s'."""
+        exc = Exception("Hold up for a bit, you've exceeded the rate limit on your API key")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_with_too_many_requests(self):
+        exc = Exception("Too many requests")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_without_billing_keywords_is_rate_limit(self):
+        """Generic 429 without billing keywords = likely a rate limit."""
+        exc = Exception("Something went wrong")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_with_credits_message_is_not_rate_limit(self):
+        """Billing-related 429 should NOT be classified as rate limit."""
+        exc = Exception("insufficient credits remaining")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is False
+
+    def test_429_with_billing_message_is_not_rate_limit(self):
+        exc = Exception("you can only afford 1000 tokens")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is False
+
+    def test_402_is_not_rate_limit(self):
+        exc = Exception("Payment Required")
+        exc.status_code = 402
+        assert _is_rate_limit_error(exc) is False
+
+    def test_500_is_not_rate_limit(self):
+        exc = Exception("Internal Server Error")
+        exc.status_code = 500
+        assert _is_rate_limit_error(exc) is False
+
+    def test_openai_ratelimiterror_classname(self):
+        """OpenAI SDK RateLimitError may omit .status_code — detect by class name."""
+        class RateLimitError(Exception):
+            pass
+        exc = RateLimitError("rate limit exceeded")
+        # No status_code set, but class name matches
+        assert _is_rate_limit_error(exc) is True
+
+    def test_no_status_code_no_keywords_is_not_rate_limit(self):
+        exc = Exception("connection reset")
+        assert _is_rate_limit_error(exc) is False
+
+
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""
 
@@ -860,11 +920,16 @@ class TestTryPaymentFallback:
 
 
 class TestCallLlmPaymentFallback:
-    """call_llm() retries with a different provider on 402 / payment errors."""
+    """call_llm() retries with a different provider on 402 / payment / rate-limit errors."""
 
     def _make_402_error(self, msg="Payment Required: insufficient credits"):
         exc = Exception(msg)
         exc.status_code = 402
+        return exc
+
+    def _make_429_rate_limit_error(self, msg="Rate limit exceeded, try again in 60 seconds"):
+        exc = Exception(msg)
+        exc.status_code = 429
         return exc
 
     def test_non_payment_error_not_caught(self, monkeypatch):
@@ -885,6 +950,32 @@ class TestCallLlmPaymentFallback:
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
                 )
+
+    def test_429_rate_limit_triggers_fallback(self, monkeypatch):
+        """429 rate-limit errors should trigger fallback to next provider."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        rate_err = self._make_429_rate_limit_error()
+        primary_client.chat.completions.create.side_effect = rate_err
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "xiaomi/mimo-v2-pro")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "xiaomi/mimo-v2-pro", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "fallback-model", "openrouter")):
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+        # Fallback client should have been used
+        assert fallback_client.chat.completions.create.called
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
@@ -1650,6 +1741,42 @@ class TestCodexAdapterReasoningTranslation:
         )
         assert "reasoning" not in captured
 
+    def test_reasoning_effort_null_falls_back_to_medium(self):
+        """Parity with agent/transports/codex.py::build_kwargs() — falsy
+        ``effort`` (None / empty / 0) keeps the default ``medium`` instead
+        of being forwarded to Codex.  Codex rejects ``{"effort": null}``
+        with HTTP 400 (Invalid value for parameter `reasoning.effort`)."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": None}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_reasoning_effort_empty_string_falls_back_to_medium(self):
+        """Empty-string effort (e.g. ``effort: ""`` in YAML) is falsy in
+        the main-agent path's truthy check; mirror that here so the same
+        config produces the same result."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": ""}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_reasoning_effort_zero_falls_back_to_medium(self):
+        """Numeric ``0`` is also falsy — the docstring lists it explicitly,
+        so cover the contract.  Codex would reject ``{"effort": 0}`` the
+        same way it rejects ``null``."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": 0}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
 
 
 class TestVisionAutoSkipsKimiCoding:

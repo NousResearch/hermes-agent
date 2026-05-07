@@ -353,7 +353,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @classmethod
     def _message_thread_id_for_typing(cls, thread_id: Optional[str]) -> Optional[int]:
-        if not thread_id:
+        # Mirrors _message_thread_id_for_send: the General forum topic (thread id
+        # "1") is represented as "no thread id" on the wire. User-created topics
+        # keep their real id so typing stays scoped to that topic.
+        if not thread_id or str(thread_id) == cls._GENERAL_TOPIC_THREAD_ID:
             return None
         return int(thread_id)
 
@@ -687,6 +690,29 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, name, chat_id, e,
                 )
             return None
+
+    async def rename_dm_topic(
+        self,
+        chat_id: int,
+        thread_id: int,
+        name: str,
+    ) -> None:
+        """Rename a forum topic in a private (DM) chat."""
+        if not self._bot:
+            return
+        try:
+            chat_id_arg = int(chat_id)
+        except (TypeError, ValueError):
+            chat_id_arg = chat_id
+        await self._bot.edit_forum_topic(
+            chat_id=chat_id_arg,
+            message_thread_id=int(thread_id),
+            name=name,
+        )
+        logger.info(
+            "[%s] Renamed DM topic in chat %s thread_id=%s -> '%s'",
+            self.name, chat_id, thread_id, name,
+        )
 
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
@@ -2485,21 +2511,16 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
                 message_thread_id = self._message_thread_id_for_typing(_typing_thread)
-                try:
-                    await self._bot.send_chat_action(
-                        chat_id=int(chat_id),
-                        action="typing",
-                        message_thread_id=message_thread_id,
-                    )
-                except Exception as e:
-                    if message_thread_id is not None and self._is_thread_not_found_error(e):
-                        await self._bot.send_chat_action(
-                            chat_id=int(chat_id),
-                            action="typing",
-                            message_thread_id=None,
-                        )
-                    else:
-                        raise
+                # No retry-without-thread fallback here: _message_thread_id_for_typing
+                # already maps the forum General topic to None, so any non-None value
+                # reaching this call is a user-created topic. If Telegram rejects it
+                # (e.g. topic deleted mid-session), we swallow the failure rather than
+                # showing a typing indicator in the wrong chat/All Messages.
+                await self._bot.send_chat_action(
+                    chat_id=int(chat_id),
+                    action="typing",
+                    message_thread_id=message_thread_id,
+                )
             except Exception as e:
                 # Typing failures are non-fatal; log at debug level only.
                 logger.debug(

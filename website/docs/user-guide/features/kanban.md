@@ -292,6 +292,40 @@ Three reasons:
 
 The `kanban-worker` and `kanban-orchestrator` skills teach the model which tool to call when and in what order.
 
+### Recommended handoff evidence
+
+`kanban_complete(summary=..., metadata={...})` is intentionally flexible:
+the summary is the human-readable closeout, and `metadata` is the
+machine-readable handoff that downstream agents, reviewers, or dashboards can
+reuse without scraping prose.
+
+For engineering and review tasks, prefer this optional metadata shape:
+
+```json
+{
+  "changed_files": ["path/to/file.py"],
+  "verification": ["pytest tests/hermes_cli/test_kanban_db.py -q"],
+  "dependencies": ["parent task id or external issue, if any"],
+  "blocked_reason": null,
+  "retry_notes": "what failed before, if this was a retry",
+  "residual_risk": ["what was not tested or still needs human review"]
+}
+```
+
+These keys are a convention, not a schema requirement. The useful property is
+that every worker leaves enough evidence for the next reader to answer four
+questions quickly:
+
+1. What changed?
+2. How was it verified?
+3. What can unblock or retry this if it fails?
+4. What risk is still deliberately left open?
+
+Keep secrets, raw logs, tokens, OAuth material, and unrelated transcripts out of
+`metadata`. Store pointers and summaries instead. If a task has no files or
+tests, say so explicitly in `summary` and use `metadata` for the evidence that
+does exist, such as source URLs, issue ids, or manual review steps.
+
 ### The worker skill
 
 Any profile that should be able to work kanban tasks must load the `kanban-worker` skill. It teaches the worker the full lifecycle in **tool calls**, not CLI commands:
@@ -369,10 +403,18 @@ kanban_complete(
 )
 ```
 
-Load it into your orchestrator profile:
+`kanban-orchestrator` is a bundled skill. It is synced into each profile during
+install and update, so there is no separate Skills Hub install step. Verify it is
+present in your orchestrator profile:
 
 ```bash
-hermes skills install devops/kanban-orchestrator
+hermes -p orchestrator skills list | grep kanban-orchestrator
+```
+
+If the bundled copy is missing, restore it for that profile:
+
+```bash
+hermes -p orchestrator skills reset kanban-orchestrator --restore
 ```
 
 For best results, pair it with a profile whose toolsets are restricted to board operations (`kanban`, `gateway`, `memory`) so the orchestrator literally cannot execute implementation tasks even if it tries.

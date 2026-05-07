@@ -391,6 +391,99 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
+    """Plugin slash commands return normal slash.exec output without using the worker."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: (lambda arg: f"plugin:{arg}") if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-slash",
+            "method": "slash.exec",
+            "params": {"command": "plugin-cmd hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "plugin:hello"}
+    assert worker.calls == []
+
+
+def test_slash_exec_plugin_lookup_failure_falls_back_to_worker(server):
+    """Plugin discovery failures must not break ordinary slash-worker commands."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        side_effect=RuntimeError("discovery boom"),
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-lookup-failure",
+            "method": "slash.exec",
+            "params": {"command": "help", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "worker:help"}
+    assert worker.calls == ["help"]
+
+
+def test_slash_exec_plugin_handler_error_returns_output(server):
+    """Plugin handler failures return slash output so the TUI does not redispatch."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    def handler(arg):
+        raise RuntimeError(f"handler boom: {arg}")
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: handler if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-handler-error",
+            "method": "slash.exec",
+            "params": {"command": "plugin-cmd hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "Plugin command error: handler boom: hello"}
+    assert worker.calls == []
+
+
 @pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
 def test_slash_exec_rejects_pending_input_commands(server, cmd):
     """slash.exec must reject commands that use _pending_input in the CLI."""

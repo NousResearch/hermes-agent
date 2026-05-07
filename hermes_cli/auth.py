@@ -416,6 +416,40 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
 }
 
+# Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
+# providers/ that is not already declared above.  New providers only need a
+# plugins/model-providers/<name>/ plugin — no edits to this file required.
+try:
+    from providers import list_providers as _list_providers_for_registry
+    for _pp in _list_providers_for_registry():
+        if _pp.name in PROVIDER_REGISTRY:
+            continue
+        if _pp.auth_type != "api_key" or not _pp.env_vars:
+            continue
+        # Skip providers that need custom token resolution or are special-cased
+        # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
+        # openrouter/custom are aggregator/user-supplied and handled outside
+        # the registry — adding them here breaks runtime_provider resolution
+        # that relies on `openrouter not in PROVIDER_REGISTRY`).
+        if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
+            continue
+        _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
+        _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
+        PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
+            id=_pp.name,
+            name=_pp.display_name or _pp.name,
+            auth_type="api_key",
+            inference_base_url=_pp.base_url,
+            api_key_env_vars=_api_key_vars or _pp.env_vars,
+            base_url_env_var=_base_url_var or "",
+        )
+        # Also register aliases so resolve_provider() resolves them
+        for _alias in _pp.aliases:
+            if _alias not in PROVIDER_REGISTRY:
+                PROVIDER_REGISTRY[_alias] = PROVIDER_REGISTRY[_pp.name]
+except Exception:
+    pass
+
 
 # =============================================================================
 # Anthropic Key Helper
@@ -746,6 +780,73 @@ def _auth_file_path() -> Path:
     return path
 
 
+def _global_auth_file_path() -> Optional[Path]:
+    """Return the global-root auth.json when the process is in profile mode.
+
+    Returns ``None`` when the profile and global root resolve to the same
+    directory (classic mode, or custom HERMES_HOME that is not a profile).
+    Used by read-only fallback paths so providers authed at the root are
+    visible to profile processes that haven't configured them locally.
+
+    See issue #18594 follow-up (credential_pool shadowing).
+    """
+    try:
+        from hermes_constants import get_default_hermes_root
+        global_root = get_default_hermes_root()
+    except Exception:
+        return None
+    profile_home = get_hermes_home()
+    try:
+        if profile_home.resolve(strict=False) == global_root.resolve(strict=False):
+            return None
+    except Exception:
+        if profile_home == global_root:
+            return None
+    # No pytest seat belt here: this is a pure read-only path, and
+    # ``_load_global_auth_store()`` wraps the read in a try/except so an
+    # unreadable global file can never break the profile process.  The
+    # write-side seat belt still lives on ``_auth_file_path()`` where it
+    # belongs (that's what protects the real user's auth store from being
+    # corrupted by a mis-configured test).
+    return global_root / "auth.json"
+
+
+def _load_global_auth_store() -> Dict[str, Any]:
+    """Load the global-root auth store (read-only fallback).
+
+    Returns an empty dict when no global fallback exists (classic mode,
+    or the global auth.json is absent). Never raises on missing file.
+
+    Seat belt: under pytest, refuses to read the real user's
+    ``~/.hermes/auth.json`` even when HERMES_HOME is set to a profile
+    path. The hermetic conftest does not redirect ``HOME``, so
+    ``get_default_hermes_root()`` for a profile-shaped HERMES_HOME can
+    still resolve to the real user's home on a dev machine. That would
+    leak real credentials into tests. This guard uses the unmodified
+    ``HOME`` env var (what ``os.path.expanduser('~')`` would resolve to),
+    not ``Path.home()``, because ``Path.home`` is sometimes monkeypatched
+    by fixtures that want to relocate the global root to a tmp path.
+    """
+    global_path = _global_auth_file_path()
+    if global_path is None or not global_path.exists():
+        return {}
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env:
+            real_root = Path(real_home_env) / ".hermes" / "auth.json"
+            try:
+                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    return {}
+            except Exception:
+                pass
+    try:
+        return _load_auth_store(global_path)
+    except Exception:
+        # A malformed global store must not break profile reads. The
+        # profile's own auth store is still authoritative.
+        return {}
+
+
 def _auth_lock_path() -> Path:
     return _auth_file_path().with_suffix(".lock")
 
@@ -932,15 +1033,50 @@ def get_auth_provider_display_name(provider_id: str) -> str:
 
 
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
-    """Return the persisted credential pool, or one provider slice."""
+    """Return the persisted credential pool, or one provider slice.
+
+    In profile mode, the profile's credential pool is authoritative. If a
+    provider has no entries in the profile, entries from the global-root
+    ``auth.json`` are used as a read-only fallback — so workers spawned in a
+    profile can see providers that were only authenticated at global scope.
+
+    Profile entries always win: the global fallback only applies per-provider
+    when the profile has zero entries for that provider. Once the user runs
+    ``hermes auth add <provider>`` inside the profile, profile entries
+    fully shadow global for that provider on the next read.
+
+    Writes always go to the profile (``write_credential_pool`` is unchanged).
+    See issue #18594 follow-up.
+    """
     auth_store = _load_auth_store()
     pool = auth_store.get("credential_pool")
     if not isinstance(pool, dict):
         pool = {}
+
+    global_pool: Dict[str, Any] = {}
+    global_store = _load_global_auth_store()
+    maybe_global_pool = global_store.get("credential_pool") if global_store else None
+    if isinstance(maybe_global_pool, dict):
+        global_pool = maybe_global_pool
+
     if provider_id is None:
-        return dict(pool)
+        merged = dict(pool)
+        for gp_key, gp_entries in global_pool.items():
+            if not isinstance(gp_entries, list) or not gp_entries:
+                continue
+            # Per-provider shadowing: profile wins whenever it has ANY entries.
+            existing = merged.get(gp_key)
+            if isinstance(existing, list) and existing:
+                continue
+            merged[gp_key] = list(gp_entries)
+        return merged
+
     provider_entries = pool.get(provider_id)
-    return list(provider_entries) if isinstance(provider_entries, list) else []
+    if isinstance(provider_entries, list) and provider_entries:
+        return list(provider_entries)
+    # Profile has no entries for this provider — fall back to global.
+    global_entries = global_pool.get(provider_id)
+    return list(global_entries) if isinstance(global_entries, list) else []
 
 
 def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:
@@ -999,9 +1135,25 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
 
 
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
-    """Return persisted auth state for a provider, or None."""
+    """Return persisted auth state for a provider, or None.
+
+    In profile mode, falls back to the global-root ``auth.json`` when the
+    profile has no state for this provider. Profile state always wins when
+    present. Writes (``_save_auth_store`` / ``persist_*_credentials``) are
+    unchanged — they still target the profile only. This mirrors
+    ``read_credential_pool``'s per-provider shadowing semantics so that
+    ``_seed_from_singletons`` can reseed a profile's credential pool from
+    global-scope provider state (e.g. a globally-authenticated Anthropic
+    OAuth or Nous device-code session). See issue #18594 follow-up.
+    """
     auth_store = _load_auth_store()
-    return _load_provider_state(auth_store, provider_id)
+    state = _load_provider_state(auth_store, provider_id)
+    if state is not None:
+        return state
+    global_store = _load_global_auth_store()
+    if not global_store:
+        return None
+    return _load_provider_state(global_store, provider_id)
 
 
 def get_active_provider() -> Optional[str]:
@@ -1195,6 +1347,17 @@ def resolve_provider(
         "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
     }
+    # Extend with aliases declared in plugins/model-providers/<name>/ that aren't already mapped.
+    # This keeps providers/ as the single source for new aliases while the
+    # hardcoded dict above remains authoritative for existing ones.
+    try:
+        from providers import list_providers as _lp
+        for _pp in _lp():
+            for _alias in _pp.aliases:
+                if _alias not in _PROVIDER_ALIASES:
+                    _PROVIDER_ALIASES[_alias] = _pp.name
+    except Exception:
+        pass
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
     if normalized == "openrouter":

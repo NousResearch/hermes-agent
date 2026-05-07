@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 
-import pytest
+import pytest  # ty: ignore[unresolved-import]
 
 
 def test_image_generation_tool_imports_without_fal_client(monkeypatch):

@@ -3224,6 +3224,25 @@ def dispatch_once(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
+    # Reap zombie children from previously spawned workers.
+    # The gateway-embedded dispatcher is the parent of every worker spawned
+    # via _default_spawn (start_new_session=True only detaches the
+    # controlling tty, not the parent). Without an explicit waitpid, each
+    # completed worker becomes a <defunct> entry that lingers until gateway
+    # exit. WNOHANG keeps this non-blocking; ChildProcessError means no
+    # children to reap. Bounded: at most one tick's worth of completions
+    # can be in <defunct> at once.
+    try:
+        while True:
+            try:
+                _pid, _status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if _pid == 0:
+                break
+    except Exception:
+        pass
+
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
     result.crashed = detect_crashed_workers(conn)

@@ -772,3 +772,274 @@ def test_handle_message_event_data_forwards_sender_when_admitted():
     assert captured.get("sender_id") is sender.sender_id
     assert captured.get("is_bot") is True
     assert captured.get("message_id") == "om_bot_ok"
+
+
+# --- REST mention hydration on ambiguous reply events (GH #21366) ----------
+
+
+def _hydration_message(**overrides):
+    """Reply-shaped Feishu websocket message: raw @_user_1 placeholder, no SDK mentions."""
+    base = dict(
+        message_id="om_reply_21366",
+        chat_id="oc_group",
+        chat_type="group",
+        message_type="text",
+        # The websocket event omits the bot open_id from message.mentions
+        # and only carries the raw placeholder in content.
+        content='{"text":"@_user_1 hello"}',
+        mentions=None,
+        parent_id="om_parent",
+        root_id="om_root",
+        thread_id=None,
+        upper_message_id=None,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_should_attempt_mention_hydration_signals():
+    adapter = make_adapter_skeleton(bot_open_id="ou_self")
+    adapter._client = object()  # truthy stand-in for the lark client
+    # Group + placeholder placeholder triggers hydration.
+    msg = _hydration_message(parent_id=None, root_id=None, content='{"text":"@_user_1"}')
+    assert adapter._should_attempt_mention_hydration(msg) is True
+    # Group + reply linkage (no placeholder) also triggers hydration.
+    msg = _hydration_message(content='{"text":"hi"}')
+    assert adapter._should_attempt_mention_hydration(msg) is True
+    # P2P never hydrates — there is no group mention gate to fail.
+    msg = _hydration_message(chat_type="p2p")
+    assert adapter._should_attempt_mention_hydration(msg) is False
+    # Plain group message (no signals) does not trigger hydration.
+    msg = _hydration_message(parent_id=None, root_id=None, content='{"text":"hello"}')
+    assert adapter._should_attempt_mention_hydration(msg) is False
+    # Without a client, never hydrate (defensive — no REST path available).
+    adapter._client = None
+    msg = _hydration_message()
+    assert adapter._should_attempt_mention_hydration(msg) is False
+
+
+def test_handle_message_event_data_hydrates_mentions_for_reply_with_raw_placeholder():
+    """Reproduces #21366: a Feishu reply @-mentioning the bot is dropped
+    when ``message.mentions`` is empty, but should be admitted after the
+    adapter falls back to GET im/v1/messages and merges the canonical
+    mentions[] entry for the bot's open_id."""
+    import asyncio
+
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_bot",
+        require_mention=True,
+        group_policy="open",
+    )
+    install_dedup_state(adapter)
+
+    # Hydrated mention shape mirrors the SDK objects (id has open_id/user_id).
+    bot_mention = SimpleNamespace(
+        key="@_user_1",
+        name="hermes_bot",
+        id=SimpleNamespace(open_id="ou_bot", user_id="u_bot", union_id=None),
+    )
+    hydrated_msg = SimpleNamespace(
+        mentions=[bot_mention],
+        parent_id="om_parent",
+        root_id="om_root",
+        thread_id=None,
+        upper_message_id=None,
+    )
+    response = SimpleNamespace(
+        success=lambda: True,
+        data=SimpleNamespace(items=[hydrated_msg]),
+        code=0,
+        msg="ok",
+    )
+
+    get_calls = []
+
+    def _fake_get(request):
+        get_calls.append(getattr(request, "message_id", None))
+        return response
+
+    adapter._client = SimpleNamespace(
+        im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(get=_fake_get))),
+    )
+
+    captured = {}
+
+    async def _fake_process_inbound_message(**kwargs):
+        captured.update(kwargs)
+
+    adapter._process_inbound_message = _fake_process_inbound_message
+
+    message = _hydration_message()
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    data = SimpleNamespace(event=SimpleNamespace(sender=sender, message=message))
+
+    # Without the fix the first _admit returns "group_policy_rejected"
+    # and the message is silently dropped.
+    asyncio.run(adapter._handle_message_event_data(data))
+
+    assert get_calls == ["om_reply_21366"], (
+        "Expected one REST hydration call for the ambiguous reply event"
+    )
+    assert captured.get("message_id") == "om_reply_21366", (
+        "Expected the reply to be admitted into the agent pipeline after hydration"
+    )
+    # The hydrated mentions should now be on the message so downstream
+    # processing sees a fully populated event.
+    assert getattr(message, "mentions", None) == [bot_mention]
+
+
+def test_handle_message_event_data_hydrates_bot_not_mentioned_rejection():
+    """allow_bots=mentions can reject before the group require_mention gate.
+
+    Missing websocket mentions can surface as ``bot_not_mentioned`` for bot
+    senders when group ``require_mention`` is disabled. Hydration should cover
+    that ambiguous reply shape too, then re-admit once REST supplies the bot
+    mention.
+    """
+    import asyncio
+
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_bot",
+        allow_bots="mentions",
+        require_mention=False,
+        group_policy="open",
+    )
+    install_dedup_state(adapter)
+
+    bot_mention = SimpleNamespace(
+        key="@_user_1",
+        name="hermes_bot",
+        id=SimpleNamespace(open_id="ou_bot", user_id="u_bot", union_id=None),
+    )
+    response = SimpleNamespace(
+        success=lambda: True,
+        data=SimpleNamespace(items=[SimpleNamespace(mentions=[bot_mention])]),
+        code=0,
+        msg="ok",
+    )
+    get_calls = []
+
+    def _fake_get(request):
+        get_calls.append(getattr(request, "message_id", None))
+        return response
+
+    adapter._client = SimpleNamespace(
+        im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(get=_fake_get))),
+    )
+
+    captured = {}
+
+    async def _fake_process_inbound_message(**kwargs):
+        captured.update(kwargs)
+
+    adapter._process_inbound_message = _fake_process_inbound_message
+
+    message = _hydration_message(message_id="om_bot_not_mentioned")
+    sender = make_sender(sender_type="bot", open_id="ou_peer_bot")
+    data = SimpleNamespace(event=SimpleNamespace(sender=sender, message=message))
+
+    assert adapter._admit(sender, message) == "bot_not_mentioned"
+    asyncio.run(adapter._handle_message_event_data(data))
+
+    assert get_calls == ["om_bot_not_mentioned"]
+    assert captured.get("message_id") == "om_bot_not_mentioned"
+    assert captured.get("is_bot") is True
+    assert getattr(message, "mentions", None) == [bot_mention]
+
+
+def test_handle_message_event_data_still_drops_when_hydration_finds_no_bot_mention():
+    """If REST hydration returns mentions that don't include the bot, the
+    admission gate must still reject the message (no false-positive admits)."""
+    import asyncio
+
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_bot",
+        require_mention=True,
+        group_policy="open",
+    )
+    install_dedup_state(adapter)
+
+    other_mention = SimpleNamespace(
+        key="@_user_1",
+        name="someone_else",
+        id=SimpleNamespace(open_id="ou_other", user_id="u_other", union_id=None),
+    )
+    hydrated_msg = SimpleNamespace(
+        mentions=[other_mention],
+        parent_id="om_parent",
+        root_id=None,
+        thread_id=None,
+        upper_message_id=None,
+    )
+    response = SimpleNamespace(
+        success=lambda: True,
+        data=SimpleNamespace(items=[hydrated_msg]),
+        code=0,
+        msg="ok",
+    )
+    adapter._client = SimpleNamespace(
+        im=SimpleNamespace(
+            v1=SimpleNamespace(message=SimpleNamespace(get=lambda _r: response)),
+        ),
+    )
+
+    processed = []
+
+    async def _fake_process_inbound_message(**kwargs):
+        processed.append(kwargs)
+
+    adapter._process_inbound_message = _fake_process_inbound_message
+
+    message = _hydration_message()
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    data = SimpleNamespace(event=SimpleNamespace(sender=sender, message=message))
+
+    asyncio.run(adapter._handle_message_event_data(data))
+
+    assert processed == [], "Message must remain rejected when hydration shows no bot mention"
+
+
+def test_handle_message_event_data_skips_hydration_without_signals():
+    """A plain group message with no mention placeholder and no reply linkage
+    must not pay the REST cost — it's just a normal off-topic group post."""
+    import asyncio
+
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_bot",
+        require_mention=True,
+        group_policy="open",
+    )
+    install_dedup_state(adapter)
+
+    get_calls = []
+
+    def _fake_get(request):  # pragma: no cover — must not be invoked
+        get_calls.append(getattr(request, "message_id", None))
+        return SimpleNamespace(success=lambda: True, data=None)
+
+    adapter._client = SimpleNamespace(
+        im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(get=_fake_get))),
+    )
+
+    processed = []
+
+    async def _fake_process_inbound_message(**kwargs):
+        processed.append(kwargs)
+
+    adapter._process_inbound_message = _fake_process_inbound_message
+
+    message = _hydration_message(
+        message_id="om_no_signals",
+        content='{"text":"random group chatter"}',
+        parent_id=None,
+        root_id=None,
+        thread_id=None,
+        upper_message_id=None,
+    )
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    data = SimpleNamespace(event=SimpleNamespace(sender=sender, message=message))
+
+    asyncio.run(adapter._handle_message_event_data(data))
+
+    assert get_calls == [], "Hydration must not run when there are no ambiguity signals"
+    assert processed == [], "Plain group chatter without @-mention stays rejected"

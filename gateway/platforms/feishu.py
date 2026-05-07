@@ -2411,6 +2411,17 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         reason = self._admit(sender, message)
+        if reason in (
+            "group_policy_rejected",
+            "bot_not_mentioned",
+        ) and self._should_attempt_mention_hydration(message):
+            # Feishu reply events can omit message.mentions for the bot @-mention
+            # (raw content shows only "@_user_1"); fetch the canonical message via
+            # REST and re-admit before dropping. See GH #21366. The same missing
+            # mentions shape can also trip allow_bots="mentions" before the
+            # group require_mention gate, yielding bot_not_mentioned.
+            if await self._hydrate_message_mentions(message):
+                reason = self._admit(sender, message)
         if reason is not None:
             logger.debug("[Feishu] dropping inbound event: %s", reason)
             return
@@ -4105,6 +4116,88 @@ class FeishuAdapter(BasePlatformAdapter):
             bot=self._bot_identity(),
         )
         return self._post_mentions_bot(normalized.mentions)
+
+    def _should_attempt_mention_hydration(self, message: Any) -> bool:
+        """Return True when an admission rejection deserves a REST hydration retry.
+
+        Feishu's websocket events for replies can omit ``message.mentions`` and
+        deliver raw content like ``{"text":"@_user_1"}`` even when the canonical
+        message (``GET im/v1/messages/{id}``) has a populated ``mentions[]``
+        entry for the bot. The two ambiguity signals worth one extra REST call:
+
+          * a Feishu user-mention placeholder (``@_user_``) in raw content, or
+          * any reply/thread linkage field (``parent_id``/``root_id``/...).
+        """
+        if getattr(message, "chat_type", "p2p") == "p2p":
+            return False
+        if not self._client or not getattr(message, "message_id", None):
+            return False
+        raw_content = getattr(message, "content", "") or ""
+        if "@_user_" in raw_content:
+            return True
+        for attr in ("parent_id", "root_id", "thread_id", "upper_message_id"):
+            if getattr(message, attr, None):
+                return True
+        return False
+
+    async def _hydrate_message_mentions(self, message: Any) -> bool:
+        """Fetch the canonical message and merge ``mentions``/reply linkage in-place.
+
+        Returns True when at least one mention entry was merged from the REST
+        payload onto ``message`` (caller should re-run ``_admit``). Failures
+        are logged at DEBUG and treated as no-op.
+        """
+        message_id = getattr(message, "message_id", None)
+        if not message_id or not self._client:
+            return False
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await asyncio.to_thread(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                logger.debug(
+                    "[Feishu] Mention hydration GET failed for %s: code=%s msg=%s",
+                    message_id,
+                    getattr(response, "code", "unknown"),
+                    getattr(response, "msg", ""),
+                )
+                return False
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            hydrated = items[0] if items else None
+            if hydrated is None:
+                return False
+            hydrated_mentions = getattr(hydrated, "mentions", None) or []
+            merged = False
+            if hydrated_mentions and not getattr(message, "mentions", None):
+                try:
+                    setattr(message, "mentions", list(hydrated_mentions))
+                    merged = True
+                except Exception:
+                    logger.debug(
+                        "[Feishu] Could not assign hydrated mentions onto message %s",
+                        message_id,
+                        exc_info=True,
+                    )
+            for attr in ("parent_id", "root_id", "thread_id", "upper_message_id"):
+                if not getattr(message, attr, None):
+                    value = getattr(hydrated, attr, None)
+                    if value:
+                        try:
+                            setattr(message, attr, value)
+                        except Exception:
+                            pass
+            if merged:
+                logger.info(
+                    "[Feishu] Hydrated mentions via REST for ambiguous reply event %s",
+                    message_id,
+                )
+            return merged
+        except Exception:
+            logger.debug(
+                "[Feishu] Mention hydration raised for %s",
+                message_id,
+                exc_info=True,
+            )
+            return False
 
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
         # IDs trump names: when both sides have open_id (or both user_id),

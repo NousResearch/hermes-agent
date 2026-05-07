@@ -10060,11 +10060,15 @@ class AIAgent:
                 current_session_id=self.session_id,
             )
         elif function_name == "memory":
-            target = function_args.get("target", "memory")
+            # Preserve raw target=None signal for the warm dispatcher's
+            # promote/demote branches. The hot path inside memory_tool
+            # defaults target to 'memory' when it's None, so this is
+            # safe for the existing add/replace/remove flow.
+            raw_target = function_args.get("target")
             from tools.memory_tool import memory_tool as _memory_tool
             result = _memory_tool(
                 action=function_args.get("action"),
-                target=target,
+                target=raw_target,
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
@@ -10085,7 +10089,7 @@ class AIAgent:
                 try:
                     self._memory_manager.on_memory_write(
                         function_args.get("action", ""),
-                        target,
+                        raw_target or "memory",
                         function_args.get("content", ""),
                         metadata=self._build_memory_write_metadata(
                             task_id=effective_task_id,
@@ -10694,11 +10698,15 @@ class AIAgent:
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
-                target = function_args.get("target", "memory")
+                # See the parallel bypass at line 10062 for why we forward
+                # raw_target (None when not specified) instead of defaulting
+                # to "memory" — the warm promote/demote dispatch needs to
+                # tell defaulted apart from explicit.
+                raw_target = function_args.get("target")
                 from tools.memory_tool import memory_tool as _memory_tool
                 function_result = _memory_tool(
                     action=function_args.get("action"),
-                    target=target,
+                    target=raw_target,
                     content=function_args.get("content"),
                     old_text=function_args.get("old_text"),
                     store=self._memory_store,
@@ -10717,7 +10725,7 @@ class AIAgent:
                     try:
                         self._memory_manager.on_memory_write(
                             function_args.get("action", ""),
-                            target,
+                            raw_target or "memory",
                             function_args.get("content", ""),
                             metadata=self._build_memory_write_metadata(
                                 task_id=effective_task_id,

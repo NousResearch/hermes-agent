@@ -520,6 +520,7 @@ def _handle_warm_action(
     args_tags: Optional[str],
     args_fact_id: Optional[int],
     args_helpful: Optional[bool],
+    args_target: Optional[str],
     hot_store: Optional[MemoryStore],
 ) -> str:
     """Dispatch warm-tier actions. Always returns a JSON string."""
@@ -639,6 +640,12 @@ def _handle_warm_action(
     elif action == "promote":
         # Move a warm fact to the hot tier. Fetch the row, write it to hot,
         # delete from warm only if hot write succeeded.
+        #
+        # Destination hot target is taken from ``target`` ('memory' or
+        # 'user'), defaulting to 'memory'. Earlier versions overloaded
+        # ``old_text`` for this — callers passing old_text='user' will
+        # still get user-target promotion via the back-compat shim
+        # below, but new code should use target=.
         if hot_store is None:
             return tool_error(
                 "Hot tier is not available; cannot promote.", success=False,
@@ -652,9 +659,15 @@ def _handle_warm_action(
             return tool_error(
                 f"No warm fact with id {args_fact_id}.", success=False,
             )
-        # Hot tier expects target='memory' or 'user'. Default to 'memory';
-        # caller can specify target explicitly.
-        hot_target = "user" if args_old_text == "user" else "memory"
+        # Resolve destination target. Prefer the new explicit ``target``
+        # arg; fall back to the legacy ``old_text`` overload only when
+        # target wasn't explicitly set to a valid value.
+        if args_target in ("memory", "user"):
+            hot_target = args_target
+        elif args_old_text in ("memory", "user"):
+            hot_target = args_old_text  # legacy behavior — preserved
+        else:
+            hot_target = "memory"
         hot_result = hot_store.add(hot_target, row["content"])
         if not hot_result.get("success"):
             return json.dumps(hot_result, ensure_ascii=False)
@@ -669,7 +682,16 @@ def _handle_warm_action(
 
     elif action == "demote":
         # Move a hot entry to warm. Identified by old_text substring (same
-        # rules as hot remove). Tier param is implicitly hot (the source).
+        # rules as hot remove).
+        #
+        # Source hot target is taken from ``target`` ('memory' or 'user'),
+        # defaulting to 'memory'. Earlier versions overloaded ``category``
+        # for this, which clashed with category's documented meaning
+        # ("warm-tier category for the new fact"). New code should use
+        # target= for the source and category= for the new warm fact's
+        # category. The legacy category-as-target overload is preserved
+        # only when ``target`` wasn't explicitly set to a valid value
+        # AND ``category`` happens to be 'memory'/'user'.
         if hot_store is None:
             return tool_error(
                 "Hot tier is not available; cannot demote.", success=False,
@@ -678,7 +700,17 @@ def _handle_warm_action(
             return tool_error(
                 "old_text is required for demote.", success=False,
             )
-        hot_target = args_category if args_category in ("memory", "user") else "memory"
+        if args_target in ("memory", "user"):
+            hot_target = args_target
+            warm_category = args_category or "general"
+        elif args_category in ("memory", "user"):
+            # Legacy overload — category was the source target. Preserved
+            # for back-compat; new code should use target=.
+            hot_target = args_category
+            warm_category = "general"
+        else:
+            hot_target = "memory"
+            warm_category = args_category or "general"
         # Find the hot entry first (without removing it), so we don't
         # delete-without-write if warm add fails.
         with hot_store._file_lock(hot_store._path_for(hot_target)):  # type: ignore[attr-defined]
@@ -695,7 +727,11 @@ def _handle_warm_action(
                 success=False,
             )
         content = matches[0]
-        warm_result = warm.add(content=content, tags="demoted-from-hot")
+        warm_result = warm.add(
+            content=content,
+            category=warm_category,
+            tags=args_tags or "demoted-from-hot",
+        )
         if not warm_result.get("success"):
             return json.dumps(warm_result, ensure_ascii=False)
         # Warm write OK — drop from hot.
@@ -704,6 +740,8 @@ def _handle_warm_action(
             "success": True,
             "message": f"Demoted hot entry to warm fact {warm_result.get('fact_id')}.",
             "warm_state": warm_result,
+            "hot_target": hot_target,
+            "warm_category": warm_category,
         }
 
     else:
@@ -718,7 +756,7 @@ def _handle_warm_action(
 
 def memory_tool(
     action: str,
-    target: str = "memory",
+    target: Optional[str] = None,
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
@@ -762,6 +800,7 @@ def memory_tool(
             args_tags=tags,
             args_fact_id=fact_id,
             args_helpful=helpful,
+            args_target=target,
             hot_store=store,
         )
 
@@ -772,6 +811,11 @@ def memory_tool(
             success=False,
         )
 
+    # Default target for hot-tier ops is 'memory' (the personal-notes file).
+    # The warm path handles its own target resolution (None means "not
+    # specified" — see _handle_warm_action's promote/demote branches).
+    if target is None:
+        target = "memory"
     if target not in ("memory", "user"):
         return tool_error(
             f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False,
@@ -846,8 +890,10 @@ MEMORY_SCHEMA = {
         "recall_related (query OR fact_id), read ([+category +top_k]), "
         "replace (fact_id+content), remove (fact_id), "
         "feedback (fact_id+helpful) — train trust scores by rating retrieved facts.\n"
-        "  CROSS-TIER: promote (fact_id) — move warm fact to hot tier; "
-        "demote (old_text) — move hot entry to warm.\n\n"
+        "  CROSS-TIER: promote (fact_id [+target]) — move warm fact to hot tier "
+        "(target='memory' or 'user', defaults to 'memory'); "
+        "demote (old_text [+target +category]) — move hot entry to warm "
+        "(target picks the source hot tier; category sets the new warm category).\n\n"
         "RECALL: use memory(action='recall', query='...') when the user references something cross-session, "
         "you suspect related context exists from prior work, or you're debugging a system covered in older notes. "
         "It's keyword search (BM25), so use exact terms / proper nouns when possible. ~50 tokens per call.\n\n"
@@ -881,8 +927,12 @@ MEMORY_SCHEMA = {
                 "type": "string",
                 "enum": ["memory", "user"],
                 "description": (
-                    "Hot tier only: 'memory' for personal notes, 'user' for user profile. "
-                    "Ignored for warm tier (warm uses category/tags instead)."
+                    "'memory' for personal notes, 'user' for user profile. "
+                    "Hot tier (add/replace/remove/read): which file to operate on. "
+                    "Cross-tier promote: which hot file the fact lands in. "
+                    "Cross-tier demote: which hot file the fact comes from. "
+                    "Defaults to 'memory'. Ignored for warm-tier-only actions "
+                    "(add/recall/recall_related/read/replace/remove/feedback)."
                 ),
             },
             "content": {
@@ -949,7 +999,10 @@ registry.register(
     schema=MEMORY_SCHEMA,
     handler=lambda args, **kw: memory_tool(
         action=args.get("action", ""),
-        target=args.get("target", "memory"),
+        # target=None means "not specified" — memory_tool defaults it
+        # to 'memory' on hot-tier ops and treats None as a signal to
+        # the warm dispatcher's promote/demote branches.
+        target=args.get("target"),
         content=args.get("content"),
         old_text=args.get("old_text"),
         store=kw.get("store"),

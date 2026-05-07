@@ -285,17 +285,67 @@ class TestMemoryToolPromote:
         assert warm.get(fid) is None
 
     def test_promote_to_user_target(self, warm, hot_store):
+        """Legacy form — old_text='user' overload still works for back-compat."""
         add_result = json.loads(memory_tool(
             action="add", tier="warm",
             content="Adam is a TSE",
         ))
         fid = add_result["fact_id"]
-        # old_text="user" routes to USER.md (per the documented contract)
+        # old_text="user" routes to USER.md (legacy overload, preserved)
         result = json.loads(memory_tool(
             action="promote", fact_id=fid, old_text="user", store=hot_store,
         ))
         assert result["success"] is True
+        assert result["hot_target"] == "user"
         assert any("Adam is a TSE" in e for e in hot_store.user_entries)
+
+    def test_promote_to_user_target_new_api(self, warm, hot_store):
+        """Preferred form: explicit target='user' arg."""
+        add_result = json.loads(memory_tool(
+            action="add", tier="warm",
+            content="User prefers concise responses",
+        ))
+        fid = add_result["fact_id"]
+        result = json.loads(memory_tool(
+            action="promote", fact_id=fid, target="user", store=hot_store,
+        ))
+        assert result["success"] is True
+        assert result["hot_target"] == "user"
+        assert any("concise responses" in e for e in hot_store.user_entries)
+
+    def test_promote_default_target_is_memory(self, warm, hot_store):
+        """No target / no old_text overload → defaults to memory tier."""
+        add_result = json.loads(memory_tool(
+            action="add", tier="warm",
+            content="Default-target promote test",
+        ))
+        fid = add_result["fact_id"]
+        result = json.loads(memory_tool(
+            action="promote", fact_id=fid, store=hot_store,
+        ))
+        assert result["success"] is True
+        assert result["hot_target"] == "memory"
+        assert any("Default-target promote" in e for e in hot_store.memory_entries)
+        assert not hot_store.user_entries
+
+    def test_promote_target_wins_over_legacy_old_text(self, warm, hot_store):
+        """When both target= and the legacy old_text='user' shim are set,
+        the explicit target arg must win."""
+        add_result = json.loads(memory_tool(
+            action="add", tier="warm",
+            content="Conflict resolution test",
+        ))
+        fid = add_result["fact_id"]
+        # target=memory + old_text=user — the new arg should win, fact lands
+        # in memory not user.
+        result = json.loads(memory_tool(
+            action="promote", fact_id=fid, target="memory", old_text="user",
+            store=hot_store,
+        ))
+        assert result["success"] is True
+        assert result["hot_target"] == "memory"
+        assert any("Conflict resolution" in e for e in hot_store.memory_entries)
+        assert not any("Conflict resolution" in e for e in hot_store.user_entries)
 
     def test_promote_unknown_id(self, warm, hot_store):
         result = json.loads(memory_tool(
@@ -358,6 +408,88 @@ class TestMemoryToolDemote:
         ))
         assert result["success"] is False
         assert "Multiple" in result["error"]
+
+    def test_demote_from_user_target_new_api(self, warm, hot_store):
+        """Preferred form: explicit target='user' arg picks the source
+        hot tier; category= sets the new warm fact's category."""
+        memory_tool(
+            action="add", target="user",
+            content="user-tier fact about preferences",
+            store=hot_store,
+        )
+        result = json.loads(memory_tool(
+            action="demote", old_text="preferences",
+            target="user", category="preferences",
+            store=hot_store,
+        ))
+        assert result["success"] is True
+        assert result["hot_target"] == "user"
+        assert result["warm_category"] == "preferences"
+        # Hot user entry gone, warm fact created with the right category
+        assert not any("preferences" in e for e in hot_store.user_entries)
+        recalled = json.loads(memory_tool(
+            action="recall", query="preferences", top_k=5,
+        ))
+        assert recalled["count"] >= 1
+        assert recalled["results"][0]["category"] == "preferences"
+
+    def test_demote_from_user_target_legacy_category_overload(self, warm, hot_store):
+        """Legacy form: category='user' overload still works for back-compat
+        (treated as source target, not new warm category)."""
+        memory_tool(
+            action="add", target="user",
+            content="user-tier legacy demote test",
+            store=hot_store,
+        )
+        result = json.loads(memory_tool(
+            action="demote", old_text="legacy demote",
+            category="user",  # legacy overload — means source target
+            store=hot_store,
+        ))
+        assert result["success"] is True
+        assert result["hot_target"] == "user"
+        # Legacy path drops the original category to 'general' since
+        # category= was hijacked for source target.
+        assert result["warm_category"] == "general"
+
+    def test_demote_target_wins_over_legacy_category(self, warm, hot_store):
+        """When both target= and legacy category='user' overload are set,
+        the explicit target arg must win and category= becomes the new
+        warm category as documented."""
+        memory_tool(
+            action="add", target="user",
+            content="conflict between target and category overload",
+            store=hot_store,
+        )
+        result = json.loads(memory_tool(
+            action="demote", old_text="conflict",
+            target="user", category="preferences",
+            store=hot_store,
+        ))
+        assert result["success"] is True
+        assert result["hot_target"] == "user"
+        # category= is now interpreted per its documented meaning, not
+        # as a source-target overload.
+        assert result["warm_category"] == "preferences"
+
+    def test_demote_preserves_explicit_category(self, warm, hot_store):
+        """category= on demote sets the new warm fact's category."""
+        memory_tool(
+            action="add", target="memory",
+            content="categorized demote test",
+            store=hot_store,
+        )
+        result = json.loads(memory_tool(
+            action="demote", old_text="categorized demote",
+            category="tooling",
+            store=hot_store,
+        ))
+        assert result["success"] is True
+        assert result["warm_category"] == "tooling"
+        recalled = json.loads(memory_tool(
+            action="recall", query="categorized demote",
+        ))
+        assert recalled["results"][0]["category"] == "tooling"
 
 
 class TestMemoryToolFeedback:

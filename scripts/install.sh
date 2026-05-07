@@ -1281,6 +1281,10 @@ setup_path() {
     # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
     # can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
+    # Older installs created this path as a symlink to $HERMES_BIN. Without
+    # the rm, `cat >` follows the symlink and overwrites the venv pip entry
+    # point with this shim — making `exec "$HERMES_BIN"` self-recurse. (#21454)
+    rm -f "$command_link_dir/hermes"
     cat > "$command_link_dir/hermes" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH

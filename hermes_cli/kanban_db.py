@@ -2503,6 +2503,91 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
+def specify_triage_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    author: Optional[str] = None,
+) -> bool:
+    """Flesh out a triage task and promote it to ``todo``.
+
+    Atomically updates ``title`` / ``body`` (when provided) and transitions
+    ``status: triage -> todo`` in a single write txn. Returns False when
+    the task is missing or not in the ``triage`` column — callers should
+    surface that as "nothing to specify" rather than an error.
+
+    ``todo`` (not ``ready``) is the correct landing column: ``recompute_ready``
+    promotes parent-free / parent-done todos to ``ready`` on the next
+    dispatcher tick, which keeps the normal parent-gating behaviour intact
+    for specified tasks that happen to have open parents.
+
+    ``author`` is recorded on an audit comment only when at least one of
+    ``title`` / ``body`` actually changed — avoids noisy comment spam for
+    status-only promotions.
+    """
+    if title is not None and not title.strip():
+        raise ValueError("title cannot be blank")
+    with write_txn(conn):
+        existing = conn.execute(
+            "SELECT title, body FROM tasks WHERE id = ? AND status = 'triage'",
+            (task_id,),
+        ).fetchone()
+        if existing is None:
+            return False
+        sets: list[str] = ["status = 'todo'"]
+        params: list[Any] = []
+        changed_fields: list[str] = []
+        if title is not None and title.strip() != (existing["title"] or ""):
+            sets.append("title = ?")
+            params.append(title.strip())
+            changed_fields.append("title")
+        if body is not None and (body or "") != (existing["body"] or ""):
+            sets.append("body = ?")
+            params.append(body)
+            changed_fields.append("body")
+        params.append(task_id)
+        cur = conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} "
+            f"WHERE id = ? AND status = 'triage'",
+            tuple(params),
+        )
+        if cur.rowcount != 1:
+            return False
+        if changed_fields and author and author.strip():
+            # Inline INSERT (rather than ``add_comment``) because we're
+            # already inside this function's write_txn — nested BEGIN
+            # IMMEDIATE would raise OperationalError. We also skip the
+            # 'commented' event that ``add_comment`` emits, since the
+            # 'specified' event below already records the change.
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    task_id,
+                    author.strip(),
+                    "Specified — updated "
+                    + ", ".join(changed_fields)
+                    + " and promoted to todo.",
+                    int(time.time()),
+                ),
+            )
+        _append_event(
+            conn,
+            task_id,
+            "specified",
+            {"changed_fields": changed_fields} if changed_fields else None,
+        )
+    # Outside the write_txn above, so we don't nest BEGIN IMMEDIATE — the
+    # ready-promotion pass opens its own IMMEDIATE txn. This runs the same
+    # logic the dispatcher would on its next tick, so a specified task
+    # with no open parents flips straight to 'ready' here instead of
+    # idling in 'todo' until the next sweep.
+    recompute_ready(conn)
+    return True
+
+
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(

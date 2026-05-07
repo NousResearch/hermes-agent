@@ -442,7 +442,7 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 ### What the plugin gives you
 
 - A **Kanban** tab showing one column per status: `triage`, `todo`, `ready`, `running`, `blocked`, `done` (plus `archived` when the toggle is on).
-  - `triage` is the parking column for rough ideas a specifier is expected to flesh out. Tasks created with `hermes kanban create --triage` (or via the Triage column's inline create) land here and the dispatcher leaves them alone until a human or specifier promotes them to `todo` / `ready`.
+  - `triage` is the parking column for rough ideas a specifier is expected to flesh out. Tasks created with `hermes kanban create --triage` (or via the Triage column's inline create) land here and the dispatcher leaves them alone until a human or specifier promotes them to `todo` / `ready`. Run `hermes kanban specify <id>` to have the auxiliary LLM expand a triage task into a concrete spec (title + body with goal, approach, acceptance criteria) and promote it to `todo` in one shot; `--all` sweeps every triage task at once. Configure which model runs the specifier under `auxiliary.triage_specifier` in `config.yaml`.
 - Cards show the task id, title, priority badge, tenant tag, assigned profile, comment/link counts, a **progress pill** (`N/M` children done when the task has dependents), and "created N ago". A per-card checkbox enables multi-select.
 - **Per-profile lanes inside Running** — toolbar checkbox toggles sub-grouping of the Running column by assignee.
 - **Live updates via WebSocket** — the plugin tails the append-only `task_events` table on a short poll interval; the board reflects changes the instant any profile (CLI, gateway, or another dashboard tab) acts. Reloads are debounced so a burst of events triggers a single refetch.
@@ -588,6 +588,8 @@ hermes kanban notify-list [<id>] [--json]
 hermes kanban notify-unsubscribe <id>
         --platform <name> --chat-id <id> [--thread-id <id>]
 hermes kanban context <id>                             # what a worker sees
+hermes kanban specify [<id> | --all] [--tenant T]      # flesh out a triage-column idea
+        [--author NAME] [--json]                       #   into a full spec and promote to todo
 hermes kanban gc [--event-retention-days N]            # workspaces + old events + old logs
         [--log-retention-days N]
 ```
@@ -658,7 +660,7 @@ The board supports these eight patterns without any new primitives:
 | **P6 `@mention`** | inline routing from prose | `@reviewer look at this` |
 | **P7 Thread-scoped workspace** | `/kanban here` in a thread | per-project gateway threads |
 | **P8 Fleet farming** | one profile, N subjects | 50 social accounts |
-| **P9 Triage specifier** | rough idea → `triage` → specifier expands body → `todo` | "turn this one-liner into a spec' task" |
+| **P9 Triage specifier** | rough idea → `triage` → `hermes kanban specify` expands body → `todo` | "turn this one-liner into a spec'd task" |
 
 For worked examples of each, see `docs/hermes-kanban-v1-spec.pdf`.
 

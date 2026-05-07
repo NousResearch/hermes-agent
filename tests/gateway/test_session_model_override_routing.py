@@ -126,6 +126,66 @@ def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
 
 
+def test_gateway_fallback_runtime_model_replaces_primary_model(monkeypatch):
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.5")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_key": "sk-fallback",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+            "model": "minimax/minimax-m2.7",
+        },
+    )
+
+    runner = _make_runner()
+
+    model, runtime_kwargs = runner._resolve_session_agent_runtime()
+
+    assert model == "minimax/minimax-m2.7"
+    assert runtime_kwargs["provider"] == "openrouter"
+    assert runtime_kwargs["api_key"] == "sk-fallback"
+    assert "model" not in runtime_kwargs
+
+
+def test_try_resolve_fallback_provider_carries_configured_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        """
+fallback_providers:
+  - provider: openrouter
+    model: minimax/minimax-m2.7
+    base_url: https://openrouter.ai/api/v1
+    api_key: sk-fallback
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    def _fake_resolve_runtime_provider(**kwargs):
+        assert kwargs["requested"] == "openrouter"
+        assert kwargs["explicit_base_url"] == "https://openrouter.ai/api/v1"
+        assert kwargs["explicit_api_key"] == "sk-fallback"
+        return {
+            "provider": "openrouter",
+            "api_key": "sk-fallback",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _fake_resolve_runtime_provider,
+    )
+
+    runtime_kwargs = gateway_run._try_resolve_fallback_provider()
+
+    assert runtime_kwargs is not None
+    assert runtime_kwargs["provider"] == "openrouter"
+    assert runtime_kwargs["model"] == "minimax/minimax-m2.7"
+
+
 @pytest.mark.asyncio
 async def test_background_task_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})

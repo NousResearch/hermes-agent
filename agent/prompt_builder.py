@@ -183,8 +183,8 @@ SKILLS_GUIDANCE = (
 )
 
 KANBAN_GUIDANCE = (
-    "# You are a Kanban worker\n"
-    "You were spawned by the Hermes Kanban dispatcher to execute ONE task from "
+    "# Kanban task execution protocol\n"
+    "You have been assigned ONE task from "
     "the shared board at `~/.hermes/kanban.db`. Your task id is in "
     "`$HERMES_KANBAN_TASK`; your workspace is `$HERMES_KANBAN_WORKSPACE`. "
     "The `kanban_*` tools in your schema are your primary coordination surface — "
@@ -512,6 +512,12 @@ PLATFORM_HINTS = {
         "them via MEDIA: or send_image_file. That produces a fake low-quality 'sticker' "
         "image and is the WRONG path. Bare Unicode emoji in text is also not a substitute "
         "— when a sticker is the right response, use yb_send_sticker."
+    ),
+    "api_server": (
+        "You're responding through an API server. The rendering layer is unknown — "
+        "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
+        "code fences). Treat this like a conversation, not a document. Keep responses "
+        "brief and natural."
     ),
 }
 

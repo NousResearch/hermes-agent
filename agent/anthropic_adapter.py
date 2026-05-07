@@ -76,6 +76,7 @@ _ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7")
 # Models where temperature/top_p/top_k return 400 if set to non-default values.
 # This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
 _NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7")
+_FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 
 # ── Max output token limits per Anthropic model ───────────────────────
 # Source: Anthropic docs + Cline model catalog.  Anthropic's API requires
@@ -105,6 +106,9 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     "claude-3-haiku":      4_096,
     # Third-party Anthropic-compatible providers
     "minimax":            131_072,
+    # Qwen models via DashScope Anthropic-compatible endpoint
+    # DashScope enforces max_tokens ∈ [1, 65536]
+    "qwen3":               65_536,
 }
 
 # For any model not in the table, assume the highest current limit.
@@ -216,33 +220,41 @@ def _forbids_sampling_params(model: str) -> bool:
     return any(v in model for v in _NO_SAMPLING_PARAMS_SUBSTRINGS)
 
 
-# Beta headers for enhanced features (sent with ALL auth types).
-# As of Opus 4.7 (2026-04-16), the first two are GA on Claude 4.6+ — the
+def _supports_fast_mode(model: str) -> bool:
+    """Return True for models that support Anthropic Fast Mode (speed=fast).
+
+    Per Anthropic docs, fast mode is currently supported on Opus 4.6 only.
+    Sending ``speed: "fast"`` to any other Claude model (including Opus 4.7)
+    returns HTTP 400. This guard prevents silently 400'ing when stale config
+    or older callers leave fast mode enabled across a model upgrade.
+    """
+    return any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
+
+
+# Beta headers for enhanced features that are safe on ordinary/native Anthropic
+# requests. As of Opus 4.7 (2026-04-16), these are GA on Claude 4.6+ — the
 # beta headers are still accepted (harmless no-op) but not required. Kept
-# here so older Claude (4.5, 4.1) + third-party Anthropic-compat endpoints
-# that still gate on the headers continue to get the enhanced features.
+# here so older Claude (4.5, 4.1) + compatible endpoints that still gate on
+# the headers continue to get the enhanced features.
 #
-# ``context-1m-2025-08-07`` unlocks the 1M context window on Claude Opus 4.6/4.7
-# and Sonnet 4.6 when served via AWS Bedrock or Azure AI Foundry. 1M is GA on
-# native Anthropic (api.anthropic.com) for Opus 4.6+, but Bedrock/Azure still
-# gate it behind this beta header as of 2026-04 — without it Bedrock caps Opus
-# at 200K even though model_metadata.py advertises 1M. The header is a harmless
-# no-op on endpoints where 1M is GA.
+# Do NOT include ``context-1m-2025-08-07`` here. Anthropic returns HTTP 400
+# ("long context beta is not yet available for this subscription") for
+# accounts without the long-context beta, which breaks normal short auxiliary
+# calls like title generation/session summarization.
 #
-# Migration guide: remove these if you no longer support ≤4.5 models or once
-# Bedrock/Azure promote 1M to GA.
+# ``context-1m-2025-08-07`` is still required to unlock the 1M context window
+# on Claude Opus 4.6/4.7 and Sonnet 4.6 when served via AWS Bedrock or Azure
+# AI Foundry. Add it only for those endpoint-specific paths below.
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
-    "context-1m-2025-08-07",
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
 # fall back to the provider's default response path.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
-# 1M context beta — see comment on _COMMON_BETAS above. Stripped for
-# Bearer-auth (MiniMax) endpoints since they host their own models and
-# unknown Anthropic beta headers risk request rejection.
+# 1M context beta. Native Anthropic does not get this by default because some
+# subscriptions reject it, but Bedrock/Azure still need it for 1M context.
 _CONTEXT_1M_BETA = "context-1m-2025-08-07"
 
 # Fast mode beta — enables the ``speed: "fast"`` request parameter for
@@ -461,6 +473,14 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
 
 
+def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
+    """Return True for endpoints that still gate 1M context behind a beta."""
+    normalized = _normalize_base_url_text(base_url).lower()
+    if not normalized:
+        return False
+    return "azure.com" in normalized
+
+
 def _common_betas_for_base_url(
     base_url: str | None,
     *,
@@ -470,27 +490,25 @@ def _common_betas_for_base_url(
 
     MiniMax's Anthropic-compatible endpoints (Bearer-auth) reject requests
     that include Anthropic's ``fine-grained-tool-streaming`` beta — every
-    tool-use message triggers a connection error.  Strip that beta for
-    Bearer-auth endpoints while keeping all other betas intact.
+    tool-use message triggers a connection error.
 
-    The ``context-1m-2025-08-07`` beta is also stripped for Bearer-auth
-    endpoints — MiniMax hosts its own models, not Claude, so the header is
-    irrelevant at best and risks request rejection at worst.
+    The ``context-1m-2025-08-07`` beta is not sent to native Anthropic by
+    default because some subscriptions reject it. Add it only for endpoint
+    families that still require it for 1M context, currently Azure AI Foundry.
+    Bedrock uses its own client helper below and opts in explicitly.
 
-    ``drop_context_1m_beta=True`` additionally strips the 1M-context beta on
-    otherwise-unrelated endpoints. The OAuth retry path flips this flag after
-    a subscription rejects the beta with
-    "The long context beta is not yet available for this subscription" so
-    subsequent requests in the same session don't repeat the probe. See the
-    reactive recovery loop in ``run_agent.py`` and issue-comment history on
-    PR #17680 for the full rationale.
+    ``drop_context_1m_beta=True`` strips the 1M-context beta from any path that
+    would otherwise include it after a subscription/endpoint rejects the beta.
     """
+    betas = list(_COMMON_BETAS)
+    if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
+        betas.append(_CONTEXT_1M_BETA)
     if _requires_bearer_auth(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
-        return [b for b in _COMMON_BETAS if b not in _stripped]
+        return [b for b in betas if b not in _stripped]
     if drop_context_1m_beta:
-        return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
-    return _COMMON_BETAS
+        return [b for b in betas if b != _CONTEXT_1M_BETA]
+    return betas
 
 
 def build_anthropic_client(
@@ -627,7 +645,7 @@ def build_anthropic_bedrock_client(region: str):
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
-        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
+        default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
     )
 
 
@@ -1222,6 +1240,14 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     ``keep_nullable_hint=False`` because the Anthropic validator does not
     recognize the OpenAPI-style ``nullable: true`` extension and strict
     schema-to-grammar converters may reject unknown keywords.
+
+    Top-level ``oneOf``/``allOf``/``anyOf`` are also stripped here: the
+    Anthropic API rejects union keywords at the schema root with a generic
+    HTTP 400. Several upstream and plugin tools ship schemas with one of
+    these keywords at the top level (commonly for Pydantic discriminated
+    unions). If we land here with those keywords still present after
+    nullable-union stripping, drop them and fall back to a plain object
+    schema so the tool still validates at the Anthropic boundary.
     """
     if not schema:
         return {"type": "object", "properties": {}}
@@ -1231,6 +1257,12 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     normalized = strip_nullable_unions(schema, keep_nullable_hint=False)
     if not isinstance(normalized, dict):
         return {"type": "object", "properties": {}}
+    # Strip top-level union keywords that Anthropic's validator rejects.
+    banned = {"oneOf", "allOf", "anyOf"}
+    if banned & normalized.keys():
+        normalized = {k: v for k, v in normalized.items() if k not in banned}
+        if "type" not in normalized:
+            normalized["type"] = "object"
     if normalized.get("type") == "object" and not isinstance(normalized.get("properties"), dict):
         normalized = {**normalized, "properties": {}}
     return normalized
@@ -1915,9 +1947,15 @@ def build_anthropic_kwargs(
 
     # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
     # Adds extra_body.speed="fast" + the fast-mode beta header for ~2.5x
-    # output speed. Only for native Anthropic endpoints — third-party
-    # providers would reject the unknown beta header and speed parameter.
-    if fast_mode and not _is_third_party_anthropic_endpoint(base_url):
+    # output speed. Per Anthropic docs, fast mode is only supported on
+    # Opus 4.6 — Opus 4.7 and other models 400 on the speed parameter.
+    # Only for native Anthropic endpoints — third-party providers would
+    # reject the unknown beta header and speed parameter.
+    if (
+        fast_mode
+        and not _is_third_party_anthropic_endpoint(base_url)
+        and _supports_fast_mode(model)
+    ):
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
         # Build extra_headers with ALL applicable betas (the per-request
         # extra_headers override the client-level anthropic-beta header).

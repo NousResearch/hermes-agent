@@ -231,6 +231,55 @@ class TestSlackConnectCleanup:
         mock_release.assert_called_once_with("slack-app-token", "xapp-fake")
         assert adapter._platform_lock_identity is None
 
+    @pytest.mark.asyncio
+    async def test_reconnect_closes_previous_handler_to_prevent_zombie_socket(self):
+        """Regression for #18980: calling connect() on an adapter that already has
+        a live handler (e.g. during a gateway restart) must close the old
+        AsyncSocketModeHandler before creating a new one.  Without this guard,
+        the old Socket Mode websocket stays alive and both connections dispatch
+        every Slack event, producing double responses — the same bug that
+        affected DiscordAdapter (#18187).
+        """
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        # Simulate state left over from a prior connect() call.
+        first_handler = AsyncMock()
+        first_handler.close_async = AsyncMock()
+        adapter._handler = first_handler
+
+        mock_app = MagicMock()
+        def _noop_decorator(event_type):
+            def decorator(fn): return fn
+            return decorator
+        mock_app.event = _noop_decorator
+        mock_app.command = _noop_decorator
+        mock_app.action = _noop_decorator
+        mock_app.client = AsyncMock()
+
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(return_value={
+            "user_id": "U_BOT",
+            "user": "testbot",
+            "team_id": "T_FAKE",
+            "team": "FakeTeam",
+        })
+
+        second_handler = MagicMock()
+
+        with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
+             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=second_handler), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock"), \
+             patch("asyncio.create_task"):
+            result = await adapter.connect()
+
+        assert result is True
+        first_handler.close_async.assert_awaited_once_with()
+        assert adapter._handler is second_handler
+
 
 # ---------------------------------------------------------------------------
 # TestSlackProxyBehavior

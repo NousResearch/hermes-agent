@@ -220,6 +220,81 @@ def test_classify_handles_malformed_arguments_string(curator_env):
     assert len(result["pruned"]) == 1
 
 
+def test_classify_no_false_positive_short_name_in_file_path(curator_env):
+    """Short skill name that is a substring of another filename = pruned, not consolidated."""
+    # e.g. "api" should NOT match "references/api-design.md"
+    result = curator_env._classify_removed_skills(
+        removed=["api"],
+        added=[],
+        after_names={"conventions"},
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "write_file",
+                    "name": "conventions",
+                    "file_path": "references/api-design.md",
+                    "file_content": "# API Design\n...",
+                }),
+            },
+        ],
+    )
+    assert result["consolidated"] == [], (
+        f"Short name 'api' should NOT match file_path 'references/api-design.md'"
+    )
+    assert len(result["pruned"]) == 1
+    assert result["pruned"][0]["name"] == "api"
+
+
+def test_classify_no_false_positive_short_name_in_content(curator_env):
+    """Short skill name embedded in longer word in content = pruned, not consolidated."""
+    # e.g. "test" should NOT match content "running latest tests"
+    result = curator_env._classify_removed_skills(
+        removed=["test"],
+        added=[],
+        after_names={"umbrella"},
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "patch",
+                    "name": "umbrella",
+                    "old_string": "old",
+                    "new_string": "running latest tests with pytest",
+                }),
+            },
+        ],
+    )
+    assert result["consolidated"] == [], (
+        f"Short name 'test' should NOT match 'latest' via word boundary"
+    )
+    assert len(result["pruned"]) == 1
+
+
+def test_classify_still_matches_exact_word_in_content(curator_env):
+    """Word-boundary match still works for exact word occurrences."""
+    # "api" SHOULD match content "use the api gateway"
+    result = curator_env._classify_removed_skills(
+        removed=["api"],
+        added=[],
+        after_names={"gateway"},
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "action": "edit",
+                    "name": "gateway",
+                    "content": "# Gateway\n\nUse the api gateway for all requests.\n",
+                }),
+            },
+        ],
+    )
+    assert len(result["consolidated"]) == 1, (
+        f"'api' should match as a standalone word in content"
+    )
+    assert result["consolidated"][0]["into"] == "gateway"
+
+
 def test_report_md_splits_consolidated_and_pruned_sections(curator_env):
     """End-to-end: REPORT.md shows both sections distinctly."""
     curator = curator_env

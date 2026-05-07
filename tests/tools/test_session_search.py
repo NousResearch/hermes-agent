@@ -498,3 +498,65 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_source_from_resolved_parent_not_fts5_child(self):
+        """source in output must reflect the resolved parent session, not the child that matched FTS5.
+
+        Regression test for #15909: when a delegation child session (source='telegram')
+        resolves to a parent (source='api_server'), the result entry must report
+        'api_server', not 'telegram'.
+        """
+        from unittest.mock import MagicMock, AsyncMock, patch as _patch
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        # FTS5 hit is in the child delegation session which carries source='telegram'
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "child_sid",
+                "content": "hello world",
+                "source": "telegram",       # child session source — wrong value to surface
+                "session_started": 1709400000,
+                "model": "gpt-4o-mini",
+            },
+        ]
+
+        def _get_session(session_id):
+            if session_id == "child_sid":
+                return {
+                    "id": "child_sid",
+                    "parent_session_id": "parent_sid",
+                    "source": "telegram",
+                    "started_at": 1709400000,
+                    "model": "gpt-4o-mini",
+                }
+            if session_id == "parent_sid":
+                return {
+                    "id": "parent_sid",
+                    "parent_session_id": None,
+                    "source": "api_server",  # correct parent source
+                    "started_at": 1709300000,
+                    "model": "gpt-4o-mini",
+                }
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "hello world"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        with _patch(
+            "tools.session_search_tool.async_call_llm",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("no provider"),
+        ):
+            result = json.loads(session_search(query="hello world", db=mock_db))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        entry = result["results"][0]
+        assert entry["session_id"] == "parent_sid", "should report resolved parent session ID"
+        assert entry["source"] == "api_server", (
+            f"source should be parent's 'api_server', got {entry['source']!r}"
+        )

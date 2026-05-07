@@ -16,34 +16,36 @@ on:
 permissions:
   contents: read
 
+# Do not cancel in-flight builds when a newer push lands. Each commit should
+# still publish its own immutable SHA tag; floating tags are moved later in a
+# serialized job.
 concurrency:
   group: docker-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-and-push:
-    # Only run on the upstream repository, not on forks
     if: github.repository == 'ashneil12/vanilla-hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
       packages: write
-
+    outputs:
+      pushed_sha_tag: ${{ steps.mark_pushed.outputs.pushed }}
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           submodules: recursive
+          fetch-depth: 1000
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
-      # Build amd64 only so we can `load` the image for smoke testing.
-      # `load: true` cannot export a multi-arch manifest to the local daemon.
-      # The multi-arch build follows on push to main / release.
       - name: Build image (amd64, smoke test)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
@@ -57,18 +59,21 @@ jobs:
 
       - name: Test image starts
         run: |
-          # The image runs as the hermes user (UID 10000).  GitHub Actions
-          # creates /tmp/hermes-test root-owned by default, which hermes
-          # can't write to — chown it to match the in-container UID before
-          # bind-mounting.  Real users doing `docker run -v ~/.hermes:...`
-          # with their own UID hit the same issue and have their own
-          # remediations (HERMES_UID env var, or chown locally).
           mkdir -p /tmp/hermes-test
           sudo chown -R 10000:10000 /tmp/hermes-test
           docker run --rm \
             -v /tmp/hermes-test:/opt/data \
             --entrypoint /opt/hermes/docker/entrypoint.sh \
             ghcr.io/ashneil12/vanilla-hermes-agent:test --help
+
+      - name: Test dashboard subcommand
+        run: |
+          mkdir -p /tmp/hermes-test
+          sudo chown -R 10000:10000 /tmp/hermes-test
+          docker run --rm \
+            -v /tmp/hermes-test:/opt/data \
+            --entrypoint /opt/hermes/docker/entrypoint.sh \
+            ghcr.io/ashneil12/vanilla-hermes-agent:test dashboard --help
 
       - name: Log in to GitHub Container Registry
         if: >-
@@ -80,7 +85,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push multi-arch image (main branch)
+      # Push an immutable per-commit SHA tag first. Floating tags move in the
+      # follow-up job after an ancestor check, which prevents stale runs from
+      # clobbering :latest or :stable.
+      - name: Push multi-arch image with SHA tag (main branch)
+        id: push_sha
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
@@ -89,15 +98,16 @@ jobs:
           push: true
           provenance: false
           platforms: linux/amd64,linux/arm64
-          # :stable is the floating tag the Hermesdeploy dashboard pulls from —
-          # both the manual "Update" button and the daily auto-update timer
-          # reference :stable, so every push to main needs to move it.
-          tags: |
-            ghcr.io/ashneil12/vanilla-hermes-agent:latest
-            ghcr.io/ashneil12/vanilla-hermes-agent:stable
-            ghcr.io/ashneil12/vanilla-hermes-agent:${{ github.sha }}
+          tags: ghcr.io/ashneil12/vanilla-hermes-agent:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Mark SHA tag pushed
+        id: mark_pushed
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: Push multi-arch image (release)
         if: github.event_name == 'release'
@@ -110,7 +120,109 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/ashneil12/vanilla-hermes-agent:latest
+            ghcr.io/ashneil12/vanilla-hermes-agent:stable
             ghcr.io/ashneil12/vanilla-hermes-agent:${{ github.event.release.tag_name }}
             ghcr.io/ashneil12/vanilla-hermes-agent:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  move-floating-tags:
+    if: |
+      github.repository == 'ashneil12/vanilla-hermes-agent'
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && needs.build-and-push.outputs.pushed_sha_tag == 'true'
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: docker-move-floating-tags-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 1000
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide whether to move floating tags
+        id: latest_check
+        run: |
+          set -euo pipefail
+          image=ghcr.io/ashneil12/vanilla-hermes-agent
+
+          image_json=$(
+            docker buildx imagetools inspect "${image}:latest" \
+              --format '{{ json (index .Image "linux/amd64") }}' \
+              2>/dev/null || true
+          )
+
+          if [ -z "${image_json}" ]; then
+            echo "No existing :latest (or inspect failed) — safe to publish."
+            echo "push_floating=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          current_sha=$(
+            printf '%s' "${image_json}" \
+              | jq -r '.config.Labels."org.opencontainers.image.revision" // ""'
+          )
+
+          if [ -z "${current_sha}" ]; then
+            echo "Registry :latest has no revision label — safe to publish."
+            echo "push_floating=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Registry :latest is at ${current_sha}"
+          echo "This run is at      ${GITHUB_SHA}"
+
+          if [ "${current_sha}" = "${GITHUB_SHA}" ]; then
+            echo ":latest already points at our SHA — nothing to do."
+            echo "push_floating=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git cat-file -e "${current_sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --prune origin \
+              "+refs/heads/main:refs/remotes/origin/main" \
+              || true
+          fi
+
+          if ! git cat-file -e "${current_sha}^{commit}" 2>/dev/null; then
+            echo "Registry :latest points at an unknown commit (${current_sha}); refusing to overwrite."
+            echo "push_floating=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor "${current_sha}" "${GITHUB_SHA}"; then
+            echo "Our commit is a descendant of :latest — safe to advance."
+            echo "push_floating=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Another run advanced :latest past us (or diverged) — leaving it alone."
+            echo "push_floating=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Move :latest and :stable to this SHA
+        if: steps.latest_check.outputs.push_floating == 'true'
+        run: |
+          set -euo pipefail
+          image=ghcr.io/ashneil12/vanilla-hermes-agent
+          docker buildx imagetools create \
+            --tag "${image}:latest" \
+            --tag "${image}:stable" \
+            "${image}:${GITHUB_SHA}"

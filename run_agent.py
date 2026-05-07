@@ -4297,6 +4297,7 @@ class AIAgent:
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
                         enabled_toolsets=["memory", "skills"],
+                        skip_memory=True,
                     )
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"

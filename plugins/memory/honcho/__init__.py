@@ -281,10 +281,12 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         try:
             # ----- Port #4053: cron guard -----
+            # Also covers background_review and subagent contexts to prevent
+            # non-user-facing agents from polluting peer representations.
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
-            if agent_context in ("cron", "flush") or platform == "cron":
-                logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
+            if agent_context in ("cron", "flush", "background_review", "subagent") or platform == "cron":
+                logger.debug("Honcho skipped: non-primary context (agent_context=%s, platform=%s)",
                              agent_context, platform)
                 self._cron_skipped = True
                 return

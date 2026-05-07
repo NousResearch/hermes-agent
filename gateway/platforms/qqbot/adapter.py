@@ -119,6 +119,11 @@ from gateway.platforms.qqbot.utils import (
     coerce_list as _coerce_list_impl,
     build_user_agent,
 )
+from gateway.platforms.qqbot.chunked_upload import (
+    ChunkedUploader,
+    UploadDailyLimitExceededError,
+    UploadFileTooLargeError,
+)
 
 
 def check_qq_requirements() -> bool:
@@ -2160,42 +2165,62 @@ class QQAdapter(BasePlatformAdapter):
             reply_to: Optional[str] = None,
             file_name: Optional[str] = None,
     ) -> SendResult:
-        """Upload media and send as a native message."""
+        """Upload media and send as a native message.
+
+        Upload strategy:
+
+        - **HTTP(S) URLs** → single ``POST /v2/{users|groups}/{id}/files``
+          with ``url=...``. The QQ platform fetches the URL directly; fastest
+          path when the source is already hosted.
+        - **Local files** → three-step chunked upload (prepare / PUT parts /
+          complete). Handles files up to the platform's ~100 MB per-file
+          limit without the ~10 MB inline-base64 cap of the old adapter.
+        """
         if not self.is_connected:
             if not await self._wait_for_reconnection():
                 return SendResult(success=False, error="Not connected", retryable=True)
 
-        try:
-            # Resolve media source
-            data, content_type, resolved_name = await self._load_media(
-                media_source, file_name
+        chat_type = self._guess_chat_type(chat_id)
+        if chat_type == "guild":
+            # Guild channels don't support native media upload in the same way.
+            return SendResult(
+                success=False,
+                error="Guild media send not supported via this path",
             )
 
-            # Route
-            chat_type = self._guess_chat_type(chat_id)
-
-            if chat_type == "guild":
-                # Guild channels don't support native media upload in the same way
-                # Send as URL fallback
-                return SendResult(
-                    success=False, error="Guild media send not supported via this path"
+        try:
+            if self._is_url(media_source):
+                # URL upload — let the platform fetch it directly.
+                resolved_name = (
+                    file_name
+                    or Path(urlparse(media_source).path).name
+                    or "media"
+                )
+                upload = await self._upload_media(
+                    chat_type,
+                    chat_id,
+                    file_type,
+                    url=media_source,
+                    srv_send_msg=False,
+                    file_name=resolved_name if file_type == MEDIA_TYPE_FILE else None,
+                )
+            else:
+                # Local file — chunked upload (prepare / PUT parts / complete).
+                resolved_name, upload = await self._upload_local_file(
+                    chat_type,
+                    chat_id,
+                    media_source,
+                    file_type,
+                    file_name,
                 )
 
-            # Upload
-            upload = await self._upload_media(
-                chat_type,
-                chat_id,
-                file_type,
-                file_data=data if not self._is_url(media_source) else None,
-                url=media_source if self._is_url(media_source) else None,
-                srv_send_msg=False,
-                file_name=resolved_name if file_type == MEDIA_TYPE_FILE else None,
-            )
-
-            file_info = upload.get("file_info")
+            file_info = upload.get("file_info") or (
+                upload.get("data", {}) or {}
+            ).get("file_info")
             if not file_info:
                 return SendResult(
-                    success=False, error=f"Upload returned no file_info: {upload}"
+                    success=False,
+                    error=f"Upload returned no file_info: {upload}",
                 )
 
             # Send media message
@@ -2224,9 +2249,85 @@ class QQAdapter(BasePlatformAdapter):
                 message_id=str(send_data.get("id", uuid.uuid4().hex[:12])),
                 raw_response=send_data,
             )
+        except UploadDailyLimitExceededError as exc:
+            # Non-retryable: daily quota hit. Give the caller actionable text
+            # so the model can compose a helpful reply.
+            logger.warning(
+                "[%s] Daily upload limit exceeded for %s (%s)",
+                self._log_tag, exc.file_name, exc.file_size_human,
+            )
+            return SendResult(
+                success=False,
+                error=(
+                    f"QQ daily upload limit exceeded for {exc.file_name!r} "
+                    f"({exc.file_size_human}). Retry tomorrow."
+                ),
+                retryable=False,
+            )
+        except UploadFileTooLargeError as exc:
+            logger.warning(
+                "[%s] File too large: %s (%s, platform limit %s)",
+                self._log_tag, exc.file_name, exc.file_size_human, exc.limit_human,
+            )
+            return SendResult(
+                success=False,
+                error=(
+                    f"{exc.file_name!r} ({exc.file_size_human}) exceeds the "
+                    f"QQ per-file upload limit ({exc.limit_human})."
+                ),
+                retryable=False,
+            )
         except Exception as exc:
             logger.error("[%s] Media send failed: %s", self._log_tag, exc)
             return SendResult(success=False, error=str(exc))
+
+    async def _upload_local_file(
+            self,
+            chat_type: str,
+            chat_id: str,
+            media_source: str,
+            file_type: int,
+            file_name: Optional[str],
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Chunked-upload a local file and return ``(resolved_name, complete_response)``.
+
+        The returned ``complete_response`` contains the ``file_info`` token
+        that goes into the subsequent RichMedia message body.
+
+        :raises UploadDailyLimitExceededError: On biz_code 40093002.
+        :raises UploadFileTooLargeError: When the file exceeds the platform limit.
+        :raises FileNotFoundError: If the path does not exist.
+        :raises ValueError: If the path looks like a placeholder (``<path>``).
+        :raises RuntimeError: If the HTTP client is not initialized.
+        """
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized — not connected?")
+
+        local_path = Path(media_source).expanduser()
+        if not local_path.is_absolute():
+            local_path = (Path.cwd() / local_path).resolve()
+
+        if not local_path.exists() or not local_path.is_file():
+            if media_source.startswith("<") or len(media_source) < 3:
+                raise ValueError(
+                    f"Invalid media source (looks like a placeholder): {media_source!r}"
+                )
+            raise FileNotFoundError(f"Media file not found: {local_path}")
+
+        resolved_name = file_name or local_path.name
+        uploader = ChunkedUploader(
+            api_request=self._api_request,
+            http_put=self._http_client.put,
+            log_tag=self._log_tag,
+        )
+        complete = await uploader.upload(
+            chat_type=chat_type,
+            target_id=chat_id,
+            file_path=str(local_path),
+            file_type=file_type,
+            file_name=resolved_name,
+        )
+        return resolved_name, complete
 
     async def _load_media(
             self, source: str, file_name: Optional[str] = None

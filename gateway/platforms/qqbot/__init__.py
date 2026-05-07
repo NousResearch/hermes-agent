@@ -34,6 +34,13 @@ from .crypto import decrypt_secret, generate_bind_key  # noqa: F401
 # -- Utils -----------------------------------------------------------------
 from .utils import build_user_agent, get_api_headers, coerce_list  # noqa: F401
 
+# -- Chunked upload --------------------------------------------------------
+from .chunked_upload import (  # noqa: F401
+    ChunkedUploader,
+    UploadDailyLimitExceededError,
+    UploadFileTooLargeError,
+)
+
 __all__ = [
     # adapter
     "QQAdapter",
@@ -52,4 +59,8 @@ __all__ = [
     "build_user_agent",
     "get_api_headers",
     "coerce_list",
+    # chunked upload
+    "ChunkedUploader",
+    "UploadDailyLimitExceededError",
+    "UploadFileTooLargeError",
 ]

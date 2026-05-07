@@ -891,6 +891,32 @@
   display: flex;
   justify-content: flex-end;
   padding: 0 0.25rem;
+  gap: 0.5rem;
+  align-items: center;
+}
+.hermes-kanban-docs-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-muted-foreground, rgba(180, 180, 200, 0.8));
+  background: var(--color-card-subtle, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
+  text-decoration: none;
+  cursor: help;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.hermes-kanban-docs-link:hover,
+.hermes-kanban-docs-link:focus-visible {
+  color: var(--color-foreground, #e7e7ee);
+  background: var(--color-card, rgba(255, 255, 255, 0.08));
+  border-color: var(--color-border, rgba(160, 160, 190, 0.45));
+  outline: none;
 }
 .hermes-kanban-dialog-backdrop {
   position: fixed;

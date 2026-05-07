@@ -1399,6 +1399,18 @@ class MCPServerTask:
                 # still detect a transient in-flight state — it'll be
                 # re-set after the fresh session initializes.
                 continue
+            except asyncio.CancelledError:
+                # Task was cancelled (shutdown, gateway restart, explicit
+                # task.cancel()). Don't treat this as a connection failure —
+                # CancelledError inherits from BaseException (not Exception)
+                # in Python 3.11+, so the broad ``except Exception`` below
+                # would NOT catch it; we'd silently exit the reconnect loop
+                # and the MCP server would stay dead until Hermes is fully
+                # restarted. Re-raise so the task's cancellation propagates
+                # correctly to asyncio's task machinery and ``shutdown()``'s
+                # ``await self._task`` completes. See #9930.
+                self.session = None
+                raise
             except Exception as exc:
                 self.session = None
 

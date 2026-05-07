@@ -218,6 +218,8 @@ def _check_disk_usage_warning():
 # session's cached sudo password inside the same long-lived process.
 _sudo_password_cache: dict[str, str] = {}
 _sudo_password_cache_lock = threading.Lock()
+_SUDO_CACHE_TTL_SECONDS = 300  # 5 min TTL for cached sudo passwords
+_sudo_password_cache_timestamps: dict[str, float] = {}  # scope -> timestamp
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
@@ -285,9 +287,18 @@ def _get_sudo_password_cache_scope() -> str:
 
 
 def _get_cached_sudo_password() -> str:
-    """Return the cached sudo password for the current scope."""
+    """Return the cached sudo password for the current scope.
+
+    If the cached entry has exceeded the TTL, it is evicted and an empty
+    string is returned so the caller will re-prompt.
+    """
     scope = _get_sudo_password_cache_scope()
     with _sudo_password_cache_lock:
+        ts = _sudo_password_cache_timestamps.get(scope, 0.0)
+        if scope in _sudo_password_cache and (time.time() - ts) > _SUDO_CACHE_TTL_SECONDS:
+            _sudo_password_cache.pop(scope, None)
+            _sudo_password_cache_timestamps.pop(scope, None)
+            return ""
         return _sudo_password_cache.get(scope, "")
 
 
@@ -297,8 +308,10 @@ def _set_cached_sudo_password(password: str) -> None:
     with _sudo_password_cache_lock:
         if password:
             _sudo_password_cache[scope] = password
+            _sudo_password_cache_timestamps[scope] = time.time()
         else:
             _sudo_password_cache.pop(scope, None)
+            _sudo_password_cache_timestamps.pop(scope, None)
 
 
 def _reset_cached_sudo_passwords() -> None:
@@ -308,6 +321,7 @@ def _reset_cached_sudo_passwords() -> None:
     """
     with _sudo_password_cache_lock:
         _sudo_password_cache.clear()
+        _sudo_password_cache_timestamps.clear()
 
 # =============================================================================
 # Dangerous Command Approval System

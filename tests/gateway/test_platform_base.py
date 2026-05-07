@@ -365,6 +365,16 @@ class TestShouldSendMediaAsAudio:
         assert should_send_media_as_audio("telegram", ".ogg") is False
         assert should_send_media_as_audio("telegram", ".opus") is False
 
+    def test_bale_matches_telegram_audio_rules(self):
+        from gateway.platforms.base import should_send_media_as_audio
+
+        assert should_send_media_as_audio("bale", ".mp3") is True
+        assert should_send_media_as_audio("bale", ".m4a") is True
+        assert should_send_media_as_audio("bale", ".wav") is False
+        assert should_send_media_as_audio("bale", ".flac") is False
+        assert should_send_media_as_audio("bale", ".ogg", is_voice=True) is True
+        assert should_send_media_as_audio("bale", ".opus") is False
+
     def test_accepts_platform_enum(self):
         from gateway.config import Platform
         from gateway.platforms.base import should_send_media_as_audio

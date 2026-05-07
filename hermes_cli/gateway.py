@@ -2807,6 +2807,26 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "bale",
+        "label": "Bale",
+        "emoji": "📱",
+        "token_var": "BALE_BOT_TOKEN",
+        "setup_instructions": [
+            "1. Create a Bale bot and copy its bot token",
+            "2. Find your Bale numeric user ID / chat ID",
+            "3. Paste the token below and optionally preconfigure a home chat",
+        ],
+        "vars": [
+            {"name": "BALE_BOT_TOKEN", "prompt": "Bot token", "password": True,
+             "help": "Paste the Bale bot token."},
+            {"name": "BALE_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Numeric Bale user IDs allowed to talk to the bot."},
+            {"name": "BALE_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
+             "help": "For DMs, this is usually your numeric Bale user ID. You can set it later via /set-home."},
+        ],
+    },
+    {
         "key": "discord",
         "label": "Discord",
         "emoji": "💬",

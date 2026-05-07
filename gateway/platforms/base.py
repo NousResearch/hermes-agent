@@ -56,7 +56,7 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     normalized_ext = (ext or "").lower()
     if normalized_ext not in _AUDIO_EXTS:
         return False
-    if _platform_name(platform) == "telegram":
+    if _platform_name(platform) in {"telegram", "bale"}:
         if normalized_ext in _TELEGRAM_VOICE_EXTS:
             return is_voice
         return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS

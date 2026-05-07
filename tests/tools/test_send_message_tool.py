@@ -483,7 +483,7 @@ class TestSendToPlatformChunking:
 
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, **kwargs):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
@@ -673,6 +673,33 @@ class TestSendTelegramHtmlDetection:
         kwargs = bot.send_message.await_args.kwargs
         assert kwargs["disable_web_page_preview"] is True
 
+    def test_custom_base_url_is_normalized_for_bale(self, monkeypatch):
+        bot = self._make_bot()
+        captured = {}
+
+        def _bot_factory(**kwargs):
+            captured.update(kwargs)
+            return bot
+
+        parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
+        constants_mod = SimpleNamespace(ParseMode=parse_mode)
+        telegram_mod = SimpleNamespace(Bot=_bot_factory, constants=constants_mod)
+        monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
+        monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
+
+        asyncio.run(
+            _send_telegram(
+                "tok",
+                "123",
+                "hello",
+                base_url="https://tapi.bale.ai",
+                platform_name="bale",
+            )
+        )
+
+        assert captured["base_url"] == "https://tapi.bale.ai/bot"
+        assert captured["base_file_url"] == "https://tapi.bale.ai/file/bot"
+
     def test_html_with_code_and_pre_tags(self, monkeypatch):
         bot = self._make_bot()
         _install_telegram_mock(monkeypatch, bot)
@@ -782,6 +809,30 @@ class TestParseTargetRefDiscord:
         assert chat_id == "123456"
         assert thread_id == "789"
         assert is_explicit is True
+
+
+class TestParseTargetRefTelegramLike:
+    def test_bale_topic_target_matches_telegram_format(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("bale", "-1001234567890:17585")
+        assert chat_id == "-1001234567890"
+        assert thread_id == "17585"
+        assert is_explicit is True
+
+
+class TestSendToPlatformBale:
+    def test_bale_uses_default_bot_api_root_for_one_shot_send(self):
+        pconfig = SimpleNamespace(token="bale-token", extra={})
+
+        with patch("tools.send_message_tool._send_telegram", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = asyncio.run(
+                _send_to_platform(Platform.BALE, pconfig, "12345", "hello")
+            )
+
+        assert result["success"] is True
+        assert send_mock.await_count == 1
+        kwargs = send_mock.await_args.kwargs
+        assert kwargs["platform_name"] == "bale"
+        assert kwargs["base_url"] == "https://tapi.bale.ai"
 
 
 class TestParseTargetRefMatrix:

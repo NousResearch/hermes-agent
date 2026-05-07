@@ -622,3 +622,92 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestBaleEnvOverrides:
+    def test_apply_env_overrides_enables_bale_and_sets_base_urls(self):
+        config = GatewayConfig()
+
+        with patch.dict(
+            os.environ,
+            {
+                "BALE_BOT_TOKEN": "bale-token",
+                "BALE_REPLY_TO_MODE": "all",
+                "BALE_BASE_URL": "https://tapi.bale.ai",
+                "BALE_BASE_FILE_URL": "https://tapi.bale.ai/file",
+                "BALE_HOME_CHANNEL": "987654321",
+                "BALE_HOME_CHANNEL_NAME": "Bale Home",
+                "BALE_HOME_CHANNEL_THREAD_ID": "42",
+            },
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        assert Platform.BALE in config.platforms
+        bale = config.platforms[Platform.BALE]
+        assert bale.enabled is True
+        assert bale.token == "bale-token"
+        assert bale.reply_to_mode == "all"
+        assert bale.extra["base_url"] == "https://tapi.bale.ai"
+        assert bale.extra["base_file_url"] == "https://tapi.bale.ai/file"
+        assert bale.home_channel is not None
+        assert bale.home_channel.platform == Platform.BALE
+        assert bale.home_channel.chat_id == "987654321"
+        assert bale.home_channel.name == "Bale Home"
+        assert bale.home_channel.thread_id == "42"
+
+    def test_load_gateway_config_bridges_bale_yaml_settings(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "require_mention: true\n"
+            "bale:\n"
+            "  mention_patterns:\n"
+            "    - Hermes\n"
+            "  free_response_chats:\n"
+            "    - 123\n"
+            "  ignored_threads:\n"
+            "    - 7\n"
+            "  reactions: true\n"
+            "  proxy_url: http://bale-proxy:8080\n"
+            "  allow_from:\n"
+            "    - 111\n"
+            "  group_allow_from:\n"
+            "    - 222\n"
+            "  group_allowed_chats:\n"
+            "    - -10055\n"
+            "  disable_link_previews: true\n"
+            "  base_url: https://tapi.bale.ai\n"
+            "  base_file_url: https://tapi.bale.ai/file\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("BALE_REQUIRE_MENTION", raising=False)
+        monkeypatch.delenv("BALE_MENTION_PATTERNS", raising=False)
+        monkeypatch.delenv("BALE_FREE_RESPONSE_CHATS", raising=False)
+        monkeypatch.delenv("BALE_IGNORED_THREADS", raising=False)
+        monkeypatch.delenv("BALE_REACTIONS", raising=False)
+        monkeypatch.delenv("BALE_PROXY", raising=False)
+        monkeypatch.delenv("BALE_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("BALE_GROUP_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("BALE_GROUP_ALLOWED_CHATS", raising=False)
+
+        config = load_gateway_config()
+
+        import os
+
+        assert os.environ.get("BALE_REQUIRE_MENTION") == "true"
+        assert os.environ.get("BALE_MENTION_PATTERNS") == '["Hermes"]'
+        assert os.environ.get("BALE_FREE_RESPONSE_CHATS") == "123"
+        assert os.environ.get("BALE_IGNORED_THREADS") == "7"
+        assert os.environ.get("BALE_REACTIONS") == "true"
+        assert os.environ.get("BALE_PROXY") == "http://bale-proxy:8080"
+        assert os.environ.get("BALE_ALLOWED_USERS") == "111"
+        assert os.environ.get("BALE_GROUP_ALLOWED_USERS") == "222"
+        assert os.environ.get("BALE_GROUP_ALLOWED_CHATS") == "-10055"
+        assert config.platforms[Platform.BALE].extra["disable_link_previews"] is True
+        assert config.platforms[Platform.BALE].extra["base_url"] == "https://tapi.bale.ai"
+        assert config.platforms[Platform.BALE].extra["base_file_url"] == "https://tapi.bale.ai/file"
+
+

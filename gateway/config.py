@@ -89,6 +89,7 @@ class Platform(Enum):
     """
     LOCAL = "local"
     TELEGRAM = "telegram"
+    BALE = "bale"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
     SLACK = "slack"
@@ -878,6 +879,11 @@ def load_gateway_config() -> GatewayConfig:
                     _tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
                     _tg_extra = _tg_plat.setdefault("extra", {})
                     _tg_extra.setdefault("require_mention", _tl_require_mention)
+                _bale_section = yaml_cfg.get("bale") or {}
+                if "require_mention" not in _bale_section:
+                    _bale_plat = platforms_data.setdefault(Platform.BALE.value, {})
+                    _bale_extra = _bale_plat.setdefault("extra", {})
+                    _bale_extra.setdefault("require_mention", _tl_require_mention)
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})
@@ -937,6 +943,73 @@ def load_gateway_config() -> GatewayConfig:
                         extra = {}
                         plat_data["extra"] = extra
                     extra["disable_link_previews"] = telegram_cfg["disable_link_previews"]
+
+            bale_cfg = yaml_cfg.get("bale", {})
+            if isinstance(bale_cfg, dict):
+                _effective_rm = bale_cfg.get("require_mention", yaml_cfg.get("require_mention"))
+                if _effective_rm is not None and not os.getenv("BALE_REQUIRE_MENTION"):
+                    os.environ["BALE_REQUIRE_MENTION"] = str(_effective_rm).lower()
+                if "mention_patterns" in bale_cfg and not os.getenv("BALE_MENTION_PATTERNS"):
+                    os.environ["BALE_MENTION_PATTERNS"] = json.dumps(bale_cfg["mention_patterns"])
+                frc = bale_cfg.get("free_response_chats")
+                if frc is not None and not os.getenv("BALE_FREE_RESPONSE_CHATS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["BALE_FREE_RESPONSE_CHATS"] = str(frc)
+                ignored_threads = bale_cfg.get("ignored_threads")
+                if ignored_threads is not None and not os.getenv("BALE_IGNORED_THREADS"):
+                    if isinstance(ignored_threads, list):
+                        ignored_threads = ",".join(str(v) for v in ignored_threads)
+                    os.environ["BALE_IGNORED_THREADS"] = str(ignored_threads)
+                if "reactions" in bale_cfg and not os.getenv("BALE_REACTIONS"):
+                    os.environ["BALE_REACTIONS"] = str(bale_cfg["reactions"]).lower()
+                if "proxy_url" in bale_cfg and not os.getenv("BALE_PROXY"):
+                    os.environ["BALE_PROXY"] = str(bale_cfg["proxy_url"]).strip()
+                allowed_users = bale_cfg.get("allow_from")
+                if allowed_users is not None and not os.getenv("BALE_ALLOWED_USERS"):
+                    if isinstance(allowed_users, list):
+                        allowed_users = ",".join(str(v) for v in allowed_users)
+                    os.environ["BALE_ALLOWED_USERS"] = str(allowed_users)
+                group_allowed_users = bale_cfg.get("group_allow_from")
+                if group_allowed_users is not None and not os.getenv("BALE_GROUP_ALLOWED_USERS"):
+                    if isinstance(group_allowed_users, list):
+                        group_allowed_users = ",".join(str(v) for v in group_allowed_users)
+                    os.environ["BALE_GROUP_ALLOWED_USERS"] = str(group_allowed_users)
+                group_allowed_chats = bale_cfg.get("group_allowed_chats")
+                if group_allowed_chats is not None and not os.getenv("BALE_GROUP_ALLOWED_CHATS"):
+                    if isinstance(group_allowed_chats, list):
+                        group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
+                    os.environ["BALE_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
+                if "disable_link_previews" in bale_cfg:
+                    plat_data = platforms_data.setdefault(Platform.BALE.value, {})
+                    if not isinstance(plat_data, dict):
+                        plat_data = {}
+                        platforms_data[Platform.BALE.value] = plat_data
+                    extra = plat_data.setdefault("extra", {})
+                    if not isinstance(extra, dict):
+                        extra = {}
+                        plat_data["extra"] = extra
+                    extra["disable_link_previews"] = bale_cfg["disable_link_previews"]
+                if "base_url" in bale_cfg:
+                    plat_data = platforms_data.setdefault(Platform.BALE.value, {})
+                    if not isinstance(plat_data, dict):
+                        plat_data = {}
+                        platforms_data[Platform.BALE.value] = plat_data
+                    extra = plat_data.setdefault("extra", {})
+                    if not isinstance(extra, dict):
+                        extra = {}
+                        plat_data["extra"] = extra
+                    extra["base_url"] = bale_cfg["base_url"]
+                if "base_file_url" in bale_cfg:
+                    plat_data = platforms_data.setdefault(Platform.BALE.value, {})
+                    if not isinstance(plat_data, dict):
+                        plat_data = {}
+                        platforms_data[Platform.BALE.value] = plat_data
+                    extra = plat_data.setdefault("extra", {})
+                    if not isinstance(extra, dict):
+                        extra = {}
+                        plat_data["extra"] = extra
+                    extra["base_file_url"] = bale_cfg["base_file_url"]
 
             whatsapp_cfg = yaml_cfg.get("whatsapp", {})
             if isinstance(whatsapp_cfg, dict):
@@ -1047,6 +1120,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
     # won't connect and the cause can be confusing without a log line.
     _token_env_names = {
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
+        Platform.BALE: "BALE_BOT_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
@@ -1125,7 +1199,40 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             name=os.getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
             thread_id=os.getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
         )
-    
+
+    # Bale (Telegram-compatible Bot API hosted at tapi.bale.ai)
+    bale_token = os.getenv("BALE_BOT_TOKEN")
+    if bale_token:
+        if Platform.BALE not in config.platforms:
+            config.platforms[Platform.BALE] = PlatformConfig()
+        config.platforms[Platform.BALE].enabled = True
+        config.platforms[Platform.BALE].token = bale_token
+
+    bale_reply_mode = os.getenv("BALE_REPLY_TO_MODE", "").lower()
+    if bale_reply_mode in ("off", "first", "all"):
+        if Platform.BALE not in config.platforms:
+            config.platforms[Platform.BALE] = PlatformConfig()
+        config.platforms[Platform.BALE].reply_to_mode = bale_reply_mode
+
+    bale_base_url = os.getenv("BALE_BASE_URL", "").strip()
+    bale_base_file_url = os.getenv("BALE_BASE_FILE_URL", "").strip()
+    if bale_base_url or bale_base_file_url:
+        if Platform.BALE not in config.platforms:
+            config.platforms[Platform.BALE] = PlatformConfig()
+        if bale_base_url:
+            config.platforms[Platform.BALE].extra["base_url"] = bale_base_url
+        if bale_base_file_url:
+            config.platforms[Platform.BALE].extra["base_file_url"] = bale_base_file_url
+
+    bale_home = os.getenv("BALE_HOME_CHANNEL")
+    if bale_home and Platform.BALE in config.platforms:
+        config.platforms[Platform.BALE].home_channel = HomeChannel(
+            platform=Platform.BALE,
+            chat_id=bale_home,
+            name=os.getenv("BALE_HOME_CHANNEL_NAME", "Home"),
+            thread_id=os.getenv("BALE_HOME_CHANNEL_THREAD_ID") or None,
+        )
+
     # Discord
     discord_token = os.getenv("DISCORD_BOT_TOKEN")
     if discord_token:

@@ -14,6 +14,7 @@ import os
 import tempfile
 import html as _html
 import re
+from urllib.parse import urlsplit, urlunsplit
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -234,6 +235,75 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+def _normalize_bot_api_base_urls(
+    base_url: Optional[str],
+    base_file_url: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Normalize Telegram-style Bot API roots into PTB-ready method/file URLs.
+
+    ``python-telegram-bot`` expects ``base_url`` to end with ``/bot`` and
+    ``base_file_url`` to end with ``/file/bot``.  Callers may provide either a
+    full PTB-ready URL or a bare API root such as ``https://api.telegram.org``
+    / ``https://tapi.bale.ai``.  This helper accepts both and derives the
+    matching file endpoint when only the method endpoint is given.
+    """
+
+    raw_base = str(base_url or "").strip().rstrip("/")
+    if not raw_base:
+        return None, None, None
+
+    parsed = urlsplit(raw_base)
+    if not parsed.scheme or not parsed.netloc:
+        raw_file = str(base_file_url or "").strip().rstrip("/") or None
+        return raw_base, raw_file, None
+
+    def _method_path(path: str) -> str:
+        normalized = (path or "").rstrip("/")
+        if not normalized:
+            return "/bot"
+        if normalized.endswith("/file/bot"):
+            return normalized[: -len("/file/bot")] + "/bot"
+        if normalized.endswith("/bot"):
+            return normalized
+        return f"{normalized}/bot"
+
+    def _file_path(path: str) -> str:
+        normalized = (path or "").rstrip("/")
+        if not normalized:
+            return "/file/bot"
+        if normalized.endswith("/file/bot"):
+            return normalized
+        if normalized.endswith("/bot"):
+            return normalized[: -len("/bot")] + "/file/bot"
+        return f"{normalized}/file/bot"
+
+    method_path = _method_path(parsed.path)
+    method_url = urlunsplit((parsed.scheme, parsed.netloc, method_path, "", ""))
+
+    raw_file = str(base_file_url or "").strip().rstrip("/")
+    if raw_file:
+        file_parsed = urlsplit(raw_file)
+        if file_parsed.scheme and file_parsed.netloc:
+            file_url = urlunsplit(
+                (
+                    file_parsed.scheme,
+                    file_parsed.netloc,
+                    _file_path(file_parsed.path),
+                    "",
+                    "",
+                )
+            )
+        else:
+            file_url = raw_file
+    else:
+        file_url = urlunsplit(
+            (parsed.scheme, parsed.netloc, _file_path(method_path), "", "")
+        )
+
+    api_host = (parsed.hostname or "").lower() or None
+    return method_url, file_url, api_host
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -252,9 +322,25 @@ class TelegramAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
+    PLATFORM = Platform.TELEGRAM
+    PLATFORM_LABEL = "Telegram"
+    BOT_TOKEN_LOCK_SCOPE = "telegram-bot-token"
+    BOT_TOKEN_RESOURCE_DESC = "Telegram bot token"
+    DEFAULT_BOT_API_ROOT: Optional[str] = None
+    PROXY_ENV_VAR = "TELEGRAM_PROXY"
+    ALLOWED_USERS_ENV_VAR = "TELEGRAM_ALLOWED_USERS"
+    REQUIRE_MENTION_ENV_VAR = "TELEGRAM_REQUIRE_MENTION"
+    FREE_RESPONSE_CHATS_ENV_VAR = "TELEGRAM_FREE_RESPONSE_CHATS"
+    IGNORED_THREADS_ENV_VAR = "TELEGRAM_IGNORED_THREADS"
+    MENTION_PATTERNS_ENV_VAR = "TELEGRAM_MENTION_PATTERNS"
+    REACTIONS_ENV_VAR = "TELEGRAM_REACTIONS"
+    WEBHOOK_URL_ENV_VAR = "TELEGRAM_WEBHOOK_URL"
+    WEBHOOK_PORT_ENV_VAR = "TELEGRAM_WEBHOOK_PORT"
+    WEBHOOK_SECRET_ENV_VAR = "TELEGRAM_WEBHOOK_SECRET"
+    TELEGRAM_FALLBACK_API_HOST = "api.telegram.org"
 
-    def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.TELEGRAM)
+    def __init__(self, config: PlatformConfig, platform: Optional[Platform] = None):
+        super().__init__(config, platform or self.PLATFORM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
         self._webhook_mode: bool = False
@@ -317,7 +403,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     normalized_chat_type = "forum" if thread_id is not None else "group"
 
                 source = SessionSource(
-                    platform=Platform.TELEGRAM,
+                    platform=self.platform,
                     chat_id=str(chat_id or normalized_user_id),
                     chat_type=normalized_chat_type,
                     user_id=normalized_user_id,
@@ -332,7 +418,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
-        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+        allowed_csv = os.getenv(self.ALLOWED_USERS_ENV_VAR, "").strip()
         if not allowed_csv:
             return True
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
@@ -882,20 +968,35 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         
         try:
-            if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
+            if not self._acquire_platform_lock(
+                self.BOT_TOKEN_LOCK_SCOPE,
+                self.config.token,
+                self.BOT_TOKEN_RESOURCE_DESC,
+            ):
                 return False
 
             # Build the application
             builder = Application.builder().token(self.config.token)
-            custom_base_url = self.config.extra.get("base_url")
+            custom_base_url = self.config.extra.get("base_url") or self.DEFAULT_BOT_API_ROOT
+            custom_base_file_url = self.config.extra.get("base_file_url")
+            normalized_base_url = None
+            normalized_base_file_url = None
+            api_host = self.TELEGRAM_FALLBACK_API_HOST
             if custom_base_url:
-                builder = builder.base_url(custom_base_url)
+                normalized_base_url, normalized_base_file_url, api_host = _normalize_bot_api_base_urls(
+                    custom_base_url,
+                    custom_base_file_url,
+                )
+            if normalized_base_url:
+                builder = builder.base_url(normalized_base_url)
                 builder = builder.base_file_url(
-                    self.config.extra.get("base_file_url", custom_base_url)
+                    normalized_base_file_url or normalized_base_url
                 )
                 logger.info(
-                    "[%s] Using custom Telegram base_url: %s",
-                    self.name, custom_base_url,
+                    "[%s] Using custom %s base_url: %s",
+                    self.name,
+                    self.PLATFORM_LABEL,
+                    normalized_base_url,
                 )
 
             # PTB defaults (pool_timeout=1s) are too aggressive on flaky networks and
@@ -922,17 +1023,19 @@ class TelegramAdapter(BasePlatformAdapter):
             }
 
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in ("1", "true", "yes", "on"))
-            fallback_ips = self._fallback_ips()
-            if not fallback_ips:
-                fallback_ips = await discover_fallback_ips()
-                logger.info(
-                    "[%s] Auto-discovered Telegram fallback IPs: %s",
-                    self.name,
-                    ", ".join(fallback_ips),
-                )
+            fallback_ips: list[str] = []
+            if api_host == self.TELEGRAM_FALLBACK_API_HOST:
+                fallback_ips = self._fallback_ips()
+                if not fallback_ips:
+                    fallback_ips = await discover_fallback_ips()
+                    logger.info(
+                        "[%s] Auto-discovered Telegram fallback IPs: %s",
+                        self.name,
+                        ", ".join(fallback_ips),
+                    )
 
-            proxy_targets = ["api.telegram.org", *fallback_ips]
-            proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
+            proxy_targets = ([api_host] if api_host else []) + fallback_ips
+            proxy_url = resolve_proxy_url(self.PROXY_ENV_VAR, target_hosts=proxy_targets or None)
             if fallback_ips and not proxy_url and not disable_fallback:
                 logger.info(
                     "[%s] Telegram fallback IPs active: %s",
@@ -1006,7 +1109,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._app.start()
 
             # Decide between webhook and polling mode
-            webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+            webhook_url = os.getenv(self.WEBHOOK_URL_ENV_VAR, "").strip()
 
             if webhook_url:
                 # ── Webhook mode ─────────────────────────────────────
@@ -1020,18 +1123,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 # inject forged updates as if from Telegram. Refuse to
                 # start rather than silently run in fail-open mode.
                 # See GHSA-3vpc-7q5r-276h.
-                webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
-                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+                webhook_port = int(os.getenv(self.WEBHOOK_PORT_ENV_VAR, "8443"))
+                webhook_secret = os.getenv(self.WEBHOOK_SECRET_ENV_VAR, "").strip()
                 if not webhook_secret:
                     raise RuntimeError(
-                        "TELEGRAM_WEBHOOK_SECRET is required when "
-                        "TELEGRAM_WEBHOOK_URL is set. Without it, the "
+                        f"{self.WEBHOOK_SECRET_ENV_VAR} is required when "
+                        f"{self.WEBHOOK_URL_ENV_VAR} is set. Without it, the "
                         "webhook endpoint accepts forged updates from "
                         "anyone who can reach it — see "
                         "https://github.com/NousResearch/hermes-agent/"
                         "security/advisories/GHSA-3vpc-7q5r-276h.\n\n"
                         "Generate a secret and set it in your .env:\n"
-                        "  export TELEGRAM_WEBHOOK_SECRET=\"$(openssl rand -hex 32)\"\n\n"
+                        f"  export {self.WEBHOOK_SECRET_ENV_VAR}=\"$(openssl rand -hex 32)\"\n\n"
                         "Then register it with Telegram when setting the "
                         "webhook via setWebhook's secret_token parameter."
                     )
@@ -1091,7 +1194,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Telegram allows up to 100 commands but has an undocumented
                 # payload size limit.  Skill descriptions are truncated to 40
                 # chars in telegram_menu_commands() to fit 100 commands safely.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
+                menu_commands, hidden_count = telegram_menu_commands(
+                    max_commands=100,
+                    platform=self.platform.value,
+                )
                 await self._bot.set_my_commands([
                     BotCommand(name, desc) for name, desc in menu_commands
                 ])
@@ -1110,7 +1216,7 @@ class TelegramAdapter(BasePlatformAdapter):
             
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
-            logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
+            logger.info("[%s] Connected to %s (%s mode)", self.name, self.PLATFORM_LABEL, mode)
 
             # Set up DM topics (Bot API 9.4 — Private Chat Topics)
             # Runs after connection is established so the bot can call createForumTopic.
@@ -1127,9 +1233,9 @@ class TelegramAdapter(BasePlatformAdapter):
             
         except Exception as e:
             self._release_platform_lock()
-            message = f"Telegram startup failed: {e}"
+            message = f"{self.PLATFORM_LABEL} startup failed: {e}"
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
-            logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
+            logger.error("[%s] Failed to connect to %s: %s", self.name, self.PLATFORM_LABEL, e, exc_info=True)
             return False
 
     async def disconnect(self) -> None:
@@ -2745,12 +2851,12 @@ class TelegramAdapter(BasePlatformAdapter):
             if isinstance(configured, str):
                 return configured.lower() in ("true", "1", "yes", "on")
             return bool(configured)
-        return os.getenv("TELEGRAM_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv(self.REQUIRE_MENTION_ENV_VAR, "false").lower() in ("true", "1", "yes", "on")
 
     def _telegram_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
-            raw = os.getenv("TELEGRAM_FREE_RESPONSE_CHATS", "")
+            raw = os.getenv(self.FREE_RESPONSE_CHATS_ENV_VAR, "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -2758,7 +2864,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _telegram_ignored_threads(self) -> set[int]:
         raw = self.config.extra.get("ignored_threads")
         if raw is None:
-            raw = os.getenv("TELEGRAM_IGNORED_THREADS", "")
+            raw = os.getenv(self.IGNORED_THREADS_ENV_VAR, "")
 
         if isinstance(raw, list):
             values = raw
@@ -2780,7 +2886,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Compile optional regex wake-word patterns for group triggers."""
         patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
-            raw = os.getenv("TELEGRAM_MENTION_PATTERNS", "").strip()
+            raw = os.getenv(self.MENTION_PATTERNS_ENV_VAR, "").strip()
             if raw:
                 try:
                     loaded = json.loads(raw)
@@ -3617,7 +3723,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in ("false", "0", "no")
+        return os.getenv(self.REACTIONS_ENV_VAR, "false").lower() not in ("false", "0", "no")
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""

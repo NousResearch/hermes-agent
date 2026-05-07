@@ -601,7 +601,7 @@ agent:
 #   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
 #   - A list of individual toolsets to compose your own (see list below)
 #
-# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot, teams
+# Supported platform keys: cli, telegram, bale, discord, whatsapp, slack, qqbot, teams
 #
 # Examples:
 #
@@ -625,6 +625,7 @@ agent:
 # If not set, defaults are:
 #   cli:           hermes-cli            (everything + cronjob management)
 #   telegram:      hermes-telegram       (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob, messaging)
+#   bale:          hermes-bale           (same as telegram)
 #   discord:       hermes-discord        (same as telegram)
 #   whatsapp:      hermes-whatsapp       (same as telegram)
 #   slack:         hermes-slack          (same as telegram)
@@ -636,6 +637,7 @@ agent:
 platform_toolsets:
   cli: [hermes-cli]
   telegram: [hermes-telegram]
+  bale: [hermes-bale]
   discord: [hermes-discord]
   whatsapp: [hermes-whatsapp]
   slack: [hermes-slack]
@@ -656,6 +658,10 @@ platform_toolsets:
 #     reply_to_mode: "first"  # off | first | all
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#   bale:
+#     reply_to_mode: "first"  # off | first | all
+#     extra:
+#       base_url: https://tapi.bale.ai
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
@@ -686,6 +692,7 @@ platform_toolsets:
 #   hermes-cli       - All of the above except rl + send_message
 #   hermes-telegram  - terminal, file, web, vision, image_gen, tts, browser,
 #                      skills, todo, cronjob, send_message
+#   hermes-bale      - Same as hermes-telegram
 #   hermes-discord   - Same as hermes-telegram
 #   hermes-whatsapp  - Same as hermes-telegram
 #   hermes-slack     - Same as hermes-telegram

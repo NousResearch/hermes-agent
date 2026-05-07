@@ -52,6 +52,14 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+_TELEGRAM_LIKE_PLATFORM_VALUES = frozenset({"telegram", "bale"})
+
+
+def _is_telegram_like_platform(platform: Any) -> bool:
+    """Return True for Telegram-compatible platforms using Telegram slash rules."""
+    platform_value = getattr(platform, "value", platform)
+    return str(platform_value or "").lower() in _TELEGRAM_LIKE_PLATFORM_VALUES
+
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
@@ -60,8 +68,7 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     underscores.  Keep other platform renderings unchanged, but normalize
     Telegram help text so command mentions remain clickable/valid there.
     """
-    platform_value = getattr(platform, "value", platform)
-    if platform_value != "telegram":
+    if not _is_telegram_like_platform(platform):
         return text
 
     from hermes_cli.commands import _sanitize_telegram_name
@@ -4215,7 +4222,14 @@ class GatewayRunner:
                 logger.warning("Telegram: python-telegram-bot not installed")
                 return None
             return TelegramAdapter(config)
-        
+
+        elif platform == Platform.BALE:
+            from gateway.platforms.bale import BaleAdapter, check_bale_requirements
+            if not check_bale_requirements():
+                logger.warning("Bale: python-telegram-bot not installed")
+                return None
+            return BaleAdapter(config)
+
         elif platform == Platform.DISCORD:
             from gateway.platforms.discord import DiscordAdapter, check_discord_requirements
             if not check_discord_requirements():
@@ -4382,6 +4396,7 @@ class GatewayRunner:
 
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+            Platform.BALE: "BALE_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
@@ -4401,13 +4416,16 @@ class GatewayRunner:
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
+            Platform.BALE: "BALE_GROUP_ALLOWED_USERS",
         }
         platform_group_chat_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+            Platform.BALE: "BALE_GROUP_ALLOWED_CHATS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
+            Platform.BALE: "BALE_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
@@ -4484,8 +4502,8 @@ class GatewayRunner:
             # No allowlists configured -- check global allow-all flag
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
 
-        # Telegram can optionally authorize group traffic by chat ID.
-        # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
+        # Telegram-like platforms can optionally authorize group traffic by chat ID.
+        # Keep this separate from *_GROUP_ALLOWED_USERS, which gates
         # the sender user ID for group/forum messages.
         if group_chat_allowlist and source.chat_type in {"group", "forum"} and source.chat_id:
             allowed_group_ids = {
@@ -4494,14 +4512,11 @@ class GatewayRunner:
             if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
                 return True
 
-        # Backward-compat shim for #15027: prior to PR #17686,
-        # TELEGRAM_GROUP_ALLOWED_USERS was (mis)used as a chat-ID allowlist.
-        # Values starting with "-" are Telegram chat IDs, not user IDs, so if
-        # users still have those in TELEGRAM_GROUP_ALLOWED_USERS we honor them
-        # as chat IDs and warn once. The correct var is now
-        # TELEGRAM_GROUP_ALLOWED_CHATS.
+        # Backward-compat shim for Telegram-compatible platforms: before the
+        # dedicated *_GROUP_ALLOWED_CHATS env var existed, chat-ID-shaped values
+        # in *_GROUP_ALLOWED_USERS were (mis)used as a chat allowlist.
         if (
-            source.platform == Platform.TELEGRAM
+            _is_telegram_like_platform(source.platform)
             and group_user_allowlist
             and source.chat_type in {"group", "forum"}
             and source.chat_id
@@ -4512,22 +4527,26 @@ class GatewayRunner:
                 if v.strip().startswith("-")
             }
             if legacy_chat_ids:
-                if not getattr(self, "_warned_telegram_group_users_legacy", False):
+                warned_attr = f"_warned_{source.platform.value}_group_users_legacy"
+                group_users_env = platform_group_user_env_map.get(source.platform, "PLATFORM_GROUP_ALLOWED_USERS")
+                group_chats_env = platform_group_chat_env_map.get(source.platform, "PLATFORM_GROUP_ALLOWED_CHATS")
+                if not getattr(self, warned_attr, False):
                     logger.warning(
-                        "TELEGRAM_GROUP_ALLOWED_USERS contains chat-ID-shaped values "
+                        "%s contains chat-ID-shaped values "
                         "(%s). Treating them as chat IDs for backward compatibility. "
-                        "Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS — the _USERS var "
+                        "Move chat IDs to %s — the _USERS var "
                         "is now for sender user IDs.",
+                        group_users_env,
                         ",".join(sorted(legacy_chat_ids)),
+                        group_chats_env,
                     )
-                    self._warned_telegram_group_users_legacy = True
+                    setattr(self, warned_attr, True)
                 if source.chat_id in legacy_chat_ids:
                     return True
 
         # Check if user is in any allowlist. In group/forum chats,
-        # TELEGRAM_GROUP_ALLOWED_USERS is the scoped allowlist and should not
-        # imply DM access; TELEGRAM_ALLOWED_USERS remains the platform-wide
-        # allowlist and still works everywhere for backward compatibility.
+        # *_GROUP_ALLOWED_USERS is the scoped allowlist and should not imply DM
+        # access; the platform-wide *_ALLOWED_USERS env still works everywhere.
         allowed_ids = set()
         if platform_allowlist:
             allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
@@ -4594,6 +4613,7 @@ class GatewayRunner:
         if platform:
             platform_env_map = {
                 Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+                Platform.BALE: "BALE_ALLOWED_USERS",
                 Platform.DISCORD:  "DISCORD_ALLOWED_USERS",
                 Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
                 Platform.SLACK:    "SLACK_ALLOWED_USERS",
@@ -4614,6 +4634,10 @@ class GatewayRunner:
                 Platform.TELEGRAM: (
                     "TELEGRAM_GROUP_ALLOWED_USERS",
                     "TELEGRAM_GROUP_ALLOWED_CHATS",
+                ),
+                Platform.BALE: (
+                    "BALE_GROUP_ALLOWED_USERS",
+                    "BALE_GROUP_ALLOWED_CHATS",
                 ),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
             }
@@ -5159,14 +5183,15 @@ class GatewayRunner:
             )
             _started_at = self._running_agents_ts.get(_quick_key, 0)
             if (
-                source.platform == Platform.TELEGRAM
+                _is_telegram_like_platform(source.platform)
                 and event.message_type == MessageType.TEXT
                 and _telegram_followup_grace > 0
                 and _started_at
                 and (time.time() - _started_at) <= _telegram_followup_grace
             ):
                 logger.debug(
-                    "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
+                    "%s follow-up arrived %.2fs after run start for %s — queueing without interrupt",
+                    getattr(source.platform, "value", "telegram"),
                     time.time() - _started_at,
                     _quick_key,
                 )
@@ -7501,13 +7526,13 @@ class GatewayRunner:
             return False
         if event.source.platform is None:
             return False
-        # Only Telegram populates platform_update_id currently; be explicit
-        # so future platforms aren't accidentally gated by this check.
+        # Only Telegram-like platforms currently populate platform_update_id;
+        # be explicit so future platforms aren't accidentally gated by this check.
         try:
             platform_value = event.source.platform.value
         except Exception:
             return False
-        if platform_value != "telegram":
+        if platform_value not in _TELEGRAM_LIKE_PLATFORM_VALUES:
             return False
 
         try:
@@ -7589,7 +7614,7 @@ class GatewayRunner:
             return "No commands available."
 
         from gateway.config import Platform
-        page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
+        page_size = 15 if _is_telegram_like_platform(event.source.platform) else 20
         total_pages = max(1, (len(entries) + page_size - 1) // page_size)
         page = max(1, min(requested_page, total_pages))
         start = (page - 1) * page_size
@@ -12566,7 +12591,7 @@ class GatewayRunner:
                     # problem.  (Ported from openclaw/openclaw#72038.)
                     _fresh_final_secs = (
                         float(getattr(_scfg, "fresh_final_after_seconds", 0.0) or 0.0)
-                        if source.platform == Platform.TELEGRAM
+                        if _is_telegram_like_platform(source.platform)
                         else 0.0
                     )
                     _consumer_cfg = StreamConsumerConfig(
@@ -13350,7 +13375,7 @@ class GatewayRunner:
                         # (Ported from openclaw/openclaw#72038.)
                         _fresh_final_secs = (
                             float(getattr(_scfg, "fresh_final_after_seconds", 0.0) or 0.0)
-                            if source.platform == Platform.TELEGRAM
+                            if _is_telegram_like_platform(source.platform)
                             else 0.0
                         )
                         _consumer_cfg = StreamConsumerConfig(

@@ -310,7 +310,7 @@ def _handle_send(args):
 
 def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
-    if platform_name == "telegram":
+    if platform_name in ("telegram", "bale"):
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
@@ -475,6 +475,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
+        Platform.BALE: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
@@ -496,15 +497,24 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # Telegram measures length in UTF-16 code units, not Unicode codepoints.
     max_len = _MAX_LENGTHS.get(platform)
     if max_len:
-        _len_fn = utf16_len if platform == Platform.TELEGRAM else None
+        _len_fn = utf16_len if platform in (Platform.TELEGRAM, Platform.BALE) else None
         chunks = BasePlatformAdapter.truncate_message(message, max_len, len_fn=_len_fn)
     else:
         chunks = [message]
 
     # --- Telegram: special handling for media attachments ---
-    if platform == Platform.TELEGRAM:
+    if platform in (Platform.TELEGRAM, Platform.BALE):
         last_result = None
         disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+        bot_base_url = (getattr(pconfig, "extra", {}) or {}).get("base_url")
+        bot_base_file_url = (getattr(pconfig, "extra", {}) or {}).get("base_file_url")
+        if platform == Platform.BALE and not bot_base_url:
+            try:
+                from gateway.platforms.bale import BaleAdapter
+
+                bot_base_url = BaleAdapter.DEFAULT_BOT_API_ROOT
+            except Exception:
+                bot_base_url = "https://tapi.bale.ai"
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
             result = await _send_telegram(
@@ -514,6 +524,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 media_files=media_files if is_last else [],
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
+                base_url=bot_base_url,
+                base_file_url=bot_base_file_url,
+                platform_name=platform.value,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -667,7 +680,18 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
+async def _send_telegram(
+    token,
+    chat_id,
+    message,
+    media_files=None,
+    thread_id=None,
+    disable_link_previews=False,
+    *,
+    base_url=None,
+    base_file_url=None,
+    platform_name="telegram",
+):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -697,7 +721,25 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
-        bot = Bot(token=token)
+        bot_kwargs = {"token": token}
+        if base_url:
+            try:
+                from gateway.platforms.telegram import _normalize_bot_api_base_urls
+
+                normalized_base_url, normalized_base_file_url, _ = _normalize_bot_api_base_urls(
+                    base_url,
+                    base_file_url,
+                )
+                if normalized_base_url:
+                    bot_kwargs["base_url"] = normalized_base_url
+                if normalized_base_file_url:
+                    bot_kwargs["base_file_url"] = normalized_base_file_url
+            except Exception:
+                bot_kwargs["base_url"] = base_url
+                if base_file_url:
+                    bot_kwargs["base_file_url"] = base_file_url
+
+        bot = Bot(**bot_kwargs)
         int_chat_id = int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}
@@ -783,7 +825,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
         result = {
             "success": True,
-            "platform": "telegram",
+            "platform": platform_name,
             "chat_id": chat_id,
             "message_id": str(last_msg.message_id),
         }
@@ -793,7 +835,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:
-        return _error(f"Telegram send failed: {e}")
+        return _error(f"{platform_name.title()} send failed: {e}")
 
 
 def _derive_forum_thread_name(message: str) -> str:

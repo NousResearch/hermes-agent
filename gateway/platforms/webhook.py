@@ -205,7 +205,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # Cross-platform delivery — any platform with a gateway adapter.
         # Check both built-in names and plugin-registered platforms.
         _BUILTIN_DELIVER_PLATFORMS = {
-            "telegram", "discord", "slack", "signal", "sms", "whatsapp",
+            "telegram", "bale", "discord", "slack", "signal", "sms", "whatsapp",
             "matrix", "mattermost", "homeassistant", "email", "dingtalk",
             "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
             "qqbot", "yuanbao",

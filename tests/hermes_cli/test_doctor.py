@@ -378,6 +378,11 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
     assert "1) pkg install nodejs" in out
     assert "2) npm install -g agent-browser" in out
     assert "3) agent-browser install" in out
+    assert "Termux compatibility fallbacks:" in out
+    assert "use .[termux-all] for broad compatibility" in out
+    assert "Matrix E2EE extra is excluded on Termux" in out
+    assert "Local faster-whisper extra is excluded on Termux" in out
+    assert "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY)." in out
     assert "docker not found (optional)" not in out
 
 

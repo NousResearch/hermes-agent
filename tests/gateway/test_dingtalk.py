@@ -586,6 +586,25 @@ class TestIncomingHandlerProcess:
     and dispatches message processing as a background task (fire-and-forget)
     so the SDK ACK is returned immediately."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_chatbot_message(self, monkeypatch):
+        """Provide a fake ChatbotMessage.from_dict when SDK is absent."""
+        from gateway.platforms import dingtalk as dt_mod
+        if dt_mod.ChatbotMessage is None:
+            def _from_dict(data):
+                msg = MagicMock()
+                msg.text = data.get("text", {})
+                msg.sender_id = data.get("senderId", "")
+                msg.conversation_id = data.get("conversationId", "")
+                msg.conversation_type = data.get("conversationType", "")
+                msg.message_id = data.get("msgId", "")
+                msg.session_webhook = data.get("sessionWebhook", "")
+                msg.is_in_at_list = data.get("isInAtList", False)
+                msg.rich_text_content = None
+                msg.rich_text = None
+                return msg
+            monkeypatch.setattr(dt_mod, "ChatbotMessage", SimpleNamespace(from_dict=_from_dict))
+
     @pytest.mark.asyncio
     async def test_process_extracts_session_webhook(self):
         """session_webhook must be populated from callback data."""

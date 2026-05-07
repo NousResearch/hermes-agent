@@ -1022,3 +1022,69 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+class TestModelRequiresMaxCompletionTokens:
+    """Tests for model_requires_max_completion_tokens()."""
+
+    def test_gpt_4o_family(self):
+        from agent.model_metadata import model_requires_max_completion_tokens
+        assert model_requires_max_completion_tokens("gpt-4o") is True
+        assert model_requires_max_completion_tokens("gpt-4o-mini") is True
+        assert model_requires_max_completion_tokens("gpt-4o-2024-08-06") is True
+
+    def test_gpt_4_1_family(self):
+        from agent.model_metadata import model_requires_max_completion_tokens
+        assert model_requires_max_completion_tokens("gpt-4.1") is True
+        assert model_requires_max_completion_tokens("gpt-4.1-mini") is True
+        assert model_requires_max_completion_tokens("gpt-4.1-nano") is True
+
+    def test_gpt_5_family(self):
+        from agent.model_metadata import model_requires_max_completion_tokens
+        assert model_requires_max_completion_tokens("gpt-5") is True
+        assert model_requires_max_completion_tokens("gpt-5.4") is True
+        assert model_requires_max_completion_tokens("gpt-5.4-mini") is True
+        assert model_requires_max_completion_tokens("gpt-5.4-nano") is True
+        assert model_requires_max_completion_tokens("gpt-5.1-chat") is True
+
+    def test_o_series(self):
+        from agent.model_metadata import model_requires_max_completion_tokens
+        assert model_requires_max_completion_tokens("o1") is True
+        assert model_requires_max_completion_tokens("o1-mini") is True
+        assert model_requires_max_completion_tokens("o1-preview") is True
+        assert model_requires_max_completion_tokens("o3") is True
+        assert model_requires_max_completion_tokens("o3-mini") is True
+        assert model_requires_max_completion_tokens("o3-mini-high") is True
+        assert model_requires_max_completion_tokens("o4") is True
+        assert model_requires_max_completion_tokens("o4-mini") is True
+
+    def test_prefixed_model_names(self):
+        from agent.model_metadata import model_requires_max_completion_tokens
+        assert model_requires_max_completion_tokens("openai/gpt-4o-mini") is True
+        assert model_requires_max_completion_tokens("openai/gpt-5.4") is True
+        assert model_requires_max_completion_tokens("anthropic/claude-sonnet-4") is False
+        assert model_requires_max_completion_tokens("openai/gpt-4o") is True
+
+    def test_older_models_use_max_tokens(self):
+        from agent.model_metadata import model_requires_max_completion_tokens
+        assert model_requires_max_completion_tokens("gpt-4-turbo") is False
+        assert model_requires_max_completion_tokens("gpt-3.5-turbo") is False
+        assert model_requires_max_completion_tokens("claude-3-5-sonnet-20240620") is False
+        assert model_requires_max_completion_tokens("llama3.1-8b") is False
+        assert model_requires_max_completion_tokens("mixtral-8x7b") is False
+
+    def test_empty_and_none(self):
+        from agent.model_metadata import model_requires_max_completion_tokens
+        assert model_requires_max_completion_tokens("") is False
+        assert model_requires_max_completion_tokens(None) is False
+
+    def test_whitespace_handling(self):
+        from agent.model_metadata import model_requires_max_completion_tokens
+        assert model_requires_max_completion_tokens("  gpt-4o-mini  ") is True
+        assert model_requires_max_completion_tokens("gpt-5.4") is True
+
+    def test_case_insensitive(self):
+        from agent.model_metadata import model_requires_max_completion_tokens
+        assert model_requires_max_completion_tokens("GPT-4O-MINI") is True
+        assert model_requires_max_completion_tokens("Gpt-5.4") is True
+        assert model_requires_max_completion_tokens("O3-MINI") is True

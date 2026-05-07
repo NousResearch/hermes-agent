@@ -145,6 +145,7 @@ from agent.model_metadata import (
     parse_available_output_tokens_from_error,
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
+    model_requires_max_completion_tokens,
 )
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
@@ -1865,6 +1866,23 @@ class AIAgent:
             _api_retries = 3
         self._api_max_retries = _api_retries
 
+        # API retry backoff tuning.  Defaults target rate-limit scenarios
+        # (short resets) with sensible growth.  Overridable via config.yaml:
+        #   agent.api_retry_base_delay  (default 2.0 seconds)
+        #   agent.api_retry_max_delay  (default 60.0 seconds)
+        try:
+            self._api_retry_base_delay = float(_agent_section.get("api_retry_base_delay", 2.0))
+            if self._api_retry_base_delay <= 0:
+                self._api_retry_base_delay = 2.0
+        except (TypeError, ValueError):
+            self._api_retry_base_delay = 2.0
+        try:
+            self._api_retry_max_delay = float(_agent_section.get("api_retry_max_delay", 60.0))
+            if self._api_retry_max_delay <= 0:
+                self._api_retry_max_delay = 60.0
+        except (TypeError, ValueError):
+            self._api_retry_max_delay = 60.0
+
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
         # Configuration via config.yaml (compression section)
@@ -3042,12 +3060,14 @@ class AIAgent:
         """Return the correct max tokens kwarg for the current provider.
 
         OpenAI's newer models (gpt-4o, o-series, gpt-5+) require
-        'max_completion_tokens'. Azure OpenAI also requires
-        'max_completion_tokens' for gpt-5.x models served via the
-        OpenAI-compatible endpoint. OpenRouter, local models, and older
-        OpenAI models use 'max_tokens'.
+        'max_completion_tokens' on api.openai.com, Azure, and any
+        OpenAI-compatible endpoint (OpenRouter, self-hosted, proxies).
+        Older OpenAI models (gpt-4-turbo, gpt-3.5-turbo, etc.) use
+        'max_tokens' on all endpoints.
         """
-        if self._is_direct_openai_url() or self._is_azure_openai_url():
+        if (self._is_direct_openai_url()
+                or self._is_azure_openai_url()
+                or model_requires_max_completion_tokens(self.model)):
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
@@ -11602,8 +11622,8 @@ class AIAgent:
                                 "failed": True  # Mark as failure for filtering
                             }
                         
-                        # Backoff before retry — jittered exponential: 5s base, 120s cap
-                        wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
+                        # Backoff before retry — jittered exponential, config-driven
+                        wait_time = jittered_backoff(retry_count, base_delay=self._api_retry_base_delay, max_delay=self._api_retry_max_delay)
                         self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
@@ -13027,7 +13047,7 @@ class AIAgent:
                                     _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
-                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=self._api_retry_base_delay, max_delay=self._api_retry_max_delay)
                     if is_rate_limited:
                         self._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                     else:

@@ -20,13 +20,14 @@ Voice mode is especially useful when:
 
 ## Choose your voice mode setup
 
-There are really three different voice experiences in Hermes.
+There are really four different voice experiences in Hermes.
 
 | Mode | Best for | Platform |
 |---|---|---|
 | Interactive microphone loop | Personal hands-free use while coding or researching | CLI |
 | Voice replies in chat | Spoken responses alongside normal messaging | Telegram, Discord |
-| Live voice channel bot | Group or personal live conversation in a VC | Discord voice channels |
+| Turn-based voice channel bot | Discord VC conversation through speech-boundary detection, STT, the normal agent loop, and TTS | Discord voice channels |
+| Realtime voice channel bot | Low-latency streaming speech-to-speech with interruption/barge-in | Discord voice channels |
 
 A good path is:
 1. get text working first
@@ -345,7 +346,9 @@ Useful when you want private interaction without server-channel mention behavior
 
 This is the most advanced mode.
 
-Hermes joins a Discord VC, listens to user speech, transcribes it, runs the normal agent pipeline, and speaks replies back into the channel.
+Hermes has two Discord VC modes:
+- `/voice join` or `/voice channel` keeps the existing turn-based flow: detect speech boundaries, transcribe a WAV, run the normal agent pipeline, then speak a TTS reply.
+- `/voice realtime` or `/voice live` streams Discord PCM directly to OpenAI Realtime and streams PCM audio back into the VC. It is lower latency and supports barge-in, but realtime tools are disabled by default.
 
 ## Required Discord permissions
 
@@ -365,23 +368,32 @@ In a Discord text channel where the bot is present:
 
 ```text
 /voice join
+/voice realtime
 /voice leave
 /voice status
 ```
 
 ### What happens when joined
 
+In turn-based mode:
 - users speak in the VC
 - Hermes detects speech boundaries
 - transcripts are posted in the associated text channel
 - Hermes responds in text and audio
 - the text channel is the one where `/voice join` was issued
 
+In realtime mode:
+- Discord audio streams continuously to OpenAI Realtime
+- Ariadne speaks back as audio deltas arrive
+- user speech while Ariadne is speaking clears queued output for interruption
+- `/voice leave` stops the realtime session and disconnects
+
 ### Best practices for Discord VC use
 
 - keep `DISCORD_ALLOWED_USERS` tight
 - use a dedicated bot/testing channel at first
 - verify STT and TTS work in ordinary text-chat voice mode before trying VC mode
+- set `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` before trying `/voice realtime`
 
 ## Voice quality recommendations
 

@@ -15,6 +15,7 @@ Usage:
 
 import asyncio
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -30,6 +31,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -1213,7 +1215,7 @@ class GatewayRunner:
         if not isinstance(data, dict):
             return {}
 
-        valid_modes = {"off", "voice_only", "all"}
+        valid_modes = {"off", "voice_only", "all", "realtime"}
         result = {}
         for chat_id, mode in data.items():
             if mode not in valid_modes:
@@ -8312,7 +8314,7 @@ class GatewayRunner:
         return None
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
+        """Handle /voice [on|off|tts|channel|realtime|live|leave|status] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         platform = event.source.platform
@@ -8347,6 +8349,8 @@ class GatewayRunner:
             )
         elif args in ("channel", "join"):
             return await self._handle_voice_channel_join(event)
+        elif args in ("realtime", "live", "channel realtime"):
+            return await self._handle_voice_realtime_join(event)
         elif args == "leave":
             return await self._handle_voice_channel_leave(event)
         elif args == "status":
@@ -8355,6 +8359,7 @@ class GatewayRunner:
                 "off": "Off (text only)",
                 "voice_only": "On (voice reply to voice messages)",
                 "all": "TTS (voice reply to all messages)",
+                "realtime": "Realtime (low-latency voice channel)",
             }
             # Append voice channel info if connected
             adapter = self.adapters.get(event.source.platform)
@@ -8362,9 +8367,14 @@ class GatewayRunner:
             if guild_id and hasattr(adapter, "get_voice_channel_info"):
                 info = adapter.get_voice_channel_info(guild_id)
                 if info:
+                    realtime_active = (
+                        hasattr(adapter, "is_realtime_voice_active")
+                        and adapter.is_realtime_voice_active(guild_id)
+                    )
                     lines = [
                         f"Voice mode: {labels.get(mode, mode)}",
                         f"Voice channel: #{info['channel_name']}",
+                        f"Realtime: {'active' if realtime_active else 'inactive'}",
                         f"Participants: {info['member_count']}",
                     ]
                     for m in info["members"]:
@@ -8387,6 +8397,101 @@ class GatewayRunner:
                 if adapter:
                     self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
                 return "Voice mode disabled."
+
+    async def _handle_voice_realtime_join(self, event: MessageEvent) -> str:
+        """Join the user's Discord voice channel in true realtime mode."""
+        adapter = self.adapters.get(event.source.platform)
+        if event.source.platform != Platform.DISCORD or not hasattr(adapter, "join_realtime_voice_channel"):
+            return "Realtime voice channels are only supported on Discord."
+
+        guild_id = self._get_guild_id(event)
+        if not guild_id:
+            return "This command only works in a Discord server."
+
+        voice_channel = await adapter.get_user_voice_channel(
+            guild_id, event.source.user_id
+        )
+        if not voice_channel:
+            return "You need to be in a voice channel first."
+
+        api_key = os.getenv("VOICE_TOOLS_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return (
+                "Realtime voice needs an OpenAI API key. Set "
+                "VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY, then restart the gateway."
+            )
+
+        try:
+            from gateway.realtime_voice import RealtimeVoiceConfig
+        except ImportError:
+            return "Realtime voice dependencies are missing. Install the messaging extra and restart the gateway."
+        from hermes_cli.config import load_config
+
+        full_cfg = load_config()
+        voice_cfg = full_cfg.get("voice") if isinstance(full_cfg, dict) else {}
+        realtime_cfg = {}
+        if isinstance(voice_cfg, dict):
+            candidate = voice_cfg.get("realtime")
+            if isinstance(candidate, dict):
+                realtime_cfg = candidate
+        if realtime_cfg.get("enabled", True) is False:
+            return "Realtime voice is disabled in config.yaml (voice.realtime.enabled=false)."
+
+        model = str(realtime_cfg.get("model") or "gpt-realtime-2")
+        voice = str(realtime_cfg.get("voice") or "marin")
+        input_rate = int(realtime_cfg.get("input_rate") or 24_000)
+        output_rate = int(realtime_cfg.get("output_rate") or 24_000)
+        turn_detection = str(realtime_cfg.get("turn_detection") or "semantic_vad")
+        tools_enabled = bool(realtime_cfg.get("tools_enabled", False))
+        stable_user_id = f"discord:{event.source.user_id}"
+        safety_identifier = hashlib.sha256(stable_user_id.encode("utf-8")).hexdigest()
+        instructions = (
+            "You are Ariadne, Hákon's operational AI assistant. This is a live "
+            "voice conversation. Be brief, direct, and conversational. Do not "
+            "narrate tool use. Ask at most one clarifying question when needed. "
+            "For external side effects or risky operations, say you need explicit "
+            "approval and wait. If asked to do internet/system/file work that "
+            "requires tools unavailable in this realtime session, summarize the "
+            "intended action and ask Hákon to send it as text or approve handoff "
+            "to the normal Hermes tool loop."
+        )
+        config = RealtimeVoiceConfig(
+            api_key=api_key,
+            model=model,
+            voice=voice,
+            instructions=instructions,
+            safety_identifier=safety_identifier,
+            tools_enabled=tools_enabled,
+            input_rate=input_rate,
+            output_rate=output_rate,
+            turn_detection=turn_detection,
+        )
+        realtime_context = SimpleNamespace(config=config)
+
+        if hasattr(adapter, "_on_voice_disconnect"):
+            adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+
+        try:
+            success = await adapter.join_realtime_voice_channel(voice_channel, realtime_context)
+        except Exception as e:
+            logger.warning("Failed to start realtime voice channel: %s", e)
+            message = str(e).replace(api_key, "[redacted]")
+            return f"Failed to start realtime voice channel: {message}"
+
+        if not success:
+            return "Failed to join realtime voice channel. Check bot permissions (Connect + Speak)."
+
+        if hasattr(adapter, "_voice_text_channels"):
+            adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
+        if hasattr(adapter, "_voice_sources"):
+            adapter._voice_sources[guild_id] = event.source.to_dict()
+        self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "realtime"
+        self._save_voice_modes()
+        self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
+        return (
+            f"Joined realtime voice channel **{voice_channel.name}**.\n"
+            "Streaming speech-to-speech is active. Use /voice leave to disconnect."
+        )
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""

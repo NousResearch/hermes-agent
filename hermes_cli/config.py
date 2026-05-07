@@ -900,6 +900,18 @@ DEFAULT_CONFIG = {
         "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        "realtime": {
+            "enabled": True,
+            "provider": "openai",
+            "model": "gpt-realtime-2",
+            "voice": "marin",
+            "input_rate": 24000,
+            "output_rate": 24000,
+            "turn_detection": "semantic_vad",
+            "tools_enabled": False,
+            "idle_timeout_seconds": 300,
+            "max_session_minutes": 30,
+        },
     },
     
     "human_delay": {

@@ -60,6 +60,13 @@ from gateway.platforms.base import (
 )
 from tools.url_safety import is_safe_url
 
+try:
+    from gateway.discord_realtime_audio import RealtimeDiscordAudioSource
+    from gateway.realtime_voice import RealtimeVoiceSession
+except ImportError:  # pragma: no cover - optional messaging deps may be absent.
+    RealtimeDiscordAudioSource = None
+    RealtimeVoiceSession = None
+
 
 def _clean_discord_id(entry: str) -> str:
     """Strip common prefixes from a Discord user ID or username entry.
@@ -159,6 +166,12 @@ class VoiceReceiver:
         # Debug logging counter (instance-level to avoid cross-instance races)
         self._packet_debug_count = 0
 
+        # Realtime streaming callback, scheduled onto the asyncio loop from
+        # Discord's socket reader thread after Opus decode.
+        self._realtime_enabled = False
+        self._realtime_audio_callback: Optional[Callable[[int, bytes], None]] = None
+        self._realtime_loop: Optional[asyncio.AbstractEventLoop] = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -194,6 +207,15 @@ class VoiceReceiver:
 
     def resume(self):
         self._paused = False
+
+    def set_realtime_callback(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        callback: Optional[Callable[[int, bytes], None]],
+    ) -> None:
+        self._realtime_loop = loop
+        self._realtime_audio_callback = callback
+        self._realtime_enabled = callback is not None
 
     # ------------------------------------------------------------------
     # SSRC -> user_id mapping via SPEAKING opcode hook
@@ -370,9 +392,32 @@ class VoiceReceiver:
             with self._lock:
                 self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
+            self._dispatch_realtime_pcm(ssrc, pcm)
         except Exception as e:
             logger.debug("Opus decode error for SSRC %s: %s", ssrc, e)
             return
+
+    def _handle_decoded_pcm(self, ssrc: int, pcm: bytes) -> None:
+        with self._lock:
+            self._buffers[ssrc].extend(pcm)
+            self._last_packet_time[ssrc] = time.monotonic()
+        self._dispatch_realtime_pcm(ssrc, pcm)
+
+    def _dispatch_realtime_pcm(self, ssrc: int, pcm: bytes) -> None:
+        if not (self._realtime_enabled and self._realtime_audio_callback and self._realtime_loop):
+            return
+
+        with self._lock:
+            user_id = self._ssrc_to_user.get(ssrc, 0)
+        if not user_id:
+            user_id = self._infer_user_for_ssrc(ssrc)
+        if not user_id:
+            return
+        self._realtime_loop.call_soon_threadsafe(
+            self._realtime_audio_callback,
+            int(user_id),
+            pcm,
+        )
 
     # ------------------------------------------------------------------
     # Silence detection
@@ -514,6 +559,9 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        self._realtime_voice_sessions: Dict[int, Any] = {}
+        self._realtime_audio_sources: Dict[int, Any] = {}
+        self._realtime_context_factory: Optional[Callable] = None
         # Track threads where the bot has participated so follow-up messages
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
@@ -1641,9 +1689,89 @@ class DiscordAdapter(BasePlatformAdapter):
 
             return True
 
+    async def join_realtime_voice_channel(self, channel, realtime_context: Any) -> bool:
+        """Join a Discord voice channel in low-latency Realtime audio mode."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return False
+        if RealtimeDiscordAudioSource is None or RealtimeVoiceSession is None:
+            raise RuntimeError("Realtime voice dependencies are unavailable")
+
+        guild_id = channel.guild.id
+        loop = asyncio.get_running_loop()
+
+        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            existing = self._voice_clients.get(guild_id)
+            if existing and existing.is_connected():
+                vc = existing
+                if existing.channel.id != channel.id:
+                    await existing.move_to(channel)
+            else:
+                vc = await channel.connect()
+                self._voice_clients[guild_id] = vc
+
+            listen_task = self._voice_listen_tasks.pop(guild_id, None)
+            if listen_task:
+                listen_task.cancel()
+
+            old_session = self._realtime_voice_sessions.pop(guild_id, None)
+            if old_session:
+                await old_session.stop()
+            old_source = self._realtime_audio_sources.pop(guild_id, None)
+            if old_source:
+                old_source.close()
+
+            if vc.is_playing():
+                vc.stop()
+
+            source = RealtimeDiscordAudioSource()
+            vc.play(source)
+
+            session = RealtimeVoiceSession(
+                config=realtime_context.config,
+                audio_sink=source.push_pcm_24k_mono,
+                on_barge_in=source.clear,
+                logger=logger,
+            )
+            try:
+                await session.start()
+            except Exception:
+                source.close()
+                try:
+                    if vc.is_playing():
+                        vc.stop()
+                except Exception:
+                    pass
+                raise
+
+            receiver = self._voice_receivers.get(guild_id)
+            if not receiver:
+                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver.start()
+                self._voice_receivers[guild_id] = receiver
+
+            def _schedule_realtime_audio(user_id: int, pcm: bytes) -> None:
+                if not self._is_allowed_user(str(user_id)):
+                    return
+                asyncio.create_task(session.append_discord_pcm(user_id, pcm))
+
+            receiver.set_realtime_callback(loop, _schedule_realtime_audio)
+            self._realtime_voice_sessions[guild_id] = session
+            self._realtime_audio_sources[guild_id] = source
+            self._reset_voice_timeout(guild_id)
+            return True
+
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            realtime_sessions = getattr(self, "_realtime_voice_sessions", {})
+            realtime_sources = getattr(self, "_realtime_audio_sources", {})
+            session = realtime_sessions.pop(guild_id, None)
+            if session:
+                await session.stop()
+            source = realtime_sources.pop(guild_id, None)
+            if source:
+                source.close()
+
             # Stop voice receiver first
             receiver = self._voice_receivers.pop(guild_id, None)
             if receiver:
@@ -1660,6 +1788,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 task.cancel()
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
+
+    def is_realtime_voice_active(self, guild_id: int) -> bool:
+        """Return whether the guild has an active realtime voice session."""
+        return guild_id in self._realtime_voice_sessions
 
     # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120
@@ -2654,9 +2786,11 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, "/reload-skills")
 
         @tree.command(name="voice", description="Toggle voice reply mode")
-        @discord.app_commands.describe(mode="Voice mode: on, off, tts, channel, leave, or status")
+        @discord.app_commands.describe(mode="Voice mode: on, off, tts, channel, realtime, live, leave, or status")
         @discord.app_commands.choices(mode=[
             discord.app_commands.Choice(name="channel — join your voice channel", value="channel"),
+            discord.app_commands.Choice(name="realtime — true low-latency speech-to-speech", value="realtime"),
+            discord.app_commands.Choice(name="live — alias for realtime", value="live"),
             discord.app_commands.Choice(name="leave — leave voice channel", value="leave"),
             discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),
             discord.app_commands.Choice(name="tts — voice reply to all messages", value="tts"),
@@ -3811,7 +3945,7 @@ class DiscordAdapter(BasePlatformAdapter):
             skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            if auto_thread and not skip_thread and not is_free_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)

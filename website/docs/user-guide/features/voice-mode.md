@@ -29,6 +29,7 @@ The `~/.hermes/` directory and default `config.yaml` are created automatically t
 | **Interactive Voice** | CLI | Press Ctrl+B to record, agent auto-detects silence and responds |
 | **Auto Voice Reply** | Telegram, Discord | Agent sends spoken audio alongside text responses |
 | **Voice Channel** | Discord | Bot joins VC, listens to users speaking, speaks replies back |
+| **Realtime Voice Channel** | Discord | Streams Discord PCM through OpenAI Realtime for low-latency speech-to-speech |
 
 ## Requirements
 
@@ -90,7 +91,7 @@ Add to `~/.hermes/.env`:
 # Speech-to-Text — local provider needs NO key at all
 # pip install faster-whisper          # Free, runs locally, recommended
 GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
-VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
+VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper, OpenAI TTS, and Discord Realtime voice
 
 # Text-to-Speech (optional — Edge TTS and NeuTTS work without any key)
 ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
@@ -237,7 +238,9 @@ Voice mode setting is persisted across gateway restarts.
 
 ## Discord Voice Channels
 
-The most immersive voice feature: the bot joins a Discord voice channel, listens to users speaking, transcribes their speech, processes through the agent, and speaks the reply back in the voice channel.
+The most immersive voice features run inside Discord voice channels. Hermes supports both the existing turn-based mode and a true realtime mode:
+- `/voice join` or `/voice channel`: detects speech boundaries, transcribes a WAV, runs the normal agent pipeline, and speaks a TTS reply.
+- `/voice realtime` or `/voice live`: streams decoded Discord PCM to OpenAI Realtime and streams PCM audio back into the channel with barge-in support.
 
 ### Setup
 
@@ -316,7 +319,7 @@ DISCORD_ALLOWED_USERS=your-user-id
 
 # TTS — optional. Edge TTS and NeuTTS need no key.
 # ELEVENLABS_API_KEY=***      # Premium quality
-# VOICE_TOOLS_OPENAI_KEY=***  # OpenAI TTS / Whisper
+# VOICE_TOOLS_OPENAI_KEY=***  # OpenAI TTS / Whisper / Realtime voice
 ```
 
 ### Start the Gateway
@@ -334,6 +337,8 @@ Use these in the Discord text channel where the bot is present:
 ```
 /voice join      Bot joins your current voice channel
 /voice channel   Alias for /voice join
+/voice realtime  True low-latency speech-to-speech in your voice channel
+/voice live      Alias for /voice realtime
 /voice leave     Bot disconnects from voice channel
 /voice status    Show voice mode and connected channel
 ```
@@ -344,13 +349,15 @@ You must be in a voice channel before running `/voice join`. The bot joins the s
 
 ### How It Works
 
-When the bot joins a voice channel, it:
+In turn-based mode, the bot:
 
 1. **Listens** to each user's audio stream independently
 2. **Detects silence** — 1.5s of silence after at least 0.5s of speech triggers processing
 3. **Transcribes** the audio via Whisper STT (local, Groq, or OpenAI)
 4. **Processes** through the full agent pipeline (session, tools, memory)
 5. **Speaks** the reply back in the voice channel via TTS
+
+In realtime mode, decoded 48 kHz stereo Discord PCM is converted to 24 kHz mono PCM, streamed to OpenAI Realtime, and the model's 24 kHz mono PCM audio deltas are converted back to Discord's 48 kHz stereo playback format. Realtime tools are disabled by default unless an approval-safe tool bridge is added.
 
 ### Text Channel Integration
 

@@ -1289,6 +1289,17 @@ voice:
   beep_enabled: true            # Play record start/stop beeps in CLI voice mode
   silence_threshold: 200        # RMS threshold for speech detection
   silence_duration: 3.0         # Seconds of silence before auto-stop
+  realtime:
+    enabled: true               # Enable /voice realtime for Discord voice channels
+    provider: openai
+    model: gpt-realtime-2
+    voice: marin
+    input_rate: 24000
+    output_rate: 24000
+    turn_detection: semantic_vad
+    tools_enabled: false        # Keep tools off unless approval bridging is implemented
+    idle_timeout_seconds: 300
+    max_session_minutes: 30
 ```
 
 Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/docs/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.

@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -190,6 +191,254 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
+
+    def test_chat_websocket_allows_remote_client_on_tailscale_bind(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.app.state, "bound_host", "100.64.119.29", raising=False)
+        ws = SimpleNamespace(client=SimpleNamespace(host="100.101.102.103"))
+
+        assert web_server._is_public_bind() is True
+        assert web_server._ws_client_is_allowed(ws) is True
+
+    def test_chat_websocket_rejects_remote_client_on_loopback_bind(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+        ws = SimpleNamespace(client=SimpleNamespace(host="100.101.102.103"))
+
+        assert web_server._is_public_bind() is False
+        assert web_server._ws_client_is_allowed(ws) is False
+
+    def test_loopback_dashboard_allows_explicit_proxy_host(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ALLOWED_HOSTS",
+            "mac-mini-de-ergonomia-mac-mini.taild069eb.ts.net",
+        )
+
+        assert web_server._is_accepted_host(
+            "mac-mini-de-ergonomia-mac-mini.taild069eb.ts.net",
+            "127.0.0.1",
+        ) is True
+
+    def test_loopback_dashboard_rejects_unlisted_proxy_host(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.delenv("HERMES_DASHBOARD_ALLOWED_HOSTS", raising=False)
+
+        assert web_server._is_accepted_host(
+            "mac-mini-de-ergonomia-mac-mini.taild069eb.ts.net",
+            "127.0.0.1",
+        ) is False
+
+    def test_chat_websocket_allows_explicit_proxy_host_on_loopback_bind(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ALLOWED_HOSTS",
+            "mac-mini-de-ergonomia-mac-mini.taild069eb.ts.net",
+        )
+        ws = SimpleNamespace(
+            client=SimpleNamespace(host="100.101.102.103"),
+            headers={"host": "mac-mini-de-ergonomia-mac-mini.taild069eb.ts.net"},
+        )
+
+        assert web_server._is_public_bind() is False
+        assert web_server._ws_client_is_allowed(ws) is True
+
+    def test_dashboard_voice_transcribe_requires_token(self):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth_client = TestClient(app)
+        resp = unauth_client.post(
+            "/api/voice/transcribe",
+            content=b"fake webm",
+            headers={"Content-Type": "audio/webm"},
+        )
+
+        assert resp.status_code == 401
+
+    def test_dashboard_voice_transcribe_rejects_unsupported_audio(self):
+        resp = self.client.post(
+            "/api/voice/transcribe",
+            content=b"not audio",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+        assert resp.status_code == 415
+
+    def test_dashboard_voice_transcribe_rejects_oversized_upload(self, monkeypatch):
+        import tools.transcription_tools as transcription_tools
+
+        monkeypatch.setattr(transcription_tools, "MAX_FILE_SIZE", 4)
+        monkeypatch.setattr(
+            transcription_tools,
+            "transcribe_audio",
+            lambda path: pytest.fail("oversized upload must not be transcribed"),
+        )
+
+        resp = self.client.post(
+            "/api/voice/transcribe",
+            content=b"12345",
+            headers={"Content-Type": "audio/webm"},
+        )
+
+        assert resp.status_code == 413
+
+    def test_dashboard_voice_transcribe_uses_existing_stt_and_cleans_temp(self, monkeypatch):
+        import tools.transcription_tools as transcription_tools
+
+        seen_paths: list[str] = []
+
+        def fake_transcribe(path: str):
+            seen_paths.append(path)
+            assert Path(path).suffix == ".webm"
+            assert Path(path).read_bytes() == b"fake webm audio"
+            return {"success": True, "transcript": "dashboard transcript"}
+
+        monkeypatch.setattr(transcription_tools, "transcribe_audio", fake_transcribe)
+
+        resp = self.client.post(
+            "/api/voice/transcribe?filename=recording.webm",
+            content=b"fake webm audio",
+            headers={"Content-Type": "audio/webm;codecs=opus"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"success": True, "transcript": "dashboard transcript"}
+        assert len(seen_paths) == 1
+        assert not Path(seen_paths[0]).exists()
+
+    def test_dashboard_voice_transcribe_filters_whisper_hallucination(self, monkeypatch):
+        import tools.transcription_tools as transcription_tools
+
+        monkeypatch.setattr(
+            transcription_tools,
+            "transcribe_audio",
+            lambda path: {"success": True, "transcript": "Thank you."},
+        )
+
+        resp = self.client.post(
+            "/api/voice/transcribe",
+            content=b"silent audio",
+            headers={"Content-Type": "audio/webm"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"success": True, "transcript": "", "filtered": True}
+
+    def test_dashboard_voice_synthesize_requires_token(self):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth_client = TestClient(app)
+        resp = unauth_client.post(
+            "/api/voice/synthesize",
+            json={"text": "hello"},
+        )
+
+        assert resp.status_code == 401
+
+    def test_dashboard_voice_synthesize_rejects_empty_text(self):
+        resp = self.client.post(
+            "/api/voice/synthesize",
+            json={"text": "   "},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "text is required"
+
+    def test_dashboard_voice_synthesize_rejects_large_text(self):
+        resp = self.client.post(
+            "/api/voice/synthesize",
+            json={"text": "x" * 4001},
+        )
+
+        assert resp.status_code == 413
+        assert resp.json()["detail"] == "text too large"
+
+    def test_dashboard_voice_synthesize_uses_existing_tts_and_cleans_temp(self, monkeypatch):
+        import tools.tts_tool as tts_tool
+
+        seen_paths: list[str] = []
+
+        def fake_tts(text: str, output_path: str):
+            seen_paths.append(output_path)
+            assert text == "dashboard speech"
+            assert Path(output_path).suffix == ".mp3"
+            Path(output_path).write_bytes(b"fake mp3 audio")
+            return json.dumps({
+                "success": True,
+                "file_path": output_path,
+                "provider": "edge",
+            })
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
+
+        resp = self.client.post(
+            "/api/voice/synthesize",
+            json={"text": "dashboard speech"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("audio/mpeg")
+        assert resp.content == b"fake mp3 audio"
+        assert len(seen_paths) == 1
+        assert not Path(seen_paths[0]).exists()
+
+    def test_dashboard_voice_synthesize_cleans_converted_output(self, monkeypatch):
+        import tools.tts_tool as tts_tool
+
+        seen_paths: list[str] = []
+
+        def fake_tts(_text: str, output_path: str):
+            seen_paths.append(output_path)
+            ogg_path = str(Path(output_path).with_suffix(".ogg"))
+            Path(output_path).write_bytes(b"source mp3")
+            Path(ogg_path).write_bytes(b"fake ogg audio")
+            return json.dumps({
+                "success": True,
+                "file_path": ogg_path,
+                "provider": "edge",
+            })
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
+
+        resp = self.client.post(
+            "/api/voice/synthesize",
+            json={"text": "dashboard speech"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("audio/ogg")
+        assert resp.content == b"fake ogg audio"
+        assert len(seen_paths) == 1
+        assert not Path(seen_paths[0]).exists()
+        assert not Path(seen_paths[0]).with_suffix(".ogg").exists()
+
+    def test_dashboard_voice_synthesize_surfaces_tts_failure(self, monkeypatch):
+        import tools.tts_tool as tts_tool
+
+        monkeypatch.setattr(
+            tts_tool,
+            "text_to_speech_tool",
+            lambda _text, _output_path: json.dumps({
+                "success": False,
+                "error": "tts unavailable",
+            }),
+        )
+
+        resp = self.client.post(
+            "/api/voice/synthesize",
+            json={"text": "dashboard speech"},
+        )
+
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "tts unavailable"
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")

@@ -285,6 +285,7 @@ export interface SlashHandlerContext {
   }
   slashFlightRef: MutableRefObject<number>
   transcript: {
+    appendMessage: (msg: Msg) => void
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
     send: (text: string) => void

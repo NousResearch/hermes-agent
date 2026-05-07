@@ -644,7 +644,7 @@ export function useMainApp(gw: GatewayClient) {
           setSessionStartedAt
         },
         slashFlightRef,
-        transcript: { page, panel, send, setHistoryItems, sys, trimLastExchange: session.trimLastExchange },
+        transcript: { appendMessage, page, panel, send, setHistoryItems, sys, trimLastExchange: session.trimLastExchange },
         voice: { setVoiceEnabled, setVoiceRecordKey }
       }),
     [

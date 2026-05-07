@@ -359,6 +359,16 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('/stop interrupts the active turn without sending terminal Ctrl+C', () => {
+    patchUiState({ busy: true, sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/stop')).toBe(true)
+
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('session.interrupt', { session_id: 'sid-abc' })
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('process.stop', {})
+  })
+
   it('renders browser connect progress messages from the gateway', async () => {
     const rpc = vi.fn(() =>
       Promise.resolve({
@@ -746,6 +756,7 @@ const buildSession = () => ({
 })
 
 const buildTranscript = () => ({
+  appendMessage: vi.fn(),
   page: vi.fn(),
   panel: vi.fn(),
   send: vi.fn(),

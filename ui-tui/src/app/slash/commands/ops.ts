@@ -17,6 +17,7 @@ import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
+import { turnController } from '../../turnController.js'
 import type { SlashCommand } from '../types.js'
 
 interface SkillInfo {
@@ -63,9 +64,18 @@ interface SkillsReloadResponse {
 
 export const opsCommands: SlashCommand[] = [
   {
-    help: 'stop background processes',
+    help: 'stop the active turn and background processes',
     name: 'stop',
     run: (_arg, ctx) => {
+      if (ctx.ui.busy && ctx.sid) {
+        turnController.interruptTurn({
+          appendMessage: ctx.transcript.appendMessage,
+          gw: ctx.gateway.gw,
+          sid: ctx.sid,
+          sys: ctx.transcript.sys
+        })
+      }
+
       ctx.gateway
         .rpc<ProcessStopResponse>('process.stop', {})
         .then(

@@ -14,10 +14,12 @@ import hmac
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -50,7 +52,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
@@ -77,6 +79,21 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
+
+_DASHBOARD_VOICE_READ_CHUNK_SIZE = 1024 * 1024
+_DASHBOARD_VOICE_TTS_MAX_CHARS = 4000
+_DASHBOARD_VOICE_CONTENT_TYPE_SUFFIXES = {
+    "audio/aac": ".aac",
+    "audio/flac": ".flac",
+    "audio/mp4": ".mp4",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/wave": ".wav",
+    "audio/webm": ".webm",
+    "audio/x-wav": ".wav",
+}
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
@@ -147,17 +164,20 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
+def _extra_accepted_hosts() -> set[str]:
+    """Dashboard hosts explicitly allowed behind a trusted local proxy."""
+    raw = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    return {
+        host.strip().lower().rsplit(":", 1)[0]
+        for host in raw.split(",")
+        if host.strip()
+    }
 
-    Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
-    """
+
+def _host_from_header(host_header: str) -> str:
+    """Return a normalized host name from an HTTP/WebSocket Host header."""
     if not host_header:
-        return False
+        return ""
     # Strip port suffix. IPv6 addresses use bracket notation:
     #   [::1]         — no port
     #   [::1]:9119    — with port
@@ -174,7 +194,21 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
             host_only = h.strip("[]")
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    return host_only.lower()
+
+
+def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+    """True if the Host header targets the interface we bound to.
+
+    Accepts:
+    - Exact bound host (with or without port suffix)
+    - Loopback aliases when bound to loopback
+    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
+      no protection possible at this layer)
+    """
+    if not host_header:
+        return False
+    host_only = _host_from_header(host_header)
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -185,7 +219,10 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # Loopback bind: accept the loopback names
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        return (
+            host_only in _LOOPBACK_HOST_VALUES
+            or host_only in _extra_accepted_hosts()
+        )
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
@@ -458,6 +495,10 @@ class ModelAssignment(BaseModel):
     provider: str
     model: str
     task: str = ""
+
+
+class DashboardVoiceSynthesizeRequest(BaseModel):
+    text: str
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -2897,8 +2938,15 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
 def _is_public_bind() -> bool:
-    """True when bound to all-interfaces (operator used --insecure)."""
-    return getattr(app.state, "bound_host", "") in ("0.0.0.0", "::")
+    """True when the dashboard is reachable by non-loopback clients.
+
+    ``--insecure`` can bind either to all interfaces or to a specific private
+    interface such as a Tailscale IP.  In both cases, token-protected chat
+    WebSockets must accept non-loopback peers; otherwise the dashboard loads
+    remotely while the Chat tab closes with 4403.
+    """
+    host = getattr(app.state, "bound_host", "")
+    return host not in _LOOPBACK_HOSTS
 
 
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
@@ -2908,6 +2956,10 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     (--insecure mode, guarded by session token auth).
     """
     if _is_public_bind():
+        return True
+    headers_get = getattr(getattr(ws, "headers", None), "get", None)
+    host_header = headers_get("host", "") if headers_get else ""
+    if _host_from_header(host_header) in _extra_accepted_hosts():
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
@@ -2954,6 +3006,195 @@ def _resolve_chat_argv(
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
 
     return list(argv), str(cwd) if cwd else None, env
+
+
+def _dashboard_voice_suffix(
+    filename: str,
+    content_type: str,
+    supported_formats: set[str],
+) -> str:
+    """Return a safe suffix for browser-recorded dashboard audio."""
+    suffix = Path(filename or "").suffix.lower()
+    if suffix in supported_formats:
+        return suffix
+
+    media_type = (content_type or "").split(";", 1)[0].strip().lower()
+    return _DASHBOARD_VOICE_CONTENT_TYPE_SUFFIXES.get(media_type, "")
+
+
+async def _write_dashboard_voice_body(
+    request: Request,
+    *,
+    suffix: str,
+    max_size: int,
+) -> str:
+    """Persist one bounded raw audio upload and return its temporary path."""
+    tmp_path = ""
+    size = 0
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=suffix,
+            prefix="dashboard_voice_",
+            delete=False,
+        ) as tmp:
+            tmp_path = tmp.name
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > max_size:
+                    raise HTTPException(status_code=413, detail="audio too large")
+                tmp.write(chunk)
+    except Exception:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+    if size == 0:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=400, detail="empty audio upload")
+
+    return tmp_path
+
+
+def _cleanup_dashboard_voice_paths(paths: Tuple[str, ...]) -> None:
+    """Best-effort cleanup for dashboard-generated voice artifacts."""
+    for path in paths:
+        if not path:
+            continue
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            _log.debug("dashboard voice cleanup failed for %s: %s", path, exc)
+
+
+def _dashboard_audio_media_type(path: str) -> str:
+    media_type, _encoding = mimetypes.guess_type(path)
+    return media_type or "application/octet-stream"
+
+
+@app.post("/api/voice/transcribe")
+async def dashboard_voice_transcribe(request: Request) -> dict:
+    """Transcribe microphone audio captured by the dashboard browser.
+
+    The classic CLI/TUI voice path records with ``sounddevice`` on the host
+    running Hermes.  The dashboard is often opened from another device (for
+    example a MacBook/iPhone controlling a Mac mini over Tailscale), so this
+    endpoint accepts audio recorded by ``MediaRecorder`` in the browser and
+    reuses the existing STT pipeline server-side.  The returned transcript is
+    injected into the embedded PTY by the React chat page; this endpoint does
+    not create a second chat surface.
+    """
+    from tools.transcription_tools import MAX_FILE_SIZE, SUPPORTED_FORMATS, transcribe_audio
+
+    filename = request.query_params.get("filename", "")
+    suffix = _dashboard_voice_suffix(
+        filename,
+        request.headers.get("content-type", ""),
+        SUPPORTED_FORMATS,
+    )
+    if suffix not in SUPPORTED_FORMATS:
+        raise HTTPException(status_code=415, detail="unsupported audio format")
+
+    tmp_path = await _write_dashboard_voice_body(
+        request,
+        suffix=suffix,
+        max_size=MAX_FILE_SIZE,
+    )
+    try:
+        result = await asyncio.to_thread(transcribe_audio, tmp_path)
+        if result.get("success"):
+            try:
+                from tools.voice_mode import is_whisper_hallucination
+
+                transcript = str(result.get("transcript", ""))
+                if is_whisper_hallucination(transcript):
+                    return {"success": True, "transcript": "", "filtered": True}
+            except Exception as exc:
+                _log.debug("dashboard voice hallucination filter skipped: %s", exc)
+        return result
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+@app.post("/api/voice/synthesize")
+async def dashboard_voice_synthesize(body: DashboardVoiceSynthesizeRequest) -> FileResponse:
+    """Synthesize dashboard speech with Hermes' configured TTS provider.
+
+    The classic ``speak_text`` path plays audio on the host that runs Hermes.
+    Dashboard users may be on another device over Tailscale, so this endpoint
+    reuses ``text_to_speech_tool`` to generate audio server-side and returns
+    the bytes for playback in the browser.
+    """
+    from tools.tts_tool import text_to_speech_tool
+
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    if len(text) > _DASHBOARD_VOICE_TTS_MAX_CHARS:
+        raise HTTPException(status_code=413, detail="text too large")
+
+    fd, requested_path = tempfile.mkstemp(
+        suffix=".mp3",
+        prefix="dashboard_tts_",
+    )
+    os.close(fd)
+    cleanup_paths = {requested_path}
+
+    try:
+        raw_result = await asyncio.to_thread(
+            text_to_speech_tool,
+            text,
+            requested_path,
+        )
+        try:
+            result = json.loads(raw_result)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="TTS returned an invalid response",
+            ) from exc
+
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=502,
+                detail=str(result.get("error") or "TTS synthesis failed"),
+            )
+
+        file_path = str(result.get("file_path") or requested_path)
+        cleanup_paths.add(file_path)
+        if not Path(file_path).exists() or Path(file_path).stat().st_size <= 0:
+            raise HTTPException(
+                status_code=502,
+                detail="TTS synthesis produced no audio",
+            )
+
+        cleanup_task = BackgroundTasks()
+        cleanup_task.add_task(_cleanup_dashboard_voice_paths, tuple(cleanup_paths))
+        return FileResponse(
+            file_path,
+            media_type=_dashboard_audio_media_type(file_path),
+            filename=Path(file_path).name,
+            background=cleanup_task,
+        )
+    except HTTPException:
+        _cleanup_dashboard_voice_paths(tuple(cleanup_paths))
+        raise
+    except Exception as exc:
+        _cleanup_dashboard_voice_paths(tuple(cleanup_paths))
+        _log.exception("dashboard voice synthesis failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:

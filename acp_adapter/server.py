@@ -124,6 +124,28 @@ def _is_text_resource(mime_type: str | None) -> bool:
     return mime.startswith(_TEXT_RESOURCE_MIME_PREFIXES) or mime in _TEXT_RESOURCE_MIME_TYPES
 
 
+def _is_image_resource(mime_type: str | None) -> bool:
+    mime = (mime_type or "").split(";", 1)[0].strip().lower()
+    return mime.startswith("image/")
+
+
+def _guess_image_mime_from_path(path: Path) -> str | None:
+    suffix = path.suffix.lower()
+    return {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".svg": "image/svg+xml",
+    }.get(suffix)
+
+
+def _image_data_url(data: bytes, mime_type: str) -> str:
+    return f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
+
+
 def _path_from_file_uri(uri: str) -> Path | None:
     """Convert local file URIs/paths from ACP clients into a readable Path.
 
@@ -186,10 +208,17 @@ def _format_resource_text(
     return f"{header}\nURI: {uri}\n\n{body}"
 
 
-def _resource_link_to_text(block: ResourceContentBlock) -> str | None:
+def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]:
+    """Convert an ACP resource_link block to OpenAI content parts.
+
+    Returns a list of {"type": "text", ...} and/or {"type": "image_url", ...}
+    parts. Image resources produce an image_url part with a small text header
+    so the model knows which attachment it is. Non-image resources return a
+    single text part with the inlined file body (or a binary-omit note).
+    """
     uri = str(getattr(block, "uri", "") or "").strip()
     if not uri:
-        return None
+        return []
 
     name = str(getattr(block, "name", "") or "").strip() or None
     title = str(getattr(block, "title", "") or "").strip() or None
@@ -197,12 +226,50 @@ def _resource_link_to_text(block: ResourceContentBlock) -> str | None:
     path = _path_from_file_uri(uri)
 
     if path is None:
-        return _format_resource_text(
-            uri=uri,
-            name=name,
-            title=title,
-            body="[Resource link only; Hermes cannot read non-file ACP resource URIs directly.]",
-        )
+        return [{
+            "type": "text",
+            "text": _format_resource_text(
+                uri=uri,
+                name=name,
+                title=title,
+                body="[Resource link only; Hermes cannot read non-file ACP resource URIs directly.]",
+            ),
+        }]
+
+    # Image files: emit a short text header + image_url data URL so vision
+    # models can see the attachment instead of a "binary omitted" note.
+    image_mime = mime_type if _is_image_resource(mime_type) else _guess_image_mime_from_path(path)
+    if image_mime and _is_image_resource(image_mime):
+        try:
+            size = path.stat().st_size
+            if size > _MAX_ACP_RESOURCE_BYTES:
+                return [{
+                    "type": "text",
+                    "text": _format_resource_text(
+                        uri=uri,
+                        name=name,
+                        title=title,
+                        body=f"[Image too large to inline: {size} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
+                    ),
+                }]
+            with path.open("rb") as fh:
+                data = fh.read()
+        except OSError as exc:
+            logger.warning("ACP image resource read failed: %s", uri, exc_info=True)
+            return [{
+                "type": "text",
+                "text": _format_resource_text(
+                    uri=uri,
+                    name=name,
+                    title=title,
+                    body=f"[Could not read attached image: {exc}]",
+                ),
+            }]
+        display = _resource_display_name(uri, name=name, title=title)
+        return [
+            {"type": "text", "text": f"[Attached image: {display}]\nURI: {uri}"},
+            {"type": "image_url", "image_url": {"url": _image_data_url(data, image_mime)}},
+        ]
 
     try:
         size = path.stat().st_size
@@ -211,36 +278,45 @@ def _resource_link_to_text(block: ResourceContentBlock) -> str | None:
             data = fh.read(read_size)
         text = _decode_text_bytes(data, mime_type)
         if text is None:
-            return _format_resource_text(
-                uri=uri,
-                name=name,
-                title=title,
-                body=f"[Binary file omitted: {size} bytes, mime={mime_type or 'unknown'}]",
-            )
+            return [{
+                "type": "text",
+                "text": _format_resource_text(
+                    uri=uri,
+                    name=name,
+                    title=title,
+                    body=f"[Binary file omitted: {size} bytes, mime={mime_type or 'unknown'}]",
+                ),
+            }]
         note = None
         if size > _MAX_ACP_RESOURCE_BYTES:
             note = f"truncated to {_MAX_ACP_RESOURCE_BYTES} of {size} bytes"
-        return _format_resource_text(uri=uri, name=name, title=title, body=text, note=note)
+        return [{
+            "type": "text",
+            "text": _format_resource_text(uri=uri, name=name, title=title, body=text, note=note),
+        }]
     except OSError as exc:
         logger.warning("ACP resource read failed: %s", uri, exc_info=True)
-        return _format_resource_text(
-            uri=uri,
-            name=name,
-            title=title,
-            body=f"[Could not read attached file: {exc}]",
-        )
+        return [{
+            "type": "text",
+            "text": _format_resource_text(
+                uri=uri,
+                name=name,
+                title=title,
+                body=f"[Could not read attached file: {exc}]",
+            ),
+        }]
 
 
-def _embedded_resource_to_text(block: EmbeddedResourceContentBlock) -> str | None:
+def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dict[str, Any]]:
     resource = getattr(block, "resource", None)
     if resource is None:
-        return None
+        return []
 
     uri = str(getattr(resource, "uri", "") or "").strip()
     mime_type = str(getattr(resource, "mime_type", "") or "").strip() or None
 
     if isinstance(resource, TextResourceContents):
-        return _format_resource_text(uri=uri, body=resource.text)
+        return [{"type": "text", "text": _format_resource_text(uri=uri, body=resource.text)}]
 
     if isinstance(resource, BlobResourceContents):
         blob = resource.blob or ""
@@ -248,6 +324,23 @@ def _embedded_resource_to_text(block: EmbeddedResourceContentBlock) -> str | Non
             data = base64.b64decode(blob, validate=True)
         except Exception:
             data = blob.encode("utf-8", errors="replace")
+
+        # Image blobs go through as image_url so vision models can see them.
+        if _is_image_resource(mime_type):
+            if len(data) > _MAX_ACP_RESOURCE_BYTES:
+                return [{
+                    "type": "text",
+                    "text": _format_resource_text(
+                        uri=uri,
+                        body=f"[Embedded image too large to inline: {len(data)} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
+                    ),
+                }]
+            display = _resource_display_name(uri)
+            return [
+                {"type": "text", "text": f"[Attached image: {display}]" + (f"\nURI: {uri}" if uri else "")},
+                {"type": "image_url", "image_url": {"url": _image_data_url(data, mime_type or "image/png")}},
+            ]
+
         text = _decode_text_bytes(data[:_MAX_ACP_RESOURCE_BYTES], mime_type)
         if text is None:
             body = f"[Binary embedded file omitted: {len(data)} bytes, mime={mime_type or 'unknown'}]"
@@ -255,12 +348,12 @@ def _embedded_resource_to_text(block: EmbeddedResourceContentBlock) -> str | Non
             body = text
             if len(data) > _MAX_ACP_RESOURCE_BYTES:
                 body += f"\n\n[Truncated to {_MAX_ACP_RESOURCE_BYTES} of {len(data)} bytes]"
-        return _format_resource_text(uri=uri, body=body)
+        return [{"type": "text", "text": _format_resource_text(uri=uri, body=body)}]
 
     text = getattr(resource, "text", None)
     if text:
-        return _format_resource_text(uri=uri, body=str(text))
-    return None
+        return [{"type": "text", "text": _format_resource_text(uri=uri, body=str(text))}]
+    return []
 
 
 def _extract_text(
@@ -323,16 +416,18 @@ def _content_blocks_to_openai_user_content(
                 parts.append(image_part)
             continue
         if isinstance(block, ResourceContentBlock):
-            resource_text = _resource_link_to_text(block)
-            if resource_text:
-                parts.append({"type": "text", "text": resource_text})
-                text_parts.append(resource_text)
+            resource_parts = _resource_link_to_parts(block)
+            for part in resource_parts:
+                parts.append(part)
+                if part.get("type") == "text":
+                    text_parts.append(part["text"])
             continue
         if isinstance(block, EmbeddedResourceContentBlock):
-            resource_text = _embedded_resource_to_text(block)
-            if resource_text:
-                parts.append({"type": "text", "text": resource_text})
-                text_parts.append(resource_text)
+            resource_parts = _embedded_resource_to_parts(block)
+            for part in resource_parts:
+                parts.append(part)
+                if part.get("type") == "text":
+                    text_parts.append(part["text"])
             continue
 
     if not parts:

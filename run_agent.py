@@ -9294,12 +9294,21 @@ class AIAgent:
             except Exception:
                 pass
 
+        # Emit a stream delta to keep the SSE connection alive during the
+        # compression LLM call (can take 10-30s).  Without this, the frontend
+        # sees no activity and its streaming state freezes — history polling
+        # is skipped (streamingStateRef !== null) and the UI goes blank.
+        self._fire_stream_delta("\n\n[Compressing context...]\n\n")
+
         try:
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
         except TypeError:
             # Plugin context engine with strict signature that doesn't accept
             # focus_topic — fall back to calling without it.
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+
+        # Signal compression complete — the agent is about to continue.
+        self._fire_stream_delta("\n\n[Context compressed, continuing...]\n\n")
 
         summary_error = getattr(self.context_compressor, "_last_summary_error", None)
         if summary_error:

@@ -18,12 +18,25 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().picker).toBe(true)
   })
 
-  it('treats /provider as a local /model alias', () => {
+  it('handles /redraw locally without slash worker fallback', () => {
     const ctx = buildCtx()
 
-    expect(createSlashHandler(ctx)('/provider')).toBe(true)
-    expect(getOverlayState().modelPicker).toBe(true)
+    expect(createSlashHandler(ctx)('/redraw')).toBe(true)
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
+  })
+
+  it('routes /status to live session.status instead of slash worker', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ output: 'Hermes TUI Status' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/status')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('session.status', { session_id: 'sid-abc' })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(ctx.transcript.page).toHaveBeenCalledWith('Hermes TUI Status', 'Status')
+    })
   })
 
   it('keeps typed /model switches session-scoped by default', async () => {
@@ -165,12 +178,105 @@ describe('createSlashHandler', () => {
     })
   })
 
-  it('shows usage for an unknown /skills subcommand', () => {
+  it('delegates non-native /skills subcommands to slash.exec', () => {
     const ctx = buildCtx()
 
-    createSlashHandler(ctx)('/skills zzz')
+    createSlashHandler(ctx)('/skills check')
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('usage: /skills'))
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+      command: 'skills check',
+      session_id: null
+    })
+  })
+
+  it('passes /new <title> through to the session lifecycle', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/new sprint planning')
+    getOverlayState().confirm?.onConfirm()
+
+    expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', 'sprint planning')
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('reloads skills in the live gateway and refreshes the catalog', async () => {
+    const rpc = vi.fn((method: string) => {
+      if (method === 'skills.reload') {
+        return Promise.resolve({ output: '42 skill(s) available' })
+      }
+      if (method === 'commands.catalog') {
+        return Promise.resolve({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
+      }
+      return Promise.resolve({})
+    })
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/reload-skills')
+
+    expect(rpc).toHaveBeenCalledWith('skills.reload', {})
+    await vi.waitFor(() => {
+      expect(ctx.transcript.page).toHaveBeenCalledWith('42 skill(s) available', 'Reload Skills')
+      expect(ctx.local.setCatalog).toHaveBeenCalledWith(
+        expect.objectContaining({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
+      )
+    })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  // Regressions from Copilot review on #19835: /voice output + frontend
+  // binding state must both track the gateway's fresh ``record_key`` on
+  // every response, or a config edit shows the new shortcut in text
+  // while push-to-talk still fires the old one until the next mtime
+  // poll (~5s).
+  it('/voice status renders the gateway record_key and pushes it into frontend state', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ enabled: true, record_key: 'ctrl+space', tts: false }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/voice status')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('  Record key: Ctrl+Space')
+    })
+    expect(ctx.voice.setVoiceRecordKey).toHaveBeenCalledWith(
+      expect.objectContaining({ ch: 'space', mod: 'ctrl', named: 'space' })
+    )
+  })
+
+  it('/voice on renders the configured binding for the start/stop hint', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ enabled: true, record_key: 'alt+r', tts: false }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/voice on')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('Voice mode enabled')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('  Alt+R to start/stop recording')
+    })
+    expect(ctx.voice.setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'r', mod: 'alt' }))
+  })
+
+  it('/voice falls back to Ctrl+B when the gateway response omits record_key', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ enabled: false, tts: false }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/voice status')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('  Record key: Ctrl+B')
+    })
+  })
+
+  // Round-2 Copilot review on #19835: a response missing ``record_key``
+  // (e.g. the old tts branch, or any future branch that forgets to
+  // include it) MUST NOT clobber the user's cached binding back to
+  // Ctrl+B. The label still renders the default for display; the
+  // frontend state keeps whatever was last authoritatively set.
+  it('/voice tts without record_key does not clobber cached frontend binding', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ enabled: true, tts: true }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/voice tts')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('Voice TTS enabled.')
+    })
+    expect(ctx.voice.setVoiceRecordKey).not.toHaveBeenCalled()
   })
 
   it('cycles details mode and persists it', async () => {
@@ -397,17 +503,17 @@ describe('createSlashHandler', () => {
       local: {
         catalog: {
           canon: {
-            '/status': '/status',
-            '/statusbar': '/statusbar'
+            '/profile': '/profile',
+            '/plugins': '/plugins'
           }
         }
       }
     })
 
-    expect(createSlashHandler(ctx)('/status')).toBe(true)
+    expect(createSlashHandler(ctx)('/profile')).toBe(true)
     await vi.waitFor(() => {
       expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
-        command: 'status',
+        command: 'profile',
         session_id: null
       })
     })
@@ -625,7 +731,8 @@ const buildLocal = () => ({
   catalog: null,
   getHistoryItems: vi.fn(() => []),
   getLastUserMsg: vi.fn(() => ''),
-  maybeWarn: vi.fn()
+  maybeWarn: vi.fn(),
+  setCatalog: vi.fn()
 })
 
 const buildSession = () => ({
@@ -648,7 +755,8 @@ const buildTranscript = () => ({
 })
 
 const buildVoice = () => ({
-  setVoiceEnabled: vi.fn()
+  setVoiceEnabled: vi.fn(),
+  setVoiceRecordKey: vi.fn()
 })
 
 interface Ctx {

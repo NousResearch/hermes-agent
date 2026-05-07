@@ -1,80 +1,116 @@
 ---
 title: "Nous Tool Gateway"
-description: "Route web search, image generation, text-to-speech, and browser automation through your Nous subscription — no extra API keys needed"
+description: "One subscription, every tool. Web search, image generation, TTS, and cloud browsers — all routed through Nous Portal with no extra API keys."
 sidebar_label: "Tool Gateway"
 sidebar_position: 2
 ---
 
 # Nous Tool Gateway
 
-:::tip Get Started
-The Tool Gateway is included with paid Nous Portal subscriptions. **[Manage your subscription →](https://portal.nousresearch.com/manage-subscription)**
-:::
+**One subscription. Every tool built in.**
 
-The **Tool Gateway** lets paid [Nous Portal](https://portal.nousresearch.com) subscribers use web search, image generation, text-to-speech, and browser automation through their existing subscription — no need to sign up for separate API keys from Firecrawl, FAL, OpenAI, or Browser Use.
+The Tool Gateway is included with every paid [Nous Portal](https://portal.nousresearch.com) subscription. It routes Hermes' tool calls — web search, image generation, text-to-speech, and cloud browser automation — through infrastructure Nous already runs, so you don't have to sign up with Firecrawl, FAL, OpenAI, Browser Use, or anyone else just to make your agent useful.
 
-## What's Included
+<div style={{display: 'flex', gap: '1rem', flexWrap: 'wrap', margin: '1.5rem 0'}}>
+  <a href="https://portal.nousresearch.com/manage-subscription" style={{background: 'var(--ifm-color-primary)', color: 'white', padding: '0.75rem 1.5rem', borderRadius: '6px', textDecoration: 'none', fontWeight: 'bold'}}>Start or manage subscription →</a>
+</div>
 
-| Tool | What It Does | Direct Alternative |
-|------|--------------|--------------------|
-| **Web search & extract** | Search the web and extract page content via Firecrawl | `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `PARALLEL_API_KEY`, `TAVILY_API_KEY` |
-| **Image generation** | Generate images via FAL (9 models: FLUX 2 Klein/Pro, GPT-Image 1.5/2, Nano Banana Pro, Ideogram V3, Recraft V4 Pro, Qwen, Z-Image Turbo) | `FAL_KEY` |
-| **Text-to-speech** | Convert text to speech via OpenAI TTS | `VOICE_TOOLS_OPENAI_KEY`, `ELEVENLABS_API_KEY` |
-| **Browser automation** | Control cloud browsers via Browser Use | `BROWSER_USE_API_KEY`, `BROWSERBASE_API_KEY` |
+## What's included
 
-All four tools bill to your Nous subscription. You can enable any combination — for example, use the gateway for web and image generation while keeping your own ElevenLabs key for TTS.
+| | Tool | What you get |
+|---|---|---|
+| 🔍 | **Web search & extract** | Agent-grade web search and full-page extraction via Firecrawl. No rate limits to worry about — the gateway handles scaling. |
+| 🎨 | **Image generation** | Nine models under one endpoint: **FLUX 2 Klein 9B**, **FLUX 2 Pro**, **Z-Image Turbo**, **Nano Banana Pro** (Gemini 3 Pro Image), **GPT Image 1.5**, **GPT Image 2**, **Ideogram V3**, **Recraft V4 Pro**, **Qwen Image**. Pick per-generation with a flag, or let Hermes default to FLUX 2 Klein. |
+| 🔊 | **Text-to-speech** | OpenAI TTS voices wired into the `text_to_speech` tool. Drop voice notes into Telegram, generate audio for pipelines, narrate anything. |
+| 🌐 | **Cloud browser automation** | Headless Chromium sessions via Browser Use. `browser_navigate`, `browser_click`, `browser_type`, `browser_vision` — all the agent-driving primitives, no Browserbase account required. |
 
-## Eligibility
+All four are pay-as-you-use billed against your Nous subscription. Use any combination — run the gateway for web and images while keeping your own ElevenLabs key for TTS, or route everything through Nous.
 
-The Tool Gateway is available to **paid** [Nous Portal](https://portal.nousresearch.com/manage-subscription) subscribers. Free-tier accounts do not have access — [upgrade your subscription](https://portal.nousresearch.com/manage-subscription) to unlock it.
+## Why it's here
 
-To check your status:
+Building an agent that can actually *do things* means stitching together 5+ API subscriptions — each with their own signup, rate limits, billing, and quirks. The gateway collapses that into one account:
+
+- **One bill.** Pay Nous; we handle the rest.
+- **One signup.** No Firecrawl, FAL, Browser Use, or OpenAI audio accounts to manage.
+- **One key.** Your Nous Portal OAuth covers every tool.
+- **Same quality.** Same backends the direct-key route uses — just fronted by us.
+
+Bring your own keys anytime — per-tool, whenever you want to. The gateway isn't a lock-in, it's a shortcut.
+
+## Get started
+
+```bash
+hermes model          # Pick Nous Portal as your provider
+```
+
+When you select Nous Portal, Hermes offers to turn on the Tool Gateway. Accept, and you're done — every supported tool is live on the next run.
+
+Check what's active at any time:
 
 ```bash
 hermes status
 ```
 
-Look for the **Nous Tool Gateway** section. It shows which tools are active via the gateway, which use direct keys, and which aren't configured.
-
-## Enabling the Tool Gateway
-
-### During model setup
-
-When you run `hermes model` and select Nous Portal as your provider, Hermes automatically offers to enable the Tool Gateway:
+You'll see a section like:
 
 ```
-Your Nous subscription includes the Tool Gateway.
-
-  The Tool Gateway gives you access to web search, image generation,
-  text-to-speech, and browser automation through your Nous subscription.
-  No need to sign up for separate API keys — just pick the tools you want.
-
-  ○ Web search & extract (Firecrawl) — not configured
-  ○ Image generation (FAL) — not configured
-  ○ Text-to-speech (OpenAI TTS) — not configured
-  ○ Browser automation (Browser Use) — not configured
-
-  ● Enable Tool Gateway
-  ○ Skip
+◆ Nous Tool Gateway
+  Nous Portal     ✓ managed tools available
+  Web tools       ✓ active via Nous subscription
+  Image gen       ✓ active via Nous subscription
+  TTS             ✓ active via Nous subscription
+  Browser         ○ active via Browser Use key
 ```
 
-Select **Enable Tool Gateway** and you're done.
+Tools marked "active via Nous subscription" are going through the gateway. Anything else is using your own keys.
 
-If you already have direct API keys for some tools, the prompt adapts — you can enable the gateway for all tools (your existing keys are kept in `.env` but not used at runtime), enable only for unconfigured tools, or skip entirely.
+## Eligibility
 
-### Via `hermes tools`
+The Tool Gateway is a **paid-subscription** feature. Free-tier Nous accounts can use Portal for inference but don't include managed tools — [upgrade your plan](https://portal.nousresearch.com/manage-subscription) to unlock the gateway.
 
-You can also enable the gateway tool-by-tool through the interactive tool configuration:
+## Mix and match
+
+The gateway is per-tool. Turn it on for just what you want:
+
+- **All tools through Nous** — easiest; one subscription, done.
+- **Gateway for web + images, bring your own TTS** — keep your ElevenLabs voice, let Nous handle the rest.
+- **Gateway only for things you don't have keys for** — "I already pay for Browserbase, but I don't want a Firecrawl account" works fine.
+
+Switch any tool at any time via:
 
 ```bash
-hermes tools
+hermes tools          # Interactive picker for each tool category
 ```
 
-Select a tool category (Web, Browser, Image Generation, or TTS), then choose **Nous Subscription** as the provider. This sets `use_gateway: true` for that tool in your config.
+Select the tool, pick **Nous Subscription** as the provider (or any direct provider you prefer). No config editing required.
 
-### Manual configuration
+## Using individual image models
 
-Set the `use_gateway` flag directly in `~/.hermes/config.yaml`:
+Image generation defaults to FLUX 2 Klein 9B for speed. Override per-call by passing the model ID to the `image_generate` tool:
+
+| Model | ID | Best for |
+|---|---|---|
+| FLUX 2 Klein 9B | `fal-ai/flux-2/klein/9b` | Fast, good default |
+| FLUX 2 Pro | `fal-ai/flux-2/pro` | Higher fidelity FLUX |
+| Z-Image Turbo | `fal-ai/z-image/turbo` | Stylized, fast |
+| Nano Banana Pro | `fal-ai/gemini-3-pro-image` | Google Gemini 3 Pro Image |
+| GPT Image 1.5 | `fal-ai/gpt-image-1/5` | OpenAI image gen, text+image |
+| GPT Image 2 | `fal-ai/gpt-image-2` | OpenAI latest |
+| Ideogram V3 | `fal-ai/ideogram/v3` | Strong prompt adherence + typography |
+| Recraft V4 Pro | `fal-ai/recraft/v4/pro` | Vector-style, graphic design |
+| Qwen Image | `fal-ai/qwen-image` | Alibaba multimodal |
+
+The set evolves — `hermes tools` → Image Generation shows the current live list.
+
+---
+
+## Configuration reference
+
+Most users never need to touch this — `hermes model` and `hermes tools` cover every workflow interactively. This section is for writing config.yaml directly or scripting setups.
+
+### Per-tool `use_gateway` flag
+
+Each tool's config block takes a `use_gateway` boolean:
 
 ```yaml
 web:
@@ -93,95 +129,48 @@ browser:
   use_gateway: true
 ```
 
-## How It Works
+Precedence: `use_gateway: true` routes through Nous regardless of any direct keys in `.env`. `use_gateway: false` (or absent) uses direct keys if available and only falls back to the gateway when none exist.
 
-When `use_gateway: true` is set for a tool, the runtime routes API calls through the Nous Tool Gateway instead of using direct API keys:
-
-1. **Web tools** — `web_search` and `web_extract` use the gateway's Firecrawl endpoint
-2. **Image generation** — `image_generate` uses the gateway's FAL endpoint
-3. **TTS** — `text_to_speech` uses the gateway's OpenAI Audio endpoint
-4. **Browser** — `browser_navigate` and other browser tools use the gateway's Browser Use endpoint
-
-The gateway authenticates using your Nous Portal credentials (stored in `~/.hermes/auth.json` after `hermes model`).
-
-### Precedence
-
-Each tool checks `use_gateway` first:
-
-- **`use_gateway: true`** → route through the gateway, even if direct API keys exist in `.env`
-- **`use_gateway: false`** (or absent) → use direct API keys if available, fall back to gateway only when no direct keys exist
-
-This means you can switch between gateway and direct keys at any time without deleting your `.env` credentials.
-
-## Switching Back to Direct Keys
-
-To stop using the gateway for a specific tool:
-
-```bash
-hermes tools    # Select the tool → choose a direct provider
-```
-
-Or set `use_gateway: false` in config:
+### Disabling the gateway
 
 ```yaml
 web:
-  backend: firecrawl
-  use_gateway: false  # Now uses FIRECRAWL_API_KEY from .env
+  use_gateway: false   # Hermes now uses FIRECRAWL_API_KEY from .env
 ```
 
-When you select a non-gateway provider in `hermes tools`, the `use_gateway` flag is automatically set to `false` to prevent contradictory config.
+`hermes tools` automatically clears the flag when you pick a non-gateway provider, so this usually happens for you.
 
-## Checking Status
+### Self-hosted gateway (advanced)
+
+Running your own Nous-compatible gateway? Override endpoints in `~/.hermes/.env`:
 
 ```bash
-hermes status
+TOOL_GATEWAY_DOMAIN=your-domain.example.com
+TOOL_GATEWAY_SCHEME=https
+TOOL_GATEWAY_USER_TOKEN=your-token        # normally auto-populated from Portal login
+FIRECRAWL_GATEWAY_URL=https://...         # override one endpoint specifically
 ```
 
-The **Nous Tool Gateway** section shows:
-
-```
-◆ Nous Tool Gateway
-  Nous Portal   ✓ managed tools available
-  Web tools       ✓ active via Nous subscription
-  Image gen       ✓ active via Nous subscription
-  TTS             ✓ active via Nous subscription
-  Browser         ○ active via Browser Use key
-  Modal           ○ available via subscription (optional)
-```
-
-Tools marked "active via Nous subscription" are routed through the gateway. Tools with their own keys show which provider is active.
-
-## Advanced: Self-Hosted Gateway
-
-For self-hosted or custom gateway deployments, you can override the gateway endpoints via environment variables in `~/.hermes/.env`:
-
-```bash
-TOOL_GATEWAY_DOMAIN=nousresearch.com     # Base domain for gateway routing
-TOOL_GATEWAY_SCHEME=https                 # HTTP or HTTPS (default: https)
-TOOL_GATEWAY_USER_TOKEN=your-token        # Auth token (normally auto-populated)
-FIRECRAWL_GATEWAY_URL=https://...         # Override for the Firecrawl endpoint specifically
-```
-
-These env vars are always visible in the configuration regardless of subscription status — they're useful for custom infrastructure setups.
+These knobs exist for custom infrastructure setups (enterprise deployments, dev environments). Regular subscribers never set them.
 
 ## FAQ
 
-### Do I need to delete my existing API keys?
+### Does it work with Telegram / Discord / the other messaging gateways?
 
-No. When `use_gateway: true` is set, the runtime skips direct API keys and routes through the gateway. Your keys stay in `.env` untouched. If you later disable the gateway, they'll be used again automatically.
+Yes. Tool Gateway operates at the tool-execution layer, not the CLI. Every interface that can call a tool — CLI, Telegram, Discord, Slack, IRC, Teams, the API server, anything — benefits from it transparently.
 
-### Can I use the gateway for some tools and direct keys for others?
+### What happens if my subscription expires?
 
-Yes. The `use_gateway` flag is per-tool. You can mix and match — for example, gateway for web and image generation, your own ElevenLabs key for TTS, and Browserbase for browser automation.
+Tools routed through the gateway stop working until you renew or swap in direct API keys via `hermes tools`. Hermes shows a clear error pointing at the portal.
 
-### What if my subscription expires?
+### Can I see usage or costs per tool?
 
-Tools that were routed through the gateway will stop working until you [renew your subscription](https://portal.nousresearch.com/manage-subscription) or switch to direct API keys via `hermes tools`.
+Yes — the [Nous Portal dashboard](https://portal.nousresearch.com) breaks usage down by tool so you can see what's driving your bill.
 
-### Does the gateway work with the messaging gateway?
+### Is Modal (serverless terminal) included?
 
-Yes. The Tool Gateway routes tool API calls regardless of whether you're using the CLI, Telegram, Discord, or any other messaging platform. It operates at the tool runtime level, not the entry point level.
+Modal is available as an **optional add-on** through the Nous subscription, not part of the default Tool Gateway bundle. Configure it via `hermes setup terminal` or directly in `config.yaml` when you want a remote sandbox for shell execution.
 
-### Is Modal included?
+### Do I need to delete my existing API keys when I enable the gateway?
 
-Modal (serverless terminal backend) is available as an optional add-on through the Nous subscription. It's not enabled by the Tool Gateway prompt — configure it separately via `hermes setup terminal` or in `config.yaml`.
+No — keep them in `.env`. When `use_gateway: true`, Hermes skips direct keys and uses the gateway. Flip the flag back to `false` and your keys become the source again. The gateway isn't a lock-in.

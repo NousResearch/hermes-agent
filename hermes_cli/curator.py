@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 
@@ -57,7 +58,8 @@ def _cmd_status(args) -> int:
     print(f"  last summary:   {summary}")
     _report = state.get("last_report_path")
     if _report:
-        print(f"  last report:    {_report}")
+        suffix = "" if Path(_report).exists() else " (missing)"
+        print(f"  last report:    {_report}{suffix}")
     _ih = curator.get_interval_hours()
     _interval_label = (
         f"{_ih // 24}d" if _ih % 24 == 0 and _ih >= 24
@@ -161,6 +163,8 @@ def _cmd_run(args) -> int:
         return 1
 
     dry = bool(getattr(args, "dry_run", False))
+    background = bool(getattr(args, "background", False))
+    synchronous = bool(getattr(args, "synchronous", False)) or not background
     if dry:
         print("curator: running DRY-RUN (report only, no mutations)...")
     else:
@@ -171,7 +175,7 @@ def _cmd_run(args) -> int:
 
     result = curator.run_curator_review(
         on_summary=_on_summary,
-        synchronous=bool(args.synchronous),
+        synchronous=synchronous,
         dry_run=dry,
     )
     auto = result.get("auto_transitions", {})
@@ -188,13 +192,19 @@ def _cmd_run(args) -> int:
                 f"archived={auto.get('archived', 0)} "
                 f"reactivated={auto.get('reactivated', 0)}"
             )
-    if not args.synchronous:
+    if not synchronous:
         print("llm pass running in background — check `hermes curator status` later")
     if dry:
-        print(
-            "dry-run: no changes applied. When the report lands, read it with "
-            "`hermes curator status` and run `hermes curator run` (no flag) to apply."
-        )
+        if synchronous:
+            print(
+                "dry-run: no changes applied. Read the report with "
+                "`hermes curator status` and run `hermes curator run` (no flag) to apply."
+            )
+        else:
+            print(
+                "dry-run: no changes applied. When the report lands, read it with "
+                "`hermes curator status` and run `hermes curator run` (no flag) to apply."
+            )
     return 0
 
 
@@ -243,6 +253,111 @@ def _cmd_restore(args) -> int:
     ok, msg = skill_usage.restore_skill(args.skill)
     print(f"curator: {msg}")
     return 0 if ok else 1
+
+
+def _cmd_archive(args) -> int:
+    """Manually archive an agent-created skill. Refuses if pinned.
+
+    The auto-curator archives stale skills on its own schedule; this verb is
+    for the user who wants to archive *now* without waiting for a run.
+    """
+    from tools import skill_usage
+    if skill_usage.get_record(args.skill).get("pinned"):
+        print(
+            f"curator: '{args.skill}' is pinned — unpin first with "
+            f"`hermes curator unpin {args.skill}`"
+        )
+        return 1
+    ok, msg = skill_usage.archive_skill(args.skill)
+    print(f"curator: {msg}")
+    return 0 if ok else 1
+
+
+def _idle_days(record: dict) -> Optional[int]:
+    """Days since the skill's last activity (view / use / patch).
+
+    Falls back to ``created_at`` so a skill that was authored but never used
+    can still be pruned — otherwise never-touched skills would be immortal.
+    Returns None only when both fields are missing or unparseable.
+    """
+    ts = record.get("last_activity_at") or record.get("created_at")
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0, (datetime.now(timezone.utc) - dt).days)
+
+
+def _cmd_prune(args) -> int:
+    """Bulk-archive agent-created skills idle for >= N days.
+
+    Pinned skills are exempt. Already-archived skills are skipped. Default
+    ``--days 90`` matches a conservative read of the curator's own archive
+    threshold; adjust with ``--days``. Use ``--dry-run`` to preview.
+    """
+    from tools import skill_usage
+    days = getattr(args, "days", 90)
+    if days < 1:
+        print(f"curator: --days must be >= 1 (got {days})", file=sys.stderr)
+        return 2
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    skip_confirm = bool(getattr(args, "yes", False))
+
+    candidates = []
+    for r in skill_usage.agent_created_report():
+        if r.get("pinned"):
+            continue
+        if r.get("state") == skill_usage.STATE_ARCHIVED:
+            continue
+        idle = _idle_days(r)
+        if idle is None or idle < days:
+            continue
+        candidates.append((r["name"], idle))
+
+    if not candidates:
+        print(f"curator: nothing to prune (no unpinned skills idle >= {days}d)")
+        return 0
+
+    candidates.sort(key=lambda c: -c[1])
+    print(f"curator: {len(candidates)} skill(s) idle >= {days}d:")
+    for name, idle in candidates:
+        print(f"  {name:40s} idle {idle}d")
+
+    if dry_run:
+        print("\n(dry run — no changes made)")
+        return 0
+
+    if not skip_confirm:
+        try:
+            reply = input(f"\nArchive {len(candidates)} skill(s)? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\ncurator: aborted")
+            return 1
+        if reply not in ("y", "yes"):
+            print("curator: aborted")
+            return 1
+
+    archived = 0
+    failures = []
+    for name, _ in candidates:
+        ok, msg = skill_usage.archive_skill(name)
+        if ok:
+            archived += 1
+        else:
+            failures.append((name, msg))
+
+    print(f"\ncurator: archived {archived}/{len(candidates)}")
+    if failures:
+        print("failures:")
+        for name, msg in failures:
+            print(f"  {name}: {msg}")
+        return 1
+    return 0
 
 
 def _cmd_backup(args) -> int:
@@ -337,6 +452,18 @@ def _cmd_rollback(args) -> int:
     return 1
 
 
+def _cmd_list_archived(args) -> int:
+    """List archived (recoverable) skills."""
+    from tools import skill_usage
+    names = skill_usage.list_archived_skill_names()
+    if not names:
+        print("curator: no archived skills")
+        return 0
+    for name in names:
+        print(name)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # argparse wiring (called from hermes_cli.main)
 # ---------------------------------------------------------------------------
@@ -356,7 +483,11 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_run = subs.add_parser("run", help="Trigger a curator review now")
     p_run.add_argument(
         "--sync", "--synchronous", dest="synchronous", action="store_true",
-        help="Wait for the LLM review pass to finish (default: background thread)",
+        help="Wait for the LLM review pass to finish (default for manual runs)",
+    )
+    p_run.add_argument(
+        "--background", dest="background", action="store_true",
+        help="Start the LLM review pass in a background thread and return immediately",
     )
     p_run.add_argument(
         "--dry-run", dest="dry_run", action="store_true",
@@ -382,6 +513,34 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_restore = subs.add_parser("restore", help="Restore an archived skill")
     p_restore.add_argument("skill", help="Skill name")
     p_restore.set_defaults(func=_cmd_restore)
+
+    subs.add_parser("list-archived", help="List archived skills") \
+        .set_defaults(func=_cmd_list_archived)
+
+    p_archive = subs.add_parser(
+        "archive",
+        help="Manually archive a skill (move to .archive/, excluded from prompt)",
+    )
+    p_archive.add_argument("skill", help="Skill name")
+    p_archive.set_defaults(func=_cmd_archive)
+
+    p_prune = subs.add_parser(
+        "prune",
+        help="Bulk-archive agent-created skills idle for >= N days (default 90)",
+    )
+    p_prune.add_argument(
+        "--days", type=int, default=90,
+        help="Archive skills idle for at least N days (default: 90)",
+    )
+    p_prune.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Skip the confirmation prompt",
+    )
+    p_prune.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Show what would be archived without doing it",
+    )
+    p_prune.set_defaults(func=_cmd_prune)
 
     p_backup = subs.add_parser(
         "backup",

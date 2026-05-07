@@ -192,12 +192,18 @@ class TestTencentTokenhubCanonicalProvider:
 
 
 class TestTencentInOpenRouterAndNous:
-    """tencent/hy3-preview:free should appear in OpenRouter and Nous curated lists."""
+    """tencent/hy3-preview:free and tencent/hy3-preview should appear in OpenRouter and Nous curated lists."""
 
     def test_in_openrouter_fallback(self):
         from hermes_cli.models import OPENROUTER_MODELS
         ids = [mid for mid, _ in OPENROUTER_MODELS]
         assert "tencent/hy3-preview:free" in ids
+
+    def test_paid_in_openrouter_fallback(self):
+        """tencent/hy3-preview (paid, no :free suffix) should also be in OpenRouter list."""
+        from hermes_cli.models import OPENROUTER_MODELS
+        ids = [mid for mid, _ in OPENROUTER_MODELS]
+        assert "tencent/hy3-preview" in ids
 
     def test_in_nous_provider_models(self):
         from hermes_cli.models import _PROVIDER_MODELS
@@ -420,7 +426,7 @@ class TestTencentTokenhubCLIDispatch:
 
 
 class TestTencentTokenhubModelCatalogJSON:
-    """Verify tencent/hy3-preview:free is present in the website model-catalog.json."""
+    """Verify tencent/hy3-preview:free and tencent/hy3-preview are present in the website model-catalog.json."""
 
     def test_in_model_catalog_json(self):
         catalog_path = os.path.join(
@@ -445,6 +451,7 @@ class TestTencentTokenhubModelCatalogJSON:
                 for model in provider_entry.get("models", []):
                     all_ids.add(model.get("id", ""))
         assert "tencent/hy3-preview:free" in all_ids
+        assert "tencent/hy3-preview" in all_ids
 
 
 # =============================================================================

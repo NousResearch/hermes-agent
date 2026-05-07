@@ -53,6 +53,43 @@ def test_run_gateway_exits_nonzero_when_start_gateway_reports_failure(monkeypatc
     assert calls == [(True, None)]
 
 
+def test_run_gateway_refuses_root_in_official_docker(monkeypatch, tmp_path, capsys):
+    project_root = tmp_path / "opt" / "hermes"
+    (project_root / "docker").mkdir(parents=True)
+    (project_root / "docker" / "entrypoint.sh").write_text("#!/bin/sh\n")
+
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
+    monkeypatch.delenv("HERMES_ALLOW_ROOT_GATEWAY", raising=False)
+    monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: True)
+
+    with pytest.raises(SystemExit) as exc_info:
+        gateway.run_gateway()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Refusing to run the Hermes gateway as root" in out
+    assert "/opt/hermes/docker/entrypoint.sh" in out
+
+
+def test_run_gateway_root_guard_has_escape_hatch(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: True)
+    monkeypatch.setenv("HERMES_ALLOW_ROOT_GATEWAY", "1")
+
+    gateway.run_gateway(verbose=2, replace=True)
+
+    assert calls == [(True, 2)]
+
+
 class TestSystemdLingerStatus:
     def test_reports_enabled(self, monkeypatch):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)

@@ -235,6 +235,9 @@ def _scan_workspace_state(source_dir: Path) -> list[tuple[Path, str]]:
     """
     findings: list[tuple[Path, str]] = []
 
+    if not source_dir.exists():
+        return findings
+
     # Direct state files in the root
     for name in ("todo.json", "sessions", "logs"):
         candidate = source_dir / name
@@ -243,7 +246,12 @@ def _scan_workspace_state(source_dir: Path) -> list[tuple[Path, str]]:
             findings.append((candidate, f"Root {kind}: {name}"))
 
     # State files inside workspace directories
-    for child in sorted(source_dir.iterdir()):
+    try:
+        children = sorted(source_dir.iterdir())
+    except OSError:
+        return findings
+
+    for child in children:
         if not child.is_dir() or child.name.startswith("."):
             continue
         # Check for workspace-like subdirectories

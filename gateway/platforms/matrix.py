@@ -17,7 +17,8 @@ Environment variables:
     MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
                             (eyes/checkmark/cross). Default: true
     MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
-    MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
+    MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement (alias of matrix.free_response_rooms)
+    MATRIX_ALLOWED_ROOMS    Comma-separated room IDs; if set, bot ONLY responds in these rooms (whitelist, DMs exempt; alias of matrix.allowed_rooms)
     MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
     MATRIX_DM_AUTO_THREAD       Auto-create threads for DM messages (default: false)
     MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
@@ -343,10 +344,29 @@ class MatrixAdapter(BasePlatformAdapter):
         self._require_mention: bool = os.getenv(
             "MATRIX_REQUIRE_MENTION", "true"
         ).lower() not in ("false", "0", "no")
-        free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
-        self._free_rooms: Set[str] = {
-            r.strip() for r in free_rooms_raw.split(",") if r.strip()
-        }
+        free_rooms_raw = config.extra.get("free_response_rooms")
+        if free_rooms_raw is None:
+            free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
+        if isinstance(free_rooms_raw, list):
+            self._free_rooms: Set[str] = {
+                str(r).strip() for r in free_rooms_raw if str(r).strip()
+            }
+        else:
+            self._free_rooms: Set[str] = {
+                r.strip() for r in str(free_rooms_raw).split(",") if r.strip()
+            }
+        # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
+        allowed_rooms_raw = config.extra.get("allowed_rooms")
+        if allowed_rooms_raw is None:
+            allowed_rooms_raw = os.getenv("MATRIX_ALLOWED_ROOMS", "")
+        if isinstance(allowed_rooms_raw, list):
+            self._allowed_rooms: Set[str] = {
+                str(r).strip() for r in allowed_rooms_raw if str(r).strip()
+            }
+        else:
+            self._allowed_rooms: Set[str] = {
+                r.strip() for r in str(allowed_rooms_raw).split(",") if r.strip()
+            }
         self._auto_thread: bool = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in (
             "true",
             "1",
@@ -364,6 +384,12 @@ class MatrixAdapter(BasePlatformAdapter):
             "MATRIX_REACTIONS", "true"
         ).lower() not in ("false", "0", "no")
         self._pending_reactions: dict[tuple[str, str], str] = {}
+        # Delay before redacting reactions so Matrix homeservers have time to
+        # deliver the final message event without tripping "missing event"
+        # errors in some clients.  5s is empirically safe; not user-tunable —
+        # if that changes, add a config.yaml entry rather than an env var.
+        self._reaction_redaction_delay_seconds = 5.0
+        self._reaction_redaction_tasks: Set[asyncio.Task] = set()
 
         # Proxy support — resolve once at init, reuse for all HTTP traffic.
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
@@ -850,6 +876,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 await self._sync_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+        redaction_tasks = list(self._reaction_redaction_tasks)
+        for task in redaction_tasks:
+            if not task.done():
+                task.cancel()
+        if redaction_tasks:
+            await asyncio.gather(*redaction_tasks, return_exceptions=True)
+        self._reaction_redaction_tasks.clear()
 
         # Close the SQLite crypto store database.
         if hasattr(self, "_crypto_db") and self._crypto_db:
@@ -1559,6 +1593,18 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Require-mention gating.
         if not is_dm:
+            # allowed_rooms check (whitelist — must pass before other gating).
+            # When set, messages from rooms NOT in this whitelist are silently
+            # ignored, even if @mentioned.  DMs are already excluded above.
+            if self._allowed_rooms and room_id not in self._allowed_rooms:
+                logger.debug(
+                    "Matrix: ignoring message %s in %s — room not in "
+                    "MATRIX_ALLOWED_ROOMS whitelist",
+                    event_id,
+                    room_id,
+                )
+                return None
+
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
@@ -1929,6 +1975,35 @@ class MatrixAdapter(BasePlatformAdapter):
         """Remove a reaction by redacting its event."""
         return await self.redact_message(room_id, reaction_event_id, reason)
 
+    def _schedule_reaction_redaction(
+        self,
+        room_id: str,
+        reaction_event_id: str,
+        reason: str = "",
+    ) -> None:
+        """Redact a reaction after a short delay so message delivery settles."""
+
+        async def _redact_later() -> None:
+            try:
+                if self._reaction_redaction_delay_seconds:
+                    await asyncio.sleep(self._reaction_redaction_delay_seconds)
+                if not await self._redact_reaction(room_id, reaction_event_id, reason):
+                    logger.debug(
+                        "Matrix: failed to redact reaction %s", reaction_event_id
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug(
+                    "Matrix: delayed reaction redaction failed for %s: %s",
+                    reaction_event_id,
+                    exc,
+                )
+
+        task = asyncio.create_task(_redact_later())
+        self._reaction_redaction_tasks.add(task)
+        task.add_done_callback(self._reaction_redaction_tasks.discard)
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add eyes reaction when the agent starts processing a message."""
         if not self._reactions_enabled:
@@ -1957,8 +2032,11 @@ class MatrixAdapter(BasePlatformAdapter):
         reaction_key = (room_id, msg_id)
         if reaction_key in self._pending_reactions:
             eyes_event_id = self._pending_reactions.pop(reaction_key)
-            if not await self._redact_reaction(room_id, eyes_event_id):
-                logger.debug("Matrix: failed to redact eyes reaction %s", eyes_event_id)
+            self._schedule_reaction_redaction(
+                room_id,
+                eyes_event_id,
+                "processing complete",
+            )
         await self._send_reaction(
             room_id,
             msg_id,
@@ -2037,11 +2115,8 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> None:
         """Redact the bot's seed ✅/❎ reactions, leaving only the user's reaction."""
         for emoji, evt_id in prompt.bot_reaction_events.items():
-            try:
-                await self.redact_message(room_id, evt_id, "approval resolved")
-                logger.debug("Matrix: redacted bot reaction %s (%s)", emoji, evt_id)
-            except Exception as exc:
-                logger.debug("Matrix: failed to redact bot reaction %s: %s", emoji, exc)
+            self._schedule_reaction_redaction(room_id, evt_id, "approval resolved")
+            logger.debug("Matrix: scheduled bot reaction redaction %s (%s)", emoji, evt_id)
 
     # ------------------------------------------------------------------
     # Text message aggregation (handles Matrix client-side splits)

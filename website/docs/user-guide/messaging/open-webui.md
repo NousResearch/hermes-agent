@@ -18,11 +18,55 @@ flowchart LR
     B -->|SSE streaming response| A
 ```
 
-Open WebUI connects to Hermes Agent's API server just like it would connect to OpenAI. Your agent handles the requests with its full toolset — terminal, file operations, web search, memory, skills — and returns the final response.
+Open WebUI connects to Hermes Agent's API server just like it would connect to OpenAI. Hermes handles the requests with its full toolset — terminal, file operations, web search, memory, skills — and returns the final response.
+
+:::important Runtime location
+The API server is a **Hermes agent runtime**, not a pure LLM proxy. For each request, Hermes creates a server-side `AIAgent` on the API-server host. Tool calls run where that API server is running.
+
+For example, if a laptop points Open WebUI or another OpenAI-compatible client at a Hermes API server on a remote machine, `pwd`, file tools, browser tools, local MCP tools, and other workspace tools run on the remote API-server host, not on the laptop.
+:::
 
 Open WebUI talks to Hermes server-to-server, so you do not need `API_SERVER_CORS_ORIGINS` for this integration.
 
 ## Quick Setup
+
+### One-command local bootstrap (macOS/Linux, no Docker)
+
+If you want Hermes + Open WebUI wired together locally with a reusable launcher, run:
+
+```bash
+cd ~/.hermes/hermes-agent
+bash scripts/setup_open_webui.sh
+```
+
+What the script does:
+
+- ensures `~/.hermes/.env` contains `API_SERVER_ENABLED`, `API_SERVER_HOST`, `API_SERVER_KEY`, `API_SERVER_PORT`, and `API_SERVER_MODEL_NAME`
+- restarts the Hermes gateway so the API server comes up
+- installs Open WebUI into `~/.local/open-webui-venv`
+- writes a launcher at `~/.local/bin/start-open-webui-hermes.sh`
+- on macOS, installs a `launchd` user service; on Linux with `systemd --user`, installs a user service there
+
+Defaults:
+
+- Hermes API: `http://127.0.0.1:8642/v1`
+- Open WebUI: `http://127.0.0.1:8080`
+- model name advertised to Open WebUI: `Hermes Agent`
+
+Useful overrides:
+
+```bash
+OPEN_WEBUI_NAME='My Hermes UI' \
+OPEN_WEBUI_ENABLE_SIGNUP=true \
+HERMES_API_MODEL_NAME='My Hermes Agent' \
+bash scripts/setup_open_webui.sh
+```
+
+On Linux, automatic background service setup requires a working `systemd --user` session. If you are on a headless SSH box and want to skip service installation, run:
+
+```bash
+OPEN_WEBUI_ENABLE_SERVICE=false bash scripts/setup_open_webui.sh
+```
 
 ### 1. Enable the API server
 
@@ -124,7 +168,7 @@ If you prefer to configure the connection through the UI instead of environment 
 5. Click **+ Add New Connection**
 6. Enter:
    - **URL**: `http://host.docker.internal:8642/v1`
-   - **API Key**: your key or any non-empty value (e.g., `not-needed`)
+   - **API Key**: the exact same value as `API_SERVER_KEY` in Hermes
 7. Click the **checkmark** to verify the connection
 8. **Save**
 
@@ -167,13 +211,15 @@ Open WebUI currently manages conversation history client-side even in Responses 
 When you send a message in Open WebUI:
 
 1. Open WebUI sends a `POST /v1/chat/completions` request with your message and conversation history
-2. Hermes Agent creates an AIAgent instance with its full toolset
-3. The agent processes your request — it may call tools (terminal, file operations, web search, etc.)
+2. Hermes Agent creates a server-side `AIAgent` instance using the API server's profile, model/provider config, memory, skills, and configured API-server toolsets
+3. The agent processes your request — it may call tools (terminal, file operations, web search, etc.) on the API-server host
 4. As tools execute, **inline progress messages stream to the UI** so you can see what the agent is doing (e.g. `` `💻 ls -la` ``, `` `🔍 Python 3.12 release` ``)
 5. The agent's final text response streams back to Open WebUI
 6. Open WebUI displays the response in its chat interface
 
-Your agent has access to all the same tools and capabilities as when using the CLI or Telegram — the only difference is the frontend.
+Your agent has access to the same tools and capabilities as that API-server Hermes instance. If the API server is remote, those tools are remote too.
+
+If you need tools to run against your **local** workspace today, run Hermes locally and point it at a pure LLM provider or pure OpenAI-compatible model proxy (for example vLLM, LiteLLM, Ollama, llama.cpp, OpenAI, OpenRouter, etc.). A future split-runtime mode for "remote brain, local hands" is being tracked in [#18715](https://github.com/NousResearch/hermes-agent/issues/18715); it is not the behavior of the current API server.
 
 :::tip Tool Progress
 With streaming enabled (the default), you'll see brief inline indicators as tools run — the tool emoji and its key argument. These appear in the response stream before the agent's final answer, giving you visibility into what's happening behind the scenes.
@@ -218,6 +264,10 @@ Hermes Agent may be executing multiple tool calls (reading files, running comman
 ### "Invalid API key" errors
 
 Make sure your `OPENAI_API_KEY` in Open WebUI matches the `API_SERVER_KEY` in Hermes Agent.
+
+:::warning
+Open WebUI persists OpenAI-compatible connection settings in its own database after first launch. If you accidentally saved a wrong key in the Admin UI, fixing the environment variables alone is not enough — update or delete the saved connection in **Admin Settings → Connections**, or reset the Open WebUI data directory / database.
+:::
 
 ## Multi-User Setup with Profiles
 

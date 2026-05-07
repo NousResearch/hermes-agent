@@ -318,6 +318,17 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "ollama.com": "ollama-cloud",
 }
 
+# Auto-extend with hostnames derived from provider profiles.
+# Any provider with a base_url not already in the map gets added automatically.
+try:
+    from providers import list_providers as _list_providers
+    for _pp in _list_providers():
+        _host = _pp.get_hostname()
+        if _host and _host not in _URL_TO_PROVIDER:
+            _URL_TO_PROVIDER[_host] = _pp.name
+except Exception:
+    pass
+
 
 def _infer_provider_from_url(base_url: str) -> Optional[str]:
     """Infer the models.dev provider name from a base URL.

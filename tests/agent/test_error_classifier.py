@@ -59,6 +59,7 @@ class TestFailoverReason:
             "provider_policy_blocked",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
+            "llama_cpp_grammar_pattern",
             "unknown",
         }
         actual = {r.value for r in FailoverReason}
@@ -474,6 +475,43 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="openrouter", approx_tokens=0)
         # Without "thinking" in the message, it shouldn't be thinking_signature
         assert result.reason != FailoverReason.thinking_signature
+
+    # ── Provider-specific: llama.cpp grammar-parse ──
+
+    def test_llama_cpp_grammar_parse_error(self):
+        """llama.cpp rejects regex escapes in JSON Schema `pattern`."""
+        e = MockAPIError(
+            "parse: error parsing grammar: unknown escape at \\d",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_llama_cpp_unable_to_generate_parser(self):
+        """Older llama.cpp builds surface the error as 'unable to generate parser'."""
+        e = MockAPIError(
+            "Unable to generate parser for this template",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+
+    def test_llama_cpp_json_schema_to_grammar_phrase(self):
+        """Some builds mention the module name explicitly."""
+        e = MockAPIError(
+            "json-schema-to-grammar failed to convert schema",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+
+    def test_llama_cpp_grammar_requires_400(self):
+        """A 500 with the same phrase isn't the llama.cpp grammar case."""
+        e = MockAPIError("error parsing grammar", status_code=500)
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason != FailoverReason.llama_cpp_grammar_pattern
 
     # ── Provider-specific: Anthropic long-context tier ──
 

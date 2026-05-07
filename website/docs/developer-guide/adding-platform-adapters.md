@@ -40,13 +40,25 @@ The plugin system lets you add a platform adapter without modifying any core Her
 
 ### PLUGIN.yaml
 
+Plugin metadata. The `requires_env` and `optional_env` blocks auto-populate `hermes config` UI entries (see [Surfacing Env Vars](#surfacing-env-vars-in-hermes-config) below).
+
 ```yaml
 name: my-platform
+label: My Platform
+kind: platform
 version: 1.0.0
 description: My custom messaging platform adapter
+author: Your Name
 requires_env:
-  - MY_PLATFORM_TOKEN
-  - MY_PLATFORM_CHANNEL
+  - MY_PLATFORM_TOKEN          # bare string works
+  - name: MY_PLATFORM_CHANNEL  # or rich dict for better UX
+    description: "Channel to join"
+    prompt: "Channel"
+    password: false
+optional_env:
+  - name: MY_PLATFORM_HOME_CHANNEL
+    description: "Default channel for cron delivery"
+    password: false
 ```
 
 ### adapter.py
@@ -90,6 +102,18 @@ def validate_config(config) -> bool:
     return bool(os.getenv("MY_PLATFORM_TOKEN") or extra.get("token"))
 
 
+def _env_enablement() -> dict | None:
+    token = os.getenv("MY_PLATFORM_TOKEN", "").strip()
+    channel = os.getenv("MY_PLATFORM_CHANNEL", "").strip()
+    if not (token and channel):
+        return None
+    seed = {"token": token, "channel": channel}
+    home = os.getenv("MY_PLATFORM_HOME_CHANNEL")
+    if home:
+        seed["home_channel"] = {"chat_id": home, "name": "Home"}
+    return seed
+
+
 def register(ctx):
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
@@ -100,6 +124,14 @@ def register(ctx):
         validate_config=validate_config,
         required_env=["MY_PLATFORM_TOKEN"],
         install_hint="pip install my-platform-sdk",
+        # Env-driven auto-configuration — seeds PlatformConfig.extra from
+        # env vars before adapter construction. See "Env-Driven Auto-
+        # Configuration" section below.
+        env_enablement_fn=_env_enablement,
+        # Cron home-channel delivery support. Lets deliver=my_platform cron
+        # jobs route without editing cron/scheduler.py. See "Cron Delivery"
+        # section below.
+        cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
         # Per-platform user authorization env vars
         allowed_users_env="MY_PLATFORM_ALLOWED_USERS",
         allow_all_env="MY_PLATFORM_ALLOW_ALL_USERS",
@@ -149,7 +181,9 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Config parsing | `Platform._missing_()` accepts any platform name |
 | Connected platform validation | Registry `validate_config()` called |
 | User authorization | `allowed_users_env` / `allow_all_env` checked |
-| Cron delivery | `Platform()` resolves any registered name |
+| Env-only auto-enable | `env_enablement_fn` seeds `PlatformConfig.extra` + `home_channel` |
+| Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
+| `hermes config` UI entries | `requires_env` / `optional_env` in `plugin.yaml` auto-populate |
 | send_message tool | Routes through live gateway adapter |
 | Webhook cross-platform delivery | Registry checked for known platforms |
 | `/update` command access | `allow_update_command` flag |
@@ -162,6 +196,100 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | `hermes tools` / `hermes skills` | Plugin platforms in per-platform config |
 | Token lock (multi-profile) | Use `acquire_scoped_lock()` in your `connect()` |
 | Orphaned config warning | Descriptive log when plugin is missing |
+
+## Env-Driven Auto-Configuration
+
+Most users set up a platform by dropping env vars into `~/.hermes/.env` rather than editing `config.yaml`. The `env_enablement_fn` hook lets your plugin pick those env vars up **before** the adapter is constructed, so `hermes gateway status`, `get_connected_platforms()`, and cron delivery see the correct state without instantiating the platform SDK.
+
+```python
+def _env_enablement() -> dict | None:
+    """Seed PlatformConfig.extra from env vars.
+
+    Called by the platform registry during load_gateway_config().
+    Return None when the platform isn't minimally configured — the
+    caller then skips auto-enabling. Return a dict to seed extras.
+
+    The special 'home_channel' key is extracted and becomes a proper
+    HomeChannel dataclass on the PlatformConfig; every other key is
+    merged into PlatformConfig.extra.
+    """
+    token = os.getenv("MY_PLATFORM_TOKEN", "").strip()
+    channel = os.getenv("MY_PLATFORM_CHANNEL", "").strip()
+    if not (token and channel):
+        return None
+    seed = {"token": token, "channel": channel}
+    home = os.getenv("MY_PLATFORM_HOME_CHANNEL")
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": os.getenv("MY_PLATFORM_HOME_CHANNEL_NAME", "Home"),
+        }
+    return seed
+
+
+def register(ctx):
+    ctx.register_platform(
+        name="my_platform",
+        label="My Platform",
+        adapter_factory=lambda cfg: MyPlatformAdapter(cfg),
+        check_fn=check_requirements,
+        validate_config=validate_config,
+        env_enablement_fn=_env_enablement,
+        # ... other fields
+    )
+```
+
+## Cron Delivery
+
+To let `deliver=my_platform` cron jobs route to a configured home channel, set `cron_deliver_env_var` to the env var name that holds the default chat/room/channel ID:
+
+```python
+ctx.register_platform(
+    name="my_platform",
+    ...
+    cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
+)
+```
+
+The scheduler reads this env var when resolving the home target for `deliver=my_platform` jobs, and also treats the platform as a valid cron target in `_KNOWN_DELIVERY_PLATFORMS`-style checks. If your `env_enablement_fn` seeds a `home_channel` dict (see above), that takes precedence — `cron_deliver_env_var` is the fallback for cron jobs that run before env seeding.
+
+## Surfacing Env Vars in `hermes config`
+
+`hermes_cli/config.py` scans `plugins/platforms/*/plugin.yaml` at import time and auto-populates `OPTIONAL_ENV_VARS` from `requires_env` and (optional) `optional_env` blocks. Use the rich-dict form to contribute proper descriptions, prompts, password flags, and URLs — the CLI setup UI picks them up for free.
+
+```yaml
+# plugins/platforms/my_platform/plugin.yaml
+name: my_platform-platform
+label: My Platform
+kind: platform
+version: 1.0.0
+description: >
+  My Platform gateway adapter for Hermes Agent.
+author: Your Name
+requires_env:
+  - name: MY_PLATFORM_TOKEN
+    description: "Bot API token from the My Platform console"
+    prompt: "My Platform bot token"
+    url: "https://my-platform.example.com/bots"
+    password: true
+  - name: MY_PLATFORM_CHANNEL
+    description: "Channel to join (e.g. #hermes)"
+    prompt: "Channel"
+    password: false
+optional_env:
+  - name: MY_PLATFORM_HOME_CHANNEL
+    description: "Default channel for cron delivery (defaults to MY_PLATFORM_CHANNEL)"
+    prompt: "Home channel (or empty)"
+    password: false
+  - name: MY_PLATFORM_ALLOWED_USERS
+    description: "Comma-separated user IDs allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+```
+
+**Supported dict keys:** `name` (required), `description`, `prompt`, `url`, `password` (bool; auto-detected from `*_TOKEN` / `*_SECRET` / `*_KEY` / `*_PASSWORD` / `*_JSON` suffix when omitted), `category` (defaults to `"messaging"`).
+
+Bare-string entries (`- MY_PLATFORM_TOKEN`) still work — they get a generic description auto-derived from the plugin's `label`. If a hardcoded entry for the same var already exists in `OPTIONAL_ENV_VARS`, it wins (back-compat); the plugin.yaml form acts as the fallback.
 
 ### Reference Implementation
 

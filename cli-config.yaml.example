@@ -601,7 +601,7 @@ agent:
 #   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
 #   - A list of individual toolsets to compose your own (see list below)
 #
-# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot, teams
+# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot, teams, google_chat
 #
 # Examples:
 #
@@ -632,6 +632,7 @@ agent:
 #   homeassistant: hermes-homeassistant  (same as telegram)
 #   qqbot:            hermes-qqbot            (same as telegram)
 #   teams:            hermes-teams            (same as telegram)
+#   google_chat:      hermes-google_chat      (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -644,6 +645,7 @@ platform_toolsets:
   qqbot: [hermes-qqbot]
   yuanbao: [hermes-yuanbao]
   teams: [hermes-teams]
+  google_chat: [hermes-google_chat]
 
 # =============================================================================
 # Gateway Platform Settings
@@ -874,6 +876,22 @@ display:
   #   verbose: Full args, results, and debug logs (same as /verbose)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
+
+  # Auto-cleanup of temporary progress bubbles after the final response lands.
+  # On platforms that support message deletion (currently Telegram), this
+  # removes the tool-progress bubble, "⏳ Still working..." notices, and
+  # context-pressure status messages once the final reply has been delivered —
+  # keeping long-running turns visible live, then tidy afterward. Failed runs
+  # leave the bubbles in place as breadcrumbs. Off by default.
+  # Per-platform override: display.platforms.telegram.cleanup_progress
+  #   true:  Delete tracked progress/status bubbles on successful turn
+  #   false: Leave everything in place (default)
+  # Example:
+  #   display:
+  #     platforms:
+  #       telegram:
+  #         cleanup_progress: true
+  cleanup_progress: false
 
   # Gateway-only natural mid-turn assistant updates.
   # When true, completed assistant status messages are sent as separate chat

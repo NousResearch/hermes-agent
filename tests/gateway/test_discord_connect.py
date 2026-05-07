@@ -612,10 +612,57 @@ async def test_post_connect_initialization_respects_discord_retry_after(tmp_path
     await adapter._run_post_connect_initialization()
 
     sync.assert_awaited_once()
-    state = json.loads((tmp_path / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILE).read_text())
+    state_path = (
+        tmp_path
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME
+    )
+    state = json.loads(state_path.read_text())
     entry = state["999"]
     assert entry["retry_after"] == 123.0
     assert entry["retry_after_until"] > entry["last_attempt_at"]
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_reraises_non_rate_limit_exceptions(tmp_path, monkeypatch):
+    """Arbitrary failures during sync must surface, not be swallowed as rate-limits."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {"name": "status", "description": "Show Hermes status", "type": 1, "options": []}
+
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: [_DesiredCommand()]),
+        application_id=4242,
+        user=SimpleNamespace(id=4242),
+    )
+
+    # Unrelated failure that happens to expose retry_after. Must NOT be
+    # caught by the rate-limit handler — it has nothing to do with 429s.
+    class _UnrelatedError(RuntimeError):
+        retry_after = 999.0
+
+    sync = AsyncMock(side_effect=_UnrelatedError("database is down"))
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+
+    # The outer _run_post_connect_initialization has a broad except Exception
+    # that logs defensively — so we assert on state NOT being written.
+    await adapter._run_post_connect_initialization()
+
+    sync.assert_awaited_once()
+    state_path = (
+        tmp_path
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME
+    )
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    entry = state.get("4242", {})
+    # Attempt was recorded before the sync call, but no rate-limit cooldown
+    # should have been persisted from the unrelated exception.
+    assert "retry_after_until" not in entry
+    assert "retry_after" not in entry
 
 
 @pytest.mark.asyncio

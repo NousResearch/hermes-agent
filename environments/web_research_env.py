@@ -37,7 +37,6 @@ Inspired by: GroceryMind — production Hermes agent doing live web research
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -64,9 +63,7 @@ try:
 except ImportError:
     HF_AVAILABLE = False
 
-from atroposlib.envs.base import ScoredDataGroup
 from atroposlib.envs.server_handling.server_manager import APIServerConfig
-from atroposlib.type_definitions import Item
 
 from environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfig
 from environments.agent_loop import AgentResult

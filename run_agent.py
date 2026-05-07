@@ -12756,7 +12756,18 @@ class AIAgent:
                             base_url=getattr(self, "base_url", None),
                         )
                         if not pool_may_recover:
-                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            # Minimum pause before hammering fallback — gives the
+                            # rate-limited provider a moment and prevents a cascade
+                            # of immediate fallback attempts from burning all keys.
+                            _fb_wait = jittered_backoff(
+                                self._fallback_index + 1,
+                                base_delay=15.0, max_delay=45.0,
+                            )
+                            self._emit_status(
+                                f"⚠️ Rate limited — waiting {_fb_wait:.0f}s before "
+                                f"switching to fallback (to avoid hammering providers)..."
+                            )
+                            time.sleep(_fb_wait)
                             if self._try_activate_fallback(reason=classified.reason):
                                 retry_count = 0
                                 compression_attempts = 0
@@ -13084,7 +13095,9 @@ class AIAgent:
                     if is_client_error:
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
-                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — waiting before trying fallback...")
+                        # Brief pause before hammering the fallback provider.
+                        time.sleep(jittered_backoff(1, base_delay=10.0, max_delay=30.0))
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -13151,7 +13164,17 @@ class AIAgent:
                             retry_count = 0
                             continue
                         # Try fallback before giving up entirely
-                        self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                        self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — waiting before trying fallback...")
+                        # Increasing cooldown between fallback attempts to avoid
+                        # triggering rate limits on every provider in rapid succession.
+                        _fallback_cooldown = jittered_backoff(
+                            self._fallback_index + 1,
+                            base_delay=30.0, max_delay=120.0,
+                        )
+                        self._emit_status(
+                            f"⚠️ Cooling down {_fallback_cooldown:.0f}s before next fallback attempt..."
+                        )
+                        time.sleep(_fallback_cooldown)
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -13233,7 +13256,7 @@ class AIAgent:
                                     _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
-                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=10.0, max_delay=60.0)
+                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=15.0, max_delay=90.0)
                     if is_rate_limited:
                         self._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                     else:

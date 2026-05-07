@@ -1,0 +1,14 @@
+name: line-platform
+kind: platform
+version: 1.0.0
+description: >
+  LINE Messaging API gateway adapter for Hermes Agent.
+  Runs an aiohttp webhook server that receives LINE webhook events
+  (with HMAC-SHA256 signature verification) and relays messages to and
+  from the Hermes agent.  Supports text, image, sticker, group, room,
+  and 1:1 (user) chats.  Outbound replies use the LINE reply token when
+  available and fall back to the push API otherwise.
+author: Hermes Agent contributors
+requires_env:
+  - LINE_CHANNEL_ACCESS_TOKEN
+  - LINE_CHANNEL_SECRET

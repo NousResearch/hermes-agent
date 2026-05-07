@@ -477,6 +477,34 @@ class VoiceReceiver:
                 pass
 
 
+def _read_dm_role_auth_guild() -> Optional[int]:
+    """Return the guild ID opted-in for DM role-based auth, or None.
+
+    Reads ``discord.dm_role_auth_guild`` from config.yaml. This is
+    deliberately a config.yaml-only setting (not an env var): per repo
+    policy, ``~/.hermes/.env`` is for secrets only, and this is a
+    behavioral setting. Guild IDs aren't secrets.
+
+    Accepts ints or numeric strings in the config. Anything else
+    (empty, malformed, None) returns None, which keeps the secure
+    default (DM role-auth disabled).
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config() or {}
+        discord_cfg = cfg.get("discord", {}) or {}
+        raw = discord_cfg.get("dm_role_auth_guild")
+    except Exception:
+        return None
+    if raw is None or raw == "":
+        return None
+    try:
+        guild_id = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return guild_id if guild_id > 0 else None
+
+
 class DiscordAdapter(BasePlatformAdapter):
     """
     Discord bot adapter.
@@ -2140,11 +2168,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Role checks are **scoped to the guild the message originated from**.
         For DMs (no guild context), role-based auth is disabled by default and
-        only user-ID allowlist applies. Set ``DISCORD_DM_ROLE_AUTH_GUILD``
-        to a specific guild ID to opt-in: role membership in that one guild
-        will authorize DMs. This prevents cross-guild privilege escalation
-        where a user with the configured role in any shared public server
-        could DM the bot and pass the allowlist.
+        only user-ID allowlist applies. Set ``discord.dm_role_auth_guild``
+        in config.yaml to a specific guild ID to opt-in: role membership in
+        that one guild will authorize DMs. This prevents cross-guild
+        privilege escalation where a user with the configured role in any
+        shared public server could DM the bot and pass the allowlist.
 
         Args:
             user_id: Author ID as a string.
@@ -2168,14 +2196,14 @@ class DiscordAdapter(BasePlatformAdapter):
         if not has_roles:
             return False
 
-        # DM path: roles require explicit opt-in via DISCORD_DM_ROLE_AUTH_GUILD.
-        # Without this, a user with the configured role in ANY mutual guild
-        # could DM the bot and bypass the allowlist (cross-guild leakage).
+        # DM path: roles require explicit opt-in via
+        # ``discord.dm_role_auth_guild`` in config.yaml. Without this, a
+        # user with the configured role in ANY mutual guild could DM the
+        # bot and bypass the allowlist (cross-guild leakage).
         if is_dm or guild is None:
-            dm_guild_env = os.getenv("DISCORD_DM_ROLE_AUTH_GUILD", "").strip()
-            if not dm_guild_env.isdigit():
+            dm_guild_id = _read_dm_role_auth_guild()
+            if dm_guild_id is None:
                 return False
-            dm_guild_id = int(dm_guild_env)
             if self._client is None:
                 return False
             dm_guild = self._client.get_guild(dm_guild_id)

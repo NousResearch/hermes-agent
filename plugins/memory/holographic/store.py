@@ -6,6 +6,7 @@ Single-user Hermes memory store plugin.
 import re
 import sqlite3
 import threading
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -811,6 +812,8 @@ class MemoryStore:
             if row is None:
                 raise KeyError(f"entity_id {entity_id} not found")
 
+            self.backup_before("rename_entity")
+
             old_name: str = row["name"]
             existing_aliases = [
                 a.strip() for a in (row["aliases"] or "").split(",") if a.strip()
@@ -914,6 +917,8 @@ class MemoryStore:
             ).fetchone()
             if target is None:
                 raise KeyError(f"target entity_id {target_id} not found")
+
+            self.backup_before("merge_entities")
 
             source_name: str = source["name"]
             target_name: str = target["name"]
@@ -1084,6 +1089,78 @@ class MemoryStore:
             self._rebuild_bank(cat)
 
         return {"changed": changed, "merged": merged, "skipped": skipped}
+
+    def backup_before(self, operation_name: str, *, keep: int = 30) -> Path:
+        """Snapshot the live DB before a destructive op.
+
+        Writes ``<db_parent>/backups/{operation_name}-{timestamp}.db`` using
+        SQLite's online backup API (WAL-safe, sees the latest committed
+        state). Then prunes all but the *keep* most recent ``.db`` files in
+        that directory so the safety net stays bounded.
+
+        Called automatically by ``rename_entity`` and ``merge_entities``;
+        also safe to call directly before ad-hoc destructive work. If the
+        snapshot can't be written, raises — a destructive op without its
+        backup is worse than the op not happening at all.
+        """
+        op = (operation_name or "").strip()
+        if not op:
+            raise ValueError("operation_name must not be empty")
+        # Strip path separators so callers can't escape the backups dir.
+        op = op.replace("/", "_").replace("\\", "_")
+
+        backups_dir = self.db_path.parent / "backups"
+        backups_dir.mkdir(parents=True, exist_ok=True)
+
+        # Microseconds disambiguate same-second calls (rotation tests, fast loops).
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        backup_path = backups_dir / f"{op}-{timestamp}.db"
+
+        with self._lock:
+            dest = sqlite3.connect(str(backup_path))
+            try:
+                self._conn.backup(dest)
+            finally:
+                dest.close()
+
+        self._prune_backups(backups_dir, keep=keep)
+        return backup_path
+
+    def list_backups(self, operation_name: "str | None" = None) -> "list[Path]":
+        """List existing backup snapshots, newest first.
+
+        Filename timestamps are formatted ``YYYYMMDD_HHMMSS_micro`` so a
+        descending lexicographic sort = reverse-chronological.
+
+        Pass ``operation_name`` to filter (e.g. only ``rename_entity`` snapshots);
+        omit to see everything in the backups directory.
+        """
+        backups_dir = self.db_path.parent / "backups"
+        if not backups_dir.exists():
+            return []
+        if operation_name:
+            op = operation_name.replace("/", "_").replace("\\", "_")
+            pattern = f"{op}-*.db"
+        else:
+            pattern = "*.db"
+        return sorted(backups_dir.glob(pattern), reverse=True)
+
+    @staticmethod
+    def _prune_backups(backups_dir: Path, keep: int) -> None:
+        """Delete all but the *keep* most recent ``.db`` files in *backups_dir*.
+
+        Sorts by filename. Timestamps are formatted ``YYYYMMDD_HHMMSS_micro``
+        so lexicographic order equals chronological order — more deterministic
+        than mtime when many files are created in the same second.
+        """
+        if keep < 0:
+            return
+        files = sorted(backups_dir.glob("*.db"), reverse=True)
+        for old in files[keep:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
 
     def close(self) -> None:
         """Close the database connection."""

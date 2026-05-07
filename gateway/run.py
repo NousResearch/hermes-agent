@@ -5559,17 +5559,20 @@ class GatewayRunner:
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
         
-        # If the previous session expired and was auto-reset, prepend a notice
-        # so the agent knows this is a fresh conversation (not an intentional /reset).
+        # If the previous session expired and was auto-reset, capture a notice
+        # for the agent BUT do NOT modify context_prompt — one-time transient
+        # notices must not contaminate the agent cache signature (which is
+        # computed from combined_ephemeral = context_prompt + ...).
+        # The notice is injected into combined_ephemeral AFTER _sig is computed.
+        _reset_context_note = None
         if getattr(session_entry, 'was_auto_reset', False):
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
-                context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
+                _reset_context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
             elif reset_reason == "daily":
-                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
+                _reset_context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
-                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
-            context_prompt = context_note + "\n\n" + context_prompt
+                _reset_context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
 
             # Send a user-facing notification explaining the reset, unless:
             # - notifications are disabled in config
@@ -12280,6 +12283,13 @@ class GatewayRunner:
                                _cached_for_log[1][:8], _sig[:8])
                 else:
                     logger.info("CACHE MISS: no cached agent for session %s (sig=%s)", session_key, _sig[:8])
+                # Inject auto-reset notice into ephemeral system prompt AFTER
+                # _sig computation so one-time transient notices don't contaminate
+                # the agent cache signature and cause per-turn evictions.
+                # Only needed for fresh agents (cache MISS); cached agents
+                # already have their frozen system prompt.
+                if _reset_context_note:
+                    combined_ephemeral = (_reset_context_note + "\n\n" + (combined_ephemeral or "")).strip()
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],

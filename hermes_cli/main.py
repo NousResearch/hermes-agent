@@ -7331,7 +7331,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 for p in all_profiles:
                     try:
                         r = seed_profile_skills(p.path, quiet=True)
-                        if r:
+                        if r and r.get("skipped_opt_out"):
+                            status = "opted out (--no-skills)"
+                        elif r:
                             copied = len(r.get("copied", []))
                             updated = len(r.get("updated", []))
                             modified = len(r.get("user_modified", []))
@@ -8124,6 +8126,7 @@ def cmd_profile(args):
         clone = getattr(args, "clone", False)
         clone_all = getattr(args, "clone_all", False)
         no_alias = getattr(args, "no_alias", False)
+        no_skills = getattr(args, "no_skills", False)
 
         try:
             clone_from = getattr(args, "clone_from", None)
@@ -8134,6 +8137,7 @@ def cmd_profile(args):
                 clone_all=clone_all,
                 clone_config=clone,
                 no_alias=no_alias,
+                no_skills=no_skills,
             )
             print(f"\nProfile '{name}' created at {profile_dir}")
 
@@ -8158,10 +8162,17 @@ def cmd_profile(args):
                 except Exception:
                     pass  # Honcho plugin not installed or not configured
 
-            # Seed bundled skills (skip if --clone-all already copied them)
+            # Seed bundled skills (skip if --clone-all already copied them, or
+            # if --no-skills was passed — in which case seed_profile_skills()
+            # honors the marker file and returns skipped_opt_out=True).
             if not clone_all:
                 result = seed_profile_skills(profile_dir)
-                if result:
+                if result and result.get("skipped_opt_out"):
+                    print(
+                        "No bundled skills seeded (--no-skills). "
+                        "Delete .no-bundled-skills in the profile to opt back in."
+                    )
+                elif result:
                     copied = len(result.get("copied", []))
                     print(f"{copied} bundled skills synced.")
                 else:
@@ -10522,6 +10533,11 @@ Examples:
     )
     profile_create.add_argument(
         "--no-alias", action="store_true", help="Skip wrapper script creation"
+    )
+    profile_create.add_argument(
+        "--no-skills",
+        action="store_true",
+        help="Create an empty profile with no bundled skills (opts out of `hermes update` skill sync)",
     )
 
     profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")

@@ -688,6 +688,69 @@ from gateway.whatsapp_identity import (
 
 logger = logging.getLogger(__name__)
 
+_PROGRESS_CLEANUP_PATH = _hermes_home / "gateway" / "pending_progress_cleanup.json"
+_PROGRESS_CLEANUP_LOCK = threading.Lock()
+_PROGRESS_CLEANUP_MAX_ATTEMPTS = 5
+
+
+def _progress_cleanup_key(platform: str, chat_id: str, message_id: str) -> str:
+    return f"{platform}:{chat_id}:{message_id}"
+
+
+def _load_pending_progress_cleanups() -> list[dict[str, Any]]:
+    try:
+        if not _PROGRESS_CLEANUP_PATH.exists():
+            return []
+        data = json.loads(_PROGRESS_CLEANUP_PATH.read_text())
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+    except Exception as e:
+        logger.debug("Failed to load pending progress cleanup queue: %s", e)
+    return []
+
+
+def _write_pending_progress_cleanups(items: list[dict[str, Any]]) -> None:
+    try:
+        _PROGRESS_CLEANUP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(_PROGRESS_CLEANUP_PATH, items)
+    except Exception as e:
+        logger.debug("Failed to write pending progress cleanup queue: %s", e)
+
+
+def _remember_progress_cleanup(platform: Any, chat_id: Any, message_id: Any) -> None:
+    if not chat_id or not message_id:
+        return
+    platform_value = getattr(platform, "value", platform)
+    platform_s = str(platform_value)
+    chat_s = str(chat_id)
+    message_s = str(message_id)
+    key = _progress_cleanup_key(platform_s, chat_s, message_s)
+    with _PROGRESS_CLEANUP_LOCK:
+        items = _load_pending_progress_cleanups()
+        items = [item for item in items if item.get("key") != key]
+        items.append({
+            "key": key,
+            "platform": platform_s,
+            "chat_id": chat_s,
+            "message_id": message_s,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "attempts": 0,
+            "reason": "tool_progress",
+        })
+        _write_pending_progress_cleanups(items)
+
+
+def _forget_progress_cleanup(platform: Any, chat_id: Any, message_id: Any) -> None:
+    if not chat_id or not message_id:
+        return
+    platform_value = getattr(platform, "value", platform)
+    key = _progress_cleanup_key(str(platform_value), str(chat_id), str(message_id))
+    with _PROGRESS_CLEANUP_LOCK:
+        items = _load_pending_progress_cleanups()
+        new_items = [item for item in items if item.get("key") != key]
+        if len(new_items) != len(items):
+            _write_pending_progress_cleanups(new_items)
+
 
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
@@ -2948,6 +3011,78 @@ class GatewayRunner:
         except Exception as exc:
             logger.error("Stale-code restart request failed: %s", exc)
 
+    async def _drain_pending_progress_cleanups(self) -> None:
+        """Best-effort cleanup for progress bubbles left behind by restarts/crashes."""
+        with _PROGRESS_CLEANUP_LOCK:
+            pending = _load_pending_progress_cleanups()
+        if not pending:
+            return
+
+        remaining: list[dict[str, Any]] = []
+        cleaned = 0
+        dropped = 0
+        for item in pending:
+            platform_name = str(item.get("platform") or "")
+            chat_id = str(item.get("chat_id") or "")
+            message_id = str(item.get("message_id") or "")
+            attempts = int(item.get("attempts") or 0)
+            if not platform_name or not chat_id or not message_id:
+                dropped += 1
+                continue
+            if attempts >= _PROGRESS_CLEANUP_MAX_ATTEMPTS:
+                logger.info(
+                    "Dropping stale progress cleanup after %d attempts: %s/%s",
+                    attempts,
+                    chat_id,
+                    message_id,
+                )
+                dropped += 1
+                continue
+
+            try:
+                platform = Platform(platform_name)
+            except Exception:
+                item["attempts"] = attempts + 1
+                remaining.append(item)
+                continue
+
+            adapter = self.adapters.get(platform)
+            if not adapter:
+                item["attempts"] = attempts + 1
+                remaining.append(item)
+                continue
+            if type(adapter).delete_message is BasePlatformAdapter.delete_message:
+                dropped += 1
+                continue
+
+            try:
+                logger.info(
+                    "Deleting stale progress bubble %s in chat %s (startup-cleanup)",
+                    message_id,
+                    chat_id,
+                )
+                result = await adapter.delete_message(chat_id, message_id)
+                logger.info("Startup cleanup delete result: %s", result)
+                if result:
+                    cleaned += 1
+                else:
+                    item["attempts"] = attempts + 1
+                    remaining.append(item)
+            except Exception as e:
+                logger.warning("Startup progress cleanup delete error: %s", e)
+                item["attempts"] = attempts + 1
+                remaining.append(item)
+
+        with _PROGRESS_CLEANUP_LOCK:
+            _write_pending_progress_cleanups(remaining)
+        if cleaned or dropped or remaining:
+            logger.info(
+                "Startup progress cleanup: cleaned=%d dropped=%d remaining=%d",
+                cleaned,
+                dropped,
+                len(remaining),
+            )
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -3277,6 +3412,13 @@ class GatewayRunner:
         
         # Update delivery router with adapters
         self.delivery_router.adapters = self.adapters
+
+        # Clean up tool-progress bubbles persisted by previous runs before
+        # restart/crash could delete them.
+        try:
+            await self._drain_pending_progress_cleanups()
+        except Exception as e:
+            logger.warning("Startup progress cleanup failed: %s", e)
         
         self._running = True
         self._update_runtime_status("running")
@@ -13228,7 +13370,9 @@ class GatewayRunner:
                                     logger.info("Deleting progress bubble %s in chat %s (run-completed)", progress_msg_id, _progress_chat_id)
                                     result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
                                     logger.info("Delete result: %s", result)
-                                    if not result:
+                                    if result:
+                                        _forget_progress_cleanup(source.platform, _progress_chat_id, progress_msg_id)
+                                    else:
                                         can_delete = False
                             except Exception as e:
                                 logger.warning("Delete error on run completed: %s", e)
@@ -13283,7 +13427,9 @@ class GatewayRunner:
                                     logger.info("Deleting progress bubble %s in chat %s (__reset__)", progress_msg_id, _progress_chat_id)
                                     result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
                                     logger.info("Delete result: %s", result)
-                                    if not result:
+                                    if result:
+                                        _forget_progress_cleanup(source.platform, _progress_chat_id, progress_msg_id)
+                                    else:
                                         can_delete = False
                             except Exception as e:
                                 logger.warning("Delete error: %s", e)
@@ -13322,7 +13468,9 @@ class GatewayRunner:
                                     logger.info("Deleting progress bubble %s in chat %s (normal-completion)", progress_msg_id, _progress_chat_id)
                                     result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
                                     logger.info("Delete result: %s", result)
-                                    if not result:
+                                    if result:
+                                        _forget_progress_cleanup(source.platform, _progress_chat_id, progress_msg_id)
+                                    else:
                                         can_delete = False
                             except Exception as e:
                                 logger.warning("Delete error on normal completion: %s", e)
@@ -13359,6 +13507,9 @@ class GatewayRunner:
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
+                            if _auto_delete:
+                                _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
+                                _remember_progress_cleanup(source.platform, _progress_chat_id, progress_msg_id)
 
                     _last_edit_ts = time.monotonic()
 
@@ -13405,7 +13556,9 @@ class GatewayRunner:
                                             logger.info("Deleting progress bubble %s in chat %s (__reset__)", progress_msg_id, _progress_chat_id)
                                             result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
                                             logger.info("Delete result: %s", result)
-                                            if not result:
+                                            if result:
+                                                _forget_progress_cleanup(source.platform, _progress_chat_id, progress_msg_id)
+                                            else:
                                                 can_delete = False
                                     except Exception as e:
                                         logger.warning("Delete error: %s", e)
@@ -13439,7 +13592,9 @@ class GatewayRunner:
                                 logger.info("Deleting progress bubble %s in chat %s (final-drain)", progress_msg_id, _progress_chat_id)
                                 result = await adapter.delete_message(_progress_chat_id, progress_msg_id)
                                 logger.info("Delete result: %s", result)
-                                if not result:
+                                if result:
+                                    _forget_progress_cleanup(source.platform, _progress_chat_id, progress_msg_id)
+                                else:
                                     can_delete = False
                         except Exception as e:
                             logger.warning("Delete error in final drain: %s", e)

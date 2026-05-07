@@ -11,6 +11,7 @@ import pytest
 
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.config import Platform, PlatformConfig
+import gateway.run as gateway_run
 
 
 class DeleteRecordingAdapter(BasePlatformAdapter):
@@ -117,3 +118,52 @@ class TestAutoDeleteConfig:
         platform_val = resolve_display_setting(config, "discord", "auto_delete_tool_progress")
         assert global_val is True
         assert platform_val is False
+
+
+class TestPersistedProgressCleanup:
+    def test_remember_and_forget_progress_cleanup(self, tmp_path, monkeypatch):
+        path = tmp_path / "pending_progress_cleanup.json"
+        monkeypatch.setattr(gateway_run, "_PROGRESS_CLEANUP_PATH", path)
+
+        gateway_run._remember_progress_cleanup(Platform.DISCORD, "chat-1", "msg-1")
+        items = gateway_run._load_pending_progress_cleanups()
+
+        assert len(items) == 1
+        assert items[0]["platform"] == "discord"
+        assert items[0]["chat_id"] == "chat-1"
+        assert items[0]["message_id"] == "msg-1"
+
+        gateway_run._forget_progress_cleanup(Platform.DISCORD, "chat-1", "msg-1")
+        assert gateway_run._load_pending_progress_cleanups() == []
+
+    @pytest.mark.asyncio
+    async def test_startup_cleanup_deletes_and_clears_pending_record(self, tmp_path, monkeypatch):
+        path = tmp_path / "pending_progress_cleanup.json"
+        monkeypatch.setattr(gateway_run, "_PROGRESS_CLEANUP_PATH", path)
+        gateway_run._remember_progress_cleanup(Platform.DISCORD, "chat-1", "msg-1")
+
+        adapter = DeleteRecordingAdapter(delete_succeeds=True)
+        runner = object.__new__(gateway_run.GatewayRunner)
+        runner.adapters = {Platform.DISCORD: adapter}
+
+        await runner._drain_pending_progress_cleanups()
+
+        assert adapter.delete_calls == [("chat-1", "msg-1")]
+        assert gateway_run._load_pending_progress_cleanups() == []
+
+    @pytest.mark.asyncio
+    async def test_startup_cleanup_keeps_failed_delete_for_retry(self, tmp_path, monkeypatch):
+        path = tmp_path / "pending_progress_cleanup.json"
+        monkeypatch.setattr(gateway_run, "_PROGRESS_CLEANUP_PATH", path)
+        gateway_run._remember_progress_cleanup(Platform.DISCORD, "chat-1", "msg-1")
+
+        adapter = DeleteRecordingAdapter(delete_succeeds=False)
+        runner = object.__new__(gateway_run.GatewayRunner)
+        runner.adapters = {Platform.DISCORD: adapter}
+
+        await runner._drain_pending_progress_cleanups()
+
+        items = gateway_run._load_pending_progress_cleanups()
+        assert adapter.delete_calls == [("chat-1", "msg-1")]
+        assert len(items) == 1
+        assert items[0]["attempts"] == 1

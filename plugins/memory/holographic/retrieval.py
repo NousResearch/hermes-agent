@@ -517,26 +517,21 @@ class FactRetriever:
         return base * (1.0 + 0.1 * min(hc, 20))
 
     def _reinforce_facts(self, fact_ids: "list[int]") -> None:
-        """Atomic batched UPDATE of helpful_count for the given fact_ids.
-        No-op if reinforce_on_retrieval is False or list is empty.
-        Logs each increment at DEBUG (fact_id=N helpful_count: old → new)."""
-        if not self.reinforce_on_retrieval or not fact_ids:
-            return
-        placeholders = ",".join("?" * len(fact_ids))
-        try:
-            with self.store._lock:
-                cur = self.store._conn.execute(
-                    f"UPDATE facts SET helpful_count = helpful_count + 1 "
-                    f"WHERE fact_id IN ({placeholders}) "
-                    f"RETURNING fact_id, helpful_count",
-                    fact_ids,
-                )
-                for row in cur.fetchall():
-                    logger.debug("Reinforced fact_id=%d helpful_count: %d → %d",
-                                 row[0], row[1] - 1, row[1])
-                self.store._conn.commit()
-        except Exception as e:
-            logger.debug("Reinforce skipped: %s", e)
+        """Reserved hook for retrieval-time signals. Currently a no-op.
+
+        ADR-001 (2026-05-07) closed the helpful_count write that used to
+        live here: passive retrieval was inflating the ranking multiplier
+        the same way explicit thumbs-up does, laundering retrieval
+        frequency into the trust signal. ``record_feedback`` is now the
+        sole writer of ``helpful_count``.
+
+        The function and its ``reinforce_on_retrieval`` flag are kept in
+        place because the four retrieval paths (search/probe/related/reason)
+        already invoke this hook on their result IDs — a future signal
+        like recency or per-retrieval timestamp would land here without
+        needing to thread a new call site through the codebase.
+        """
+        return
 
     def _half_life_for(self, category: "str | None") -> int:
         """Return the configured half-life (days) for a category, falling back

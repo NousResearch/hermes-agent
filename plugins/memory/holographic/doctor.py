@@ -20,7 +20,9 @@ does not mutate state — it reports. Repairs are explicit and called out.
 
 from __future__ import annotations
 
+import ast
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -89,6 +91,7 @@ def check_memory_health(
         checks.append(_check_vector_shape(conn, hrr_dim))
         checks.append(_check_orphans(conn))
         checks.append(_check_smoke_probe(conn, hrr_dim, smoke_entity))
+        checks.append(_check_trust_signal_writers())
     finally:
         conn.close()
 
@@ -294,4 +297,127 @@ def _check_smoke_probe(
         f"{elapsed_ms}ms over {len(rows)} facts",
         entity=entity_name, elapsed_ms=elapsed_ms, n_facts=len(rows),
         best_sim=round(best_sim, 4),
+    )
+
+
+# ADR-001: helpful_count is the trust-ranking multiplier. Only
+# record_feedback may write it. _reinforce_facts used to write it on every
+# retrieval and was inflating the multiplier silently. This check guards
+# against that regression by inspecting string-literal contents for SQL
+# writes to helpful_count outside the allowed function.
+#
+# Why string-literal scanning instead of line-based: SQL UPDATE statements
+# in this codebase span multiple lines inside a single triple-quoted or
+# f-string literal. Line-based scans either miss multi-column SET clauses
+# (the column doesn't sit immediately after SET) or false-positive on
+# comments and regex patterns that mention the column name. Walking the
+# AST and inspecting only Constant/JoinedStr contents sidesteps both.
+_HELPFUL_COUNT_WRITER_RE = re.compile(
+    # The two SQL write idioms used in this codebase, matchable across
+    # newlines because we scan whole string literals:
+    #   * ``SET ... helpful_count = ...`` (UPDATE clause)
+    #   * ``helpful_count = helpful_count`` (increment idiom for either
+    #     UPDATE or INSERT … ON CONFLICT … DO UPDATE)
+    r"(?:\bSET\b[^;]*?\bhelpful_count\s*=|\bhelpful_count\s*=\s*helpful_count\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+_ALLOWED_HELPFUL_COUNT_WRITER = "record_feedback"
+
+
+def _string_literals(tree: ast.AST) -> "list[tuple[int, str]]":
+    """Yield (lineno, content) for every string-literal in *tree*.
+
+    Plain string literals come through as ``ast.Constant`` with str value;
+    f-strings are ``ast.JoinedStr`` whose ``.values`` interleave Constant
+    parts with FormattedValue runtime expressions. We concatenate only the
+    Constant parts — the runtime values aren't statically known but SQL
+    keywords in this codebase always live in the literal segments.
+    """
+    out: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            out.append((node.lineno, node.value))
+        elif isinstance(node, ast.JoinedStr):
+            parts = [
+                v.value for v in node.values
+                if isinstance(v, ast.Constant) and isinstance(v.value, str)
+            ]
+            if parts:
+                out.append((node.lineno, "".join(parts)))
+    return out
+
+
+def _check_trust_signal_writers(plugin_dir: "Path | None" = None) -> dict:
+    """Verify only ``record_feedback`` writes ``helpful_count`` (ADR-001).
+
+    Walks every ``.py`` file in the holographic plugin directory, parses
+    the AST, and inspects every string-literal's content for SQL fragments
+    that mutate ``helpful_count``. Any match found inside a function other
+    than ``record_feedback`` is a violation.
+
+    Pure source inspection — does not touch the DB. The ``plugin_dir``
+    argument exists for testability; production callers omit it and the
+    check runs against this file's own package directory.
+    """
+    if plugin_dir is None:
+        plugin_dir = Path(__file__).parent
+
+    violations: list[tuple[str, str, int]] = []  # (file, function, line)
+
+    for py_file in sorted(plugin_dir.glob("*.py")):
+        try:
+            source = py_file.read_text()
+        except OSError as exc:
+            return _check(
+                "trust_signal_writers", "error",
+                f"could not read {py_file.name}: {exc}",
+            )
+        try:
+            tree = ast.parse(source, filename=str(py_file))
+        except SyntaxError as exc:
+            return _check(
+                "trust_signal_writers", "error",
+                f"could not parse {py_file.name}: {exc}",
+            )
+
+        # Build (start_line, end_line, name) for every function. Sorted
+        # ascending by start so that, for nested defs, the *last* enclosing
+        # match wins (innermost wins).
+        funcs: list[tuple[int, int, str]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                start = node.lineno
+                end = node.end_lineno or start
+                funcs.append((start, end, node.name))
+        funcs.sort(key=lambda t: t[0])
+
+        for lineno, content in _string_literals(tree):
+            if not _HELPFUL_COUNT_WRITER_RE.search(content):
+                continue
+            enclosing = "<module>"
+            for start, end, name in funcs:
+                if start <= lineno <= end:
+                    enclosing = name
+            if enclosing != _ALLOWED_HELPFUL_COUNT_WRITER:
+                violations.append((py_file.name, enclosing, lineno))
+
+    if violations:
+        sample = ", ".join(
+            f"{f}:{ln} in {fn}()" for f, fn, ln in violations[:3]
+        )
+        return _check(
+            "trust_signal_writers", "error",
+            f"{len(violations)} disallowed helpful_count writer(s) — only "
+            f"{_ALLOWED_HELPFUL_COUNT_WRITER} may write this column "
+            f"(ADR-001). Found: {sample}",
+            violations=[
+                {"file": f, "function": fn, "line": ln}
+                for f, fn, ln in violations
+            ],
+        )
+
+    return _check(
+        "trust_signal_writers", "ok",
+        f"helpful_count writes confined to {_ALLOWED_HELPFUL_COUNT_WRITER} "
+        f"(ADR-001)",
     )

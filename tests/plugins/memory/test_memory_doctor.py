@@ -154,3 +154,81 @@ def test_schema_version_value_in_detail(healthy_db):
     report = check_memory_health(db_path=healthy_db, hrr_dim=DIM)
     sv = _by_name(report, "schema_version")
     assert f"v{_CURRENT_SCHEMA_VERSION}" in sv["detail"]
+
+
+# ---------------------------------------------------------------------------
+# trust_signal_writers (ADR-001 invariant)
+# ---------------------------------------------------------------------------
+#
+# helpful_count is the ranking multiplier (_reinforced_trust at retrieval.py).
+# ADR-001 closed the _reinforce_facts write path that used to inflate it on
+# every probe. record_feedback is now the sole writer. The check below scans
+# plugin source for SQL writes outside that allowed function.
+
+
+def test_trust_signal_writers_passes_against_real_plugin():
+    """The live plugin code must satisfy ADR-001."""
+    from plugins.memory.holographic.doctor import _check_trust_signal_writers
+    result = _check_trust_signal_writers()
+    assert result["status"] == "ok", result
+    assert "record_feedback" in result["detail"]
+
+
+def test_trust_signal_writers_appears_in_full_report(healthy_db):
+    """Wiring check: the new check shows up in check_memory_health output."""
+    report = check_memory_health(db_path=healthy_db, hrr_dim=DIM)
+    tsw = _by_name(report, "trust_signal_writers")
+    assert tsw["status"] == "ok"
+
+
+def test_trust_signal_writers_flags_synthetic_violator(tmp_path):
+    """A non-record_feedback function writing helpful_count must error."""
+    from plugins.memory.holographic.doctor import _check_trust_signal_writers
+
+    (tmp_path / "store.py").write_text(
+        'def record_feedback(fact_id, helpful):\n'
+        '    sql = """\n'
+        '    UPDATE facts\n'
+        '    SET trust_score = ?,\n'
+        '        helpful_count = helpful_count + 1\n'
+        '    WHERE fact_id = ?\n'
+        '    """\n'
+    )
+    (tmp_path / "evil.py").write_text(
+        'def sneaky_writer(fact_ids):\n'
+        '    sql = "UPDATE facts SET helpful_count = helpful_count + 1"\n'
+    )
+
+    result = _check_trust_signal_writers(plugin_dir=tmp_path)
+    assert result["status"] == "error"
+    assert len(result["violations"]) == 1
+    v = result["violations"][0]
+    assert v["file"] == "evil.py"
+    assert v["function"] == "sneaky_writer"
+
+
+def test_trust_signal_writers_ignores_select_and_schema(tmp_path):
+    """SELECTs of helpful_count and CREATE TABLE column declarations are reads,
+    not writes — they must not be flagged."""
+    from plugins.memory.holographic.doctor import _check_trust_signal_writers
+
+    (tmp_path / "reader.py").write_text(
+        'def list_facts():\n'
+        '    sql = """\n'
+        '    CREATE TABLE facts (helpful_count INTEGER DEFAULT 0);\n'
+        '    SELECT fact_id, trust_score, helpful_count FROM facts;\n'
+        '    """\n'
+    )
+
+    result = _check_trust_signal_writers(plugin_dir=tmp_path)
+    assert result["status"] == "ok", result
+
+
+def test_trust_signal_writers_handles_unparseable_source(tmp_path):
+    """Syntax error in a plugin file must surface as error, not crash."""
+    from plugins.memory.holographic.doctor import _check_trust_signal_writers
+
+    (tmp_path / "broken.py").write_text("def oops(:\n  pass\n")
+    result = _check_trust_signal_writers(plugin_dir=tmp_path)
+    assert result["status"] == "error"
+    assert "broken.py" in result["detail"]

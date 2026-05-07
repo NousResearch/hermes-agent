@@ -5973,6 +5973,18 @@ class AIAgent:
                 if hasattr(chunk, "usage") and chunk.usage:
                     usage_obj = chunk.usage
 
+            # Detect non-SSE providers: if the stream iterator completed
+            # without yielding any content or tool-call chunks, the provider
+            # likely returned a plain JSON response instead of SSE.  Flag
+            # this so the next attempt uses non-streaming automatically.
+            if not content_parts and not tool_calls_acc and not self._interrupt_requested:
+                self._disable_streaming = True
+                logger.info(
+                    "Streaming yielded zero content/tool-call chunks — "
+                    "provider may not support SSE.  Disabling streaming "
+                    "for subsequent requests."
+                )
+
             # Build mock response matching non-streaming shape
             full_content = "".join(content_parts) or None
             mock_tool_calls = None

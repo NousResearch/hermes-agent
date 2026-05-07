@@ -359,9 +359,27 @@ def on_session_end(
         return summary
 
     # Step 3: dispatch each approved entry through conflict resolution
+    #
+    # IMPORTANT: when the proposal already carries a ``verdict`` field
+    # (because the confirm UI ran ``_classify_proposals`` and showed it
+    # to the user), we MUST reuse that exact verdict here. Re-classifying
+    # at commit time would:
+    #   1. Lie to the user — they approved based on the displayed verdict;
+    #      the LLM is non-deterministic on edge cases and a second roll can
+    #      flip DUPLICATE → NEW (or vice versa), polluting the warm store
+    #      with duplicates the user thought were being deduped.
+    #   2. Double the LLM cost on the slow path (one classify per proposal
+    #      in the UI, one again here).
+    # Only classify fresh when the verdict isn't pre-attached — i.e. the
+    # non-interactive auto-commit path that bypasses the confirm UI.
+    from tools.memory_extraction.conflict import ConflictVerdict
     for proposal in approved:
         try:
-            verdict = _conflict.classify(proposal["content"])
+            attached = proposal.get("verdict")
+            if isinstance(attached, ConflictVerdict):
+                verdict = attached
+            else:
+                verdict = _conflict.classify(proposal["content"])
             outcome = _conflict.apply_verdict(verdict, proposal, auto_commit=False)
             summary["actions"].append({
                 "content": proposal["content"][:120],

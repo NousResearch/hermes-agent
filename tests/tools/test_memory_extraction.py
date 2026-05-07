@@ -464,6 +464,129 @@ class TestOnSessionEnd:
         # Buffer cleared (empty approved set still finalizes the session)
         assert mex_buffer.get_session_entries("sid-rej") == []
 
+    def test_attached_verdict_is_reused_not_reclassified(
+        self, warm, auto_extract_on, monkeypatch,
+    ):
+        """Regression: if the confirm UI attached a verdict to a proposal,
+        on_session_end MUST use that exact verdict — not roll a new one.
+
+        Bug history: extractor.on_session_end called _conflict.classify()
+        unconditionally on every approved entry, throwing away the verdict
+        the confirm UI already showed the user. On non-deterministic LLM
+        responses this caused proposals displayed as DUPLICATE to be
+        committed as NEW (or vice versa), polluting the warm store with
+        the exact duplicates the user thought were being deduped.
+        """
+        from tools.memory_extraction.conflict import ConflictVerdict
+
+        # Pre-populate warm with an existing fact we'll claim is the dup target
+        existing = warm.add(
+            content="The tanium developer MCP runs at developer.tanium.com",
+            category="mcp",
+        )
+        existing_id = existing["fact_id"]
+
+        # LLM returns a final-pass entry that overlaps the existing one
+        def fake_llm(*, system, user, max_tokens, timeout=None):
+            return json.dumps({"entries": [
+                {"content": "tanium developer MCP at developer.tanium.com endpoint",
+                 "category": "mcp"}
+            ]})
+        monkeypatch.setattr(mex_extractor, "_call_extraction_llm", fake_llm)
+
+        # Sentinel: if classify() is called during commit, it would return
+        # NEW. We pre-attach DUPLICATE — the bug-prone path would commit NEW.
+        classify_calls: list = []
+        original_classify = mex_conflict.classify
+
+        def spy_classify(content, **kw):
+            classify_calls.append(content)
+            return original_classify(content, **kw)
+        monkeypatch.setattr(mex_conflict, "classify", spy_classify)
+
+        # Callback simulates the confirm UI: attaches a DUPLICATE verdict
+        # and approves the proposal as-is.
+        def cb(proposals):
+            for p in proposals:
+                p["verdict"] = ConflictVerdict(
+                    verdict="DUPLICATE",
+                    matched_id=existing_id,
+                    matched_content=existing["content"]
+                        if "content" in existing else None,
+                    rationale="UI-attached test verdict",
+                )
+            return list(proposals)
+
+        result = mex_extractor.on_session_end(
+            "sid-verdict-reuse", [{"role": "user", "content": "ctx"}],
+            interactive=True, confirm_callback=cb,
+        )
+
+        # Hard assertion: classify() must NOT be called on the approved
+        # entry's content during commit (it WAS called on the empty
+        # candidate-detection path? — no, our spy only sees calls to the
+        # public classify API). Either way the recorded contents must
+        # not include the approved proposal's text.
+        approved_text = "tanium developer MCP at developer.tanium.com endpoint"
+        assert approved_text not in classify_calls, (
+            f"classify() was called on the approved proposal at commit time, "
+            f"throwing away the UI verdict. calls={classify_calls!r}"
+        )
+
+        # And the recorded action must reflect the UI verdict (DUPLICATE
+        # → action='deduplicated'), NOT a fresh NEW commit.
+        assert len(result["actions"]) == 1, result
+        action = result["actions"][0]
+        assert action["verdict"] == "DUPLICATE", action
+        assert action["outcome"] == "deduplicated", action
+        # And no new fact_id should have been minted — apply_verdict on
+        # DUPLICATE returns the matched_id without writing a new row.
+        assert action["fact_id"] == existing_id, action
+
+        # Warm store should still contain exactly one fact (the original).
+        # If the bug were live, we'd have two — the original + the dup.
+        assert warm.count() == 1, (
+            f"warm store grew on a DUPLICATE verdict — duplicate was committed "
+            f"as NEW. count={warm.count()}"
+        )
+
+    def test_no_attached_verdict_falls_through_to_classify(
+        self, warm, auto_extract_on, monkeypatch,
+    ):
+        """When a proposal has NO pre-attached verdict (e.g. auto-commit
+        path bypasses the UI), classify() must still run at commit time."""
+        def fake_llm(*, system, user, max_tokens, timeout=None):
+            return json.dumps({"entries": [
+                {"content": "fresh fact for classify path", "category": "general"}
+            ]})
+        monkeypatch.setattr(mex_extractor, "_call_extraction_llm", fake_llm)
+
+        classify_calls: list = []
+        original_classify = mex_conflict.classify
+
+        def spy_classify(content, **kw):
+            classify_calls.append(content)
+            return original_classify(content, **kw)
+        monkeypatch.setattr(mex_conflict, "classify", spy_classify)
+
+        # Force auto-commit ON; no callback, no UI = no pre-attached verdict.
+        monkeypatch.setattr(
+            mex_extractor, "_get_extraction_config",
+            lambda: {
+                "model": "claude-haiku-4-5", "provider": None, "timeout": 30,
+                "max_tokens_per_turn": 1024, "max_tokens_session_end": 2048,
+                "include_pre_compress": True,
+                "auto_commit_session_end": True,
+            },
+        )
+
+        mex_extractor.on_session_end("sid-fresh", [])
+
+        assert "fresh fact for classify path" in classify_calls, (
+            f"classify() was NOT called on the auto-commit path. "
+            f"calls={classify_calls!r}"
+        )
+
 
 class TestFlushBuffer:
     def test_flush_clears(self, warm, auto_extract_on):

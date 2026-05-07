@@ -5597,9 +5597,11 @@ def _find_stale_dashboard_pids() -> list[int]:
     """
     patterns = [
         "hermes dashboard",
+        "hermes-dashboard",
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
     ]
+    lifecycle_flags = ("--status", "--stop")
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -5629,6 +5631,10 @@ def _find_stale_dashboard_pids() -> list[int]:
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
+                    if (
+                        any(flag in current_cmd for flag in lifecycle_flags)
+                    ):
+                        continue
                     if (
                         any(p in current_cmd for p in patterns)
                         and int(pid_str) != self_pid
@@ -5663,6 +5669,8 @@ def _find_stale_dashboard_pids() -> list[int]:
                     except ValueError:
                         continue
                     command = parts[1]
+                    if any(flag in command for flag in lifecycle_flags):
+                        continue
                     if any(p in command for p in patterns) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):

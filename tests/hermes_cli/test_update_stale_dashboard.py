@@ -104,6 +104,38 @@ class TestFindStaleDashboardPids:
             )
             assert _find_stale_dashboard_pids() == [12345]
 
+    def test_matches_direct_hermes_dashboard_launcher(self):
+        """The legacy helper script binds the dashboard port without a
+        literal `hermes dashboard` argv, so lifecycle commands must still
+        detect and stop it.
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(
+                    12345,
+                    "/Users/me/.hermes/hermes-agent/venv/bin/python3 /Users/me/.local/bin/hermes-dashboard",
+                ) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12345]
+
+    def test_lifecycle_helper_invocations_are_ignored(self):
+        """Avoid matching the transient shell/python process that is running
+        `hermes dashboard --status` or `--stop` itself.
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(11111, "/bin/bash -lc hermes dashboard --status"),
+                    _ps_line(22222, "python3 /Users/me/.local/bin/hermes dashboard --stop"),
+                    _ps_line(33333, "python3 -m hermes_cli.main dashboard --port 9119"),
+                ]) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [33333]
+
     def test_multiple_matches(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(

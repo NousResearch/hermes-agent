@@ -237,6 +237,42 @@ def _get_active_profile_path() -> Path:
     return _get_default_hermes_home() / "active_profile"
 
 
+def _get_root_alias() -> Optional[str]:
+    """Return the renamed-root display alias, or None if not set/invalid.
+
+    The root profile (``~/.hermes``) is always reachable as ``default``. When
+    ``~/.hermes/default_profile_name`` contains a valid profile id, that name
+    also resolves to the root profile so users who renamed it (in WebUI or by
+    hand) see and use the new name consistently from the CLI (see #21105).
+
+    Returns ``None`` when the file is missing, empty, fails id validation,
+    equals the reserved ``default`` alias, or collides with an existing named
+    profile dir under ``~/.hermes/profiles/``.
+    """
+    try:
+        path = _get_default_hermes_home() / "default_profile_name"
+        if not path.is_file():
+            return None
+        raw = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not raw:
+        return None
+    candidate = raw.lower()
+    if candidate == "default":
+        return None
+    if not _PROFILE_ID_RE.match(candidate):
+        return None
+    # A real named profile with the same id wins; dropping the alias keeps
+    # that profile reachable rather than silently shadowing it with the root.
+    try:
+        if (_get_profiles_root() / candidate).is_dir():
+            return None
+    except OSError:
+        return None
+    return candidate
+
+
 def _get_wrapper_dir() -> Path:
     """Return the directory for wrapper scripts."""
     return Path.home() / ".local" / "bin"
@@ -253,6 +289,10 @@ def normalize_profile_name(name: str) -> str:
     alias ``default`` is matched case-insensitively (``Default`` → ``default``).
     Dashboards and tools may pass title-cased display labels; normalize before
     validation, assignment, and subprocess spawn (see issue #18498).
+
+    A renamed root profile (``~/.hermes/default_profile_name`` — see #21105)
+    also resolves here to ``default`` so all downstream helpers route the
+    alias to the root profile without each having to know about it.
     """
     if not isinstance(name, str):
         name = str(name)
@@ -261,7 +301,11 @@ def normalize_profile_name(name: str) -> str:
         raise ValueError("profile name cannot be empty")
     if stripped.casefold() == "default":
         return "default"
-    return stripped.lower()
+    canon = stripped.lower()
+    alias = _get_root_alias()
+    if alias is not None and canon == alias:
+        return "default"
+    return canon
 
 
 def validate_profile_name(name: str) -> None:
@@ -581,8 +625,11 @@ def list_profiles() -> List[ProfileInfo]:
         model, provider = _read_config_model(default_home)
         dist_name, dist_version, dist_source = _read_distribution_meta(default_home)
         meta = read_profile_meta(default_home)
+        # Honor renamed-root display alias (#21105) — the row still has
+        # is_default=True so dashboards/CLI mark it as the root profile.
+        display_name = _get_root_alias() or "default"
         profiles.append(ProfileInfo(
-            name="default",
+            name=display_name,
             path=default_home,
             is_default=True,
             gateway_running=_check_gateway_running(default_home),
@@ -1064,7 +1111,7 @@ def get_active_profile_name() -> str:
 
     default_resolved = _get_default_hermes_home().resolve()
     if resolved == default_resolved:
-        return "default"
+        return _get_root_alias() or "default"
 
     profiles_root = _get_profiles_root().resolve()
     try:

@@ -546,6 +546,112 @@ class TestGetActiveProfileName:
 
 
 # ===================================================================
+# TestRenamedRootAlias  (#21105)
+# ===================================================================
+
+
+def _set_root_alias(profile_env, value: str) -> None:
+    """Write a renamed-root alias file under the test root."""
+    (profile_env / ".hermes" / "default_profile_name").write_text(value)
+
+
+class TestRenamedRootAlias:
+    """Tests for the renamed-root display alias plumbing (#21105).
+
+    A non-empty ``~/.hermes/default_profile_name`` should resolve to the
+    root profile across normalize/get_profile_dir/profile_exists/
+    resolve_profile_env/list_profiles/get_active_profile_name without
+    materializing a ``profiles/<alias>/`` directory.
+    """
+
+    def test_alias_resolves_to_default_via_normalize(self, profile_env):
+        _set_root_alias(profile_env, "kinni")
+        assert normalize_profile_name("kinni") == "default"
+        assert normalize_profile_name("Kinni") == "default"
+        assert normalize_profile_name("default") == "default"  # back-compat
+
+    def test_alias_resolves_to_root_dir(self, profile_env):
+        _set_root_alias(profile_env, "kinni")
+        assert get_profile_dir("kinni") == profile_env / ".hermes"
+
+    def test_alias_resolves_via_resolve_profile_env(self, profile_env):
+        _set_root_alias(profile_env, "kinni")
+        assert resolve_profile_env("kinni") == str(profile_env / ".hermes")
+        # 'default' continues to work as a back-compat alias.
+        assert resolve_profile_env("default") == str(profile_env / ".hermes")
+
+    def test_list_profiles_displays_alias_as_root_name(self, profile_env):
+        _set_root_alias(profile_env, "kinni")
+        profiles = list_profiles()
+        root = next(p for p in profiles if p.is_default)
+        assert root.name == "kinni"
+        assert root.path == profile_env / ".hermes"
+
+    def test_get_active_profile_name_returns_alias_for_root(self, profile_env):
+        _set_root_alias(profile_env, "kinni")
+        assert get_active_profile_name() == "kinni"
+
+    def test_alias_does_not_create_named_profile_dir(self, profile_env):
+        _set_root_alias(profile_env, "kinni")
+        # Touch every read path
+        get_profile_dir("kinni")
+        resolve_profile_env("kinni")
+        list_profiles()
+        get_active_profile_name()
+        assert not (profile_env / ".hermes" / "profiles" / "kinni").exists()
+
+    def test_delete_alias_is_refused(self, profile_env):
+        _set_root_alias(profile_env, "kinni")
+        with pytest.raises(ValueError, match="default"):
+            delete_profile("kinni", yes=True)
+
+    def test_create_with_alias_name_is_refused(self, profile_env):
+        _set_root_alias(profile_env, "kinni")
+        with pytest.raises(ValueError, match="default"):
+            create_profile("kinni", no_alias=True)
+
+    def test_named_profile_wins_when_collision(self, profile_env):
+        # Real named profile shadows the alias so it stays reachable.
+        create_profile("kinni", no_alias=True)
+        _set_root_alias(profile_env, "kinni")
+        named_dir = profile_env / ".hermes" / "profiles" / "kinni"
+        assert get_profile_dir("kinni") == named_dir
+        root = next(p for p in list_profiles() if p.is_default)
+        assert root.name == "default"
+
+    def test_invalid_alias_ignored(self, profile_env):
+        _set_root_alias(profile_env, "Has Spaces!")
+        assert normalize_profile_name("kinni") == "kinni"  # alias not active
+        root = next(p for p in list_profiles() if p.is_default)
+        assert root.name == "default"
+
+    def test_empty_alias_ignored(self, profile_env):
+        _set_root_alias(profile_env, "   ")
+        root = next(p for p in list_profiles() if p.is_default)
+        assert root.name == "default"
+
+    def test_default_string_alias_ignored(self, profile_env):
+        _set_root_alias(profile_env, "default")
+        root = next(p for p in list_profiles() if p.is_default)
+        assert root.name == "default"
+
+    def test_ordinary_named_profile_unaffected_by_alias(self, profile_env):
+        _set_root_alias(profile_env, "kinni")
+        create_profile("coder", no_alias=True)
+        # Other names go through unchanged.
+        assert normalize_profile_name("coder") == "coder"
+        assert get_profile_dir("coder") == (
+            profile_env / ".hermes" / "profiles" / "coder"
+        )
+
+    def test_no_alias_file_keeps_default_name(self, profile_env):
+        # Baseline — without the file, behavior is identical to pre-#21105.
+        root = next(p for p in list_profiles() if p.is_default)
+        assert root.name == "default"
+        assert get_active_profile_name() == "default"
+
+
+# ===================================================================
 # TestResolveProfileEnv
 # ===================================================================
 

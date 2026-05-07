@@ -857,6 +857,7 @@ AUTHOR_MAP = {
     # Debug share upload-time redaction (May 2026)
     "dhuysamen@gmail.com": "GodsBoy",  # PR #19318
     "mrcoferland@gmail.com": "mrcoferland",  # PR #19023
+    "chenlinfeng@ruije.com.cn": "noOne-list",  # PR #19050
 }
 
 

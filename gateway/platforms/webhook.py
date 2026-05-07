@@ -125,7 +125,15 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"Set 'secret' on the route or globally. "
                     f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
                 )
-
+          # Safety rail: Prevent INSECURE_NO_AUTH on non-localhost bindings
+            if secret == _INSECURE_NO_AUTH:
+                if self._host not in ("127.0.0.1", "localhost"):
+                    raise ValueError(
+                        f"[webhook] Route '{name}' uses INSECURE_NO_AUTH secret "
+                        f"but is bound to non-localhost host '{self._host}'. "
+                        f"INSECURE_NO_AUTH is for local testing only. "
+                        f"Refusing to start to prevent accidental exposure."
+                    )
             # deliver_only routes bypass the agent — the POST body becomes a
             # direct push notification via the configured delivery target.
             # Validate up-front so misconfiguration surfaces at startup rather

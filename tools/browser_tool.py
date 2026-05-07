@@ -76,9 +76,13 @@ except Exception:
     check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
 
 try:
-    from tools.url_safety import is_safe_url as _is_safe_url
+    from tools.url_safety import (
+        is_safe_url as _is_safe_url,
+        is_always_blocked_url as _is_always_blocked_url,
+    )
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
+    _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
 from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
@@ -837,6 +841,10 @@ def _url_is_private(url: str) -> bool:
                 ip.is_private
                 or ip.is_loopback
                 or ip.is_link_local
+                # 172.16.0.0/12: only covered by ip.is_private on Python
+                # ≥3.11 (bpo-40791).  Explicit check keeps 3.10 runtimes
+                # routing these to the local sidecar correctly.
+                or ip in ipaddress.ip_network("172.16.0.0/12")
                 or ip in ipaddress.ip_network("100.64.0.0/10")
             )
         except ValueError:
@@ -2081,6 +2089,18 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     nav_session_key = _navigation_session_key(effective_task_id, url)
     auto_local_this_nav = _is_local_sidecar_key(nav_session_key)
 
+    # Always-blocked floor: cloud metadata / IMDS endpoints are denied
+    # regardless of backend, hybrid routing, or allow_private_urls.
+    # There's no legitimate agent use case for navigating to
+    # 169.254.169.254 / metadata.google.internal / ECS task metadata
+    # via a browser, and routing those to a local Chromium sidecar
+    # on an EC2/GCP/Azure host exfiltrates IAM credentials (#16234).
+    if not _is_local_backend() and _is_always_blocked_url(url):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL targets a cloud metadata endpoint",
+        })
+
     if (
         not _is_local_backend()
         and not auto_local_this_nav
@@ -2143,6 +2163,21 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Skipped for local backends (same rationale as the pre-nav check),
         # and for the hybrid local sidecar (we're already on a local browser
         # hitting a private URL by design).
+        # Always-blocked floor (cloud metadata / IMDS) is enforced even
+        # when auto_local_this_nav is true — see pre-nav check for
+        # rationale (#16234).
+        if (
+            not _is_local_backend()
+            and final_url
+            and final_url != url
+            and _is_always_blocked_url(final_url)
+        ):
+            _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+            return json.dumps({
+                "success": False,
+                "error": "Blocked: redirect landed on a cloud metadata endpoint",
+            })
+
         if (
             not _is_local_backend()
             and not auto_local_this_nav

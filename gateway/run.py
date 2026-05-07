@@ -11120,6 +11120,7 @@ class GatewayRunner:
 
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc)."""
+        logger.debug("Evicting cached agent for session %s", session_key)
         _lock = getattr(self, "_agent_cache_lock", None)
         if _lock:
             with _lock:
@@ -12269,10 +12270,16 @@ class GatewayRunner:
                             except KeyError:
                                 pass
                         self._init_cached_agent_for_turn(agent, _interrupt_depth)
-                        logger.debug("Reusing cached agent for session %s", session_key)
+                        logger.info("CACHE HIT: reusing agent for session %s (sig=%s)", session_key, _sig[:8])
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                _cached_for_log = cached if '_cache_lock' in dir() and cached is not None else None
+                if _cached_for_log:
+                    logger.info("CACHE MISS: sig changed (old=%s new=%s)", 
+                               _cached_for_log[1][:8], _sig[:8])
+                else:
+                    logger.info("CACHE MISS: no cached agent for session %s (sig=%s)", session_key, _sig[:8])
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -13122,6 +13129,21 @@ class GatewayRunner:
             _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
             if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
                 _cfg_model = _resolve_gateway_model()
+                # Normalize _cfg_model the same way AIAgent.__init__ does
+                # (run_agent.py:1089-1090), so vendor-prefixed config values
+                # (e.g. "deepseek/deepseek-v4-pro") match the stripped agent
+                # model ("deepseek-v4-pro").  Without this, every turn evicts
+                # the cached agent unconditionally.
+                try:
+                    from hermes_cli.model_normalize import (
+                        _AGGREGATOR_PROVIDERS,
+                        normalize_model_for_provider,
+                    )
+                    _agent_provider = getattr(_agent, 'provider', '') or ''
+                    if _agent_provider not in _AGGREGATOR_PROVIDERS:
+                        _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
+                except Exception:
+                    pass
                 if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
                     # Fallback activated on a successful run — evict cached
                     # agent so the next message retries the primary model.

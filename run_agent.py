@@ -7799,6 +7799,18 @@ class AIAgent:
                 if _user_elapsed >= int(_HEARTBEAT_INTERVAL):
                     try:
                         _model_name = api_kwargs.get("model", "unknown")
+                        # Detect adaptive/extended thinking from the request
+                        # so we can label long pre-event stalls accurately.
+                        # With ``thinking.display`` defaulting to "omitted"
+                        # (matching Claude Code), the server holds back
+                        # message_start until thinking completes — which
+                        # means a long "no events" wait is *almost
+                        # certainly* the model thinking, not a real queue.
+                        _thinking_cfg = api_kwargs.get("thinking") or {}
+                        _thinking_requested = bool(
+                            isinstance(_thinking_cfg, dict)
+                            and _thinking_cfg.get("type") in ("adaptive", "enabled")
+                        )
                         if thinking_active["yes"]:
                             if thinking_chars["n"]:
                                 _phase = (
@@ -7807,9 +7819,23 @@ class AIAgent:
                             else:
                                 _phase = "thinking"
                         elif first_event_seen["yes"] and _content_silence > 10:
-                            _phase = "thinking (server-side, summarized)"
+                            # Stream started, then went silent — model is
+                            # thinking server-side without emitting blocks
+                            # (display=omitted). Used to be labeled
+                            # "summarized" when display=summarized was
+                            # hardcoded; drop that since we no longer send it.
+                            _phase = "thinking (server-side)"
                         elif first_event_seen["yes"]:
                             _phase = "streaming"
+                        elif _thinking_requested and _user_elapsed >= 30:
+                            # No message_start yet and we've been waiting
+                            # ≥30s. With thinking enabled + display=omitted,
+                            # the server defers message_start until
+                            # thinking finishes — so this is overwhelmingly
+                            # likely to be the model thinking, not a queue
+                            # or prefill stall. Surface that to the user
+                            # instead of generic "queued/prefilling".
+                            _phase = "thinking (no events yet)"
                         elif ping_seen["yes"]:
                             _phase = "queued/prefilling, server alive"
                         else:

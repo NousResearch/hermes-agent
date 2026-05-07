@@ -980,17 +980,24 @@ install_deps() {
         fi
 
         "$PIP_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null
-        if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
-            log_warn "Termux feature install (.[termux]) failed, trying base install..."
-            if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
-                log_error "Package installation failed on Termux."
-                log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl"
-                log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux]' -c constraints-termux.txt"
-                exit 1
+
+        # Try the broad Termux profile first (best-effort "install all" for Android),
+        # then fall back to the conservative Termux baseline, then base package.
+        if ! "$PIP_PYTHON" -m pip install -e '.[termux-all]' -c constraints-termux.txt; then
+            log_warn "Termux broad profile (.[termux-all]) failed, trying baseline Termux profile..."
+            if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
+                log_warn "Termux baseline profile (.[termux]) failed, trying base install..."
+                if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
+                    log_error "Package installation failed on Termux."
+                    log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl ca-certificates curl"
+                    log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
+                    exit 1
+                fi
             fi
         fi
 
         log_success "Main package installed"
+        log_info "Termux note: matrix e2ee and local faster-whisper extras are excluded from .[termux-all] due to upstream Android wheel/toolchain blockers."
         log_info "Termux note: browser/WhatsApp tooling is not installed by default; see the Termux guide for optional follow-up steps."
 
         if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
@@ -1082,7 +1089,7 @@ setup_path() {
         log_warn "hermes entry point not found at $HERMES_BIN"
         log_info "This usually means the pip install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
-            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux]' -c constraints-termux.txt"
+            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
         else
             log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[all]'"
         fi

@@ -6067,6 +6067,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
+                reset_context_note=_reset_context_note,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -11612,6 +11613,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        reset_context_note: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -12288,8 +12290,8 @@ class GatewayRunner:
                 # the agent cache signature and cause per-turn evictions.
                 # Only needed for fresh agents (cache MISS); cached agents
                 # already have their frozen system prompt.
-                if _reset_context_note:
-                    combined_ephemeral = (_reset_context_note + "\n\n" + (combined_ephemeral or "")).strip()
+                if reset_context_note:
+                    combined_ephemeral = (reset_context_note + "\n\n" + (combined_ephemeral or "")).strip()
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],

@@ -452,6 +452,18 @@ def _cmd_rollback(args) -> int:
     return 1
 
 
+def _cmd_list_archived(args) -> int:
+    """List archived (recoverable) skills."""
+    from tools import skill_usage
+    names = skill_usage.list_archived_skill_names()
+    if not names:
+        print("curator: no archived skills")
+        return 0
+    for name in names:
+        print(name)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # argparse wiring (called from hermes_cli.main)
 # ---------------------------------------------------------------------------
@@ -501,6 +513,9 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_restore = subs.add_parser("restore", help="Restore an archived skill")
     p_restore.add_argument("skill", help="Skill name")
     p_restore.set_defaults(func=_cmd_restore)
+
+    subs.add_parser("list-archived", help="List archived skills") \
+        .set_defaults(func=_cmd_list_archived)
 
     p_archive = subs.add_parser(
         "archive",

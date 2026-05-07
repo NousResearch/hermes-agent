@@ -328,9 +328,11 @@ class TestPluginHooks:
     def test_valid_hooks_include_request_scoped_api_hooks(self):
         assert "pre_api_request" in VALID_HOOKS
         assert "post_api_request" in VALID_HOOKS
+        assert "api_request_error" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
         assert "transform_llm_output" in VALID_HOOKS
+        assert "subagent_start" in VALID_HOOKS
 
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS

@@ -700,6 +700,7 @@ def handle_function_call(
     task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
     session_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
@@ -747,6 +748,7 @@ def handle_function_call(
                     task_id=task_id or "",
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
+                    turn_id=turn_id or "",
                 )
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
@@ -787,6 +789,17 @@ def handle_function_call(
                 user_task=user_task,
             )
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+        tool_status = "ok"
+        tool_error_message = None
+        try:
+            parsed_result = json.loads(result) if isinstance(result, str) else result
+            if isinstance(parsed_result, dict) and parsed_result.get("error"):
+                tool_status = "error"
+                tool_error_message = str(parsed_result.get("error"))
+        except Exception:
+            if isinstance(result, str) and "error" in result[:80].lower():
+                tool_status = "error"
+                tool_error_message = result[:500]
 
         try:
             from hermes_cli.plugins import invoke_hook
@@ -798,7 +811,10 @@ def handle_function_call(
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
+                turn_id=turn_id or "",
                 duration_ms=duration_ms,
+                status=tool_status,
+                error_message=tool_error_message,
             )
         except Exception as _hook_err:
             logger.debug("post_tool_call hook error: %s", _hook_err)
@@ -819,7 +835,10 @@ def handle_function_call(
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
+                turn_id=turn_id or "",
                 duration_ms=duration_ms,
+                status=tool_status,
+                error_message=tool_error_message,
             )
             for hook_result in hook_results:
                 if isinstance(hook_result, str):

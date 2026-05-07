@@ -377,10 +377,14 @@ def register(ctx):
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
+| [`pre_api_request`](#request-scoped-api-hooks) | Before each provider API request | ignored |
+| [`post_api_request`](#request-scoped-api-hooks) | After each successful provider API response | ignored |
+| [`api_request_error`](#request-scoped-api-hooks) | When a provider API request attempt errors or returns an invalid response | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
+| [`subagent_start`](#subagent_start) | A `delegate_task` child is created | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 | [`pre_approval_request`](#pre_approval_request) | Dangerous command needs user approval, before the prompt/notification is sent | ignored |
@@ -458,7 +462,7 @@ Fires **immediately after** every tool execution returns.
 
 ```python
 def my_callback(tool_name: str, args: dict, result: str, task_id: str,
-                duration_ms: int, **kwargs):
+                duration_ms: int, status: str, turn_id: str, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -468,8 +472,11 @@ def my_callback(tool_name: str, args: dict, result: str, task_id: str,
 | `result` | `str` | The tool's return value (always a JSON string) |
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
 | `duration_ms` | `int` | How long the tool's dispatch took, in milliseconds (measured with `time.monotonic()` around `registry.dispatch()`). |
+| `status` | `str` | `"ok"` or `"error"` based on the returned tool payload |
+| `error_message` | `str \| None` | Parsed error text when `status == "error"` |
+| `turn_id` | `str` | Stable identifier shared by turn, API, and tool hooks for this user turn |
 
-**Fires:** In `model_tools.py`, inside `handle_function_call()`, after the tool's handler returns. Fires once per tool call. Does **not** fire if the tool raised an unhandled exception (the error is caught and returned as an error JSON string instead, and `post_tool_call` fires with that error string as `result`).
+**Fires:** For registry-backed tools, in `model_tools.py` inside `handle_function_call()`. For agent-loop tools handled inline by `run_agent.py` (`todo`, `memory`, `session_search`, `clarify`, `delegate_task`, context-engine tools, and memory-provider tools), the agent loop fires the same hook after the inline handler returns. Fires once per executed tool call. Does **not** fire for a tool blocked before execution.
 
 **Return value:** Ignored.
 
@@ -646,6 +653,20 @@ def register(ctx):
 
 ---
 
+### Request-scoped API hooks
+
+`pre_api_request`, `post_api_request`, and `api_request_error` fire once per provider request attempt inside the tool loop. They carry the same `turn_id` and a per-attempt `api_request_id`, so telemetry plugins can join request, response, error, tool, and final-turn events without guessing from order.
+
+**Common parameters:** `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, and `api_call_count`.
+
+`pre_api_request` also includes request sizing fields plus `request`, a bounded, sanitized object shaped like `{"method": "POST", "body": {...}}`. Sanitization always redacts API key fields, authorization/proxy-authorization headers, and cookie/set-cookie fields before plugins receive the payload. `post_api_request` includes latency, finish reason, normalized token `usage`, assistant size summaries, and `response`, a bounded, sanitized response object with the normalized assistant message and provider response. `api_request_error` includes `api_duration`, retry metadata, `status_code`, `reason`, `error`, and the sanitized request.
+
+**Return value:** Ignored.
+
+**Use cases:** LLM span creation, token accounting, provider latency/error dashboards, request/response ATIF capture, retry analysis.
+
+---
+
 ### `on_session_start`
 
 Fires **once** when a brand-new session is created. Does **not** fire on session continuation (when the user sends a second message in an existing session).
@@ -805,6 +826,37 @@ See the **[Build a Plugin guide](/docs/guides/build-a-hermes-plugin)** for the f
 
 ---
 
+### `subagent_start`
+
+Fires **once per child agent** when `delegate_task` creates the child, before the child begins running.
+
+**Callback signature:**
+
+```python
+def my_callback(parent_session_id: str, child_session_id: str,
+                subagent_id: str, task_index: int, task_goal: str,
+                child_role: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `parent_session_id` | `str` | Session ID of the delegating parent agent |
+| `parent_subagent_id` | `str \| None` | Parent subagent ID for nested delegation |
+| `child_session_id` | `str` | Session ID assigned to the child agent |
+| `subagent_id` | `str` | Stable subagent identifier shared with `subagent_stop` |
+| `task_index` | `int` | Zero-based index within the delegate batch |
+| `task_goal` | `str` | Goal passed to the child |
+| `child_role` | `str` | Effective child role after depth/feature gating |
+| `model` / `provider` / `base_url` / `api_mode` | `str` | Runtime selected for the child |
+| `toolsets` | `list[str]` | Toolsets available to the child |
+| `depth` | `int` | Nesting depth for display/telemetry |
+
+**Return value:** Ignored.
+
+**Use cases:** Starting nested telemetry spans, displaying live subagent trees, tracking delegation queueing.
+
+---
+
 ### `subagent_stop`
 
 Fires **once per child agent** after `delegate_task` finishes. Whether you delegated a single task or a batch of three, this hook fires once for each child, serialised on the parent thread.
@@ -820,10 +872,20 @@ def my_callback(parent_session_id: str, child_role: str | None,
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `parent_session_id` | `str` | Session ID of the delegating parent agent |
+| `parent_subagent_id` | `str \| None` | Parent subagent ID for nested delegation |
+| `child_session_id` | `str \| None` | Session ID assigned to the child agent |
+| `subagent_id` | `str \| None` | Stable subagent identifier shared with `subagent_start` |
+| `task_index` | `int` | Zero-based index within the delegate batch |
 | `child_role` | `str \| None` | Orchestrator role tag set on the child (`None` if the feature isn't enabled) |
 | `child_summary` | `str \| None` | The final response the child returned to the parent |
 | `child_status` | `str` | `"completed"`, `"failed"`, `"interrupted"`, or `"error"` |
 | `duration_ms` | `int` | Wall-clock time spent running the child, in milliseconds |
+| `api_calls` | `int` | Provider API calls made by the child |
+| `model` | `str \| None` | Model used by the child |
+| `exit_reason` | `str \| None` | Child exit reason, such as `"completed"` or `"max_iterations"` |
+| `tokens` | `dict \| None` | Child input/output token totals when available |
+| `tool_trace` | `list \| None` | Compact child tool-call trace |
+| `error` | `str \| None` | Error text for failed children |
 
 **Fires:** In `tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all child futures. Firing is marshalled to the parent thread so hook authors don't have to reason about concurrent callback execution.
 
@@ -1008,16 +1070,18 @@ def register(ctx):
 
 ### `transform_tool_result`
 
-Fires **after** a tool returns and **before** the result is appended to the conversation. Lets a plugin rewrite ANY tool's result string — not just terminal output — before the model sees it.
+Fires **after** a tool returns and **before** the result is appended to the conversation. Covers both registry-backed tools and agent-loop tools handled inline by `run_agent.py`. Lets a plugin rewrite ANY tool's result string — not just terminal output — before the model sees it.
 
 **Callback signature:**
 
 ```python
 def my_callback(
     tool_name: str,
-    arguments: dict,
+    args: dict,
     result: str,
     task_id: str | None,
+    duration_ms: int,
+    status: str,
     **kwargs,
 ) -> str | None:
 ```
@@ -1025,9 +1089,11 @@ def my_callback(
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `tool_name` | `str` | Tool that produced the result (`read_file`, `web_extract`, `delegate_task`, …). |
-| `arguments` | `dict` | Arguments the model called the tool with. |
+| `args` | `dict` | Arguments the model called the tool with. |
 | `result` | `str` | The tool's raw result string, post-truncation and post-ANSI-strip. |
 | `task_id` | `str \| None` | Task/session ID when running inside RL/benchmark environments. |
+| `duration_ms` | `int` | Tool execution duration in milliseconds. |
+| `status` | `str` | `"ok"` or `"error"` based on the returned tool payload. |
 
 **Return value:** `str` to replace the result (the returned string is what the model sees), `None` to leave it unchanged.
 

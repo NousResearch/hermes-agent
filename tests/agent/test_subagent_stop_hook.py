@@ -95,6 +95,10 @@ class TestSingleTask:
                 "summary": "Done!",
                 "api_calls": 3,
                 "duration_seconds": 5.0,
+                "model": "test-model",
+                "exit_reason": "completed",
+                "tokens": {"input": 11, "output": 7},
+                "tool_trace": [{"tool": "read_file", "status": "ok"}],
                 "_child_role": "analyst",
             }
             delegate_task(goal="do X", parent_agent=_make_parent())
@@ -105,6 +109,11 @@ class TestSingleTask:
         assert payload["child_status"] == "completed"
         assert payload["child_summary"] == "Done!"
         assert payload["duration_ms"] == 5000
+        assert payload["api_calls"] == 3
+        assert payload["model"] == "test-model"
+        assert payload["exit_reason"] == "completed"
+        assert payload["tokens"] == {"input": 11, "output": 7}
+        assert payload["tool_trace"] == [{"tool": "read_file", "status": "ok"}]
 
     def test_fires_on_parent_thread(self):
         captured = _register_capturing_hook()

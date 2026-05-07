@@ -62,6 +62,7 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
             ),
             call(
                 "post_tool_call",
@@ -71,7 +72,10 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
                 duration_ms=ANY,
+                status="ok",
+                error_message=None,
             ),
             call(
                 "transform_tool_result",
@@ -81,7 +85,10 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
                 duration_ms=ANY,
+                status="ok",
+                error_message=None,
             ),
         ]
 
@@ -111,6 +118,21 @@ class TestHandleFunctionCall:
         assert post_duration == transform_duration
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
+        assert kwargs_by_hook["post_tool_call"]["status"] == "ok"
+        assert kwargs_by_hook["post_tool_call"]["error_message"] is None
+
+    def test_post_tool_call_reports_structured_error_status(self):
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"error":"nope"}'),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            handle_function_call("web_search", {"q": "test"}, task_id="t1")
+
+        kwargs_by_hook = {
+            c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list
+        }
+        assert kwargs_by_hook["post_tool_call"]["status"] == "error"
+        assert kwargs_by_hook["post_tool_call"]["error_message"] == "nope"
 
 
 # =========================================================================

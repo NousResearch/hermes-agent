@@ -2088,6 +2088,7 @@ class TestConcurrentToolExecution:
                 "web_search", {"q": "test"}, "task-1",
                 tool_call_id=None,
                 session_id=agent.session_id,
+                turn_id="",
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
             )
@@ -2135,6 +2136,56 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+    def test_invoke_tool_agent_level_tool_emits_post_hooks(self, agent):
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            if name == "transform_tool_result":
+                return ['{"ok":"transformed"}']
+            return []
+
+        with (
+            patch("tools.todo_tool.todo_tool", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+        ):
+            result = agent._invoke_tool("todo", {"todos": []}, "task-1")
+
+        assert result == '{"ok":"transformed"}'
+        post_call = [kw for name, kw in hook_calls if name == "post_tool_call"][0]
+        transform_call = [kw for name, kw in hook_calls if name == "transform_tool_result"][0]
+        assert post_call["tool_name"] == "todo"
+        assert post_call["task_id"] == "task-1"
+        assert post_call["session_id"] == agent.session_id
+        assert post_call["status"] == "ok"
+        assert post_call["error_message"] is None
+        assert isinstance(post_call["duration_ms"], int)
+        assert transform_call["result"] == '{"ok":true}'
+
+    def test_sequential_agent_level_tool_emits_post_hooks_and_transforms_result(self, agent):
+        tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="c-todo")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            if name == "transform_tool_result":
+                return ['{"ok":"sequential-transform"}']
+            return []
+
+        with (
+            patch("tools.todo_tool.todo_tool", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert messages[0]["content"] == '{"ok":"sequential-transform"}'
+        post_call = [kw for name, kw in hook_calls if name == "post_tool_call"][0]
+        assert post_call["tool_name"] == "todo"
+        assert post_call["tool_call_id"] == "c-todo"
+        assert post_call["status"] == "ok"
 
     def test_invoke_tool_blocked_returns_error_and_skips_execution(self, agent, monkeypatch):
         """_invoke_tool should return error JSON when a plugin blocks the tool."""
@@ -2463,6 +2514,33 @@ class TestRunConversation:
         agent.compression_enabled = False
         agent.save_trajectories = False
 
+    def test_api_request_hook_payload_preserves_body_and_redacts_auth_key_cookie_fields(self, agent):
+        payload = agent._api_request_payload_for_hook(
+            {
+                "messages": [{"role": "user", "content": "hello"}],
+                "api_key": "secret-key",
+                "openai_api_key": "secret-key-2",
+                "headers": {
+                    "authorization": "Bearer secret-token",
+                    "proxy-authorization": "Basic secret-token",
+                    "cookie": "session=secret",
+                    "set-cookie": "session=secret",
+                },
+                "prompt_tokens": 42,
+                "timeout": 30,
+            }
+        )
+
+        assert payload["body"]["messages"] == [{"role": "user", "content": "hello"}]
+        assert payload["body"]["api_key"] == "<redacted>"
+        assert payload["body"]["openai_api_key"] == "<redacted>"
+        assert payload["body"]["headers"]["authorization"] == "<redacted>"
+        assert payload["body"]["headers"]["proxy-authorization"] == "<redacted>"
+        assert payload["body"]["headers"]["cookie"] == "<redacted>"
+        assert payload["body"]["headers"]["set-cookie"] == "<redacted>"
+        assert payload["body"]["prompt_tokens"] == 42
+        assert "timeout" not in payload["body"]
+
     def test_stop_finish_reason_returns_response(self, agent):
         self._setup_agent(agent)
         resp = _mock_response(content="Final answer", finish_reason="stop")
@@ -2524,8 +2602,14 @@ class TestRunConversation:
         assert [call["api_call_count"] for call in pre_request_calls] == [1, 2]
         assert [call["api_call_count"] for call in post_request_calls] == [1, 2]
         assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
-        assert all("message_count" in c and "messages" not in c for c in pre_request_calls)
-        assert all("usage" in c and "response" not in c for c in post_request_calls)
+        assert all(call["turn_id"] == pre_request_calls[0]["turn_id"] for call in pre_request_calls + post_request_calls)
+        assert [call["api_request_id"] for call in pre_request_calls] == [
+            call["api_request_id"] for call in post_request_calls
+        ]
+        assert all("message_count" in c and "request" in c for c in pre_request_calls)
+        assert all("messages" in c["request"]["body"] for c in pre_request_calls)
+        assert all("usage" in c and "response" in c for c in post_request_calls)
+        assert all("assistant_message" in c["response"] for c in post_request_calls)
 
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)

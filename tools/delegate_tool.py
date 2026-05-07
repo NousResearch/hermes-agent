@@ -1166,6 +1166,27 @@ def _build_child_agent(
         except Exception as exc:
             logger.debug("spawn_requested relay failed: %s", exc)
 
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "subagent_start",
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            parent_subagent_id=parent_subagent_id,
+            child_session_id=getattr(child, "session_id", None),
+            subagent_id=subagent_id,
+            task_index=task_index,
+            task_goal=goal,
+            child_role=effective_role,
+            model=effective_model,
+            provider=effective_provider,
+            base_url=effective_base_url,
+            api_mode=effective_api_mode,
+            toolsets=child_toolsets,
+            depth=tui_depth,
+        )
+    except Exception:
+        logger.debug("subagent_start hook invocation failed", exc_info=True)
+
     return child
 
 
@@ -2246,6 +2267,12 @@ def delegate_task(
     # subagent_stop hook loop so we don't walk `results` twice.
     _children_cost_total = 0.0
     for entry in results:
+        _task_index = entry.get("task_index")
+        _child_agent = (
+            children[_task_index][2]
+            if isinstance(_task_index, int) and 0 <= _task_index < len(children)
+            else None
+        )
         child_role = entry.pop("_child_role", None)
         child_cost = entry.pop("_child_cost_usd", 0.0)
         try:
@@ -2259,10 +2286,28 @@ def delegate_task(
             _invoke_hook(
                 "subagent_stop",
                 parent_session_id=_parent_session_id,
+                parent_subagent_id=getattr(_child_agent, "_parent_subagent_id", None),
+                child_session_id=(
+                    getattr(_child_agent, "session_id", None)
+                    if isinstance(getattr(_child_agent, "session_id", None), str)
+                    else None
+                ),
+                subagent_id=(
+                    getattr(_child_agent, "_subagent_id", None)
+                    if isinstance(getattr(_child_agent, "_subagent_id", None), str)
+                    else None
+                ),
+                task_index=_task_index,
                 child_role=child_role,
                 child_summary=entry.get("summary"),
                 child_status=entry.get("status"),
                 duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
+                api_calls=entry.get("api_calls"),
+                model=entry.get("model"),
+                exit_reason=entry.get("exit_reason"),
+                tokens=entry.get("tokens"),
+                tool_trace=entry.get("tool_trace"),
+                error=entry.get("error"),
             )
         except Exception:
             logger.debug("subagent_stop hook invocation failed", exc_info=True)

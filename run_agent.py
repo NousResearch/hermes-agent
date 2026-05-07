@@ -5106,6 +5106,236 @@ class AIAgent:
         summary["total_tokens"] = cu.total_tokens
         return summary
 
+    @staticmethod
+    def _hook_payload_max_chars() -> int:
+        raw = os.getenv("HERMES_PLUGIN_PAYLOAD_MAX_CHARS", "50000")
+        try:
+            return max(1000, int(raw))
+        except (TypeError, ValueError):
+            return 50000
+
+    @staticmethod
+    def _is_sensitive_hook_key(key: Any) -> bool:
+        if not isinstance(key, str):
+            return False
+        lowered = key.lower().replace("-", "_")
+        exact = {
+            "api_key",
+            "authorization",
+            "proxy_authorization",
+            "cookie",
+            "set_cookie",
+        }
+        return lowered in exact or lowered.endswith("_api_key")
+
+    @classmethod
+    def _hook_jsonable(
+        cls,
+        value: Any,
+        *,
+        depth: int = 0,
+        max_depth: int = 8,
+        max_string: int = 8000,
+        max_sequence: int = 200,
+    ) -> Any:
+        if depth > max_depth:
+            return f"<{type(value).__name__} depth limit>"
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if len(value) > max_string:
+                return value[:max_string] + f"...[truncated {len(value) - max_string} chars]"
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            return f"<{len(value)} bytes>"
+        if isinstance(value, dict):
+            out: Dict[str, Any] = {}
+            for idx, (key, item) in enumerate(value.items()):
+                if idx >= max_sequence:
+                    out["_truncated_items"] = len(value) - max_sequence
+                    break
+                str_key = str(key)
+                if cls._is_sensitive_hook_key(str_key):
+                    out[str_key] = "<redacted>"
+                else:
+                    out[str_key] = cls._hook_jsonable(
+                        item,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                        max_string=max_string,
+                        max_sequence=max_sequence,
+                    )
+            return out
+        if isinstance(value, (list, tuple, set)):
+            seq = list(value)
+            out = [
+                cls._hook_jsonable(
+                    item,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_string=max_string,
+                    max_sequence=max_sequence,
+                )
+                for item in seq[:max_sequence]
+            ]
+            if len(seq) > max_sequence:
+                out.append({"_truncated_items": len(seq) - max_sequence})
+            return out
+        try:
+            if hasattr(value, "model_dump"):
+                try:
+                    dumped = value.model_dump(mode="json")
+                except TypeError:
+                    dumped = value.model_dump()
+                return cls._hook_jsonable(
+                    dumped,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_string=max_string,
+                    max_sequence=max_sequence,
+                )
+        except Exception:
+            pass
+        try:
+            from dataclasses import asdict, is_dataclass
+            if is_dataclass(value):
+                return cls._hook_jsonable(
+                    asdict(value),
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_string=max_string,
+                    max_sequence=max_sequence,
+                )
+        except Exception:
+            pass
+        if isinstance(value, SimpleNamespace):
+            return cls._hook_jsonable(
+                vars(value),
+                depth=depth + 1,
+                max_depth=max_depth,
+                max_string=max_string,
+                max_sequence=max_sequence,
+            )
+        if hasattr(value, "__dict__"):
+            try:
+                public_attrs = {
+                    k: v
+                    for k, v in vars(value).items()
+                    if not str(k).startswith("_")
+                }
+                return cls._hook_jsonable(
+                    public_attrs,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_string=max_string,
+                    max_sequence=max_sequence,
+                )
+            except Exception:
+                pass
+        return str(value)[:max_string]
+
+    @classmethod
+    def _sanitize_hook_payload(cls, value: Any) -> Any:
+        payload = cls._hook_jsonable(value)
+        limit = cls._hook_payload_max_chars()
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False, default=str)
+        except Exception:
+            return str(payload)[:limit]
+        if len(encoded) <= limit:
+            return payload
+        payload = cls._hook_jsonable(value, max_string=1000, max_sequence=50)
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False, default=str)
+        except Exception:
+            return str(payload)[:limit]
+        if len(encoded) <= limit:
+            return payload
+        return {
+            "_truncated": True,
+            "original_type": type(value).__name__,
+            "preview": encoded[:limit],
+        }
+
+    def _api_request_payload_for_hook(self, api_kwargs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        body = copy.deepcopy(api_kwargs or {})
+        for key in ("timeout", "http_client"):
+            body.pop(key, None)
+        return self._sanitize_hook_payload(
+            {
+                "method": "POST",
+                "body": body,
+            }
+        )
+
+    def _api_response_payload_for_hook(
+        self,
+        response: Any,
+        assistant_message: Any,
+        *,
+        finish_reason: Optional[str],
+    ) -> Dict[str, Any]:
+        tool_calls = getattr(assistant_message, "tool_calls", None) or []
+        return self._sanitize_hook_payload(
+            {
+                "model": getattr(response, "model", None),
+                "finish_reason": finish_reason,
+                "assistant_message": {
+                    "role": getattr(assistant_message, "role", "assistant"),
+                    "content": getattr(assistant_message, "content", None),
+                    "tool_calls": tool_calls,
+                },
+                "usage": self._usage_summary_for_api_request_hook(response),
+                "raw_response": response,
+            }
+        )
+
+    def _invoke_api_request_error_hook(
+        self,
+        *,
+        task_id: str,
+        turn_id: str,
+        api_request_id: str,
+        api_call_count: int,
+        api_start_time: float,
+        api_kwargs: Optional[Dict[str, Any]],
+        error_type: str,
+        error_message: str,
+        status_code: Optional[int] = None,
+        retry_count: Optional[int] = None,
+        max_retries: Optional[int] = None,
+        retryable: Optional[bool] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "api_request_error",
+                task_id=task_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                session_id=self.session_id or "",
+                platform=self.platform or "",
+                model=self.model,
+                provider=self.provider,
+                base_url=self.base_url,
+                api_mode=self.api_mode,
+                api_call_count=api_call_count,
+                api_duration=time.time() - api_start_time,
+                status_code=status_code,
+                retry_count=retry_count,
+                max_retries=max_retries,
+                retryable=retryable,
+                reason=reason,
+                error={
+                    "type": error_type,
+                    "message": error_message,
+                },
+                request=self._api_request_payload_for_hook(api_kwargs),
+            )
+        except Exception:
+            pass
+
     def _dump_api_request_debug(
         self,
         api_kwargs: Dict[str, Any],
@@ -10606,6 +10836,77 @@ class AIAgent:
             parent_agent=self,
         )
 
+    def _tool_uses_model_tools_dispatch(self, function_name: str) -> bool:
+        if function_name in {"todo", "session_search", "memory", "clarify", "delegate_task"}:
+            return False
+        if self._context_engine_tool_names and function_name in self._context_engine_tool_names:
+            return False
+        if self._memory_manager and self._memory_manager.has_tool(function_name):
+            return False
+        return True
+
+    @staticmethod
+    def _tool_result_status_for_hook(function_result: str) -> tuple[str, Optional[str]]:
+        try:
+            parsed = json.loads(function_result) if isinstance(function_result, str) else function_result
+            if isinstance(parsed, dict) and parsed.get("error"):
+                return "error", str(parsed.get("error"))
+        except Exception:
+            if isinstance(function_result, str) and "error" in function_result[:80].lower():
+                return "error", function_result[:500]
+        return "ok", None
+
+    def _invoke_inline_tool_result_hooks(
+        self,
+        function_name: str,
+        function_args: dict,
+        function_result: str,
+        effective_task_id: str,
+        tool_call_id: Optional[str],
+        duration_ms: int,
+    ) -> str:
+        status, error_message = self._tool_result_status_for_hook(function_result)
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook(
+                "post_tool_call",
+                tool_name=function_name,
+                args=function_args,
+                result=function_result,
+                task_id=effective_task_id or "",
+                session_id=self.session_id or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=getattr(self, "_current_turn_id", "") or "",
+                duration_ms=duration_ms,
+                status=status,
+                error_message=error_message,
+            )
+        except Exception as hook_err:
+            logger.debug("post_tool_call hook error for inline tool: %s", hook_err)
+
+        try:
+            from hermes_cli.plugins import invoke_hook
+            hook_results = invoke_hook(
+                "transform_tool_result",
+                tool_name=function_name,
+                args=function_args,
+                result=function_result,
+                task_id=effective_task_id or "",
+                session_id=self.session_id or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=getattr(self, "_current_turn_id", "") or "",
+                duration_ms=duration_ms,
+                status=status,
+                error_message=error_message,
+            )
+            for hook_result in hook_results:
+                if isinstance(hook_result, str):
+                    return hook_result
+        except Exception as hook_err:
+            logger.debug("transform_tool_result hook error for inline tool: %s", hook_err)
+
+        return function_result
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
@@ -10621,33 +10922,51 @@ class AIAgent:
             try:
                 from hermes_cli.plugins import get_pre_tool_call_block_message
                 block_message = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
+                    function_name,
+                    function_args,
+                    task_id=effective_task_id or "",
+                    session_id=self.session_id or "",
+                    tool_call_id=tool_call_id or "",
+                    turn_id=getattr(self, "_current_turn_id", "") or "",
                 )
             except Exception:
                 pass
         if block_message is not None:
             return json.dumps({"error": block_message}, ensure_ascii=False)
 
+        tool_start_time = time.time()
+
+        def _finish_inline_tool(result: str) -> str:
+            duration_ms = int((time.time() - tool_start_time) * 1000)
+            return self._invoke_inline_tool_result_hooks(
+                function_name,
+                function_args,
+                result,
+                effective_task_id,
+                tool_call_id,
+                duration_ms,
+            )
+
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
-            return _todo_tool(
+            return _finish_inline_tool(_todo_tool(
                 todos=function_args.get("todos"),
                 merge=function_args.get("merge", False),
                 store=self._todo_store,
-            )
+            ))
         elif function_name == "session_search":
             session_db = self._get_session_db_for_recall()
             if not session_db:
                 from hermes_state import format_session_db_unavailable
-                return json.dumps({"success": False, "error": format_session_db_unavailable()})
+                return _finish_inline_tool(json.dumps({"success": False, "error": format_session_db_unavailable()}))
             from tools.session_search_tool import session_search as _session_search
-            return _session_search(
+            return _finish_inline_tool(_session_search(
                 query=function_args.get("query", ""),
                 role_filter=function_args.get("role_filter"),
                 limit=function_args.get("limit", 3),
                 db=session_db,
                 current_session_id=self.session_id,
-            )
+            ))
         elif function_name == "memory":
             target = function_args.get("target", "memory")
             from tools.memory_tool import memory_tool as _memory_tool
@@ -10672,23 +10991,24 @@ class AIAgent:
                     )
                 except Exception:
                     pass
-            return result
+            return _finish_inline_tool(result)
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
-            return self._memory_manager.handle_tool_call(function_name, function_args)
+            return _finish_inline_tool(self._memory_manager.handle_tool_call(function_name, function_args))
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
-            return _clarify_tool(
+            return _finish_inline_tool(_clarify_tool(
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
-            )
+            ))
         elif function_name == "delegate_task":
-            return self._dispatch_delegate_task(function_args)
+            return _finish_inline_tool(self._dispatch_delegate_task(function_args))
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
+                turn_id=getattr(self, "_current_turn_id", "") or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
             )
@@ -10784,7 +11104,12 @@ class AIAgent:
             try:
                 from hermes_cli.plugins import get_pre_tool_call_block_message
                 block_message = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
+                    function_name,
+                    function_args,
+                    task_id=effective_task_id or "",
+                    session_id=self.session_id or "",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    turn_id=getattr(self, "_current_turn_id", "") or "",
                 )
             except Exception:
                 block_message = None
@@ -11166,7 +11491,12 @@ class AIAgent:
             try:
                 from hermes_cli.plugins import get_pre_tool_call_block_message
                 _block_msg = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
+                    function_name,
+                    function_args,
+                    task_id=effective_task_id or "",
+                    session_id=self.session_id or "",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    turn_id=getattr(self, "_current_turn_id", "") or "",
                 )
             except Exception:
                 pass
@@ -11410,6 +11740,7 @@ class AIAgent:
                         function_name, function_args, effective_task_id,
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
+                        turn_id=getattr(self, "_current_turn_id", "") or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
                     )
@@ -11430,6 +11761,7 @@ class AIAgent:
                         function_name, function_args, effective_task_id,
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
+                        turn_id=getattr(self, "_current_turn_id", "") or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
                     )
@@ -11437,6 +11769,16 @@ class AIAgent:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
+
+            if not _execution_blocked and not self._tool_uses_model_tools_dispatch(function_name):
+                function_result = self._invoke_inline_tool_result_hooks(
+                    function_name,
+                    function_args,
+                    function_result,
+                    effective_task_id,
+                    getattr(tool_call, "id", None),
+                    int(tool_duration * 1000),
+                )
 
             if isinstance(function_result, str):
                 result_preview = function_result if self.verbose_logging else (
@@ -11872,6 +12214,8 @@ class AIAgent:
         self._persist_user_message_override = persist_user_message
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
+        turn_id = f"{self.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+        self._current_turn_id = turn_id
         # Expose the active task_id so tools running mid-turn (e.g. delegate_task
         # in delegate_tool.py) can identify this agent for the cross-agent file
         # state registry.  Set BEFORE any tool dispatch so snapshots taken at
@@ -12147,6 +12491,7 @@ class AIAgent:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _pre_results = _invoke_hook(
                 "pre_llm_call",
+                turn_id=turn_id,
                 session_id=self.session_id,
                 user_message=original_user_message,
                 conversation_history=list(messages),
@@ -12252,6 +12597,7 @@ class AIAgent:
             
             api_call_count += 1
             self._api_call_count = api_call_count
+            api_request_id = f"{turn_id}:api:{api_call_count}"
             self._touch_activity(f"starting API call #{api_call_count}")
 
             # Grace call: the budget is exhausted but we gave the model one
@@ -12637,6 +12983,8 @@ class AIAgent:
                         _invoke_hook(
                             "pre_api_request",
                             task_id=effective_task_id,
+                            turn_id=turn_id,
+                            api_request_id=api_request_id,
                             session_id=self.session_id or "",
                             platform=self.platform or "",
                             model=self.model,
@@ -12649,6 +12997,7 @@ class AIAgent:
                             approx_input_tokens=approx_tokens,
                             request_char_count=total_chars,
                             max_tokens=self.max_tokens,
+                            request=self._api_request_payload_for_hook(api_kwargs),
                         )
                     except Exception:
                         pass
@@ -12815,6 +13164,21 @@ class AIAgent:
                         # Invalid response — could be rate limiting, provider timeout,
                         # upstream server error, or malformed response.
                         retry_count += 1
+                        self._invoke_api_request_error_hook(
+                            task_id=effective_task_id,
+                            turn_id=turn_id,
+                            api_request_id=api_request_id,
+                            api_call_count=api_call_count,
+                            api_start_time=api_start_time,
+                            api_kwargs=api_kwargs,
+                            error_type="InvalidAPIResponse",
+                            error_message=", ".join(error_details) or "Invalid API response",
+                            status_code=getattr(getattr(response, "error", None), "code", None),
+                            retry_count=retry_count,
+                            max_retries=max_retries,
+                            retryable=True,
+                            reason="invalid_response",
+                        )
                         
                         # Eager fallback: empty/malformed responses are a common
                         # rate-limit symptom.  Switch to fallback immediately
@@ -13580,6 +13944,21 @@ class AIAgent:
                         classified.reason.value, classified.status_code,
                         classified.retryable, classified.should_compress,
                         classified.should_rotate_credential, classified.should_fallback,
+                    )
+                    self._invoke_api_request_error_hook(
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        api_call_count=api_call_count,
+                        api_start_time=api_start_time,
+                        api_kwargs=api_kwargs,
+                        error_type=type(api_error).__name__,
+                        error_message=self._summarize_api_error(api_error),
+                        status_code=status_code,
+                        retry_count=retry_count,
+                        max_retries=max_retries,
+                        retryable=classified.retryable,
+                        reason=classified.reason.value,
                     )
 
                     recovered_with_pool, has_retried_429 = self._recover_with_credential_pool(
@@ -14532,6 +14911,8 @@ class AIAgent:
                     _invoke_hook(
                         "post_api_request",
                         task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
                         session_id=self.session_id or "",
                         platform=self.platform or "",
                         model=self.model,
@@ -14546,6 +14927,11 @@ class AIAgent:
                         usage=self._usage_summary_for_api_request_hook(response),
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
+                        response=self._api_response_payload_for_hook(
+                            response,
+                            assistant_message,
+                            finish_reason=finish_reason,
+                        ),
                     )
                 except Exception:
                     pass
@@ -15516,6 +15902,7 @@ class AIAgent:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _transform_results = _invoke_hook(
                     "transform_llm_output",
+                    turn_id=turn_id,
                     response_text=final_response,
                     session_id=self.session_id or "",
                     model=self.model,
@@ -15537,6 +15924,7 @@ class AIAgent:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _invoke_hook(
                     "post_llm_call",
+                    turn_id=turn_id,
                     session_id=self.session_id,
                     user_message=original_user_message,
                     assistant_response=final_response,
@@ -15652,6 +16040,7 @@ class AIAgent:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(
                 "on_session_end",
+                turn_id=turn_id,
                 session_id=self.session_id,
                 completed=completed,
                 interrupted=interrupted,

@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
-_DISCORD_COMMAND_SYNC_STATE_FILE = "discord_command_sync_state.json"
+_DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
+_DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 
@@ -834,7 +835,12 @@ class DiscordAdapter(BasePlatformAdapter):
     def _command_sync_state_path(self) -> _Path:
         from hermes_constants import get_hermes_home
 
-        return get_hermes_home() / _DISCORD_COMMAND_SYNC_STATE_FILE
+        directory = get_hermes_home() / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return directory / _DISCORD_COMMAND_SYNC_STATE_FILENAME
 
     def _read_command_sync_state(self) -> dict:
         try:
@@ -945,6 +951,40 @@ class DiscordAdapter(BasePlatformAdapter):
                     continue
         return None
 
+    @staticmethod
+    def _is_discord_rate_limit(exc: BaseException) -> bool:
+        """True only for exceptions that look like Discord 429 rate limits.
+
+        Narrower than ``hasattr(exc, 'retry_after')``: discord.py's own
+        ``RateLimited`` exception and any HTTPException with status 429
+        qualify. This prevents suppressing unrelated failures that happen
+        to expose a ``retry_after`` attribute."""
+        # discord.py emits RateLimited / HTTPException subclasses for 429s.
+        # Guard with isinstance-of-class so a mocked ``discord`` module
+        # (where attrs are MagicMocks, not types) doesn't trip isinstance.
+        if DISCORD_AVAILABLE and discord is not None:
+            for attr_name in ("RateLimited", "HTTPException"):
+                cls = getattr(discord, attr_name, None)
+                if not isinstance(cls, type):
+                    continue
+                if isinstance(exc, cls):
+                    if attr_name == "RateLimited":
+                        return True
+                    status = getattr(exc, "status", None)
+                    if status == 429:
+                        return True
+        # Fallback duck-type: something named like a rate-limit with a
+        # numeric retry_after. Covers mocked clients in tests and exotic
+        # transports, without swallowing arbitrary exceptions.
+        name = type(exc).__name__.lower()
+        if ("ratelimit" in name or "rate_limit" in name) and getattr(exc, "retry_after", None) is not None:
+            return True
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status", None) or getattr(response, "status_code", None)
+        if status == 429:
+            return True
+        return False
+
     def _command_sync_mutation_interval_seconds(self) -> float:
         return _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS
 
@@ -989,16 +1029,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 # persist Discord's retry-after when it refuses the batch.
                 summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
             except Exception as e:
+                if not self._is_discord_rate_limit(e):
+                    raise
                 retry_after = self._extract_discord_retry_after(e)
-                if retry_after is not None:
-                    self._record_command_sync_rate_limit(app_id, fingerprint, retry_after)
-                    logger.warning(
-                        "[%s] Discord rate-limited slash command sync; retrying after %.0fs",
-                        self.name,
-                        retry_after,
-                    )
-                    return
-                raise
+                if retry_after is None:
+                    # Rate-limited but no retry-after signal — back off for a
+                    # conservative default so we don't slam the bucket again.
+                    retry_after = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
+                self._record_command_sync_rate_limit(app_id, fingerprint, retry_after)
+                logger.warning(
+                    "[%s] Discord rate-limited slash command sync; retrying after %.0fs",
+                    self.name,
+                    retry_after,
+                )
+                return
             finally:
                 if has_ratelimit_timeout:
                     http.max_ratelimit_timeout = previous_ratelimit_timeout

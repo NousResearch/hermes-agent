@@ -299,3 +299,83 @@ def test_viking_client_raises_structured_server_error():
 
     with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
         client._parse_response(response)
+
+
+def test_viking_client_headers_include_bearer_when_api_key_set():
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="usr",
+        agent="hermes",
+    )
+    headers = client._headers()
+    assert headers["X-API-Key"] == "test-key"
+    assert headers["Authorization"] == "Bearer test-key"
+
+
+def test_viking_client_headers_omit_tenant_when_legacy_default():
+    # Existing installs have account/user set to the literal string "default".
+    # Those should NOT be sent as headers — the server would interpret that
+    # as a real tenant override and reject/misroute requests.
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="default",
+        user="default",
+        agent="hermes",
+    )
+    headers = client._headers()
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
+    assert headers["X-OpenViking-Agent"] == "hermes"
+    assert headers["Authorization"] == "Bearer test-key"
+
+
+def test_viking_client_headers_omit_tenant_when_empty():
+    client = _VikingClient(
+        "https://example.com",
+        api_key="",
+        account="",
+        user="",
+        agent="hermes",
+    )
+    headers = client._headers()
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
+    assert "Authorization" not in headers
+    assert "X-API-Key" not in headers
+
+
+def test_viking_client_headers_sent_with_real_tenant_values():
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="real-account",
+        user="real-user",
+        agent="hermes",
+    )
+    headers = client._headers()
+    assert headers["X-OpenViking-Account"] == "real-account"
+    assert headers["X-OpenViking-User"] == "real-user"
+
+
+def test_viking_client_health_sends_auth_headers(monkeypatch):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="",
+        user="",
+        agent="hermes",
+    )
+    captured = {}
+
+    def capture_get(url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs.get("headers") or {}
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(client._httpx, "get", capture_get)
+    assert client.health() is True
+    assert captured["url"] == "https://example.com/health"
+    assert captured["headers"]["Authorization"] == "Bearer test-key"

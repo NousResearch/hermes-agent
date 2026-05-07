@@ -860,6 +860,7 @@ AUTHOR_MAP = {
     "mrcoferland@gmail.com": "mrcoferland",  # PR #19023
     "chenlinfeng@ruije.com.cn": "noOne-list",  # PR #19050
     "briansu@Mac-mini.attlocal.net": "likejudy",  # PR #19052
+    "leosma@gmail.com": "leon7609",  # PR #19069
 }
 
 

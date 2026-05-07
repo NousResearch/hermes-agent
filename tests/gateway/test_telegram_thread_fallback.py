@@ -159,12 +159,17 @@ async def test_send_omits_general_topic_thread_id():
 
 
 @pytest.mark.asyncio
-async def test_send_typing_general_topic_uses_none_thread_id():
-    """Typing for forum General should hit the API with message_thread_id=None directly.
+async def test_send_typing_preserves_general_topic_thread_id():
+    """Typing for forum General must send message_thread_id=1, not None.
 
-    _message_thread_id_for_typing() maps the General topic (thread id "1") to None
-    the same way _message_thread_id_for_send() does, so there's no retry path — the
-    first call is already correct.
+    Asymmetric with _message_thread_id_for_send: sendMessage rejects
+    message_thread_id=1, but sendChatAction needs it to scope the typing
+    bubble to the General topic. Omitting it (message_thread_id=None) hides
+    the bubble from the General-topic view entirely.
+
+    Regression guard for the d5357f816 refactor that mapped "1" → None in
+    the typing resolver and silently killed typing indicators in every
+    forum-group General topic.
     """
     adapter = _make_adapter()
     call_log = []
@@ -177,7 +182,7 @@ async def test_send_typing_general_topic_uses_none_thread_id():
     await adapter.send_typing("-100123", metadata={"thread_id": "1"})
 
     assert call_log == [
-        {"chat_id": -100123, "action": "typing", "message_thread_id": None},
+        {"chat_id": -100123, "action": "typing", "message_thread_id": 1},
     ]
 
 

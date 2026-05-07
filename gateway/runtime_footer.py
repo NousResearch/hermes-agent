@@ -54,6 +54,12 @@ def _model_short(model: Optional[str]) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+def _mode_glyph(service_tier: Optional[str]) -> str:
+    """Return a compact mode marker for runtime footers."""
+    raw = str(service_tier or "").strip().lower()
+    return "⚡️" if raw in {"priority", "fast", "on"} else "🐢"
+
+
 def resolve_footer_config(
     user_config: dict[str, Any] | None,
     platform_key: str | None = None,
@@ -96,6 +102,7 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    service_tier: Optional[str] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -107,7 +114,7 @@ def format_runtime_footer(
         if field == "model":
             m = _model_short(model)
             if m:
-                parts.append(m)
+                parts.append(f"{_mode_glyph(service_tier)} {m}")
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
@@ -131,6 +138,7 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    service_tier: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -147,4 +155,5 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        service_tier=service_tier,
     )

@@ -66,8 +66,21 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
         context_length=100000,
         cwd=None,  # falls back to TERMINAL_CWD env var
         fields=("model", "context_pct", "cwd"),
+        service_tier="priority",
     )
-    assert out == "gpt-5.4 · 68% · ~/projects/hermes"
+    assert out == "⚡️ gpt-5.4 · 68% · ~/projects/hermes"
+
+
+def test_format_footer_model_field_uses_turtle_outside_fast_mode():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        fields=("model",),
+        service_tier=None,
+    )
+    assert out == "🐢 gpt-5.4"
 
 
 def test_format_footer_skips_missing_context_length():
@@ -124,7 +137,7 @@ def test_format_footer_drops_cwd_when_empty(monkeypatch):
         fields=("model", "context_pct", "cwd"),
     )
     # cwd silently dropped; model + pct remain
-    assert out == "gpt-5.4 · 50%"
+    assert out == "🐢 gpt-5.4 · 50%"
 
 
 def test_format_footer_custom_field_order():
@@ -134,7 +147,7 @@ def test_format_footer_custom_field_order():
         cwd="/opt/project",
         fields=("context_pct", "model"),  # swapped + no cwd
     )
-    assert out == "50% · gpt-5.4"
+    assert out == "50% · 🐢 gpt-5.4"
 
 
 def test_format_footer_unknown_field_silently_ignored():
@@ -144,7 +157,7 @@ def test_format_footer_unknown_field_silently_ignored():
         cwd="/x",
         fields=("model", "bogus", "context_pct"),
     )
-    assert out == "gpt-5.4 · 50%"
+    assert out == "🐢 gpt-5.4 · 50%"
 
 
 # ---------------------------------------------------------------------------

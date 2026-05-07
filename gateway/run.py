@@ -6172,6 +6172,7 @@ class GatewayRunner:
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    service_tier=getattr(self, "_service_tier", None),
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -8872,6 +8873,7 @@ class GatewayRunner:
                 context_tokens=0,
                 context_length=None,
                 fields=effective.get("fields") or ["model", "context_pct", "cwd"],
+                service_tier=getattr(self, "_service_tier", None),
             )
             if preview:
                 example = f"\nExample: `{preview}`"

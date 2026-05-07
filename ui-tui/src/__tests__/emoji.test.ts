@@ -17,6 +17,7 @@ describe('ensureEmojiPresentation', () => {
 
   it('injects VS16 after text-default emoji codepoints', () => {
     expect(ensureEmojiPresentation('⚠ careful')).toBe(`⚠${VS16} careful`)
+    expect(ensureEmojiPresentation('⚡ fast')).toBe(`⚡${VS16} fast`)
     expect(ensureEmojiPresentation('ℹ info')).toBe(`ℹ${VS16} info`)
     expect(ensureEmojiPresentation('love ❤ you')).toBe(`love ❤${VS16} you`)
     expect(ensureEmojiPresentation('✔ done')).toBe(`✔${VS16} done`)

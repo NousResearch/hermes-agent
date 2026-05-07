@@ -7,6 +7,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.request
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.copilot_auth import COPILOT_ENV_VARS
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -1810,64 +1812,6 @@ def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | Non
     return {"service_tier": "priority"}
 
 
-def _resolve_copilot_catalog_api_key() -> str:
-    """Best-effort GitHub token for fetching the Copilot model catalog.
-
-    Resolution order:
-      1. ``resolve_api_key_provider_credentials("copilot")`` — env vars
-         (``COPILOT_GITHUB_TOKEN`` / ``GH_TOKEN`` / ``GITHUB_TOKEN``) plus
-         the ``gh auth token`` CLI fallback.
-      2. ``read_credential_pool("copilot")`` — a token (typically a
-         ``gho_*`` from device-code login, or a fine-grained PAT) stored in
-         ``auth.json`` under ``credential_pool.copilot[]``. The pool is
-         populated by ``hermes auth add copilot`` and by ``_seed_from_env``
-         when the env var is set in ``~/.hermes/.env``.
-
-    Without (2), users whose only Copilot credential is in the pool see
-    the ``/model`` picker fall back to a stale hardcoded list because the
-    live catalog fetch silently 401s. To avoid wedging on a malformed pool
-    entry, each candidate is exchanged via ``exchange_copilot_token`` —
-    only entries that actually exchange successfully are returned, so a
-    later valid entry is reachable when an earlier one is unsupported.
-    """
-    try:
-        from hermes_cli.auth import resolve_api_key_provider_credentials
-
-        creds = resolve_api_key_provider_credentials("copilot")
-        api_key = str(creds.get("api_key") or "").strip()
-        if api_key:
-            return api_key
-    except Exception:
-        pass
-
-    try:
-        from hermes_cli.auth import read_credential_pool
-        from hermes_cli.copilot_auth import (
-            exchange_copilot_token,
-            validate_copilot_token,
-        )
-
-        for entry in read_credential_pool("copilot"):
-            if not isinstance(entry, dict):
-                continue
-            raw = str(entry.get("access_token") or "").strip()
-            if not raw:
-                continue
-            valid, _ = validate_copilot_token(raw)
-            if not valid:
-                continue
-            try:
-                api_token, _expires_at = exchange_copilot_token(raw)
-            except Exception:
-                continue
-            if api_token:
-                return api_token
-    except Exception:
-        pass
-
-    return ""
-
-
 # Providers where models.dev is treated as authoritative: curated static
 # lists are kept only as an offline fallback and to capture custom additions
 # the registry doesn't publish yet. Adding a provider here causes its
@@ -2223,7 +2167,9 @@ def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
 
 
 def fetch_github_model_catalog(
-    api_key: Optional[str] = None, timeout: float = 5.0
+    api_key: Optional[str] = None,
+    timeout: float = 5.0,
+    retry_without_auth: bool = True,
 ) -> Optional[list[dict[str, Any]]]:
     """Fetch the live GitHub Copilot model catalog for this account."""
     attempts: list[dict[str, str]] = []
@@ -2232,7 +2178,8 @@ def fetch_github_model_catalog(
             **copilot_default_headers(),
             "Authorization": f"Bearer {api_key}",
         })
-    attempts.append(copilot_default_headers())
+    if not api_key or retry_without_auth:
+        attempts.append(copilot_default_headers())
 
     for headers in attempts:
         req = urllib.request.Request(COPILOT_MODELS_URL, headers=headers)
@@ -2259,10 +2206,103 @@ def fetch_github_model_catalog(
 
 # ─── Copilot catalog context-window helpers ─────────────────────────────────
 
-# Module-level cache: {model_id: max_prompt_tokens}
-_copilot_context_cache: dict[str, int] = {}
-_copilot_context_cache_time: float = 0.0
+# Module-level cache: {token_fingerprint: {model_id: max_prompt_tokens}}
+_copilot_context_cache: dict[str, dict[str, int]] = {}
+_copilot_context_cache_time: dict[str, float] = {}
+_copilot_catalog_api_key_cache: dict[str, tuple[str, float]] = {}
 _COPILOT_CONTEXT_CACHE_TTL = 3600  # 1 hour
+_COPILOT_CATALOG_TOKEN_REFRESH_MARGIN_SECONDS = 120
+
+
+def _copilot_cache_identity(api_key: Optional[str]) -> str:
+    """Return a stable, non-secret namespace for a Copilot token."""
+    return hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()
+
+
+def _copilot_auth_state_fingerprint() -> str:
+    """Return a cheap fingerprint for the current Copilot auth state.
+
+    This is used to memoize the resolved Copilot catalog API key so repeated
+    lookups do not keep walking env vars, auth.json, credential pools, and gh.
+    The fingerprint changes when the common auth inputs change.
+    """
+    from hermes_cli.config import get_hermes_home
+
+    def _gh_hosts_yml_path() -> Path:
+        gh_config_dir = os.getenv("GH_CONFIG_DIR", "").strip()
+        if gh_config_dir:
+            return Path(gh_config_dir) / "hosts.yml"
+        xdg_config_home = os.getenv("XDG_CONFIG_HOME", "").strip()
+        if xdg_config_home:
+            return Path(xdg_config_home) / "gh" / "hosts.yml"
+        return Path.home() / ".config" / "gh" / "hosts.yml"
+
+    def _fingerprint_path(path: Path) -> str:
+        try:
+            stat = path.stat()
+        except OSError:
+            return f"{path}:missing"
+        return f"{path}:{stat.st_mtime_ns}:{stat.st_size}"
+
+    parts = [
+        f"{env_var}={os.getenv(env_var, '').strip()}"
+        for env_var in COPILOT_ENV_VARS
+    ]
+    parts.append(f"COPILOT_GH_HOST={os.getenv('COPILOT_GH_HOST', '').strip()}")
+    parts.append(_fingerprint_path(_gh_hosts_yml_path()))
+    parts.append(_fingerprint_path(get_hermes_home() / "auth.json"))
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _resolve_copilot_catalog_api_key_details() -> tuple[str, float]:
+    """Return ``(api_key, expires_at_epoch)`` for the Copilot catalog API.
+
+    The expiry is only known for exchanged tokens. Env / gh-auth tokens are
+    treated as effectively non-expiring and are revalidated by the auth-state
+    fingerprint when the underlying inputs change.
+    """
+    try:
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+
+        creds = resolve_api_key_provider_credentials("copilot")
+        api_key = str(creds.get("api_key") or "").strip()
+        if api_key:
+            return api_key, float("inf")
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.auth import read_credential_pool
+        from hermes_cli.copilot_auth import (
+            exchange_copilot_token,
+            validate_copilot_token,
+        )
+
+        for entry in read_credential_pool("copilot"):
+            if not isinstance(entry, dict):
+                continue
+            raw = str(entry.get("access_token") or "").strip()
+            if not raw:
+                continue
+            valid, _ = validate_copilot_token(raw)
+            if not valid:
+                continue
+            try:
+                api_token, expires_at = exchange_copilot_token(raw)
+            except Exception:
+                continue
+            if api_token:
+                return api_token, float(expires_at)
+    except Exception:
+        pass
+
+    return "", 0.0
+
+
+def _resolve_copilot_catalog_api_key() -> str:
+    """Best-effort GitHub token for fetching the Copilot model catalog."""
+    api_key, _expires_at = _resolve_copilot_catalog_api_key_details()
+    return api_key
 
 
 def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> Optional[int]:
@@ -2271,17 +2311,60 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
     Results are cached in-process for 1 hour to avoid repeated API calls.
     Returns the token limit or None if not found.
     """
-    global _copilot_context_cache, _copilot_context_cache_time
+    global _copilot_context_cache, _copilot_context_cache_time, _copilot_catalog_api_key_cache
 
-    # Serve from cache if fresh
-    if _copilot_context_cache and (time.time() - _copilot_context_cache_time < _COPILOT_CONTEXT_CACHE_TTL):
-        if model_id in _copilot_context_cache:
-            return _copilot_context_cache[model_id]
-        # Cache is fresh but model not in it — don't re-fetch
-        return None
+    cached_key = ""
+    cached_expires_at = 0.0
+    if not api_key:
+        state_key = _copilot_auth_state_fingerprint()
+        anonymous_cache_key = f"anon:{state_key}"
+        anonymous_cache = _copilot_context_cache.get(anonymous_cache_key)
+        anonymous_cached_at = _copilot_context_cache_time.get(anonymous_cache_key, 0.0)
+        cached = _copilot_catalog_api_key_cache.get(state_key)
+        if (
+            not cached
+            and anonymous_cache
+            and (time.time() - anonymous_cached_at < _COPILOT_CONTEXT_CACHE_TTL)
+        ):
+            if model_id in anonymous_cache:
+                return anonymous_cache[model_id]
+        now = time.time()
+        if cached:
+            cached_key, cached_expires_at = cached
+            if cached_key:
+                cache_identity = _copilot_cache_identity(cached_key)
+                cached_catalog = _copilot_context_cache.get(cache_identity)
+                cached_at = _copilot_context_cache_time.get(cache_identity, 0.0)
+                if cached_catalog and (now - cached_at < _COPILOT_CONTEXT_CACHE_TTL):
+                    if model_id in cached_catalog:
+                        return cached_catalog[model_id]
+            if cached_key and (
+                cached_expires_at == float("inf")
+                or now < (cached_expires_at - _COPILOT_CATALOG_TOKEN_REFRESH_MARGIN_SECONDS)
+            ):
+                api_key = cached_key
+        if not api_key:
+            resolved_key, expires_at = _resolve_copilot_catalog_api_key_details()
+            if resolved_key:
+                api_key = resolved_key
+                _copilot_catalog_api_key_cache[state_key] = (resolved_key, expires_at)
+
+    cache_identity = _copilot_cache_identity(api_key) if api_key else f"anon:{_copilot_auth_state_fingerprint()}"
+
+    # Serve from the per-token cache if fresh.
+    cached_catalog = _copilot_context_cache.get(cache_identity)
+    cached_at = _copilot_context_cache_time.get(cache_identity, 0.0)
+    if cached_catalog and (time.time() - cached_at < _COPILOT_CONTEXT_CACHE_TTL):
+        if model_id in cached_catalog:
+            return cached_catalog[model_id]
+        # Cache is fresh but model not in it — re-probe in case the catalog
+        # changed or the prior fetch was incomplete.
 
     # Fetch and populate cache
-    catalog = fetch_github_model_catalog(api_key=api_key)
+    catalog = fetch_github_model_catalog(
+        api_key=api_key,
+        retry_without_auth=not bool(api_key),
+    )
     if not catalog:
         return None
 
@@ -2296,8 +2379,8 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
         if isinstance(max_prompt, int) and max_prompt > 0:
             cache[mid] = max_prompt
 
-    _copilot_context_cache = cache
-    _copilot_context_cache_time = time.time()
+    _copilot_context_cache[cache_identity] = cache
+    _copilot_context_cache_time[cache_identity] = time.time()
 
     return cache.get(model_id)
 
@@ -2533,7 +2616,11 @@ def lmstudio_model_reasoning_options(
 
 
 def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0) -> Optional[list[str]]:
-    catalog = fetch_github_model_catalog(api_key=api_key, timeout=timeout)
+    catalog = fetch_github_model_catalog(
+        api_key=api_key,
+        timeout=timeout,
+        retry_without_auth=not bool(api_key),
+    )
     if not catalog:
         return None
     return [item.get("id", "") for item in catalog if item.get("id")]
@@ -2583,7 +2670,7 @@ def _copilot_catalog_ids(
     api_key: Optional[str] = None,
 ) -> set[str]:
     if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
+        catalog = fetch_github_model_catalog(api_key=api_key, retry_without_auth=False)
     if not catalog:
         return set()
     return {
@@ -2676,7 +2763,7 @@ def copilot_model_api_mode(
     # Fetch the catalog once so normalize + endpoint check share it
     # (avoids two redundant network calls for non-GPT-5 models).
     if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
+        catalog = fetch_github_model_catalog(api_key=api_key, retry_without_auth=False)
 
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if not normalized:
@@ -2810,7 +2897,7 @@ def github_model_reasoning_efforts(
     if catalog is not None:
         catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
     elif api_key:
-        fetched_catalog = fetch_github_model_catalog(api_key=api_key)
+        fetched_catalog = fetch_github_model_catalog(api_key=api_key, retry_without_auth=False)
         if fetched_catalog:
             catalog_entry = next((item for item in fetched_catalog if item.get("id") == normalized), None)
 

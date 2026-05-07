@@ -321,6 +321,48 @@ class TestFetchApiModels:
         assert catalog is not None
         assert [item["id"] for item in catalog] == ["gpt-5.4"]
 
+    def test_fetch_github_model_catalog_retries_without_auth_on_failure(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}]}'
+
+        calls = []
+
+        def _fake_urlopen(req, timeout=5.0):
+            calls.append(req)
+            if req.get_header("Authorization"):
+                raise Exception("auth failed")
+            return _Resp()
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+            catalog = fetch_github_model_catalog("gh-token")
+
+        assert catalog is not None
+        assert [item["id"] for item in catalog] == ["gpt-5.4"]
+        assert len(calls) == 2
+        assert calls[0].get_header("Authorization") == "Bearer gh-token"
+        assert calls[1].get_header("Authorization") is None
+
+    def test_fetch_github_model_catalog_can_skip_anonymous_retry_for_tokened_calls(self):
+        calls = []
+
+        def _fake_urlopen(req, timeout=5.0):
+            calls.append(req)
+            raise Exception("auth failed")
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+            catalog = fetch_github_model_catalog("gh-token", retry_without_auth=False)
+
+        assert catalog is None
+        assert len(calls) == 1
+        assert calls[0].get_header("Authorization") == "Bearer gh-token"
+
 
 class TestGithubReasoningEfforts:
     def test_gpt5_supports_minimal_to_high(self):

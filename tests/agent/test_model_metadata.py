@@ -543,6 +543,61 @@ class TestGetModelContextLength:
             assert result == CONTEXT_PROBE_TIERS[0]
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    def test_provider_aware_lookup_for_copilot_is_not_saved_to_cache(self, mock_fetch):
+        mock_fetch.return_value = {}
+
+        with patch("agent.model_metadata.get_cached_context_length") as mock_cache, \
+             patch("hermes_cli.models.get_copilot_model_context", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=272000) as mock_lookup, \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = get_model_context_length(
+                "gpt-5.4",
+                base_url="acp://copilot",
+                provider="copilot-acp",
+            )
+
+        assert result == 272000
+        mock_cache.assert_not_called()
+        mock_lookup.assert_called_once_with("copilot-acp", "gpt-5.4")
+        mock_save.assert_not_called()
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_custom_provider_acp_marker_is_treated_as_copilot(self, mock_fetch):
+        mock_fetch.return_value = {}
+
+        with patch("agent.model_metadata.get_cached_context_length") as mock_cache, \
+             patch("hermes_cli.models.get_copilot_model_context", return_value=200000) as mock_copilot_ctx, \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = get_model_context_length(
+                "claude-sonnet-4",
+                base_url="acp://copilot",
+                provider="custom",
+            )
+
+        assert result == 200000
+        mock_cache.assert_not_called()
+        mock_copilot_ctx.assert_called_once_with("claude-sonnet-4", api_key="")
+        mock_save.assert_not_called()
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_provider_aware_lookup_for_non_copilot_is_saved_to_cache(self, mock_fetch):
+        mock_fetch.return_value = {}
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._is_custom_endpoint", return_value=False), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=272000) as mock_lookup, \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = get_model_context_length(
+                "gpt-5.4",
+                base_url="http://local",
+                provider="openrouter",
+            )
+
+        assert result == 272000
+        mock_lookup.assert_called_once_with("openrouter", "gpt-5.4")
+        mock_save.assert_called_once_with("gpt-5.4", "http://local", 272000)
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
     def test_custom_endpoint_metadata_beats_fuzzy_default(self, mock_endpoint_fetch, mock_fetch):
         mock_fetch.return_value = {}
@@ -557,6 +612,55 @@ class TestGetModelContextLength:
         )
 
         assert result == 65536
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_copilot_proxy_bypasses_endpoint_metadata_cache(self, mock_endpoint_fetch, mock_fetch):
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {
+            "claude-sonnet-4": {"context_length": 200000}
+        }
+
+        result = get_model_context_length(
+            "claude-sonnet-4",
+            base_url="https://proxy.example.com/v1",
+            provider="copilot-acp",
+        )
+
+        assert result == 200000
+        mock_endpoint_fetch.assert_called_once_with(
+            "https://proxy.example.com/v1",
+            api_key="",
+            force_refresh=True,
+        )
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None)
+    @patch("agent.model_metadata._query_local_context_length", return_value=65536)
+    def test_copilot_proxy_skips_local_persistent_cache(self, mock_local_ctx, mock_endpoint_ctx, mock_fetch):
+        mock_fetch.return_value = {}
+
+        with patch("agent.model_metadata.is_local_endpoint", return_value=True), \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = get_model_context_length(
+                "claude-sonnet-4",
+                base_url="http://proxy.local/v1",
+                provider="copilot-acp",
+            )
+
+        assert result == 65536
+        mock_endpoint_ctx.assert_called_once_with(
+            "claude-sonnet-4",
+            "http://proxy.local/v1",
+            api_key="",
+            force_refresh=True,
+        )
+        mock_local_ctx.assert_called_once_with(
+            "claude-sonnet-4",
+            "http://proxy.local/v1",
+            api_key="",
+        )
+        mock_save.assert_not_called()
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")

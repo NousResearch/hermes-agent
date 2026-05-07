@@ -340,12 +340,31 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
     normalized = _normalize_base_url(base_url)
     if not normalized:
         return None
+    if normalized.lower().startswith("acp://copilot"):
+        return "copilot-acp"
     parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
     host = parsed.netloc.lower() or parsed.path.lower()
     for url_part, provider in _URL_TO_PROVIDER.items():
         if url_part in host:
             return provider
     return None
+
+
+def _is_copilot_provider(provider: Optional[str]) -> bool:
+    return provider in ("copilot", "copilot-acp", "github-copilot")
+
+
+def _is_copilot_context_source(provider: Optional[str], base_url: Optional[str]) -> bool:
+    """Return True when the lookup targets a Copilot-backed endpoint.
+
+    Copilot context windows are account-specific, so they must not use the
+    persistent context cache keyed only by ``model@base_url``.
+    """
+    if _is_copilot_provider(provider):
+        return True
+    if not base_url:
+        return False
+    return _infer_provider_from_url(base_url) in ("copilot", "copilot-acp", "github-copilot")
 
 
 def _is_known_provider_base_url(base_url: str) -> bool:
@@ -723,9 +742,14 @@ def _resolve_endpoint_context_length(
     model: str,
     base_url: str,
     api_key: str = "",
+    force_refresh: bool = False,
 ) -> Optional[int]:
     """Resolve context length from an endpoint's live ``/models`` metadata."""
-    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    endpoint_metadata = fetch_endpoint_model_metadata(
+        base_url,
+        api_key=api_key,
+        force_refresh=force_refresh,
+    )
     matched = endpoint_metadata.get(model)
     if not matched:
         if len(endpoint_metadata) == 1:
@@ -1290,7 +1314,10 @@ def get_model_context_length(
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
     # via /api/v1/models/load), so a stale cached value would mask reloads.
-    if base_url and provider != "lmstudio":
+    # Copilot endpoints are also excluded because the limit is tied to the
+    # account/token rather than the base URL alone.
+    skip_persistent_cache = _is_copilot_context_source(provider, base_url)
+    if base_url and provider != "lmstudio" and not skip_persistent_cache:
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
             # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
@@ -1329,13 +1356,28 @@ def get_model_context_length(
         except ImportError:
             pass  # boto3 not installed — fall through to generic resolution
 
+    # Provider-aware lookups need to know whether a custom endpoint is
+    # Copilot-backed before the /models probe runs, so infer it here.
+    effective_provider = provider
+    if not effective_provider or effective_provider in ("openrouter", "custom"):
+        if base_url:
+            inferred = _infer_provider_from_url(base_url)
+            if inferred:
+                effective_provider = inferred
+
     # 2. Active endpoint metadata for truly custom/unknown endpoints.
     # Known providers (Copilot, OpenAI, Anthropic, etc.) skip this — their
     # /models endpoint may report a provider-imposed limit (e.g. Copilot
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
-        context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        refresh_endpoint_probe = effective_provider in {"copilot", "copilot-acp", "github-copilot"}
+        context_length = _resolve_endpoint_context_length(
+            model,
+            base_url,
+            api_key=api_key,
+            force_refresh=refresh_endpoint_probe,
+        )
         if context_length is not None:
             return context_length
         if not _is_known_provider_base_url(base_url):
@@ -1343,7 +1385,7 @@ def get_model_context_length(
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
-                    if provider != "lmstudio":
+                    if provider != "lmstudio" and not skip_persistent_cache:
                         save_context_length(model, base_url, local_ctx)
                     return local_ctx
             logger.info(
@@ -1412,6 +1454,8 @@ def get_model_context_length(
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
+            if base_url and provider != "lmstudio" and not skip_persistent_cache:
+                save_context_length(model, base_url, ctx)
             return ctx
 
     # 6. OpenRouter live API metadata (provider-unaware fallback)
@@ -1434,7 +1478,7 @@ def get_model_context_length(
     if base_url and is_local_endpoint(base_url):
         local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
         if local_ctx and local_ctx > 0:
-            if provider != "lmstudio":
+            if provider != "lmstudio" and not skip_persistent_cache:
                 save_context_length(model, base_url, local_ctx)
             return local_ctx
 

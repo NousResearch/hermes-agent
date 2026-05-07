@@ -3825,6 +3825,34 @@ class GatewayRunner:
                     break
                 await asyncio.sleep(1)
 
+    def _kanban_notify_in_gateway_enabled(self) -> bool:
+        """Return whether this gateway should consume Kanban notify rows.
+
+        Multiple profile gateways can be alive on the same host. Notification
+        rows are a shared queue; whichever watcher consumes a row deletes it.
+        A secondary profile with its own bot can therefore steal the default
+        profile's subscription and fail delivery to an unknown chat.
+
+        Default ownership follows ``kanban.dispatch_in_gateway`` because the
+        dispatcher-owning gateway is the board owner in the current deployment
+        model. Operators that run an external dispatcher but still want gateway
+        notifications can explicitly set ``kanban.notify_in_gateway: true``.
+        """
+        env_override = os.environ.get("HERMES_KANBAN_NOTIFY_IN_GATEWAY", "").strip().lower()
+        if env_override in ("0", "false", "no", "off"):
+            return False
+        if env_override in ("1", "true", "yes", "on"):
+            return True
+        try:
+            from hermes_cli.config import load_config as _load_config
+            cfg = _load_config()
+        except Exception:
+            return False
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if "notify_in_gateway" in kanban_cfg:
+            return bool(kanban_cfg.get("notify_in_gateway"))
+        return bool(kanban_cfg.get("dispatch_in_gateway", True))
+
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
 
@@ -3845,6 +3873,12 @@ class GatewayRunner:
         purely a fan-out of the single-DB poll.
         """
         from gateway.config import Platform as _Platform
+        if not self._kanban_notify_in_gateway_enabled():
+            logger.info(
+                "kanban notifier: disabled via config/env "
+                "(kanban.notify_in_gateway=false or dispatch_in_gateway=false)"
+            )
+            return
         try:
             from hermes_cli import kanban_db as _kb
         except Exception:
@@ -3944,6 +3978,9 @@ class GatewayRunner:
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
+                        public_mode = str(
+                            sub.get("notification_mode") or "direct"
+                        ).strip().lower() == "synthesize"
                         if kind == "completed":
                             # Prefer the run's summary (the worker's
                             # intentional human-facing handoff, carried
@@ -3967,29 +4004,49 @@ class GatewayRunner:
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                                reason = str(ev.payload["reason"])[:160]
+                            if public_mode:
+                                msg = (
+                                    f"I need one clarification before I can continue: {reason}"
+                                    if reason else
+                                    "I need one clarification before I can continue."
+                                )
+                            else:
+                                suffix = f": {reason}" if reason else ""
+                                msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{suffix}"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
-                            msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
-                            )
+                            if public_mode:
+                                msg = (
+                                    "I hit a backend issue and couldn’t finish this after retries. "
+                                    "Ask for internal run details if you want me to inspect the failure."
+                                )
+                            else:
+                                msg = (
+                                    f"✖ {tag}Kanban {sub['task_id']} gave up "
+                                    f"after repeated spawn failures{err}"
+                                )
                         elif kind == "crashed":
-                            msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
-                            )
+                            if public_mode:
+                                msg = "I hit a backend issue while working on this. I’ll retry automatically."
+                            else:
+                                msg = (
+                                    f"✖ {tag}Kanban {sub['task_id']} worker crashed "
+                                    f"(pid gone); dispatcher will retry"
+                                )
                         elif kind == "timed_out":
                             limit = 0
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
-                            msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
-                            )
+                            if public_mode:
+                                msg = "This is taking longer than expected, so I’m retrying it."
+                            else:
+                                msg = (
+                                    f"⏱ {tag}Kanban {sub['task_id']} timed out "
+                                    f"(max_runtime={limit}s); will retry"
+                                )
                         else:
                             continue
                         metadata: dict[str, Any] = {}
@@ -4000,8 +4057,9 @@ class GatewayRunner:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
+                            await self._send_kanban_notification(
+                                adapter, sub, msg, metadata,
+                                event=ev, task=task, board=board_slug,
                             )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
@@ -4048,6 +4106,210 @@ class GatewayRunner:
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    async def _send_kanban_notification(
+        self,
+        adapter: Any,
+        sub: dict,
+        msg: str,
+        metadata: dict[str, Any],
+        *,
+        event: Any = None,
+        task: Any = None,
+        board: Optional[str] = None,
+    ) -> None:
+        """Send one Kanban notification and raise if the adapter reports failure.
+
+        Platform adapters normally return ``SendResult`` instead of raising on
+        delivery failure. The notifier must treat ``success=False`` as failure;
+        otherwise it advances/unsubscribes and silently loses the completion
+        ping even though nothing reached the user. ``notification_mode`` can
+        opt into synthesized user-facing text or suppress delivery entirely.
+        """
+        mode = str(sub.get("notification_mode") or "direct").strip().lower()
+        if mode == "silent":
+            logger.info(
+                "kanban notifier: silent notification for %s on %s:%s",
+                sub["task_id"], sub["platform"], sub["chat_id"],
+            )
+            return
+        send_msg = msg
+        if mode == "synthesize" and getattr(event, "kind", None) == "completed":
+            try:
+                synthesized = await self._synthesize_kanban_notification(
+                    sub=sub,
+                    event=event,
+                    task=task,
+                    board=board,
+                    direct_message=msg,
+                )
+                if synthesized and str(synthesized).strip():
+                    send_msg = str(synthesized).strip()
+            except Exception as exc:
+                logger.warning(
+                    "kanban notifier: synthesis failed for %s; falling back direct: %s",
+                    sub["task_id"], exc,
+                )
+                send_msg = msg
+        result = await adapter.send(sub["chat_id"], send_msg, metadata=metadata)
+        if getattr(result, "success", True) is False:
+            error = getattr(result, "error", None) or "adapter returned success=False"
+            raise RuntimeError(str(error))
+
+        try:
+            from gateway.mirror import mirror_to_session
+
+            mirrored = mirror_to_session(
+                str(sub.get("platform") or ""),
+                str(sub.get("chat_id") or ""),
+                send_msg,
+                source_label="kanban",
+                thread_id=(str(sub.get("thread_id") or "") or None),
+                user_id=(str(sub.get("user_id") or "") or None),
+            )
+        except Exception:
+            mirrored = False
+
+        logger.info(
+            "kanban notifier: sent %s event to %s:%s message_id=%s mirrored=%s",
+            sub["task_id"], sub["platform"], sub["chat_id"],
+            getattr(result, "message_id", None), mirrored,
+        )
+
+    @staticmethod
+    def _build_kanban_synthesis_prompt(
+        *,
+        sub: dict,
+        event: Any,
+        task: Any,
+        board: Optional[str],
+        worker_summary: Any,
+        worker_metadata: Any,
+        direct_message: str,
+    ) -> str:
+        """Build the user-facing completion synthesis prompt."""
+        origin_context = str(sub.get("origin_context") or "").strip()
+        return (
+            "You are the origin/default Hermes profile writing the final user-facing reply.\n"
+            "Use only the provided handoff, metadata, task title/body, and origin context.\n"
+            "Do NOT browse, fetch, run commands, create tasks, or redo data collection.\n"
+            "Default UX rule: hide internal workflow plumbing. Do NOT mention Kanban, task ids, assignees, "
+            "workers, worker/dispatcher flow, notification subscriptions, run ids, process ids, or board names "
+            "unless the user explicitly asked for internal mechanics, debugging, task status, or audit details.\n"
+            "Return the consolidated answer/result directly and concisely.\n"
+            "If the handoff is insufficient, say what is missing and give the best available concise status; "
+            "still avoid internal plumbing unless it is necessary to resolve the problem.\n\n"
+            f"Original user/context excerpt:\n{origin_context[:2000]}\n\n"
+            f"Task title/context:\n{getattr(task, 'title', '') if task else ''}\n"
+            f"{str(getattr(task, 'body', '') or '')[:1200]}\n\n"
+            f"Worker summary / durable handoff:\n{str(worker_summary or '')[:4000]}\n\n"
+            f"Worker metadata JSON:\n{json.dumps(worker_metadata, ensure_ascii=False, default=str)[:3000]}\n\n"
+            "Internal debug context (use only if the user's request is explicitly about internals/debugging):\n"
+            f"Task id: {sub.get('task_id')}\n"
+            f"Board: {board or 'default'}\n"
+            f"Event kind: {getattr(event, 'kind', '')}\n"
+            f"Run id: {getattr(event, 'run_id', '')}\n"
+            f"Origin session id: {sub.get('origin_session_id') or ''}\n"
+            f"Origin profile: {sub.get('origin_profile') or ''}\n"
+            f"Direct fallback message: {direct_message}"
+        )
+
+    async def _synthesize_kanban_notification(
+        self,
+        *,
+        sub: dict,
+        event: Any,
+        task: Any,
+        board: Optional[str],
+        direct_message: str,
+    ) -> str:
+        """Run a lightweight no-tools origin-profile turn for a completion.
+
+        The synthesis agent receives only the durable worker handoff and stored
+        origin context. It intentionally has no toolsets, so it cannot re-run
+        heavy collection or recursively create Kanban tasks/subscriptions.
+        """
+        from gateway.config import Platform as _Platform
+        from gateway.session import SessionSource
+        from run_agent import AIAgent
+
+        platform_str = str(sub.get("platform") or "telegram").lower()
+        try:
+            platform = _Platform(platform_str)
+        except Exception:
+            platform = _Platform.TELEGRAM
+        source = SessionSource(
+            platform=platform,
+            chat_id=str(sub.get("chat_id") or ""),
+            user_id=str(sub.get("user_id") or "") or None,
+            thread_id=str(sub.get("thread_id") or "") or None,
+        )
+        user_config = _load_gateway_config()
+        model, runtime_kwargs = self._resolve_session_agent_runtime(
+            source=source,
+            user_config=user_config,
+        )
+        if not runtime_kwargs.get("api_key"):
+            raise RuntimeError("no provider credentials configured for synthesis")
+
+        event_payload = getattr(event, "payload", None) or {}
+        run = None
+        if getattr(event, "run_id", None):
+            try:
+                from hermes_cli import kanban_db as _kb
+                conn = _kb.connect(board=board)
+                try:
+                    run = _kb.get_run(conn, int(event.run_id))
+                finally:
+                    conn.close()
+            except Exception:
+                run = None
+        worker_summary = (
+            (run.summary if run and run.summary else None)
+            or event_payload.get("summary")
+            or (task.result if task and getattr(task, "result", None) else None)
+            or direct_message
+        )
+        worker_metadata = run.metadata if run and run.metadata is not None else None
+        prompt = self._build_kanban_synthesis_prompt(
+            sub=sub,
+            event=event,
+            task=task,
+            board=board,
+            worker_summary=worker_summary,
+            worker_metadata=worker_metadata,
+            direct_message=direct_message,
+        )
+
+        def run_sync() -> str:
+            agent = AIAgent(
+                model=model,
+                **runtime_kwargs,
+                max_iterations=1,
+                quiet_mode=True,
+                verbose_logging=False,
+                enabled_toolsets=[],
+                disabled_toolsets=None,
+                session_id=f"kanban_synth_{sub.get('task_id')}_{getattr(event, 'id', int(time.time()))}",
+                platform=platform_str,
+                user_id=source.user_id,
+                chat_id=source.chat_id,
+                thread_id=source.thread_id,
+                session_db=getattr(self, "_session_db", None),
+                fallback_model=getattr(self, "_fallback_model", None),
+                skip_context_files=True,
+            )
+            try:
+                result = agent.run_conversation(user_message=prompt)
+                return str((result or {}).get("final_response") or "").strip()
+            finally:
+                self._cleanup_agent_resources(agent)
+
+        timeout_s = int((user_config.get("kanban") or {}).get("synthesis_timeout_seconds", 45))
+        return await asyncio.wait_for(
+            self._run_in_executor_with_context(run_sync),
+            timeout=max(5, timeout_s),
+        )
 
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,

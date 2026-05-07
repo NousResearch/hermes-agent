@@ -227,9 +227,10 @@ TOOLSETS = {
 
     "kanban": {
         "description": (
-            "Kanban multi-agent coordination — only active when the agent "
+            "Kanban multi-agent coordination — active when the agent "
             "is spawned by the kanban dispatcher (HERMES_KANBAN_TASK env "
-            "set). The dispatcher runs inside the gateway by default; see "
+            "set) or when a profile explicitly enables the kanban toolset. "
+            "The dispatcher runs inside the gateway by default; see "
             "`kanban.dispatch_in_gateway` in config.yaml. Lets workers mark "
             "tasks done with structured handoffs, block for human input, "
             "heartbeat during long ops, comment on threads, and (for "

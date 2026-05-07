@@ -858,6 +858,10 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     chat_id       TEXT NOT NULL,
     thread_id     TEXT NOT NULL DEFAULT '',
     user_id       TEXT,
+    notification_mode TEXT NOT NULL DEFAULT 'direct',
+    origin_session_id TEXT,
+    origin_profile    TEXT,
+    origin_context    TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
@@ -1081,6 +1085,21 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_events_run "
             "ON task_events(run_id, id)"
         )
+
+    notify_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(kanban_notify_subs)")
+    }
+    if "notification_mode" not in notify_cols:
+        conn.execute(
+            "ALTER TABLE kanban_notify_subs ADD COLUMN "
+            "notification_mode TEXT NOT NULL DEFAULT 'direct'"
+        )
+    if "origin_session_id" not in notify_cols:
+        conn.execute("ALTER TABLE kanban_notify_subs ADD COLUMN origin_session_id TEXT")
+    if "origin_profile" not in notify_cols:
+        conn.execute("ALTER TABLE kanban_notify_subs ADD COLUMN origin_profile TEXT")
+    if "origin_context" not in notify_cols:
+        conn.execute("ALTER TABLE kanban_notify_subs ADD COLUMN origin_context TEXT")
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -4183,6 +4202,11 @@ def task_age(task: Task) -> dict:
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
 
+def _normalize_notification_mode(mode: Optional[str]) -> str:
+    value = str(mode or "direct").strip().lower()
+    return value if value in {"direct", "synthesize", "silent"} else "direct"
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -4191,18 +4215,28 @@ def add_notify_sub(
     chat_id: str,
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    notification_mode: Optional[str] = "direct",
+    origin_session_id: Optional[str] = None,
+    origin_profile: Optional[str] = None,
+    origin_context: Optional[str] = None,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
     now = int(time.time())
+    mode = _normalize_notification_mode(notification_mode)
     with write_txn(conn):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, thread_id, user_id,
+                 notification_mode, origin_session_id, origin_profile,
+                 origin_context, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, now),
+            (
+                task_id, platform, chat_id, thread_id or "", user_id,
+                mode, origin_session_id, origin_profile, origin_context, now,
+            ),
         )
 
 

@@ -702,6 +702,10 @@ def handle_function_call(
     task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
     session_id: Optional[str] = None,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
@@ -713,6 +717,8 @@ def handle_function_call(
         function_name: Name of the function to call.
         function_args: Arguments for the function.
         task_id: Unique identifier for terminal/browser session isolation.
+        session_id: Hermes conversation/session id for provenance-aware tools.
+        platform/chat_id/thread_id/user_id: Optional origin surface metadata.
         user_task: The user's original task (for browser_snapshot context).
         enabled_tools: Tool names enabled for this session.  When provided,
                        execute_code uses this list to determine which sandbox
@@ -781,12 +787,22 @@ def handle_function_call(
                 function_name, function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
+                session_id=session_id,
+                platform=platform,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                user_id=user_id,
             )
         else:
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
                 user_task=user_task,
+                session_id=session_id,
+                platform=platform,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                user_id=user_id,
             )
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 

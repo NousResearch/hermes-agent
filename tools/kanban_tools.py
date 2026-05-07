@@ -135,6 +135,127 @@ def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 
 
+def _auto_subscribe_origin_for_created_task(kb, conn, created_task_id: str, **kw) -> Optional[dict[str, str]]:
+    """Subscribe the originating user surface for agent-created tasks.
+
+    Slash-command creates already subscribe in gateway/run.py because they have
+    adapter source metadata in hand. This helper covers model-tool-created
+    tasks from normal/orchestrator chats by reusing kanban_notify_subs.
+
+    Dispatcher-spawned workers set HERMES_KANBAN_TASK; skip those by default so
+    worker fan-out child tasks don't spam the worker's private run session.
+    Parentless worker-created recovery/root follow-ups are handled separately by
+    inheriting an existing notification subscription from the current task.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return None
+
+    session_id = str(kw.get("session_id") or "").strip()
+    platform = str(
+        kw.get("platform") or os.environ.get("HERMES_SESSION_SOURCE") or ""
+    ).strip().lower()
+    if not platform:
+        platform = "cli" if session_id else ""
+    if not platform:
+        return None
+
+    raw_chat_id = str(kw.get("chat_id") or "").strip()
+    if platform == "cli":
+        chat_id = raw_chat_id or session_id
+    else:
+        # Gateway delivery uses adapter chat ids. A Hermes session id alone is
+        # useful provenance but is not a routable Telegram/Discord/etc target.
+        chat_id = raw_chat_id
+    if not chat_id:
+        return None
+
+    thread_id = str(kw.get("thread_id") or "").strip()
+    user_id = str(kw.get("user_id") or "").strip() or None
+    requested_mode = str(kw.get("notification_mode") or "").strip().lower()
+    if requested_mode in {"direct", "synthesize", "silent"}:
+        notification_mode = requested_mode
+    elif platform == "telegram":
+        # Interactive Telegram model-tool creates should flow back through the
+        # origin/default profile for persona/context-aware synthesis. CLI and
+        # cron/batch remain direct to avoid surprise nested agent runs.
+        notification_mode = "synthesize"
+    else:
+        notification_mode = "direct"
+    origin_context = str(kw.get("user_task") or "").strip()[:2000] or None
+    origin_profile = os.environ.get("HERMES_PROFILE") or None
+    kb.add_notify_sub(
+        conn,
+        task_id=created_task_id,
+        platform=platform,
+        chat_id=chat_id,
+        thread_id=thread_id or None,
+        user_id=user_id,
+        notification_mode=notification_mode,
+        origin_session_id=session_id or None,
+        origin_profile=origin_profile,
+        origin_context=origin_context,
+    )
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+        "notification_mode": notification_mode,
+    }
+
+
+def _inherit_notify_sub_for_worker_root_task(
+    kb, conn, created_task_id: str, parents: list[str], requested_mode: Any = None,
+) -> Optional[dict[str, str]]:
+    """Propagate the current task's origin only for parentless worker roots.
+
+    Worker-created child/fan-out tasks should normally be silent and dependency
+    linked to their current task. The exception is a parentless recovery/root
+    follow-up created from inside a worker handling an interactive request; that
+    task is user-visible and should keep the origin subscription so completion
+    auto-returns to the initiating chat.
+    """
+    current_task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not current_task_id or parents:
+        return None
+    if str(requested_mode or "").strip().lower() == "silent":
+        return None
+
+    current_subs = kb.list_notify_subs(conn, current_task_id)
+    if not current_subs:
+        return None
+
+    first: Optional[dict[str, str]] = None
+    for sub in current_subs:
+        notification_mode = str(
+            requested_mode or sub.get("notification_mode") or "direct"
+        ).strip().lower()
+        if notification_mode not in {"direct", "synthesize", "silent"}:
+            notification_mode = "direct"
+        if notification_mode == "silent":
+            continue
+        kb.add_notify_sub(
+            conn,
+            task_id=created_task_id,
+            platform=str(sub.get("platform") or ""),
+            chat_id=str(sub.get("chat_id") or ""),
+            thread_id=str(sub.get("thread_id") or "") or None,
+            user_id=sub.get("user_id"),
+            notification_mode=notification_mode,
+            origin_session_id=sub.get("origin_session_id"),
+            origin_profile=sub.get("origin_profile"),
+            origin_context=sub.get("origin_context"),
+        )
+        if first is None:
+            first = {
+                "platform": str(sub.get("platform") or ""),
+                "chat_id": str(sub.get("chat_id") or ""),
+                "thread_id": str(sub.get("thread_id") or ""),
+                "notification_mode": notification_mode,
+                "inherited_from_task": current_task_id,
+            }
+    return first
+
+
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
@@ -456,9 +577,24 @@ def _handle_create(args: dict, **kw) -> str:
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
             new_task = kb.get_task(conn, new_tid)
+            subscription = _auto_subscribe_origin_for_created_task(
+                kb, conn, new_tid,
+                notification_mode=args.get("notification_mode"),
+                **kw,
+            )
+            if subscription is None:
+                subscription = _inherit_notify_sub_for_worker_root_task(
+                    kb, conn, new_tid, list(parents),
+                    requested_mode=args.get("notification_mode"),
+                )
+            user_facing_status = None
+            if subscription and str(subscription.get("platform") or "").lower() == "telegram":
+                user_facing_status = "I’ll look into it and report back here."
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                notification_subscription=subscription,
+                user_facing_status=user_facing_status,
             )
         finally:
             conn.close()
@@ -780,6 +916,19 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "notification_mode": {
+                "type": "string",
+                "enum": ["direct", "synthesize", "silent"],
+                "description": (
+                    "Optional completion notification behavior for the origin "
+                    "subscription. 'direct' sends the worker handoff as-is; "
+                    "'synthesize' asks the origin/default profile to craft the "
+                    "user-facing reply from the worker handoff and stored origin "
+                    "context; 'silent' subscribes but sends no terminal ping. "
+                    "Defaults to synthesize for interactive Telegram "
+                    "tool-created tasks and direct elsewhere."
                 ),
             },
         },

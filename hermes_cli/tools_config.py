@@ -71,6 +71,7 @@ CONFIGURABLE_TOOLSETS = [
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("kanban",          "🗂️  Kanban Coordination",      "show, create, complete, block, heartbeat"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),

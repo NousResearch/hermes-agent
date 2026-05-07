@@ -1158,6 +1158,12 @@ def _smart_approve(command: str, description: str) -> str:
         # Strip shell comments to remove the easiest injection vector.
         sanitized_command = _strip_shell_comments(command)
 
+        # html.escape() prevents XML tag breakout: a command containing
+        # "</command>" would close the block prematurely and allow
+        # attacker-controlled text to appear outside the data block.
+        safe_command = html.escape(sanitized_command)
+        safe_description = html.escape(description)
+
         system_prompt = (
             "You are a security reviewer for an AI coding agent. "
             "You assess whether shell commands are safe to execute.\n\n"
@@ -1178,8 +1184,8 @@ def _smart_approve(command: str, description: str) -> str:
         )
 
         user_prompt = (
-            f"The following command was flagged as: {description}\n\n"
-            f"<command>\n{sanitized_command}\n</command>\n\n"
+            f"The following command was flagged as: {safe_description}\n\n"
+            f"<command>\n{safe_command}\n</command>\n\n"
             "Assess the ACTUAL risk of the shell operations in this command. "
             "Many flagged commands are false positives — for example, "
             '`python -c "print(\'hello\')"` is flagged as "script execution '

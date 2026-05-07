@@ -68,6 +68,87 @@ def _print_separator() -> None:
     print("─" * 78, flush=True)
 
 
+def _countdown_for_review(seconds: int = 3) -> bool:
+    """Block briefly with a 'press any key to review' countdown.
+
+    Returns True when the user pressed a key (caller should fall through
+    to the interactive prompt) or False when the timer ran out (caller
+    should auto-accept all).
+
+    On a non-tty (CI, gateway, redirected stdin), returns False
+    immediately — there's no human watching to press anything, and we
+    don't want to gate session exit on a 3-second wait.
+
+    Falls back to the regular interactive prompt (returning True) on any
+    error: the goal is to never accidentally drop proposals because
+    raw-mode tty manipulation hit a corner case.
+    """
+    import sys
+    import time
+    try:
+        # Stdin must be a real tty — gateway/cron/CI all run with
+        # redirected stdin and select would block forever or report
+        # spurious readiness.
+        if not sys.stdin.isatty():
+            return False
+    except Exception:
+        return False
+
+    try:
+        import select
+        import termios
+        import tty
+    except Exception:
+        # Windows or other platforms without termios — skip the
+        # countdown, hand control straight to the interactive prompt.
+        return True
+
+    try:
+        fd = sys.stdin.fileno()
+    except (ValueError, OSError, Exception):
+        # Pseudo-files (pytest capture, some IDE consoles) raise on
+        # fileno(). Treat as non-tty and auto-accept.
+        return False
+    try:
+        original = termios.tcgetattr(fd)
+    except termios.error:
+        return True  # Not a real terminal — bail to interactive path.
+
+    interrupted = False
+    try:
+        tty.setcbreak(fd)
+        end = time.monotonic() + seconds
+        while True:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                break
+            # Refresh the inline countdown each second.
+            ticks = int(remaining) + 1
+            sys.stdout.write(
+                f"\rAuto-accepting all in {ticks}s — press any key to review... "
+            )
+            sys.stdout.flush()
+            ready, _, _ = select.select([sys.stdin], [], [], min(1.0, remaining))
+            if ready:
+                # Drain the keystroke so it doesn't bleed into the next
+                # prompt's input buffer.
+                try:
+                    sys.stdin.read(1)
+                except Exception:
+                    pass
+                interrupted = True
+                break
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, original)
+        except termios.error:
+            pass
+        # Clear the countdown line so the next print starts on a clean row.
+        sys.stdout.write("\r" + " " * 78 + "\r")
+        sys.stdout.flush()
+    return interrupted
+
+
 def _classify_proposals(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Run conflict classification on each proposal. Returns annotated list.
 
@@ -187,10 +268,17 @@ def _interactive_review(
         CONTRADICTION) display the matched fact text inline so the user
         can spot near-duplicate accretion before approving.
 
-    Default-accept rule:
-      - Pressing Enter with no input accepts ALL only when N <= 3. For
-        larger batches the default is empty — the user must opt in
-        explicitly to avoid rubber-stamping a long list.
+    Auto-accept countdown:
+      - After rendering the proposals, a 3-second "press any key to
+        review" countdown runs. If the user presses anything, control
+        falls through to the interactive prompt as before. If the timer
+        expires, all proposals are auto-accepted. This is the fast path
+        for the common case where the user is just exiting and the
+        proposals look fine; the explicit prompt remains available for
+        edits / rejects / partial accepts.
+      - Non-tty stdin (gateway, cron, CI) skips the countdown and
+        auto-accepts immediately — no human watching means no point
+        gating exit on a wall-clock wait.
     """
     if not proposals:
         return []
@@ -210,6 +298,13 @@ def _interactive_review(
         _render_proposal(i, p, show_full=show_full)
 
     print()
+
+    # Auto-accept countdown. Returns True when the user wants to review
+    # interactively, False when the timer expired and we should accept
+    # everything as-shown.
+    if not _countdown_for_review(seconds=3):
+        return annotated
+
     print("Choices:")
     if show_full:
         print("  letters (e.g. 'a c') — accept those entries")

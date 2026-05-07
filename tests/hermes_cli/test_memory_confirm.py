@@ -95,6 +95,21 @@ def stub_classifier(monkeypatch):
     return _set
 
 
+@pytest.fixture(autouse=True)
+def force_interactive_review(request, monkeypatch):
+    """Default: bypass the auto-accept countdown so existing tests still
+    reach the input()-driven interactive prompt.
+
+    Tests that explicitly exercise the countdown opt out by adding the
+    ``@pytest.mark.real_countdown`` marker; those tests get the real
+    helper and must monkeypatch ``_countdown_for_review`` themselves
+    (or test it directly).
+    """
+    if "real_countdown" in request.keywords:
+        return
+    monkeypatch.setattr(memory_confirm, "_countdown_for_review", lambda *a, **kw: True)
+
+
 # ---------------------------------------------------------------------------
 # Grammar / pluralization
 # ---------------------------------------------------------------------------
@@ -391,3 +406,93 @@ class TestWrapIndented:
         out = memory_confirm._wrap_indented("line one\nline two", indent="", width=80)
         assert "\n" not in out
         assert out == "line one line two"
+
+
+# ---------------------------------------------------------------------------
+# Auto-accept countdown
+# ---------------------------------------------------------------------------
+
+class TestAutoAcceptCountdown:
+    """The 3-second 'press any key to review' countdown.
+
+    Behavior contract:
+      - Returns False when the timer expires (caller auto-accepts all).
+      - Returns True when the user presses a key (caller falls through
+        to the interactive prompt).
+      - Returns False on non-tty stdin (no human watching → auto-accept
+        immediately, don't gate exit on a wall-clock wait).
+    """
+
+    @pytest.mark.real_countdown
+    def test_non_tty_stdin_auto_accepts(self, monkeypatch):
+        """Gateway / cron / CI redirected stdin must skip the countdown."""
+        import sys
+        # Force isatty False; every other branch should be irrelevant.
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        # Should return False (timer "expired" — auto-accept all) without
+        # blocking on select or doing tty manipulation.
+        assert memory_confirm._countdown_for_review(seconds=3) is False
+
+    def test_interactive_review_auto_accepts_when_countdown_expires(
+        self, stub_classifier, monkeypatch, capsys,
+    ):
+        """When _countdown_for_review returns False (timer expired), the
+        interactive review must auto-accept all proposals without ever
+        invoking input()."""
+        proposals = stub_classifier([
+            (_proposal("fact one here"), _verdict("NEW")),
+            (_proposal("fact two here"), _verdict("NEW")),
+        ])
+        # Timer expires (no key pressed).
+        monkeypatch.setattr(memory_confirm, "_countdown_for_review", lambda *a, **kw: False)
+        # input() must NOT be called — bomb on attempt.
+        def _bomb(*_, **__):
+            raise AssertionError("input() should not be called when countdown expires")
+        monkeypatch.setattr("builtins.input", _bomb)
+
+        chosen = memory_confirm._interactive_review(proposals)
+        assert len(chosen) == 2
+        # And the proposal contents are preserved
+        assert [p["content"] for p in chosen] == ["fact one here", "fact two here"]
+
+    def test_interactive_review_falls_through_when_countdown_interrupted(
+        self, stub_classifier, monkeypatch,
+    ):
+        """When _countdown_for_review returns True (user pressed a key),
+        the interactive prompt must run as before — input() gets called."""
+        proposals = stub_classifier([
+            (_proposal("fact one here"), _verdict("NEW")),
+        ])
+        monkeypatch.setattr(memory_confirm, "_countdown_for_review", lambda *a, **kw: True)
+        # User picks 'none' at the prompt
+        monkeypatch.setattr("builtins.input", lambda *_: "none")
+
+        chosen = memory_confirm._interactive_review(proposals)
+        assert chosen == []
+
+    @pytest.mark.real_countdown
+    def test_countdown_handles_termios_failure_gracefully(self, monkeypatch):
+        """If termios.tcgetattr raises (rare — non-real-tty that still
+        passes isatty + has a fileno), bail to the interactive path
+        rather than auto-accepting silently. Falls back to True so the
+        user still gets an explicit prompt."""
+        import sys
+
+        # Stub stdin so we don't depend on pytest's capture pseudo-file
+        # (which legitimately doesn't have a fileno).
+        class FakeStdin:
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 0  # Doesn't matter — tcgetattr is patched to raise.
+
+        monkeypatch.setattr(sys, "stdin", FakeStdin())
+
+        import termios
+        def _raise(*_):
+            raise termios.error("ENOTTY")
+        monkeypatch.setattr(termios, "tcgetattr", _raise)
+
+        # Should return True (caller falls through to interactive prompt).
+        assert memory_confirm._countdown_for_review(seconds=3) is True

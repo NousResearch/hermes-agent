@@ -314,6 +314,8 @@ class TestLoadGatewayConfig:
         )
 
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("API_SERVER_ENABLED", raising=False)
+        monkeypatch.delenv("API_SERVER_KEY", raising=False)
 
         config = load_gateway_config()
 
@@ -541,6 +543,42 @@ class TestLoadGatewayConfig:
 
         import os
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
+
+
+class TestSmsEnvOverrides:
+    def test_sms_gateway_enabled_false_prevents_twilio_auto_enable(self):
+        config = GatewayConfig()
+
+        with patch.dict(
+            os.environ,
+            {
+                "TWILIO_ACCOUNT_SID": "AC123",
+                "TWILIO_AUTH_TOKEN": "twilio_token",
+                "SMS_GATEWAY_ENABLED": "false",
+            },
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        assert Platform.SMS not in config.platforms
+
+    def test_sms_gateway_enabled_false_disables_existing_sms_config(self):
+        config = GatewayConfig(
+            platforms={Platform.SMS: PlatformConfig(enabled=True, api_key="twilio_token")}
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "TWILIO_ACCOUNT_SID": "AC123",
+                "TWILIO_AUTH_TOKEN": "twilio_token",
+                "SMS_GATEWAY_ENABLED": "0",
+            },
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.SMS].enabled is False
 
 
 class TestHomeChannelEnvOverrides:

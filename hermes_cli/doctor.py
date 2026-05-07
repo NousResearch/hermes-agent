@@ -1220,6 +1220,13 @@ def run_doctor(args):
                 }
                 if base_url_host_matches(_base, "api.kimi.com"):
                     _headers["User-Agent"] = "claude-code/0.1.0"
+                # Google AI Studio's native Gemini API does not accept OpenAI-style
+                # Authorization: Bearer auth on /models; the API key must be sent
+                # as key=... or x-goog-api-key. Without this special case doctor
+                # reports valid GOOGLE_API_KEY/GEMINI_API_KEY values as invalid.
+                if base_url_host_matches(_url, "generativelanguage.googleapis.com"):
+                    _headers.pop("Authorization", None)
+                    _headers["x-goog-api-key"] = _key
                 _resp = httpx.get(
                     _url,
                     headers=_headers,

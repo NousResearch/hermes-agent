@@ -1301,8 +1301,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # SMS (Twilio)
+    # Historically, TWILIO_ACCOUNT_SID alone auto-enabled the SMS gateway adapter.
+    # That is convenient for simple personal setups but noisy/unsafe on systems
+    # that keep Twilio credentials in ~/.hermes/.env for other services while
+    # routing customer SMS through a separate approval bridge. SMS_GATEWAY_ENABLED
+    # provides an explicit gateway-level opt-out without removing credentials.
+    sms_gateway_enabled = os.getenv("SMS_GATEWAY_ENABLED", "").strip().lower()
+    sms_gateway_disabled = sms_gateway_enabled in ("false", "0", "no", "off")
     twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    if twilio_sid:
+    if sms_gateway_disabled:
+        if Platform.SMS in config.platforms:
+            config.platforms[Platform.SMS].enabled = False
+    elif twilio_sid:
         if Platform.SMS not in config.platforms:
             config.platforms[Platform.SMS] = PlatformConfig()
         config.platforms[Platform.SMS].enabled = True

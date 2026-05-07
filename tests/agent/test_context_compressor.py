@@ -1942,3 +1942,72 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestCompressionSkipsWhenSummaryWouldInflate:
+    """Regression: compression must not replace content with a larger summary.
+
+    Issue #22037: the structured summary template has a _MIN_SUMMARY_TOKENS
+    floor of 2000 plus ~500 tokens of overhead.  When the compressible
+    window is tiny, the forced summary is larger than the raw messages it
+    replaces, causing rapid re-compression.
+    """
+
+    def _make_short_messages(self, n):
+        """Return minimal alternating messages (very small token footprint)."""
+        return [
+            {"role": "user", "content": f"u{i}"}
+            if i % 2 == 0
+            else {"role": "assistant", "content": f"a{i}"}
+            for i in range(n)
+        ]
+
+    def test_bails_when_compressible_not_larger_than_budget(self):
+        """If compressible window is smaller than summary budget, skip it."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,  # 100K threshold
+                protect_first_n=2,
+                protect_last_n=3,
+                quiet_mode=True,
+            )
+
+        # 8 alternating messages: head 2 + middle 3 + tail 3
+        # Each message is ~4 chars -> ~1 token, so middle = ~3 tokens.
+        # But the summary floor is 2000 tokens.  Compression should skip.
+        # Pass current_tokens above threshold to trigger the guard.
+        msgs = self._make_short_messages(8)
+        original = msgs[:]
+        result = c.compress(msgs, current_tokens=110_000)
+
+        # Must return unchanged (guard short-circuits before any mutation)
+        assert result == original
+        # compression_count must NOT have been incremented
+        assert c.compression_count == 0
+
+    def test_proceeds_when_compressible_is_larger_than_budget(self):
+        """If compressible window is large enough, compression proceeds normally."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=2,
+                protect_last_n=3,
+                quiet_mode=True,
+            )
+
+        # Build 100 messages with ~600 chars each (≈150 tokens).
+        # middle ≈ 95 * 150 = 14,250 tokens  →  budget = max(2000, 14250*0.20)=2850
+        # guard: 14250 > 2850 + 500 ✓  (compression proceeds)
+        msgs = []
+        for i in range(100):
+            role = "user" if i % 2 == 0 else "assistant"
+            msgs.append({"role": role, "content": f"Message {i}: " + "x" * 580})
+
+        with patch.object(c, "_generate_summary", return_value="Mock summary"):
+            result = c.compress(msgs, current_tokens=110_000)
+
+        # Should have compressed (messages were dropped)
+        assert len(result) < len(msgs)
+        assert c.compression_count == 1

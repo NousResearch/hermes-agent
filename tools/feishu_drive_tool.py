@@ -7,6 +7,7 @@ The lark client is injected per-thread by the comment event handler.
 
 import json
 import logging
+import importlib.util
 import threading
 
 from tools.registry import registry, tool_error, tool_result
@@ -33,7 +34,7 @@ def _check_feishu():
     import importlib.util
     try:
         return importlib.util.find_spec("lark_oapi") is not None
-    except (ImportError, ValueError):
+    except Exception:
         return False
 
 

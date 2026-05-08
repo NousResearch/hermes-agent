@@ -89,10 +89,7 @@ export const coreCommands: SlashCommand[] = [
     aliases: ['exit', 'q'],
     help: 'exit hermes',
     name: 'quit',
-    run: (_arg, ctx) => {
-      ctx.transcript.sys('exiting hermes…')
-      queueMicrotask(() => ctx.session.die())
-    }
+    run: (_arg, ctx) => ctx.session.die()
   },
 
   {

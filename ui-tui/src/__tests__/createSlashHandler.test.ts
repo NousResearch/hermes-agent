@@ -26,12 +26,11 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
   })
 
-  it('shows exit notice then exits locally for /quit', async () => {
+  it('exits locally for /quit', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/quit')).toBe(true)
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('exiting hermes…')
-    await vi.waitFor(() => expect(ctx.session.die).toHaveBeenCalledTimes(1))
+    expect(ctx.session.die).toHaveBeenCalledTimes(1)
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 

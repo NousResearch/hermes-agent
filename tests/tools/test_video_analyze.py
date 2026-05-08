@@ -4,6 +4,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 from tools.vision_tools import (
     _detect_video_mime_type,
@@ -175,6 +176,23 @@ class TestVideoAnalyzeTool:
 
     def _run(self, coro):
         return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_download_rejects_private_url_before_http_client(self, tmp_path):
+        from tools.vision_tools import _download_video
+
+        with (
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            pytest.raises(ValueError, match="Blocked video download"),
+        ):
+            self._run(
+                _download_video(
+                    "http://127.0.0.1:8080/private.mp4",
+                    tmp_path / "private.mp4",
+                    max_retries=1,
+                )
+            )
+
+        mock_client_cls.assert_not_called()
 
     def test_local_file_success(self, tmp_path, monkeypatch):
         """Analyze a local video file — happy path."""

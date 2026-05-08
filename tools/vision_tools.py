@@ -221,6 +221,14 @@ async def _validate_image_url_async(url: str) -> bool:
     return await async_is_safe_url(url)
 
 
+async def _ensure_safe_download_url(url: str, media_type: str) -> None:
+    """Reject private/internal media download URLs before opening sockets."""
+    if not await _validate_image_url_async(url):
+        raise ValueError(
+            f"Blocked {media_type} download from private/internal address: {url}"
+        )
+
+
 def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
     """Magic-byte MIME sniff on raw bytes (authoritative; no extension trust).
 
@@ -410,14 +418,13 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
 
         Must be async because httpx.AsyncClient awaits event hooks.
         """
-        from tools.url_safety import async_is_safe_url, redirect_target_from_response
+        from tools.url_safety import redirect_target_from_response
         redirect_url = redirect_target_from_response(response)
-        if redirect_url and not await async_is_safe_url(redirect_url):
-            raise ValueError(
-                f"Blocked redirect to private/internal address: {redirect_url}"
-            )
+        if redirect_url:
+            await _ensure_safe_download_url(redirect_url, "image")
 
     last_error = None
+    await _ensure_safe_download_url(image_url, "image")
     for attempt in range(max_retries):
         try:
             blocked = check_website_access(image_url)
@@ -1561,14 +1568,13 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     async def _ssrf_redirect_guard(response):
-        from tools.url_safety import async_is_safe_url, redirect_target_from_response
+        from tools.url_safety import redirect_target_from_response
         redirect_url = redirect_target_from_response(response)
-        if redirect_url and not await async_is_safe_url(redirect_url):
-            raise ValueError(
-                f"Blocked redirect to private/internal address: {redirect_url}"
-            )
+        if redirect_url:
+            await _ensure_safe_download_url(redirect_url, "video")
 
     last_error = None
+    await _ensure_safe_download_url(video_url, "video")
     for attempt in range(max_retries):
         try:
             blocked = check_website_access(video_url)

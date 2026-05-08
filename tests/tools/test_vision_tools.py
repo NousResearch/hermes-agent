@@ -548,6 +548,55 @@ class TestVisionSafetyGuards:
         mock_download.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_download_rejects_private_url_before_http_client(self, tmp_path):
+        from tools.vision_tools import _download_image
+
+        with (
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            pytest.raises(ValueError, match="Blocked image download"),
+        ):
+            await _download_image("http://127.0.0.1:8080/private.png", tmp_path / "x.png", max_retries=1)
+
+        mock_client_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_download_redirect_location_without_next_request_is_blocked(self, tmp_path):
+        from tools.vision_tools import _download_image
+
+        class FakeRedirectResponse:
+            is_redirect = True
+            headers = {"location": "http://169.254.169.254/latest/meta-data"}
+            url = "https://allowed.test/cat.png"
+            next_request = None
+
+        with (
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.url_safety.async_is_safe_url", new_callable=AsyncMock) as mock_safe_url,
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            pytest.raises(ValueError, match="Blocked image download"),
+        ):
+            mock_safe_url.side_effect = [True, False]
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def fake_get(*args, **kwargs):
+                hook = mock_client_cls.call_args.kwargs["event_hooks"]["response"][0]
+                await hook(FakeRedirectResponse())
+                raise AssertionError("redirect guard should have raised before response body")
+
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_client_cls.return_value = mock_client
+
+            await _download_image("https://allowed.test/cat.png", tmp_path / "cat.png", max_retries=1)
+
+        assert [call.args[0] for call in mock_safe_url.await_args_list] == [
+            "https://allowed.test/cat.png",
+            "http://169.254.169.254/latest/meta-data",
+        ]
+        assert not (tmp_path / "cat.png").exists()
+
+    @pytest.mark.asyncio
     async def test_download_blocks_redirected_final_url(self, tmp_path):
         from tools.vision_tools import _download_image
 
@@ -573,6 +622,7 @@ class TestVisionSafetyGuards:
 
         with (
             patch("tools.vision_tools.check_website_access", side_effect=fake_check),
+            patch("tools.url_safety.async_is_safe_url", new_callable=AsyncMock, return_value=True),
             patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
             pytest.raises(PermissionError, match="Blocked by website policy"),
         ):

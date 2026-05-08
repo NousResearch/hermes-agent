@@ -42,6 +42,12 @@ dependencies = [
   # Python resolves automatically.  No-op on Linux/macOS (which have
   # /usr/share/zoneinfo).  Credits: PR #13182 (@sprmn24).
   "tzdata>=2023.3; sys_platform == 'win32'",
+  # Cross-platform process / PID management.  `psutil` is the canonical
+  # answer for "is this PID alive" and process-tree walking across Linux,
+  # macOS and Windows.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
+  # (which is a silent killer on Windows — see CONTRIBUTING.md) and
+  # `os.killpg` (which doesn't exist on Windows).
+  "psutil>=5.9.0,<8",
 ]
 
 [project.optional-dependencies]

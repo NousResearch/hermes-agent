@@ -4160,8 +4160,9 @@ def load_env() -> Dict[str, str]:
     
     if env_path.exists():
         # On Windows, open() defaults to the system locale (cp1252) which can
-        # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
-        open_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+        # fail on UTF-8 .env files. Always use explicit UTF-8; tolerate BOM
+        # via utf-8-sig since users may edit .env in Notepad which adds one.
+        open_kw = {"encoding": "utf-8-sig", "errors": "replace"}
         with open(env_path, **open_kw) as f:
             raw_lines = f.readlines()
         # Sanitize before parsing: split concatenated lines & drop stale
@@ -4246,8 +4247,8 @@ def sanitize_env_file() -> int:
     if not env_path.exists():
         return 0
 
-    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
-    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
+    write_kw = {"encoding": "utf-8"}
 
     with open(env_path, **read_kw) as f:
         original_lines = f.readlines()
@@ -4336,8 +4337,8 @@ def save_env_value(key: str, value: str):
 
     # On Windows, open() defaults to the system locale (cp1252) which can
     # cause OSError errno 22 on UTF-8 .env files.
-    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
-    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
+    write_kw = {"encoding": "utf-8"}
 
     lines = []
     if env_path.exists():
@@ -4406,8 +4407,8 @@ def remove_env_value(key: str) -> bool:
         os.environ.pop(key, None)
         return False
 
-    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
-    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
+    write_kw = {"encoding": "utf-8"}
 
     with open(env_path, **read_kw) as f:
         lines = f.readlines()

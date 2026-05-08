@@ -155,10 +155,26 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
             raise OSError(details or f"taskkill failed for PID {proc.pid}")
         return
 
-    import signal
-
-    sig = signal.SIGTERM if not force else signal.SIGKILL
-    os.killpg(os.getpgid(proc.pid), sig)
+    import psutil
+    try:
+        parent = psutil.Process(proc.pid)
+        children = parent.children(recursive=True)
+        if force:
+            for child in children:
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            parent.kill()
+        else:
+            for child in children:
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+            parent.terminate()
+    except psutil.NoSuchProcess:
+        return
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))

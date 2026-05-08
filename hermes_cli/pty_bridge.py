@@ -213,7 +213,7 @@ class PtyBridge:
 
         # SIGHUP is the conventional "your terminal went away" signal.
         # We escalate if the child ignores it.
-        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):
+        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
             if not self._proc.isalive():
                 break
             try:

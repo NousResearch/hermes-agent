@@ -273,9 +273,16 @@ describe('GatewayClient websocket attach mode', () => {
   })
 
   it('redacts user-info credentials even on URLs the WHATWG parser rejects', () => {
-    // Invalid percent-encoding keeps `new URL(raw)` throwing even after any
-    // surrounding whitespace is trimmed, exercising the fallback path.
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://alice:%zz@gateway.test/api/ws?token=secret'
+    // Port 99999 is outside the WHATWG URL parser's valid 0–65535
+    // range and survives `.trim()`, so the fixture deterministically
+    // exercises `redactUrl()`'s fallback branch across Node versions.
+    // (An earlier `%zz` user-info fixture did NOT actually throw in
+    // recent Node — WHATWG accepts malformed percent escapes there —
+    // which silently routed the test through the structured-URL path.)
+    const fixture = 'ws://alice:hunter2@gateway.test:99999/api/ws?token=secret'
+    expect(() => new URL(fixture)).toThrow()
+
+    process.env.HERMES_TUI_GATEWAY_URL = fixture
     delete (globalThis as { WebSocket?: unknown }).WebSocket
 
     const gw = new GatewayClient()

@@ -180,4 +180,31 @@ describe('GatewayClient websocket attach mode', () => {
 
     expect(exits).toEqual([1011])
   })
+
+  it('redacts query string secrets in attach failure logs and events', () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=hunter2&channel=secret'
+    delete (globalThis as { WebSocket?: unknown }).WebSocket
+
+    const gw = new GatewayClient()
+    const stderrLines: string[] = []
+
+    gw.on('event', ev => {
+      if (ev.type === 'gateway.stderr' && typeof ev.payload?.line === 'string') {
+        stderrLines.push(ev.payload.line)
+      }
+    })
+    gw.start()
+    gw.drain()
+
+    expect(stderrLines.length).toBeGreaterThan(0)
+    for (const line of stderrLines) {
+      expect(line).not.toContain('hunter2')
+      expect(line).not.toContain('channel=secret')
+    }
+
+    expect(gw.getLogTail(20)).not.toContain('hunter2')
+    expect(gw.getLogTail(20)).not.toContain('channel=secret')
+
+    gw.kill()
+  })
 })

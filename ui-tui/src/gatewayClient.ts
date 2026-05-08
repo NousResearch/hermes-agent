@@ -75,6 +75,28 @@ const asWireText = (raw: unknown): string | null => {
   return null
 }
 
+// Connection URLs (gateway, sidecar) often carry bearer tokens in the query
+// string. We surface them in user-facing log lines and the
+// `gateway.start_timeout` payload, so always strip the query string and any
+// embedded user-info before logging.
+const redactUrl = (raw: string): string => {
+  if (!raw) {
+    return raw
+  }
+
+  try {
+    const url = new URL(raw)
+    const userInfo = url.username || url.password ? '***@' : ''
+    const query = url.search ? '?***' : ''
+
+    return `${url.protocol}//${userInfo}${url.host}${url.pathname}${query}`
+  } catch {
+    const queryIdx = raw.indexOf('?')
+
+    return queryIdx >= 0 ? `${raw.slice(0, queryIdx)}?***` : raw
+  }
+}
+
 interface Pending {
   id: string
   method: string
@@ -205,7 +227,7 @@ export class GatewayClient extends EventEmitter {
     }
 
     if (typeof WebSocket === 'undefined') {
-      this.pushLog(`[sidecar] WebSocket unavailable; skipping mirror to ${this.sidecarUrl}`)
+      this.pushLog(`[sidecar] WebSocket unavailable; skipping mirror to ${redactUrl(this.sidecarUrl)}`)
       return
     }
 
@@ -306,16 +328,25 @@ export class GatewayClient extends EventEmitter {
       this.rejectPending(new Error(`gateway error: ${err.message}`))
     })
 
+    const ownedProc = this.proc
     this.proc.on('exit', code => {
+      // start() can replace `this.proc` while an old child is still
+      // tearing down. Skip stale exits so we don't clear the new
+      // startup timer or reject newly-issued pending requests.
+      if (this.proc !== ownedProc) {
+        return
+      }
+
       this.handleTransportExit(code)
     })
   }
 
   private startAttachedGateway(attachUrl: string) {
-    this.startReadyTimer('websocket', attachUrl)
+    const safeAttachUrl = redactUrl(attachUrl)
+    this.startReadyTimer('websocket', safeAttachUrl)
 
     if (typeof WebSocket === 'undefined') {
-      const line = `[startup] WebSocket API unavailable; cannot attach to ${attachUrl}`
+      const line = `[startup] WebSocket API unavailable; cannot attach to ${safeAttachUrl}`
 
       this.pushLog(line)
       this.publish({ type: 'gateway.stderr', payload: { line } })
@@ -369,10 +400,17 @@ export class GatewayClient extends EventEmitter {
 
       ws.addEventListener('message', ev => this.handleWebSocketFrame(ev.data))
       ws.addEventListener('close', ev => {
-        if (this.ws === ws) {
-          this.ws = null
-          this.wsConnectPromise = null
+        // Skip close events from sockets that have already been
+        // replaced — start() / closeGatewaySocket() can swap `this.ws`
+        // before an in-flight close lands, and we must not clear the
+        // new ready timer or reject the new pending requests on behalf
+        // of a stale socket.
+        if (this.ws !== ws) {
+          return
         }
+
+        this.ws = null
+        this.wsConnectPromise = null
         this.handleTransportExit(ev.code)
       })
       ws.addEventListener('error', () => {

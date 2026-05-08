@@ -63,6 +63,25 @@ schedule), use plain numbered prose: `1) 张三  2) 李四  3) 王五`.
 If you're replying as the agent on a different platform (Telegram, Discord,
 Slack, CLI) — Markdown is fine there; ignore this skill.
 
+### 2.1 Group context rule — read history before answering group questions
+
+When the incoming NapCat message is from a QQ group and the user is asking a
+question, making a request, or referring to previous discussion, **first call**
+`napcat_call("get_group_msg_history", {"group_id": <current_group_id>, "count": 30})`
+before composing the final answer.
+
+Use the current group id from the message source / raw NapCat event. If the
+chat id is prefixed like `group:977185513`, strip `group:` and pass the numeric
+group id. Do not ask the user for the group id when it is available in context.
+
+Use the returned history only as private context to understand pronouns,
+recent topics, attachments, and who said what. Do not dump raw history back to
+the group unless the user explicitly asks for history or a summary.
+
+If `get_group_msg_history` fails or `napcat_call` is unavailable, continue with
+the visible message context and, only when it affects the answer, say briefly
+that group history could not be read.
+
 ---
 
 ## 3. Reply paths at a glance

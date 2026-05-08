@@ -661,32 +661,59 @@ class TrueConfAdapter(BasePlatformAdapter):
     def _markdown_to_html(text: str) -> str:
         """
         Convert basic Markdown to HTML for TrueConf.
-        Handles: **bold**, *italic*, __bold__, _italic_, ~~strikethrough~~, `code`, [link](url)
+        Handles: **bold**, *italic*, __bold__, _italic_, ~~strikethrough~~,
+                 `code`, ```code block```, [link](url).
+
+        Preserves original formatting inside code spans (`` `...` ``)
+        and fenced code blocks (`` ```...``` ``) — no inner markdown
+        conversion happens inside those.
         """
         import re
-        
-        # Process code first (to avoid inner processing)
-        # Inline code: `code` -> <code>code</code>
-        text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
-        
-        # Bold: **text** -> <b>text</b>
+
+        # --- Placeholder system ---
+        # Save code content before markdown conversion so subsequent
+        # regexes can't touch it, then restore it at the end.
+        _placeholders: dict[str, str] = {}
+        _counter = 0
+
+        def _save(match: re.Match) -> str:
+            nonlocal _counter
+            _counter += 1
+            # NOTE: плейсхолдер содержит только буквы+цифры — без _, *, ~, [, ], (, )
+            # чтобы ни один последующий регексп не зацепил его содержимое
+            key = f"TRUECNFMD{_counter}"
+            _placeholders[key] = match.group(0)
+            return key
+
+        # 1. Fenced code blocks (```…```) — longest first, with DOTALL
+        text = re.sub(r'```.*?```', _save, text, flags=re.DOTALL)
+
+        # 2. Inline code (`…`)
+        text = re.sub(r'`[^`]+`', _save, text)
+
+        # 3. Convert remaining markdown → HTML
+        # Bold: **text** → <b>text</b>
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-        
-        # Bold: __text__ -> <b>text</b>
+
+        # Bold: __text__ → <b>text</b>
         text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
-        
-        # Italic: *text* -> <i>text</i>
+
+        # Italic: *text* → <i>text</i>
         text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-        
-        # Italic: _text_ -> <i>text</i>
+
+        # Italic: _text_ → <i>text</i>
         text = re.sub(r'_(.+?)_', r'<i>\1</i>', text)
-        
-        # Strikethrough: ~~text~~ -> <s>text</s>
+
+        # Strikethrough: ~~text~~ → <s>text</s>
         text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
-        
-        # Links: [text](url) -> <a href="url">text</a>
+
+        # Links: [text](url) → <a href="url">text</a>
         text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2">\1</a>', text)
-        
+
+        # 4. Restore original code content
+        for key, original in _placeholders.items():
+            text = text.replace(key, original)
+
         return text
 
     def _get_parse_mode(self):

@@ -789,6 +789,7 @@ class TestPromptBuilderConstants:
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
+        assert "webui" in PLATFORM_HINTS
 
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
@@ -825,6 +826,13 @@ class TestPromptBuilderConstants:
         assert "Feishu" in hint
         assert "MEDIA:" in hint
         assert "Markdown" in hint
+
+    def test_platform_hints_webui(self):
+        hint = PLATFORM_HINTS["webui"]
+        assert "WebUI" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+        assert "absolute" in hint
 
 
 # =========================================================================

@@ -12279,7 +12279,7 @@ class GatewayRunner:
 
             if agent is None:
                 # Config changed or first message — create fresh agent
-                _cached_for_log = cached if '_cache_lock' in dir() and cached is not None else None
+                _cached_for_log = cached
                 if _cached_for_log:
                     logger.info("CACHE MISS: sig changed (old=%s new=%s)", 
                                _cached_for_log[1][:8], _sig[:8])

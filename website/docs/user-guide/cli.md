@@ -92,7 +92,7 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
-| `Alt+Enter`, `Ctrl+J`, or `Shift+Enter` | New line (multi-line input). `Shift+Enter` requires a terminal that distinguishes it from `Enter` — see below. |
+| `Alt+Enter`, `Ctrl+J`, or `Shift+Enter` | New line (multi-line input). `Shift+Enter` requires a terminal that distinguishes it from `Enter` — see below. On Windows Terminal, `Alt+Enter` is captured by the terminal (fullscreen toggle); use `Ctrl+Enter` or `Ctrl+J` instead. |
 | `Alt+V` | Paste an image from the clipboard when supported by the terminal |
 | `Ctrl+V` | Paste text and opportunistically attach clipboard images |
 | `Ctrl+B` | Start/stop voice recording when voice mode is enabled (`voice.record_key`, default: `ctrl+b`) |
@@ -225,9 +225,10 @@ Most terminals send the same byte sequence for `Enter` and `Shift+Enter` by defa
 |---|---|
 | Kitty, foot, WezTerm, Ghostty | Distinct `Shift+Enter` enabled by default |
 | iTerm2 (recent), Alacritty, VS Code terminal, Warp | Supported once the Kitty protocol is enabled in settings |
-| macOS Terminal.app, stock Windows Terminal | Not supported — `Shift+Enter` is indistinguishable from `Enter` |
+| Windows Terminal Preview 1.25+ | Supported once the Kitty protocol is enabled in settings |
+| macOS Terminal.app, stock Windows Terminal (stable) | Not supported — `Shift+Enter` is indistinguishable from `Enter` |
 
-Where the terminal cannot distinguish them, `Alt+Enter` and `Ctrl+J` continue to work everywhere.
+Where the terminal cannot distinguish them, `Alt+Enter` and `Ctrl+J` continue to work everywhere. **On Windows Terminal specifically, `Alt+Enter` is captured by the terminal (toggles fullscreen) and never reaches Hermes — use `Ctrl+Enter` (delivered as `Ctrl+J`) or `Ctrl+J` directly for a newline.**
 
 ## Interrupting the Agent
 

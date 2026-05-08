@@ -655,6 +655,77 @@ class TestCmdUpdateLaunchdRestart:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_update_bypasses_restartsec_after_graceful_drain(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """After a graceful SIGUSR1 drain, cmd_update must issue
+        ``reset-failed`` + ``start`` to bypass the unit's ``RestartSec``
+        cooldown (default 60s on our unit file) rather than passively
+        waiting for systemd's auto-restart. Collapses the post-drain delay
+        from ~60s to ~5s on a voluntary restart.
+        """
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="3\n", stderr="")
+            if "systemctl" in joined and "list-units" in joined:
+                if "--user" in joined:
+                    return subprocess.CompletedProcess(
+                        cmd, 0,
+                        stdout="hermes-gateway.service loaded active running\n",
+                        stderr="",
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "systemctl" in joined and "is-active" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+            if "systemctl" in joined and "show" in joined and "MainPID" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="4242\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        # Simulate a successful graceful drain so cmd_update reaches the
+        # post-drain restart bypass.
+        monkeypatch.setattr(
+            "hermes_cli.gateway._graceful_restart_via_sigusr1",
+            lambda pid, drain_timeout: True,
+        )
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        calls = [
+            " ".join(str(a) for a in c.args[0])
+            for c in mock_run.call_args_list
+            if "systemctl" in " ".join(str(a) for a in c.args[0])
+        ]
+
+        # Must have called ``reset-failed hermes-gateway`` AND ``start
+        # hermes-gateway`` explicitly so systemd bypasses RestartSec.
+        reset_calls = [c for c in calls if "reset-failed" in c and "hermes-gateway" in c]
+        start_calls = [
+            c for c in calls
+            if "start" in c and "hermes-gateway" in c and "restart" not in c
+        ]
+        assert reset_calls, (
+            f"Expected explicit `reset-failed hermes-gateway` after graceful drain; "
+            f"systemctl calls were: {calls}"
+        )
+        assert start_calls, (
+            f"Expected explicit `start hermes-gateway` after graceful drain to "
+            f"bypass RestartSec; systemctl calls were: {calls}"
+        )
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_update_no_gateway_running_skips_restart(
         self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
     ):

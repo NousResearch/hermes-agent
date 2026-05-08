@@ -284,24 +284,28 @@ def _firecrawl_backend_help_suffix() -> str:
 
 
 def _web_requires_env() -> list[str]:
-    """Return tool metadata env vars for the currently enabled web backends."""
-    requires = [
+    """Return tool metadata env vars for the currently enabled web backends.
+
+    The gateway env vars are always reported — they're metadata strings
+    used by the tool registry to light up the tool when the variable is
+    set.  Gating them on ``managed_nous_tools_enabled()`` only saved
+    string noise in the metadata list, but cost a synchronous HTTP
+    refresh against the Nous portal on every CLI startup (invoked at
+    tool-registration time).  The behavioral contract is: if the env var
+    is set, the tool sees it; if not, it doesn't.  Not-logged-in users
+    simply don't have the vars set, so the extra entries are harmless.
+    """
+    return [
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "FIRECRAWL_GATEWAY_URL",
+        "TOOL_GATEWAY_DOMAIN",
+        "TOOL_GATEWAY_SCHEME",
+        "TOOL_GATEWAY_USER_TOKEN",
     ]
-    if managed_nous_tools_enabled():
-        requires.extend(
-            [
-                "FIRECRAWL_GATEWAY_URL",
-                "TOOL_GATEWAY_DOMAIN",
-                "TOOL_GATEWAY_SCHEME",
-                "TOOL_GATEWAY_USER_TOKEN",
-            ]
-        )
-    return requires
 
 
 def _get_firecrawl_client():

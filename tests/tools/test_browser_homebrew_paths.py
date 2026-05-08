@@ -209,6 +209,13 @@ class TestFindAgentBrowser:
 
 
 class TestBrowserRequirements:
+    def test_cdp_override_does_not_require_agent_browser_cli(self, monkeypatch):
+        monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9222/devtools/browser/test")
+        monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
+        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: (_ for _ in ()).throw(FileNotFoundError("not found")))
+
+        assert check_browser_requirements() is True
+
     def test_termux_requires_real_agent_browser_install_not_npx_fallback(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
@@ -259,6 +266,7 @@ class TestRunBrowserCommandPathConstruction:
         hermes_home = str(tmp_path / "hermes-home")
 
         with patch("tools.browser_tool._find_agent_browser", return_value=browser_path), \
+ patch("tools.browser_tool._chromium_installed", return_value=True), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
@@ -310,6 +318,7 @@ class TestRunBrowserCommandPathConstruction:
         hermes_home = str(tmp_path / "hermes-home")
 
         with patch("tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \
+ patch("tools.browser_tool._chromium_installed", return_value=True), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
@@ -381,6 +390,7 @@ class TestRunBrowserCommandPathConstruction:
             return real_isdir(p)
 
         with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+ patch("tools.browser_tool._chromium_installed", return_value=True), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=fake_homebrew_dirs), \
@@ -429,6 +439,7 @@ class TestRunBrowserCommandPathConstruction:
             return real_isdir(p)
 
         with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+ patch("tools.browser_tool._chromium_installed", return_value=True), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
@@ -477,6 +488,7 @@ class TestRunBrowserCommandPathConstruction:
             return real_isdir(path)
 
         with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+ patch("tools.browser_tool._chromium_installed", return_value=True), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \

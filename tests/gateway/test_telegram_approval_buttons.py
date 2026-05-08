@@ -59,6 +59,21 @@ def _make_adapter(extra=None):
     return adapter
 
 
+class _AuthRunner:
+    """Minimal runner shim for callback auth tests."""
+
+    def __init__(self, authorized: bool):
+        self.authorized = authorized
+        self.last_source = None
+
+    async def _handle_message(self, event):
+        return None
+
+    def _is_user_authorized(self, source):
+        self.last_source = source
+        return self.authorized
+
+
 # ===========================================================================
 # send_exec_approval — inline keyboard buttons
 # ===========================================================================
@@ -231,6 +246,41 @@ class TestTelegramApprovalCallback:
         assert "Denied" in edit_kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_approval_callback_rejects_user_blocked_by_global_allowlist(self):
+        adapter = _make_adapter()
+        adapter._approval_state[7] = "agent:main:telegram:group:12345:99"
+        runner = _AuthRunner(authorized=False)
+        adapter._message_handler = runner._handle_message
+
+        query = AsyncMock()
+        query.data = "ea:once:7"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_not_called()
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert adapter._approval_state[7] == "agent:main:telegram:group:12345:99"
+        assert runner.last_source is not None
+        assert runner.last_source.platform == Platform.TELEGRAM
+        assert runner.last_source.user_id == "222"
+        assert runner.last_source.chat_id == "12345"
+
+    @pytest.mark.asyncio
     async def test_already_resolved(self):
         adapter = _make_adapter()
         # No state for approval_id 99 — already resolved
@@ -332,6 +382,39 @@ class TestTelegramApprovalCallback:
         assert "not authorized" in query.answer.call_args[1]["text"].lower()
         query.edit_message_text.assert_not_called()
         assert not (tmp_path / ".update_response").exists()
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_callback_rejects_user_blocked_by_global_allowlist(self, tmp_path):
+        adapter = _make_adapter()
+        runner = _AuthRunner(authorized=False)
+        adapter._message_handler = runner._handle_message
+
+        query = AsyncMock()
+        query.data = "update_prompt:y"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
+                await adapter._handle_callback_query(update, context)
+
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert not (tmp_path / ".update_response").exists()
+        assert runner.last_source is not None
+        assert runner.last_source.platform == Platform.TELEGRAM
+        assert runner.last_source.user_id == "222"
 
     @pytest.mark.asyncio
     async def test_update_prompt_callback_allows_authorized_user(self, tmp_path):

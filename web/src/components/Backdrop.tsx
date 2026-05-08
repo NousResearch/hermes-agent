@@ -38,11 +38,25 @@ export function Backdrop() {
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 z-[2]"
-        style={{ mixBlendMode: "difference", opacity: 0.033 }}
+        style={
+          {
+            // Themes can override the filler background by setting
+            // `assets.bg` — the <img> hides itself when a CSS bg is set
+            // so the two don't double-darken. CSS var fallbacks keep the
+            // default behaviour unchanged when no theme customises these.
+            mixBlendMode:
+              "var(--component-backdrop-filler-blend-mode, difference)",
+            opacity: "var(--component-backdrop-filler-opacity, 0.033)",
+            backgroundImage: "var(--theme-asset-bg)",
+            backgroundSize: "var(--component-backdrop-background-size, cover)",
+            backgroundPosition:
+              "var(--component-backdrop-background-position, center)",
+          } as unknown as React.CSSProperties
+        }
       >
         <img
           alt=""
-          className="h-[150dvh] w-auto min-w-[100dvw] object-cover object-top-left invert"
+          className="h-[150dvh] w-auto min-w-[100dvw] object-cover object-top-left invert theme-default-filler"
           fetchPriority="low"
           src="/ds-assets/filler-bg0.jpg"
         />

@@ -86,17 +86,97 @@ FIRECRAWL_API_URL=http://localhost:3002
 FIRECRAWL_BROWSER_TTL=600
 ```
 
+### Hybrid routing: cloud for public URLs, local for LAN/localhost
+
+When a cloud provider is configured, Hermes auto-spawns a **local Chromium sidecar**
+for URLs that resolve to a private/loopback/LAN address (`localhost`, `127.0.0.1`,
+`192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`, `*.local`, `*.lan`, `*.internal`,
+IPv6 loopback `::1`, link-local `169.254.x.x`). Public URLs continue to use the
+cloud provider in the same conversation.
+
+This solves the common "I'm developing locally but using Browserbase" workflow —
+the agent can screenshot your dashboard at `http://localhost:3000` AND scrape
+`https://github.com` without you switching providers or disabling the SSRF guard.
+The cloud provider never sees the private URL.
+
+The feature is **on by default**. To disable it (all URLs go to the configured
+cloud provider, as before):
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  cloud_provider: browserbase
+  auto_local_for_private_urls: false
+```
+
+With auto-routing disabled, private URLs are rejected with
+`"Blocked: URL targets a private or internal address"` unless you also set
+`browser.allow_private_urls: true` (which lets the cloud provider attempt them —
+usually won't work since Browserbase etc. can't reach your LAN).
+
+Requirements: the local sidecar uses the same `agent-browser` CLI as pure local
+mode, so you need it installed (`hermes setup tools → Browser Automation`
+auto-installs it). Post-navigation redirects from a public URL onto a private
+address are still blocked (you can't use a redirect-to-internal trick to reach
+your LAN through the public path).
+
 ### Camofox local mode
 
 [Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camoufox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.
 
 ```bash
-# Install and run
-git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
-npm install && npm start   # downloads Camoufox (~300MB) on first run
+# Clone the Camofox browser server first
+git clone https://github.com/jo-inc/camofox-browser
+cd camofox-browser
 
-# Or via Docker
-docker run -d --network host -e CAMOFOX_PORT=9377 jo-inc/camofox-browser
+# Build and start with Docker using the default container settings
+# (auto-detects arch: aarch64 on M1/M2, x86_64 on Intel)
+make up
+
+# Stop and remove the default container
+make down
+
+# Force a clean rebuild (for example, after upgrading VERSION/RELEASE)
+make reset
+
+# Just download binaries without building
+make fetch
+
+# Override arch or version explicitly
+make up ARCH=x86_64
+make up VERSION=135.0.1 RELEASE=beta.24
+```
+
+`make up` starts the default container immediately. If you want custom runtime settings such as a larger Node heap, VNC, or a persistent profile directory, build the image first and then run it yourself:
+
+```bash
+# Build the image without starting the default container
+make build
+
+# Start with persistence, VNC live view, and a larger Node heap
+mkdir -p ~/.camofox-docker
+docker run -d \
+  --name camofox-browser \
+  --restart unless-stopped \
+  -p 9377:9377 \
+  -p 6080:6080 \
+  -p 5901:5900 \
+  -e CAMOFOX_PORT=9377 \
+  -e ENABLE_VNC=1 \
+  -e VNC_BIND=0.0.0.0 \
+  -e VNC_RESOLUTION=1920x1080 \
+  -e MAX_OLD_SPACE_SIZE=2048 \
+  -v ~/.camofox-docker:/root/.camofox \
+  camofox-browser:135.0.1-aarch64
+```
+
+With VNC enabled, the browser runs in headed mode and can be watched live in your browser at `http://localhost:6080` (noVNC). You can also connect a native VNC client to `localhost:5901`.
+
+If you already ran `make up`, stop and remove that default container before starting the custom one:
+
+```bash
+make down
+# then run the custom docker run command above
 ```
 
 Then set in `~/.hermes/.env`:
@@ -203,6 +283,22 @@ Then launch the Hermes CLI and run `/browser connect`.
 :::
 
 When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live Chrome instance instead of spinning up a cloud session.
+
+### WSL2 + Windows Chrome: prefer MCP over `/browser connect`
+
+If Hermes runs inside WSL2 but the Chrome window you want to control runs on the Windows host, `/browser connect` is often not the best path.
+
+Why:
+
+- `/browser connect` expects Hermes itself to reach a usable CDP endpoint
+- modern Chrome live-debugging sessions often expose a host-local endpoint that is not directly reachable from WSL the same way a classic `9222` port is
+- even when Windows Chrome is debuggable, the cleanest integration is often to let a Windows-side browser MCP server attach to Chrome and let Hermes talk to that MCP server
+
+For that setup, prefer `chrome-devtools-mcp` through Hermes MCP support.
+
+See the MCP guide for the practical setup:
+
+- [Use MCP with Hermes](../../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
 
 ### Local browser mode
 
@@ -355,7 +451,50 @@ browser_cdp(method="Runtime.evaluate",
 browser_cdp(method="Network.getAllCookies")
 ```
 
-Browser-level methods (`Target.*`, `Browser.*`, `Storage.*`) omit `target_id`. Page-level methods (`Page.*`, `Runtime.*`, `DOM.*`, `Emulation.*`) require a `target_id` from `Target.getTargets`. Each call is independent — sessions do not persist between calls.
+Browser-level methods (`Target.*`, `Browser.*`, `Storage.*`) omit `target_id`. Page-level methods (`Page.*`, `Runtime.*`, `DOM.*`, `Emulation.*`) require a `target_id` from `Target.getTargets`. Each stateless call is independent — sessions do not persist between calls.
+
+**Cross-origin iframes:** pass `frame_id` (from `browser_snapshot.frame_tree.children[]` where `is_oopif=true`) to route the CDP call through the supervisor's live session for that iframe. This is how `Runtime.evaluate` inside a cross-origin iframe works on Browserbase, where stateless CDP connections would hit signed-URL expiry. Example:
+
+```
+browser_cdp(
+  method="Runtime.evaluate",
+  params={"expression": "document.title", "returnByValue": True},
+  frame_id="<frame_id from browser_snapshot>",
+)
+```
+
+Same-origin iframes don't need `frame_id` — use `document.querySelector('iframe').contentDocument` from a top-level `Runtime.evaluate` instead.
+
+### `browser_dialog`
+
+Responds to a native JS dialog (`alert` / `confirm` / `prompt` / `beforeunload`). Before this tool existed, dialogs would silently block the page's JavaScript thread and subsequent `browser_*` calls would hang or throw; now the agent sees pending dialogs in `browser_snapshot` output and responds explicitly.
+
+**Workflow:**
+1. Call `browser_snapshot`. If a dialog is blocking the page, it shows up as `pending_dialogs: [{"id": "d-1", "type": "alert", "message": "..."}]`.
+2. Call `browser_dialog(action="accept")` or `browser_dialog(action="dismiss")`. For `prompt()` dialogs, pass `prompt_text="..."` to supply the response.
+3. Re-snapshot — `pending_dialogs` is empty; the page's JS thread has resumed.
+
+**Detection happens automatically** via a persistent CDP supervisor — one WebSocket per task that subscribes to Page/Runtime/Target events. The supervisor also populates a `frame_tree` field in the snapshot so the agent can see the iframe structure of the current page, including cross-origin (OOPIF) iframes.
+
+**Availability matrix:**
+
+| Backend | Detection via `pending_dialogs` | Response (`browser_dialog` tool) |
+|---|---|---|
+| Local Chrome via `/browser connect` or `browser.cdp_url` | ✓ | ✓ full workflow |
+| Browserbase | ✓ | ✓ full workflow (via injected XHR bridge) |
+| Camofox / default local agent-browser | ✗ | ✗ (no CDP endpoint) |
+
+**How it works on Browserbase.** Browserbase's CDP proxy auto-dismisses real native dialogs server-side within ~10ms, so we can't use `Page.handleJavaScriptDialog`. The supervisor injects a small script via `Page.addScriptToEvaluateOnNewDocument` that overrides `window.alert`/`confirm`/`prompt` with a synchronous XHR. We intercept those XHRs via `Fetch.enable` — the page's JS thread stays blocked on the XHR until we call `Fetch.fulfillRequest` with the agent's response. `prompt()` return values round-trip back into page JS unchanged.
+
+**Dialog policy** is configured in `config.yaml` under `browser.dialog_policy`:
+
+| Policy | Behavior |
+|--------|----------|
+| `must_respond` (default) | Capture, surface in snapshot, wait for explicit `browser_dialog()` call. Safety auto-dismiss after `browser.dialog_timeout_s` (default 300s) so a buggy agent can't stall forever. |
+| `auto_dismiss` | Capture, dismiss immediately. Agent still sees the dialog in `browser_state` history but doesn't have to act. |
+| `auto_accept` | Capture, accept immediately. Useful when navigating pages with aggressive `beforeunload` prompts. |
+
+**Frame tree** inside `browser_snapshot.frame_tree` is capped to 30 frames and OOPIF depth 2 to keep payloads bounded on ad-heavy pages. A `truncated: true` flag surfaces when limits were hit; agents needing the full tree can use `browser_cdp` with `Page.getFrameTree`.
 
 ## Practical Examples
 

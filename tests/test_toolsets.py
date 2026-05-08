@@ -32,6 +32,21 @@ class TestGetToolset:
         assert ts is not None
         assert "web_search" in ts["tools"]
 
+    def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
+        reg = ToolRegistry()
+        reg.register(
+            name="web_search_plus",
+            toolset="web",
+            schema=_make_schema("web_search_plus", "Plugin web search"),
+            handler=_dummy_handler,
+        )
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        ts = get_toolset("web")
+        assert ts is not None
+        assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
+
     def test_unknown_returns_none(self):
         assert get_toolset("nonexistent") is None
 
@@ -200,8 +215,8 @@ class TestToolsetConsistency:
     def test_hermes_platforms_share_core_tools(self):
         """All hermes-* platform toolsets share the same core tools.
 
-        Platform-specific additions (e.g. ``discord_server`` on
-        hermes-discord, gated on DISCORD_BOT_TOKEN) are allowed on top —
+        Platform-specific additions (e.g. ``discord`` / ``discord_admin``
+        on hermes-discord, gated on DISCORD_BOT_TOKEN) are allowed on top —
         the invariant is that the core set is identical across platforms.
         """
         platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]

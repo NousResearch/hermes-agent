@@ -35,6 +35,12 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    # When true, delete tool-progress / "Still working..." / status bubbles
+    # after the final response lands on platforms that support message
+    # deletion (e.g. Telegram). Off by default — progress is still shown
+    # live, just cleaned up after success so the chat doesn't fill up with
+    # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
+    "cleanup_progress": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -79,7 +85,9 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "discord":     _TIER_HIGH,
 
     # Tier 2 — edit support, often customer/workspace channels
-    "slack":           _TIER_MEDIUM,
+    # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
+    # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
+    "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
     "feishu":          _TIER_MEDIUM,
@@ -183,6 +191,10 @@ def _normalise(setting: str, value: Any) -> Any:
             return "all"
         return str(value).lower()
     if setting in ("show_reasoning", "streaming"):
+        if isinstance(value, str):
+            return value.lower() in ("true", "1", "yes", "on")
+        return bool(value)
+    if setting == "cleanup_progress":
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes", "on")
         return bool(value)

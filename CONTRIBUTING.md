@@ -9,7 +9,7 @@ Thank you for contributing to Hermes Agent! This guide covers everything you nee
 We value contributions in this order:
 
 1. **Bug fixes** — crashes, incorrect behavior, data loss. Always top priority.
-2. **Cross-platform compatibility** — Windows, macOS, different Linux distros, different terminal emulators. We want Hermes to work everywhere.
+2. **Cross-platform compatibility** — macOS, different Linux distros, and WSL2 on Windows. We want Hermes to work everywhere.
 3. **Security hardening** — shell injection, prompt injection, path traversal, privilege escalation. See [Security](#security-considerations).
 4. **Performance and robustness** — retry logic, error handling, graceful degradation.
 5. **New skills** — but only broadly useful ones. See [Should it be a Skill or a Tool?](#should-it-be-a-skill-or-a-tool)
@@ -55,10 +55,10 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 | Requirement | Notes |
 |-------------|-------|
-| **Git** | With `--recurse-submodules` support |
+| **Git** | With `--recurse-submodules` support, and the `git-lfs` extension installed |
 | **Python 3.11+** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
-| **Node.js 18+** | Optional — needed for browser tools and WhatsApp bridge |
+| **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
 
 ### Clone and install
 
@@ -88,7 +88,7 @@ cp cli-config.yaml.example ~/.hermes/config.yaml
 touch ~/.hermes/.env
 
 # Add at minimum an LLM provider key:
-echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
+echo "OPENROUTER_API_KEY=***" >> ~/.hermes/.env
 ```
 
 ### Run
@@ -106,6 +106,11 @@ hermes chat -q "Hello"
 ### Run tests
 
 ```bash
+# Preferred — matches CI (hermetic env, 4 xdist workers); see AGENTS.md
+scripts/run_tests.sh
+
+# Alternative (activate the venv first). The wrapper is still recommended
+# for parity with GitHub Actions before you open a PR:
 pytest tests/ -v
 ```
 
@@ -286,16 +291,18 @@ registry.register(
 )
 ```
 
-Then add the import to `model_tools.py` in the `_modules` list:
+**Wire into a toolset (required):** Built-in tools are auto-discovered: any
+`tools/*.py` file that contains a top-level `registry.register(...)` call is
+imported by `discover_builtin_tools()` in `tools/registry.py` when `model_tools`
+loads. There is **no** manual import list in `model_tools.py` to maintain.
 
-```python
-_modules = [
-    # ... existing modules ...
-    "tools.my_tool",
-]
-```
+You must still add the tool name to the appropriate list in `toolsets.py`
+(for example `_HERMES_CORE_TOOLS` or a dedicated toolset); otherwise the tool
+registers but is never exposed to the agent. If you introduce a new toolset,
+add it in `toolsets.py` and wire it into the relevant platform presets.
 
-If it's a new toolset, add it to `toolsets.py` and to the relevant platform presets.
+See `AGENTS.md` (section **Adding New Tools**) for profile-aware paths and
+plugin vs core guidance.
 
 ---
 
@@ -494,7 +501,7 @@ branding:
   agent_name: "My Agent"
   welcome: "Welcome message"
   response_label: " ⚔ Agent "
-  prompt_symbol: "⚔ ❯ "
+  prompt_symbol: "⚔"
 
 tool_prefix: "╎"             # Tool output line prefix
 ```
@@ -515,7 +522,7 @@ See `hermes_cli/skin_engine.py` for the full schema and existing skins as exampl
 
 ## Cross-Platform Compatibility
 
-Hermes runs on Linux, macOS, and Windows. When writing code that touches the OS:
+Hermes runs on Linux, macOS, and WSL2 on Windows. When writing code that touches the OS:
 
 ### Critical rules
 
@@ -595,9 +602,9 @@ refactor/description   # Code restructuring
 
 ### Before submitting
 
-1. **Run tests**: `pytest tests/ -v`
+1. **Run tests**: `scripts/run_tests.sh` (recommended; same as CI) or `pytest tests/ -v` with the project venv activated
 2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider Windows and macOS
+3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
 
 ### PR description

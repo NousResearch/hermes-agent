@@ -361,7 +361,7 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
 
     existing_lines = []
     if env_path.exists():
-        existing_lines = env_path.read_text().splitlines()
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
 
     updated_keys = set()
     new_lines = []

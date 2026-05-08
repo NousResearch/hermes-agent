@@ -58,7 +58,9 @@ CATEGORY_TAGS = {
     "restaurant":        ("amenity", "restaurant"),
     "cafe":              ("amenity", "cafe"),
     "bar":               ("amenity", "bar"),
-    "bakery":            ("shop",    "bakery"),
+    # bakery is tagged as shop=bakery in the OSM wiki, but some mappers use
+    # amenity=bakery. Search both so small indie bakeries aren't missed.
+    "bakery":            [("shop", "bakery"), ("amenity", "bakery")],
     "convenience_store": ("shop",    "convenience"),
     # Health
     "hospital":          ("amenity", "hospital"),
@@ -68,6 +70,8 @@ CATEGORY_TAGS = {
     "veterinary":        ("amenity", "veterinary"),
     # Accommodation
     "hotel":             ("tourism", "hotel"),
+    "guest_house":       ("tourism", "guest_house"),
+    "camp_site":         ("tourism", "camp_site"),
     # Shopping & Services
     "supermarket":       ("shop",    "supermarket"),
     "bookshop":          ("shop",    "books"),
@@ -119,6 +123,19 @@ RELIGION_FILTER = {
 }
 
 VALID_CATEGORIES = sorted(CATEGORY_TAGS.keys())
+
+
+def _tags_for(category):
+    """Return the CATEGORY_TAGS entry as a list of (key, value) pairs.
+
+    Most categories map to a single (tag_key, tag_val) tuple, but some
+    (e.g. ``bakery``) are tagged under more than one OSM key and are
+    represented as a list of tuples. Normalise both forms to a list.
+    """
+    entry = CATEGORY_TAGS[category]
+    if isinstance(entry, list):
+        return list(entry)
+    return [entry]
 
 OSRM_PROFILES = {
     "driving": "driving",
@@ -338,36 +355,63 @@ def geocode_single(query):
 # ---------------------------------------------------------------------------
 
 def build_overpass_nearby(tag_key, tag_val, lat, lon, radius, limit,
-                          religion=None):
-    """Build an Overpass QL query for nearby POIs around a point."""
+                          religion=None, tag_pairs=None):
+    """Build an Overpass QL query for nearby POIs around a point.
+
+    If ``tag_pairs`` is provided, the query unions across every
+    ``(key, value)`` pair (used for categories like ``bakery`` that are
+    tagged under more than one OSM key). Otherwise falls back to the
+    single ``tag_key``/``tag_val`` pair for back-compat.
+    """
+    pairs = tag_pairs if tag_pairs else [(tag_key, tag_val)]
     religion_filter = ""
     if religion:
         religion_filter = f'["religion"="{religion}"]'
+    body_lines = []
+    for k, v in pairs:
+        body_lines.append(
+            f'  node["{k}"="{v}"]{religion_filter}'
+            f'(around:{radius},{lat},{lon});'
+        )
+        body_lines.append(
+            f'  way["{k}"="{v}"]{religion_filter}'
+            f'(around:{radius},{lat},{lon});'
+        )
+    body = "\n".join(body_lines)
     return (
         f'[out:json][timeout:25];\n'
         f'(\n'
-        f'  node["{tag_key}"="{tag_val}"]{religion_filter}'
-        f'(around:{radius},{lat},{lon});\n'
-        f'  way["{tag_key}"="{tag_val}"]{religion_filter}'
-        f'(around:{radius},{lat},{lon});\n'
+        f'{body}\n'
         f');\n'
         f'out center {limit};\n'
     )
 
 
 def build_overpass_bbox(tag_key, tag_val, south, west, north, east, limit,
-                        religion=None):
-    """Build an Overpass QL query for POIs within a bounding box."""
+                        religion=None, tag_pairs=None):
+    """Build an Overpass QL query for POIs within a bounding box.
+
+    See ``build_overpass_nearby`` for ``tag_pairs`` semantics.
+    """
+    pairs = tag_pairs if tag_pairs else [(tag_key, tag_val)]
     religion_filter = ""
     if religion:
         religion_filter = f'["religion"="{religion}"]'
+    body_lines = []
+    for k, v in pairs:
+        body_lines.append(
+            f'  node["{k}"="{v}"]{religion_filter}'
+            f'({south},{west},{north},{east});'
+        )
+        body_lines.append(
+            f'  way["{k}"="{v}"]{religion_filter}'
+            f'({south},{west},{north},{east});'
+        )
+    body = "\n".join(body_lines)
     return (
         f'[out:json][timeout:25];\n'
         f'(\n'
-        f'  node["{tag_key}"="{tag_val}"]{religion_filter}'
-        f'({south},{west},{north},{east});\n'
-        f'  way["{tag_key}"="{tag_val}"]{religion_filter}'
-        f'({south},{west},{north},{east});\n'
+        f'{body}\n'
         f');\n'
         f'out center {limit};\n'
     )
@@ -605,10 +649,10 @@ def cmd_nearby(args):
     # appear twice.
     merged = {}
     for category in categories:
-        tag_key, tag_val = CATEGORY_TAGS[category]
+        tag_pairs = _tags_for(category)
         religion = RELIGION_FILTER.get(category)
-        query = build_overpass_nearby(tag_key, tag_val, lat, lon, radius, limit,
-                                      religion=religion)
+        query = build_overpass_nearby(None, None, lat, lon, radius, limit,
+                                      religion=religion, tag_pairs=tag_pairs)
         raw = overpass_query(query)
         elements = raw.get("elements", [])
         for place in parse_overpass_elements(elements, ref_lat=lat, ref_lon=lon):
@@ -882,13 +926,18 @@ def cmd_timezone(args):
                 os_ = offset_info.get("seconds", 0)
                 sign = "+" if oh >= 0 else "-"
                 utc_offset = f"{sign}{abs(oh):02d}:{om:02d}"
+                if os_:
+                    utc_offset = f"{utc_offset}:{os_:02d}"
             elif tz_data.get("standardUtcOffset"):
                 offset_info2 = tz_data["standardUtcOffset"]
                 if isinstance(offset_info2, dict):
                     oh = offset_info2.get("hours", 0)
                     om = abs(offset_info2.get("minutes", 0))
+                    os_ = offset_info2.get("seconds", 0)
                     sign = "+" if oh >= 0 else "-"
                     utc_offset = f"{sign}{abs(oh):02d}:{om:02d}"
+                    if os_:
+                        utc_offset = f"{utc_offset}:{os_:02d}"
             timezone_src = "timeapi.io"
     except (RuntimeError, KeyError, TypeError):
         pass  # API may be down; continue to fallback
@@ -945,10 +994,10 @@ def cmd_bbox(args):
     if limit <= 0:
         error_exit("Limit must be a positive integer.")
 
-    tag_key, tag_val = CATEGORY_TAGS[category]
+    tag_pairs = _tags_for(category)
     religion = RELIGION_FILTER.get(category)
-    query = build_overpass_bbox(tag_key, tag_val, south, west, north, east,
-                                limit, religion=religion)
+    query = build_overpass_bbox(None, None, south, west, north, east,
+                                limit, religion=religion, tag_pairs=tag_pairs)
 
     raw = overpass_query(query)
 

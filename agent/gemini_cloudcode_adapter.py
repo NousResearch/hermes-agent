@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 import uuid
 from types import SimpleNamespace
@@ -42,7 +41,6 @@ from agent import google_oauth
 from agent.gemini_schema import sanitize_gemini_tool_parameters
 from agent.google_code_assist import (
     CODE_ASSIST_ENDPOINT,
-    FREE_TIER_ID,
     CodeAssistError,
     ProjectContext,
     resolve_project_context,
@@ -799,7 +797,8 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
         err_obj = {}
     err_status = str(err_obj.get("status") or "").strip()
     err_message = str(err_obj.get("message") or "").strip()
-    err_details_list = err_obj.get("details") if isinstance(err_obj.get("details"), list) else []
+    _raw_details = err_obj.get("details")
+    err_details_list = _raw_details if isinstance(_raw_details, list) else []
 
     # Extract google.rpc.ErrorInfo reason + metadata.  There may be more
     # than one ErrorInfo (rare), so we pick the first one with a reason.

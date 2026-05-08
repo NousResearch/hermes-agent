@@ -33,11 +33,15 @@ so plugin-defined tools appear alongside the built-in tools.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.metadata
 import importlib.util
+import inspect
 import logging
+import os
 import sys
+import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +49,20 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
+from hermes_cli.config import cfg_get
+
+
+def get_bundled_plugins_dir() -> Path:
+    """Locate the bundled ``plugins/`` directory.
+
+    Honours ``HERMES_BUNDLED_PLUGINS`` (set by the Nix wrapper / packaged
+    installs) so read-only store paths are consulted first.  Falls back to
+    the in-repo path used during development.
+    """
+    env_override = os.getenv("HERMES_BUNDLED_PLUGINS")
+    if env_override:
+        return Path(env_override)
+    return Path(__file__).resolve().parent.parent / "plugins"
 
 try:
     import yaml
@@ -62,6 +80,10 @@ VALID_HOOKS: Set[str] = {
     "post_tool_call",
     "transform_terminal_output",
     "transform_tool_result",
+    # Transform LLM output before it's returned to the user.
+    # Plugins return a string to replace the response text, or None/empty to leave unchanged.
+    # First non-None string wins. Useful for vocabulary/personality transformation.
+    "transform_llm_output",
     "pre_llm_call",
     "post_llm_call",
     "pre_api_request",
@@ -70,6 +92,29 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    "subagent_stop",
+    # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
+    # after the internal-event guard but BEFORE auth/pairing and agent
+    # dispatch. Plugins may return a dict to influence flow:
+    #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
+    #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
+    #   {"action": "allow"}  /  None             -> normal dispatch
+    # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
+    "pre_gateway_dispatch",
+    # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
+    # command needs user approval -- fires BOTH for CLI-interactive prompts
+    # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
+    # Observers only: return values are ignored. Plugins cannot veto or
+    # pre-answer an approval from these hooks (use pre_tool_call to block
+    # a tool before it reaches approval).
+    #
+    # Kwargs for pre_approval_request:
+    #   command: str, description: str, pattern_key: str, pattern_keys: list[str],
+    #   session_key: str, surface: "cli" | "gateway"
+    # Kwargs for post_approval_response: same as above plus
+    #   choice: "once" | "session" | "always" | "deny" | "timeout"
+    "pre_approval_request",
+    "post_approval_response",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -92,7 +137,7 @@ def _get_disabled_plugins() -> set:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        disabled = config.get("plugins", {}).get("disabled", [])
+        disabled = cfg_get(config, "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()
@@ -132,6 +177,9 @@ def _get_enabled_plugins() -> Optional[set]:
 # Data classes
 # ---------------------------------------------------------------------------
 
+_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -145,6 +193,28 @@ class PluginManifest:
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "user", "project", or "entrypoint"
     path: Optional[str] = None
+    # Plugin kind — see plugins.py module docstring for semantics.
+    # ``standalone`` (default): hooks/tools of its own; opt-in via
+    #                           ``plugins.enabled``.
+    # ``backend``: pluggable backend for an existing core tool (e.g.
+    #              image_gen). Built-in (bundled) backends auto-load;
+    #              user-installed still gated by ``plugins.enabled``.
+    # ``exclusive``: category with exactly one active provider (memory).
+    #              Selection via ``<category>.provider`` config key; the
+    #              category's own discovery system handles loading and the
+    #              general scanner skips these.
+    # ``platform``: gateway messaging platform adapter (e.g. IRC). Bundled
+    #              platform plugins auto-load so every shipped platform is
+    #              available out of the box; user-installed platform plugins
+    #              in ~/.hermes/plugins/ still gated by ``plugins.enabled``
+    #              (untrusted code).
+    kind: str = "standalone"
+    # Registry key — path-derived, used by ``plugins.enabled``/``disabled``
+    # lookups and by ``hermes plugins list``. For a flat plugin at
+    # ``plugins/disk-cleanup/`` the key is ``disk-cleanup``; for a nested
+    # category plugin at ``plugins/image_gen/openai/`` the key is
+    # ``image_gen/openai``. When empty, falls back to ``name``.
+    key: str = ""
 
 
 @dataclass
@@ -262,6 +332,7 @@ class PluginContext:
         name: str,
         handler: Callable,
         description: str = "",
+        args_hint: str = "",
     ) -> None:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -271,6 +342,13 @@ class PluginContext:
         Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
         terminal commands), this registers in-session slash commands that users
         invoke during a conversation.
+
+        ``args_hint`` is an optional short string (e.g. ``"<file>"`` or
+        ``"dias:7 formato:json"``) used by gateway adapters to surface the
+        command with an argument field — for example Discord's native slash
+        command picker. Plugin commands without ``args_hint`` register as
+        parameterless in Discord and still accept trailing text when invoked
+        as free-form chat.
 
         Names conflicting with built-in commands are rejected with a warning.
         """
@@ -299,6 +377,7 @@ class PluginContext:
             "handler": handler,
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
+            "args_hint": (args_hint or "").strip(),
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
@@ -363,6 +442,89 @@ class PluginContext:
         logger.info(
             "Plugin '%s' registered context engine: %s",
             self.manifest.name, engine.name,
+        )
+
+    # -- image gen provider registration ------------------------------------
+
+    def register_image_gen_provider(self, provider) -> None:
+        """Register an image generation backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.image_gen_provider.ImageGenProvider`. The
+        ``provider.name`` attribute is what ``image_gen.provider`` in
+        ``config.yaml`` matches against when routing ``image_generate``
+        tool calls.
+        """
+        from agent.image_gen_provider import ImageGenProvider
+        from agent.image_gen_registry import register_provider
+
+        if not isinstance(provider, ImageGenProvider):
+            logger.warning(
+                "Plugin '%s' tried to register an image_gen provider that does "
+                "not inherit from ImageGenProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        register_provider(provider)
+        logger.info(
+            "Plugin '%s' registered image_gen provider: %s",
+            self.manifest.name, provider.name,
+        )
+
+    # -- platform adapter registration ---------------------------------------
+
+    def register_platform(
+        self,
+        name: str,
+        label: str,
+        adapter_factory: Callable,
+        check_fn: Callable,
+        validate_config: Callable | None = None,
+        required_env: list | None = None,
+        install_hint: str = "",
+        **entry_kwargs: Any,
+    ) -> None:
+        """Register a gateway platform adapter.
+
+        The adapter_factory receives a ``PlatformConfig`` and returns a
+        ``BasePlatformAdapter`` subclass instance.  The gateway calls
+        ``check_fn()`` before instantiation to verify dependencies.
+
+        Extra keyword arguments are forwarded to ``PlatformEntry`` (e.g.
+        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``).
+        Unknown keys raise TypeError from the dataclass constructor.
+
+        Example::
+
+            ctx.register_platform(
+                name="irc",
+                label="IRC",
+                adapter_factory=lambda cfg: IRCAdapter(cfg),
+                check_fn=lambda: True,
+                emoji="💬",
+                setup_fn=irc_interactive_setup,
+            )
+        """
+        from gateway.platform_registry import platform_registry, PlatformEntry
+
+        entry_kwargs.setdefault("plugin_name", self.manifest.name)
+        entry = PlatformEntry(
+            name=name,
+            label=label,
+            adapter_factory=adapter_factory,
+            check_fn=check_fn,
+            validate_config=validate_config,
+            required_env=required_env or [],
+            install_hint=install_hint,
+            source="plugin",
+            **entry_kwargs,
+        )
+        platform_registry.register(entry)
+        self._manager._plugin_platform_names.add(name)
+        logger.debug(
+            "Plugin %s registered platform: %s",
+            self.manifest.name,
+            name,
         )
 
     # -- hook registration --------------------------------------------------
@@ -443,6 +605,7 @@ class PluginManager:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
+        self._plugin_platform_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
@@ -455,27 +618,50 @@ class PluginManager:
     # Public
     # -----------------------------------------------------------------------
 
-    def discover_and_load(self) -> None:
-        """Scan all plugin sources and load each plugin found."""
-        if self._discovered:
+    def discover_and_load(self, force: bool = False) -> None:
+        """Scan all plugin sources and load each plugin found.
+
+        When ``force`` is true, clear cached discovery state first so config
+        changes or newly-added bundled backends become visible in long-lived
+        sessions without requiring a full agent restart.
+        """
+        if self._discovered and not force:
             return
+        if force:
+            self._plugins.clear()
+            self._hooks.clear()
+            self._plugin_tool_names.clear()
+            self._cli_commands.clear()
+            self._plugin_commands.clear()
+            self._plugin_skills.clear()
+            self._context_engine = None
         self._discovered = True
 
         manifests: List[PluginManifest] = []
 
         # 1. Bundled plugins (<repo>/plugins/<name>/)
-        # Repo-shipped generic plugins live next to hermes_cli/.  Memory and
-        # context_engine subdirs are handled by their own discovery paths, so
-        # skip those names here.  Bundled plugins are discovered (so they
-        # show up in `hermes plugins`) but only loaded when added to
-        # `plugins.enabled` in config.yaml — opt-in like any other plugin.
-        repo_plugins = Path(__file__).resolve().parent.parent / "plugins"
+        #
+        # Repo-shipped plugins live next to hermes_cli/. Two layouts are
+        # supported (see ``_scan_directory`` for details):
+        #
+        #   - flat: ``plugins/disk-cleanup/plugin.yaml`` (standalone)
+        #   - category: ``plugins/image_gen/openai/plugin.yaml`` (backend)
+        #
+        # ``memory/``, ``context_engine/``, and ``model-providers/`` are
+        # skipped at the top level — they have their own discovery systems
+        # (plugins/memory/__init__.py, providers/__init__.py). ``platforms/``
+        # is a category holding platform adapters (scanned one level deeper
+        # below).
+        repo_plugins = get_bundled_plugins_dir()
         manifests.extend(
             self._scan_directory(
                 repo_plugins,
                 source="bundled",
-                skip_names={"memory", "context_engine"},
+                skip_names={"memory", "context_engine", "platforms", "model-providers"},
             )
+        )
+        manifests.extend(
+            self._scan_directory(repo_plugins / "platforms", source="bundled")
         )
 
         # 2. User plugins (~/.hermes/plugins/)
@@ -491,36 +677,88 @@ class PluginManager:
         manifests.extend(self._scan_entry_points())
 
         # Load each manifest (skip user-disabled plugins).
-        # Later sources override earlier ones on name collision — user plugins
-        # take precedence over bundled, project plugins take precedence over
-        # user.  Dedup here so we only load the final winner.
+        # Later sources override earlier ones on key collision — user
+        # plugins take precedence over bundled, project plugins take
+        # precedence over user. Dedup here so we only load the final
+        # winner. Keys are path-derived (``image_gen/openai``,
+        # ``disk-cleanup``) so ``tts/openai`` and ``image_gen/openai``
+        # don't collide even when both manifests say ``name: openai``.
         disabled = _get_disabled_plugins()
         enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
-            winners[manifest.name] = manifest
+            winners[manifest.key or manifest.name] = manifest
         for manifest in winners.values():
-            # Explicit disable always wins.
-            if manifest.name in disabled:
+            lookup_key = manifest.key or manifest.name
+
+            # Explicit disable always wins (matches on key or on legacy
+            # bare name for back-compat with existing user configs).
+            if lookup_key in disabled or manifest.name in disabled:
                 loaded = LoadedPlugin(manifest=manifest, enabled=False)
                 loaded.error = "disabled via config"
-                self._plugins[manifest.name] = loaded
-                logger.debug("Skipping disabled plugin '%s'", manifest.name)
+                self._plugins[lookup_key] = loaded
+                logger.debug("Skipping disabled plugin '%s'", lookup_key)
                 continue
-            # Opt-in gate: plugins must be in the enabled allow-list.
-            # If the allow-list is missing (None), treat as "nothing enabled"
-            # — users have to explicitly enable plugins to load them.
-            # Memory and context_engine providers are excluded from this gate
-            # since they have their own single-select config (memory.provider
-            # / context.engine), not the enabled list.
-            if enabled is None or manifest.name not in enabled:
+
+            # Exclusive plugins (memory providers) have their own
+            # discovery/activation path. The general loader records the
+            # manifest for introspection but does not load the module.
+            if manifest.kind == "exclusive":
                 loaded = LoadedPlugin(manifest=manifest, enabled=False)
-                loaded.error = "not enabled in config (run `hermes plugins enable {}` to activate)".format(
-                    manifest.name
+                loaded.error = (
+                    "exclusive plugin — activate via <category>.provider config"
                 )
-                self._plugins[manifest.name] = loaded
+                self._plugins[lookup_key] = loaded
                 logger.debug(
-                    "Skipping '%s' (not in plugins.enabled)", manifest.name
+                    "Skipping '%s' (exclusive, handled by category discovery)",
+                    lookup_key,
+                )
+                continue
+
+            # Model provider plugins are loaded by providers/__init__.py
+            # (its own lazy discovery keyed off first get_provider_profile()
+            # call). We record the manifest here for introspection but do
+            # not import the module — a second import would create two
+            # ProviderProfile instances and break the "last writer wins"
+            # override semantics between bundled and user plugins.
+            if manifest.kind == "model-provider":
+                loaded = LoadedPlugin(manifest=manifest, enabled=True)
+                self._plugins[lookup_key] = loaded
+                logger.debug(
+                    "Skipping '%s' (model-provider, handled by providers/ discovery)",
+                    lookup_key,
+                )
+                continue
+
+            # Built-in backends auto-load — they ship with hermes and must
+            # just work. Selection among them (e.g. which image_gen backend
+            # services calls) is driven by ``<category>.provider`` config,
+            # enforced by the tool wrapper.
+            #
+            # Bundled platform plugins (gateway adapters like IRC) auto-load
+            # for the same reason: every platform Hermes ships must be
+            # available out of the box without the user having to opt in.
+            if manifest.source == "bundled" and manifest.kind in ("backend", "platform"):
+                self._load_plugin(manifest)
+                continue
+
+            # Everything else (standalone, user-installed backends,
+            # entry-point plugins) is opt-in via plugins.enabled.
+            # Accept both the path-derived key and the legacy bare name
+            # so existing configs keep working.
+            is_enabled = (
+                enabled is not None
+                and (lookup_key in enabled or manifest.name in enabled)
+            )
+            if not is_enabled:
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = (
+                    "not enabled in config (run `hermes plugins enable {}` to activate)"
+                    .format(lookup_key)
+                )
+                self._plugins[lookup_key] = loaded
+                logger.debug(
+                    "Skipping '%s' (not in plugins.enabled)", lookup_key
                 )
                 continue
             self._load_plugin(manifest)
@@ -544,9 +782,37 @@ class PluginManager:
     ) -> List[PluginManifest]:
         """Read ``plugin.yaml`` manifests from subdirectories of *path*.
 
-        *skip_names* is an optional allow-list of names to ignore (used
-        for the bundled scan to exclude ``memory`` / ``context_engine``
-        subdirs that have their own discovery path).
+        Supports two layouts, mixed freely:
+
+        * **Flat** — ``<root>/<plugin-name>/plugin.yaml``. Key is
+          ``<plugin-name>`` (e.g. ``disk-cleanup``).
+        * **Category** — ``<root>/<category>/<plugin-name>/plugin.yaml``,
+          where the ``<category>`` directory itself has no ``plugin.yaml``.
+          Key is ``<category>/<plugin-name>`` (e.g. ``image_gen/openai``).
+          Depth is capped at two segments.
+
+        *skip_names* is an optional allow-list of names to ignore at the
+        top level (kept for back-compat; the current call sites no longer
+        pass it now that categories are first-class).
+        """
+        return self._scan_directory_level(
+            path, source, skip_names=skip_names, prefix="", depth=0
+        )
+
+    def _scan_directory_level(
+        self,
+        path: Path,
+        source: str,
+        *,
+        skip_names: Optional[Set[str]],
+        prefix: str,
+        depth: int,
+    ) -> List[PluginManifest]:
+        """Recursive implementation of :meth:`_scan_directory`.
+
+        ``prefix`` is the category path already accumulated ("" at root,
+        "image_gen" one level in). ``depth`` is the recursion depth; we
+        cap at 2 so ``<root>/a/b/c/`` is ignored.
         """
         manifests: List[PluginManifest] = []
         if not path.is_dir():
@@ -555,36 +821,124 @@ class PluginManager:
         for child in sorted(path.iterdir()):
             if not child.is_dir():
                 continue
-            if skip_names and child.name in skip_names:
+            if depth == 0 and skip_names and child.name in skip_names:
                 continue
             manifest_file = child / "plugin.yaml"
             if not manifest_file.exists():
                 manifest_file = child / "plugin.yml"
-            if not manifest_file.exists():
-                logger.debug("Skipping %s (no plugin.yaml)", child)
+
+            if manifest_file.exists():
+                manifest = self._parse_manifest(
+                    manifest_file, child, source, prefix
+                )
+                if manifest is not None:
+                    manifests.append(manifest)
                 continue
 
-            try:
-                if yaml is None:
-                    logger.warning("PyYAML not installed – cannot load %s", manifest_file)
-                    continue
-                data = yaml.safe_load(manifest_file.read_text()) or {}
-                manifest = PluginManifest(
-                    name=data.get("name", child.name),
-                    version=str(data.get("version", "")),
-                    description=data.get("description", ""),
-                    author=data.get("author", ""),
-                    requires_env=data.get("requires_env", []),
-                    provides_tools=data.get("provides_tools", []),
-                    provides_hooks=data.get("provides_hooks", []),
-                    source=source,
-                    path=str(child),
+            # No manifest at this level. If we're still within the depth
+            # cap, treat this directory as a category namespace and recurse
+            # one level in looking for children with manifests.
+            if depth >= 1:
+                logger.debug("Skipping %s (no plugin.yaml, depth cap reached)", child)
+                continue
+
+            sub_prefix = f"{prefix}/{child.name}" if prefix else child.name
+            manifests.extend(
+                self._scan_directory_level(
+                    child,
+                    source,
+                    skip_names=None,
+                    prefix=sub_prefix,
+                    depth=depth + 1,
                 )
-                manifests.append(manifest)
-            except Exception as exc:
-                logger.warning("Failed to parse %s: %s", manifest_file, exc)
+            )
 
         return manifests
+
+    def _parse_manifest(
+        self,
+        manifest_file: Path,
+        plugin_dir: Path,
+        source: str,
+        prefix: str,
+    ) -> Optional[PluginManifest]:
+        """Parse a single ``plugin.yaml`` into a :class:`PluginManifest`.
+
+        Returns ``None`` on parse failure (logs a warning).
+        """
+        try:
+            if yaml is None:
+                logger.warning("PyYAML not installed – cannot load %s", manifest_file)
+                return None
+            data = yaml.safe_load(manifest_file.read_text()) or {}
+
+            name = data.get("name", plugin_dir.name)
+            key = f"{prefix}/{plugin_dir.name}" if prefix else name
+
+            raw_kind = data.get("kind", "standalone")
+            if not isinstance(raw_kind, str):
+                raw_kind = "standalone"
+            kind = raw_kind.strip().lower()
+            if kind not in _VALID_PLUGIN_KINDS:
+                logger.warning(
+                    "Plugin %s: unknown kind '%s' (valid: %s); treating as 'standalone'",
+                    key, raw_kind, ", ".join(sorted(_VALID_PLUGIN_KINDS)),
+                )
+                kind = "standalone"
+
+            # Auto-coerce user-installed memory providers to kind="exclusive"
+            # so they're routed to plugins/memory discovery instead of being
+            # loaded by the general PluginManager (which has no
+            # register_memory_provider on PluginContext). Mirrors the
+            # heuristic in plugins/memory/__init__.py:_is_memory_provider_dir.
+            # Bundled memory providers are already skipped via skip_names.
+            if kind == "standalone" and "kind" not in data:
+                init_file = plugin_dir / "__init__.py"
+                if init_file.exists():
+                    try:
+                        source_text = init_file.read_text(errors="replace")[:8192]
+                        if (
+                            "register_memory_provider" in source_text
+                            or "MemoryProvider" in source_text
+                        ):
+                            kind = "exclusive"
+                            logger.debug(
+                                "Plugin %s: detected memory provider, "
+                                "treating as kind='exclusive'",
+                                key,
+                            )
+                        elif (
+                            "register_provider" in source_text
+                            and "ProviderProfile" in source_text
+                        ):
+                            # Model provider plugin (calls register_provider()
+                            # from ``providers`` with a ProviderProfile). Route
+                            # to providers/__init__.py discovery.
+                            kind = "model-provider"
+                            logger.debug(
+                                "Plugin %s: detected model provider, "
+                                "treating as kind='model-provider'",
+                                key,
+                            )
+                    except Exception:
+                        pass
+
+            return PluginManifest(
+                name=name,
+                version=str(data.get("version", "")),
+                description=data.get("description", ""),
+                author=data.get("author", ""),
+                requires_env=data.get("requires_env", []),
+                provides_tools=data.get("provides_tools", []),
+                provides_hooks=data.get("provides_hooks", []),
+                source=source,
+                path=str(plugin_dir),
+                kind=kind,
+                key=key,
+            )
+        except Exception as exc:
+            logger.warning("Failed to parse %s: %s", manifest_file, exc)
+            return None
 
     # -----------------------------------------------------------------------
     # Entry-point scanning
@@ -608,6 +962,7 @@ class PluginManager:
                     name=ep.name,
                     source="entrypoint",
                     path=ep.value,
+                    key=ep.name,
                 )
                 manifests.append(manifest)
         except Exception as exc:
@@ -669,10 +1024,16 @@ class PluginManager:
             loaded.error = str(exc)
             logger.warning("Failed to load plugin '%s': %s", manifest.name, exc)
 
-        self._plugins[manifest.name] = loaded
+        self._plugins[manifest.key or manifest.name] = loaded
 
     def _load_directory_module(self, manifest: PluginManifest) -> types.ModuleType:
-        """Import a directory-based plugin as ``hermes_plugins.<name>``."""
+        """Import a directory-based plugin as ``hermes_plugins.<slug>``.
+
+        The module slug is derived from ``manifest.key`` so category-namespaced
+        plugins (``image_gen/openai``) import as
+        ``hermes_plugins.image_gen__openai`` without colliding with any
+        future ``tts/openai``.
+        """
         plugin_dir = Path(manifest.path)  # type: ignore[arg-type]
         init_file = plugin_dir / "__init__.py"
         if not init_file.exists():
@@ -685,7 +1046,9 @@ class PluginManager:
             ns_pkg.__package__ = _NS_PARENT
             sys.modules[_NS_PARENT] = ns_pkg
 
-        module_name = f"{_NS_PARENT}.{manifest.name.replace('-', '_')}"
+        key = manifest.key or manifest.name
+        slug = key.replace("/", "__").replace("-", "_")
+        module_name = f"{_NS_PARENT}.{slug}"
         spec = importlib.util.spec_from_file_location(
             module_name,
             init_file,
@@ -766,10 +1129,12 @@ class PluginManager:
     def list_plugins(self) -> List[Dict[str, Any]]:
         """Return a list of info dicts for all discovered plugins."""
         result: List[Dict[str, Any]] = []
-        for name, loaded in sorted(self._plugins.items()):
+        for key, loaded in sorted(self._plugins.items()):
             result.append(
                 {
-                    "name": name,
+                    "name": loaded.manifest.name,
+                    "key": loaded.manifest.key or loaded.manifest.name,
+                    "kind": loaded.manifest.kind,
                     "version": loaded.manifest.version,
                     "description": loaded.manifest.description,
                     "source": loaded.manifest.source,
@@ -820,9 +1185,13 @@ def get_plugin_manager() -> PluginManager:
     return _plugin_manager
 
 
-def discover_plugins() -> None:
-    """Discover and load all plugins (idempotent)."""
-    get_plugin_manager().discover_and_load()
+def discover_plugins(force: bool = False) -> None:
+    """Discover and load all plugins.
+
+    Default behavior is idempotent. Pass ``force=True`` to rescan plugin
+    manifests and reload state in the current process.
+    """
+    get_plugin_manager().discover_and_load(force=force)
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
@@ -873,10 +1242,13 @@ def get_pre_tool_call_block_message(
     return None
 
 
-def _ensure_plugins_discovered() -> PluginManager:
-    """Return the global manager after running idempotent plugin discovery."""
+def _ensure_plugins_discovered(force: bool = False) -> PluginManager:
+    """Return the global manager after ensuring plugin discovery has run.
+
+    Pass ``force=True`` to rescan in the current process.
+    """
     manager = get_plugin_manager()
-    manager.discover_and_load()
+    manager.discover_and_load(force=force)
     return manager
 
 
@@ -889,6 +1261,55 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
+
+
+def resolve_plugin_command_result(result: Any) -> Any:
+    """Resolve a plugin command return value, awaiting async handlers when needed.
+
+    Sync CLI/TUI dispatch sites call plugin handlers from plain functions.
+    If a handler is async, await it directly when no loop is running; if
+    we're already inside an active loop, run it in a helper thread with its
+    own loop so the caller still gets a concrete result synchronously. The
+    threaded path is bounded by a 30s timeout so a hung async handler cannot
+    wedge the terminal indefinitely.
+    """
+    if not inspect.isawaitable(result):
+        return result
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(result)
+
+    outcome: Dict[str, Any] = {}
+    failure: Dict[str, BaseException] = {}
+    done = threading.Event()
+
+    def _runner() -> None:
+        try:
+            outcome["value"] = asyncio.run(result)
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            failure["exc"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=_runner,
+        name="hermes-plugin-command-await",
+        daemon=True,
+    )
+    thread.start()
+    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
+        raise TimeoutError(
+            "Plugin command async handler did not complete within "
+            f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s"
+        )
+    if "exc" in failure:
+        raise failure["exc"]
+    return outcome.get("value")
 
 
 def get_plugin_commands() -> Dict[str, dict]:

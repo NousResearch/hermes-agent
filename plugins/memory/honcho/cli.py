@@ -12,6 +12,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
+from hermes_cli.config import cfg_get
 
 
 def clone_honcho_for_profile(profile_name: str) -> bool:
@@ -106,7 +107,7 @@ def cmd_enable(args) -> None:
 
     # If this is a new profile host block with no settings, clone from default
     if not block.get("aiPeer"):
-        default_block = cfg.get("hosts", {}).get(HOST, {})
+        default_block = cfg_get(cfg, "hosts", HOST, default={})
         for key in ("recallMode", "writeFrequency", "sessionStrategy",
                     "contextTokens", "dialecticReasoningLevel", "dialecticDynamic",
                     "dialecticMaxChars", "messageMaxChars", "dialecticMaxInputChars",
@@ -139,7 +140,7 @@ def cmd_disable(args) -> None:
     cfg = _read_config()
     host = _host_key()
     label = f"[{host}] " if host != "hermes" else ""
-    block = cfg.get("hosts", {}).get(host, {})
+    block = cfg_get(cfg, "hosts", host, default={})
 
     if not block or block.get("enabled") is False:
         print(f"  {label}Honcho is already disabled.\n")
@@ -212,7 +213,7 @@ def sync_honcho_profiles_quiet() -> int:
     if not cfg:
         return 0
 
-    default_block = cfg.get("hosts", {}).get(HOST, {})
+    default_block = cfg_get(cfg, "hosts", HOST, default={})
     has_key = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
     if not default_block and not has_key:
         return 0
@@ -273,9 +274,38 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
 
 
 def _resolve_api_key(cfg: dict) -> str:
-    """Resolve API key with host -> root -> env fallback."""
+    """Resolve API key with host -> root -> env fallback.
+
+    For self-hosted instances configured with ``baseUrl`` instead of an API
+    key, returns ``"local"`` so that credential guards throughout the CLI
+    don't reject a valid configuration.  The ``baseUrl`` is scheme-validated
+    (http/https only) so that a typo like ``baseUrl: true`` can't silently
+    pass the guard.  Schemeless strings that look like host:port (legacy
+    config shapes, e.g. ``localhost:8000``) still pass — the Honcho SDK
+    will reject them itself with a clearer error than ours.
+    """
     host_key = ((cfg.get("hosts") or {}).get(_host_key()) or {}).get("apiKey")
-    return host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+    key = host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+    if not key:
+        base_url = cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "")
+        base_url = (base_url or "").strip()
+        if base_url:
+            from urllib.parse import urlparse
+            try:
+                parsed = urlparse(base_url)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed and parsed.scheme in ("http", "https") and parsed.netloc:
+                return "local"
+            # Schemeless but looks like a host (contains '.' or ':' and isn't
+            # a boolean literal): let it through so legacy configs don't
+            # regress into "no API key configured" when they previously worked.
+            lowered = base_url.lower()
+            if lowered not in ("true", "false", "none", "null") and any(
+                c in base_url for c in ".:"
+            ) and not base_url.isdigit():
+                return "local"
+    return key
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:

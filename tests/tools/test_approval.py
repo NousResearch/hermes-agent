@@ -434,6 +434,76 @@ class TestSensitiveRedirectPattern:
         assert dangerous is False
         assert key is None
 
+    def test_redirect_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("echo TOKEN=x > .env")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_to_nested_config_yaml_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("echo mode: prod > deploy/config.yaml")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_from_local_dotenv_source_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cat .env > backup.txt")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
+class TestProjectSensitiveCopyPattern:
+    def test_cp_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("cp .env.local .env")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_cp_absolute_path_to_dotenv_requires_approval(self):
+        # Regression: the real-world bug report was `cp /opt/data/.env.local /opt/data/.env`.
+        # The regex must cover absolute paths, not just `./` / bare relative paths.
+        dangerous, key, desc = detect_dangerous_command(
+            "cp /opt/data/.env.local /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_absolute_path_to_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "cat /opt/data/.env.local > /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_mv_to_nested_config_yaml_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("mv tmp/generated.yaml config/config.yaml")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_install_to_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("install -m 600 template.env .env.production")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_cp_from_config_yaml_source_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cp config.yaml backup.yaml")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
+class TestProjectSensitiveTeePattern:
+    def test_tee_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("printenv | tee .env.local")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
 
 class TestPatternKeyUniqueness:
     """Bug: pattern_key is derived by splitting on \\b and taking [1], so
@@ -837,3 +907,61 @@ class TestChmodExecuteCombo:
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
 
+
+class TestFailClosedUnderPromptToolkit:
+    """Regression guard for #15216.
+
+    When prompt_toolkit owns the terminal and no approval callback is
+    registered on the calling thread, prompt_dangerous_approval() must
+    deny fast instead of falling through to the input() fallback -- which
+    deadlocks because the user's keystrokes go to prompt_toolkit's raw-mode
+    stdin capture, not to input().
+    """
+
+    def test_denies_when_prompt_toolkit_active_and_no_callback(self):
+        import threading
+        import prompt_toolkit.application.current as ptc
+
+        orig = ptc.get_app_or_none
+        ptc.get_app_or_none = lambda: object()  # pretend a pt app is running
+        result = []
+        try:
+            def run():
+                result.append(
+                    prompt_dangerous_approval(
+                        "rm -rf /",
+                        "test danger",
+                        timeout_seconds=30,
+                        approval_callback=None,
+                    )
+                )
+
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
+            t.join(timeout=3)
+            assert not t.is_alive(), (
+                "prompt_dangerous_approval deadlocked under prompt_toolkit "
+                "with no callback -- fail-closed guard is broken"
+            )
+            assert result == ["deny"]
+        finally:
+            ptc.get_app_or_none = orig
+
+    def test_callback_path_still_wins_over_guard(self):
+        """Guard must not short-circuit a valid callback."""
+        import prompt_toolkit.application.current as ptc
+
+        orig = ptc.get_app_or_none
+        ptc.get_app_or_none = lambda: object()
+        try:
+            def cb(command, description, **kwargs):
+                return "once"
+
+            result = prompt_dangerous_approval(
+                "rm -rf /",
+                "test danger",
+                approval_callback=cb,
+            )
+            assert result == "once"
+        finally:
+            ptc.get_app_or_none = orig

@@ -22,7 +22,8 @@ We value contributions in this order:
 
 ## Common contribution paths
 
-- Building a new tool? Start with [Adding Tools](./adding-tools.md)
+- Building a custom/local tool without modifying Hermes core? Start with [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md)
+- Building a new built-in core tool for Hermes itself? Start with [Adding Tools](./adding-tools.md)
 - Building a new skill? Start with [Creating Skills](./creating-skills.md)
 - Building a new inference provider? Start with [Adding Providers](./adding-providers.md)
 
@@ -32,10 +33,10 @@ We value contributions in this order:
 
 | Requirement | Notes |
 |-------------|-------|
-| **Git** | With `--recurse-submodules` support |
+| **Git** | With `--recurse-submodules` support, and the `git-lfs` extension installed |
 | **Python 3.11+** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
-| **Node.js 18+** | Optional — needed for browser tools and WhatsApp bridge |
+| **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
 
 ### Clone and Install
 

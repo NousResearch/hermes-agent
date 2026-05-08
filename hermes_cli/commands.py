@@ -10,6 +10,7 @@ To add an alias: set ``aliases=("short",)`` on the existing ``CommandDef``.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -18,6 +19,10 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
+
+from utils import is_truthy_value
+
+logger = logging.getLogger(__name__)
 
 # prompt_toolkit is an optional CLI dependency — only needed for
 # SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
@@ -59,8 +64,12 @@ class CommandDef:
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",)),
+               aliases=("reset",), args_hint="[name]"),
+    CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
+               gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
+               cli_only=True),
+    CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
                cli_only=True),
     CommandDef("history", "Show conversation history", "Session",
                cli_only=True),
@@ -77,22 +86,22 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
-               aliases=("snap",), args_hint="[create|restore <id>|prune]"),
+               cli_only=True, aliases=("snap",), args_hint="[create|restore <id>|prune]"),
     CommandDef("stop", "Kill all running background processes", "Session"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]"),
     CommandDef("deny", "Deny a pending dangerous command", "Session",
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
-               aliases=("bg",), args_hint="<prompt>"),
-    CommandDef("btw", "Ephemeral side question using session context (no tools, not persisted)", "Session",
-               args_hint="<question>"),
+               aliases=("bg", "btw"), args_hint="<prompt>"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>"),
+    CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
+               args_hint="[text | pause | resume | clear | status]"),
     CommandDef("status", "Show session info", "Session"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -101,12 +110,15 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
 
     # Configuration
+    CommandDef("sessions", "Browse and resume previous sessions", "Session"),
+
+    # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--provider name] [--global]"),
-    CommandDef("provider", "Show available providers and current provider",
-               "Configuration"),
-    CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info"),
+    CommandDef("model", "Switch model for this session", "Configuration",
+               aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
+    CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
+               cli_only=True),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
@@ -115,6 +127,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command"),
+    CommandDef("footer", "Toggle gateway runtime-metadata footer on final replies",
+               "Configuration", args_hint="[on|off|status]",
+               subcommands=("on", "off", "status")),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration"),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
@@ -124,9 +139,15 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[normal|fast|status]",
                subcommands=("normal", "fast", "status", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
-               args_hint="[name]"),
+               cli_only=True, args_hint="[name]"),
+    CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
+               cli_only=True, args_hint="[kaomoji|emoji|unicode|ascii]",
+               subcommands=("kaomoji", "emoji", "unicode", "ascii")),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
+    CommandDef("busy", "Control what Enter does while Hermes is working", "Configuration",
+               cli_only=True, args_hint="[queue|steer|interrupt|status]",
+               subcommands=("queue", "steer", "interrupt", "status")),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
@@ -139,9 +160,20 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
-    CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills"),
+    CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
+               "Tools & Skills", args_hint="[subcommand]",
+               subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
+    CommandDef("kanban", "Multi-profile collaboration board (tasks, links, comments)",
+               "Tools & Skills", args_hint="[subcommand]",
+               subcommands=("list", "ls", "show", "create", "assign", "link", "unlink",
+                            "claim", "comment", "complete", "block", "unblock", "archive",
+                            "tail", "dispatch", "context", "init", "gc")),
+    CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
+               cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
+    CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
+               "Tools & Skills", aliases=("reload_skills",)),
     CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
@@ -260,6 +292,26 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
 )
 
 
+def is_gateway_known_command(name: str | None) -> bool:
+    """Return True if ``name`` resolves to a gateway-dispatchable slash command.
+
+    This covers both built-in commands (``GATEWAY_KNOWN_COMMANDS`` derived
+    from ``COMMAND_REGISTRY``) and plugin-registered commands, which are
+    looked up lazily so importing this module never forces plugin
+    discovery. Gateway code uses this to decide whether to emit
+    ``command:<name>`` hooks — plugin commands get the same lifecycle
+    events as built-ins.
+    """
+    if not name:
+        return False
+    if name in GATEWAY_KNOWN_COMMANDS:
+        return True
+    for plugin_name, _description, _args_hint in _iter_plugin_command_entries():
+        if plugin_name == name:
+            return True
+    return False
+
+
 # Commands with explicit Level-2 running-agent handlers in gateway/run.py.
 # Listed here for introspection / tests; semantically a subset of
 # "all resolvable commands" — which is the real bypass set (see
@@ -297,7 +349,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     safety net in gateway.run discards any command text that reaches
     the pending queue — which meant a mid-run /model (or /reasoning,
     /voice, /insights, /title, /resume, /retry, /undo, /compress,
-    /usage, /provider, /reload-mcp, /sethome, /reset) would silently
+    /usage, /reload-mcp, /sethome, /reset) would silently
     interrupt the agent AND get discarded, producing a zero-char
     response. See issue #5057 / PRs #6252, #10370, #4665.
 
@@ -331,7 +383,7 @@ def _resolve_config_gates() -> set[str]:
             else:
                 val = None
                 break
-        if val:
+        if is_truthy_value(val, default=False):
             result.add(cmd.name)
     return result
 
@@ -350,6 +402,11 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
         overrides = config_overrides if config_overrides is not None else _resolve_config_gates()
         return cmd.name in overrides
     return False
+
+
+def _requires_argument(args_hint: str) -> bool:
+    """Return True when selecting a command without text would be incomplete."""
+    return args_hint.strip().startswith("<")
 
 
 def gateway_help_lines() -> list[str]:
@@ -371,21 +428,66 @@ def gateway_help_lines() -> list[str]:
     return lines
 
 
+def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
+    """Yield (name, description, args_hint) tuples for all plugin slash commands.
+
+    Plugin commands are registered via
+    :func:`hermes_cli.plugins.PluginContext.register_command`. They behave
+    like ``CommandDef`` entries for gateway surfacing: they appear in the
+    Telegram command menu, in Slack's ``/hermes`` subcommand mapping, and
+    (via :func:`gateway.platforms.discord._register_slash_commands`) in
+    Discord's native slash command picker.
+
+    Lookup is lazy so importing this module never forces plugin discovery
+    (which can trigger filesystem scans and environment-dependent
+    behavior).
+    """
+    try:
+        from hermes_cli.plugins import get_plugin_commands
+    except Exception:
+        return []
+    try:
+        commands = get_plugin_commands() or {}
+    except Exception:
+        return []
+    entries: list[tuple[str, str, str]] = []
+    for name, meta in commands.items():
+        if not isinstance(name, str) or not isinstance(meta, dict):
+            continue
+        description = str(meta.get("description") or f"Run /{name}")
+        args_hint = str(meta.get("args_hint") or "").strip()
+        entries.append((name, description, args_hint))
+    return entries
+
+
 def telegram_bot_commands() -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 
     Telegram command names cannot contain hyphens, so they are replaced with
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
-    canonical command.
+    canonical command. Commands that require arguments are skipped because
+    selecting a Telegram BotCommand sends only ``/command`` and would execute
+    an incomplete command.
+
+    Plugin-registered slash commands are included so plugins get native
+    autocomplete in Telegram without touching core code.
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
+        if _requires_argument(cmd.args_hint):
+            continue
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
+    for name, description, args_hint in _iter_plugin_command_entries():
+        if _requires_argument(args_hint):
+            continue
+        tg_name = _sanitize_telegram_name(name)
+        if tg_name:
+            result.append((tg_name, description))
     return result
 
 
@@ -416,9 +518,9 @@ def _sanitize_telegram_name(raw: str) -> str:
 
 
 def _clamp_command_names(
-    entries: list[tuple[str, str]],
+    entries: list[tuple[str, ...]],
     reserved: set[str],
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, ...]]:
     """Enforce 32-char command name limit with collision avoidance.
 
     Both Telegram and Discord cap slash command names at 32 characters.
@@ -426,10 +528,15 @@ def _clamp_command_names(
     (against *reserved* names or earlier entries in the same batch), the name is
     shortened to 31 chars and a digit ``0``-``9`` is appended to differentiate.
     If all 10 digit slots are taken the entry is silently dropped.
+
+    Accepts tuples of any length >= 2.  Extra elements beyond ``(name, desc)``
+    (e.g. ``cmd_key``) are passed through unchanged, so callers can attach
+    metadata that survives the rename.
     """
     used: set[str] = set(reserved)
-    result: list[tuple[str, str]] = []
-    for name, desc in entries:
+    result: list[tuple] = []
+    for entry in entries:
+        name, desc, *extra = entry
         if len(name) > _CMD_NAME_LIMIT:
             candidate = name[:_CMD_NAME_LIMIT]
             if candidate in used:
@@ -445,7 +552,7 @@ def _clamp_command_names(
         if name in used:
             continue
         used.add(name)
-        result.append((name, desc))
+        result.append((name, desc, *extra))
     return result
 
 
@@ -528,13 +635,26 @@ def _collect_gateway_skill_entries(
     try:
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
+        from agent.skill_utils import get_external_skills_dirs
         _skills_dir = str(SKILLS_DIR.resolve())
-        _hub_dir = str((SKILLS_DIR / ".hub").resolve())
+        _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
+        # Build set of allowed directory prefixes: local skills dir + any
+        # user-configured ``skills.external_dirs``. Ensure each prefix ends
+        # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
+        # Without this widening, external skills are visible in
+        # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
+        # silently excluded from gateway slash menus (#8110).
+        _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
+        _allowed_prefixes.extend(
+            str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
+        )
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
             info = skill_cmds[cmd_key]
             skill_path = info.get("skill_md_path", "")
-            if not skill_path.startswith(_skills_dir):
+            if not skill_path:
+                continue
+            if not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes):
                 continue
             if skill_path.startswith(_hub_dir):
                 continue
@@ -552,17 +672,15 @@ def _collect_gateway_skill_entries(
     except Exception:
         pass
 
-    # Clamp names; _clamp_command_names works on (name, desc) pairs so we
-    # need to zip/unzip.
-    skill_pairs = [(n, d) for n, d, _ in skill_triples]
-    key_by_pair = {(n, d): k for n, d, k in skill_triples}
-    skill_pairs = _clamp_command_names(skill_pairs, reserved_names)
+    # Clamp names; cmd_key is passed through as extra payload so it survives
+    # any clamp-induced renames.
+    skill_triples = _clamp_command_names(skill_triples, reserved_names)
 
     # Skills fill remaining slots — only tier that gets trimmed
     remaining = max(0, max_slots - len(all_entries))
-    hidden_count = max(0, len(skill_pairs) - remaining)
-    for n, d in skill_pairs[:remaining]:
-        all_entries.append((n, d, key_by_pair.get((n, d), "")))
+    hidden_count = max(0, len(skill_triples) - remaining)
+    for n, d, k in skill_triples[:remaining]:
+        all_entries.append((n, d, k))
 
     return all_entries[:max_slots], hidden_count
 
@@ -638,24 +756,40 @@ def discord_skill_commands(
 def discord_skill_commands_by_category(
     reserved_names: set[str],
 ) -> tuple[dict[str, list[tuple[str, str, str]]], list[tuple[str, str, str]], int]:
-    """Return skill entries organized by category for Discord ``/skill`` subcommand groups.
+    """Return skill entries organized by category for Discord ``/skill`` autocomplete.
 
-    Skills whose directory is nested at least 2 levels under ``SKILLS_DIR``
+    Skills whose directory is nested at least 2 levels under a scan root
     (e.g. ``creative/ascii-art/SKILL.md``) are grouped by their top-level
     category.  Root-level skills (e.g. ``dogfood/SKILL.md``) are returned as
-    *uncategorized* — the caller should register them as direct subcommands
-    of the ``/skill`` group.
+    *uncategorized*.
 
-    The same filtering as :func:`discord_skill_commands` is applied: hub
-    skills excluded, per-platform disabled excluded, names clamped.
+    Scan roots include the local ``SKILLS_DIR`` **and** any configured
+    ``skills.external_dirs`` — matching the widened filter applied to the
+    flat ``discord_skill_commands()`` collector in #18741. Without this
+    parity, external-dir skills are visible via ``hermes skills list`` and
+    the agent's ``/skill-name`` dispatch but silently absent from Discord's
+    ``/skill`` autocomplete.
+
+    Filtering mirrors :func:`discord_skill_commands`: hub skills excluded,
+    per-platform disabled excluded, names clamped to 32 chars, descriptions
+    clamped to 100 chars.
+
+    The legacy 25-group × 25-subcommand caps (from the old nested
+    ``/skill <cat> <name>`` layout) are **not** applied — the live caller
+    (``_register_skill_group`` in ``gateway/platforms/discord.py``, refactored
+    in PR #11580) flattens these results and feeds them into a single
+    autocomplete callback, which scales to thousands of entries without any
+    per-command payload concerns. ``hidden_count`` is retained in the return
+    tuple for backward compatibility and still reports skills dropped for
+    other reasons (32-char clamp collision vs a reserved name).
 
     Returns:
         ``(categories, uncategorized, hidden_count)``
 
         - *categories*: ``{category_name: [(name, description, cmd_key), ...]}``
         - *uncategorized*: ``[(name, description, cmd_key), ...]``
-        - *hidden_count*: skills dropped due to Discord group limits
-          (25 subcommand groups, 25 subcommands per group)
+        - *hidden_count*: skills dropped due to name clamp collisions
+          against already-registered command names.
     """
     from pathlib import Path as _P
 
@@ -669,14 +803,33 @@ def discord_skill_commands_by_category(
     # Collect raw skill data --------------------------------------------------
     categories: dict[str, list[tuple[str, str, str]]] = {}
     uncategorized: list[tuple[str, str, str]] = []
-    _names_used: set[str] = set(reserved_names)
+    # Map clamped-32-char-name → what it came from, so we can emit an
+    # actionable warning on collision. Reserved (gateway-builtin) command
+    # names are marked with a sentinel so the warning distinguishes
+    # "skill collided with a reserved command" from "two skills collided
+    # on the 32-char clamp" — the latter is the rename-worthy case.
+    _names_used: dict[str, str] = {n: "<reserved>" for n in reserved_names}
     hidden = 0
 
     try:
         from agent.skill_commands import get_skill_commands
+        from agent.skill_utils import get_external_skills_dirs
         from tools.skills_tool import SKILLS_DIR
+
         _skills_dir = SKILLS_DIR.resolve()
         _hub_dir = (SKILLS_DIR / ".hub").resolve()
+        # Build list of (resolved_root, is_local) tuples. Each external dir
+        # becomes its own scan root for category derivation — a skill at
+        # ``<external>/mlops/foo/SKILL.md`` is still categorized as "mlops".
+        _scan_roots: list[_P] = [_skills_dir]
+        try:
+            for ext in get_external_skills_dirs():
+                try:
+                    _scan_roots.append(_P(ext).resolve())
+                except Exception:
+                    continue
+        except Exception:
+            pass
         skill_cmds = get_skill_commands()
 
         for cmd_key in sorted(skill_cmds):
@@ -685,10 +838,21 @@ def discord_skill_commands_by_category(
             if not skill_path:
                 continue
             sp = _P(skill_path).resolve()
-            # Skip skills outside SKILLS_DIR or from the hub
-            if not str(sp).startswith(str(_skills_dir)):
-                continue
+            # Hub skills are loaded via the skill hub, not surfaced as
+            # slash commands.
             if str(sp).startswith(str(_hub_dir)):
+                continue
+            # Accept skill if it lives under any scan root; record the
+            # matching root so we can derive the category correctly.
+            matched_root: _P | None = None
+            for root in _scan_roots:
+                try:
+                    sp.relative_to(root)
+                except ValueError:
+                    continue
+                matched_root = root
+                break
+            if matched_root is None:
                 continue
 
             skill_name = info.get("name", "")
@@ -696,22 +860,50 @@ def discord_skill_commands_by_category(
                 continue
 
             raw_name = cmd_key.lstrip("/")
-            # Clamp to 32 chars (Discord limit)
+            # Clamp to 32 chars (Discord per-command name limit)
             discord_name = raw_name[:32]
             if discord_name in _names_used:
+                # Two skills whose first 32 chars are identical. One wins
+                # (the first one seen, which is alphabetical because the
+                # caller iterates ``sorted(skill_cmds)``); the other is
+                # dropped from Discord's /skill autocomplete.
+                #
+                # Silently counting this as ``hidden`` (the old behavior)
+                # meant skill authors had no way to discover the drop —
+                # their skill just didn't appear in the picker. Emit a
+                # WARNING naming both sides so the author can rename the
+                # losing skill's frontmatter name to something with a
+                # distinct 32-char prefix.
+                prior = _names_used[discord_name]
+                if prior == "<reserved>":
+                    logger.warning(
+                        "Discord /skill: %r (from %r) collides on its 32-char "
+                        "clamp with a reserved gateway command name %r — the "
+                        "skill will not appear in the /skill autocomplete. "
+                        "Rename the skill's frontmatter ``name:`` to differ "
+                        "in its first 32 chars.",
+                        discord_name, cmd_key, discord_name,
+                    )
+                else:
+                    logger.warning(
+                        "Discord /skill: %r and %r both clamp to %r on "
+                        "Discord's 32-char command-name limit — only %r "
+                        "will appear in the /skill autocomplete. Rename "
+                        "one skill's frontmatter ``name:`` to differ in "
+                        "its first 32 chars.",
+                        prior, cmd_key, discord_name, prior,
+                    )
+                hidden += 1
                 continue
-            _names_used.add(discord_name)
+            _names_used[discord_name] = cmd_key
 
             desc = info.get("description", "")
             if len(desc) > 100:
                 desc = desc[:97] + "..."
 
-            # Determine category from the relative path within SKILLS_DIR.
-            # e.g. creative/ascii-art/SKILL.md → parts = ("creative", "ascii-art")
-            try:
-                rel = sp.parent.relative_to(_skills_dir)
-            except ValueError:
-                continue
+            # Determine category from the relative path within the matched
+            # scan root. e.g. creative/ascii-art/SKILL.md → ("creative", ...)
+            rel = sp.parent.relative_to(matched_root)
             parts = rel.parts
             if len(parts) >= 2:
                 cat = parts[0]
@@ -721,28 +913,128 @@ def discord_skill_commands_by_category(
     except Exception:
         pass
 
-    # Enforce Discord limits: 25 subcommand groups, 25 subcommands each ------
-    _MAX_GROUPS = 25
-    _MAX_PER_GROUP = 25
+    return categories, uncategorized, hidden
 
-    trimmed_categories: dict[str, list[tuple[str, str, str]]] = {}
-    group_count = 0
-    for cat in sorted(categories):
-        if group_count >= _MAX_GROUPS:
-            hidden += len(categories[cat])
+
+# ---------------------------------------------------------------------------
+# Slack native slash commands
+# ---------------------------------------------------------------------------
+
+# Slack slash command name constraints: lowercase a-z, 0-9, hyphens,
+# underscores. Max 32 chars. Slack app manifest accepts up to 50 slash
+# commands per app.
+_SLACK_MAX_SLASH_COMMANDS = 50
+_SLACK_NAME_LIMIT = 32
+_SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
+_SLACK_RESERVED_COMMANDS = frozenset({
+    # Built-in Slack slash commands that cannot be registered by apps.
+    # https://slack.com/help/articles/201259356-Use-built-in-slash-commands
+    "me", "status", "away", "dnd", "shrug", "remind", "msg", "feed",
+    "who", "collapse", "expand", "leave", "join", "open", "search",
+    "topic", "mute", "pro", "shortcuts",
+})
+
+
+def _sanitize_slack_name(raw: str) -> str:
+    """Convert a command name to a valid Slack slash command name.
+
+    Slack allows lowercase a-z, digits, hyphens, and underscores. Max 32
+    chars. Uppercase is lowercased; invalid chars are stripped.
+    """
+    name = raw.lower()
+    name = _SLACK_INVALID_CHARS.sub("", name)
+    name = name.strip("-_")
+    return name[:_SLACK_NAME_LIMIT]
+
+
+def slack_native_slashes() -> list[tuple[str, str, str]]:
+    """Return (slash_name, description, usage_hint) triples for Slack.
+
+    Every gateway-available command in ``COMMAND_REGISTRY`` is surfaced as
+    a standalone Slack slash command (e.g. ``/btw``, ``/stop``, ``/model``),
+    matching Discord's and Telegram's model where every command is a
+    first-class slash and not a ``/hermes <verb>`` subcommand.
+
+    Both canonical names and aliases are included so users can type any
+    documented form (e.g. ``/background``, ``/bg``, and ``/btw`` all work).
+    Plugin-registered slash commands are included too.
+
+    Commands whose sanitized name collides with a Slack built-in
+    (e.g. ``/status``, ``/me``, ``/join``) are silently skipped.  Users
+    can still reach them via ``/hermes <command>``.
+
+    Results are clamped to Slack's 50-command limit with duplicate-name
+    avoidance. ``/hermes`` is always reserved as the first entry so the
+    legacy ``/hermes <subcommand>`` form keeps working for anything that
+    gets dropped by the clamp or for free-form questions.
+    """
+    overrides = _resolve_config_gates()
+    entries: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+
+    # Reserve /hermes as the catch-all top-level command.
+    entries.append(("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
+    seen.add("hermes")
+
+    def _add(name: str, desc: str, hint: str) -> None:
+        slack_name = _sanitize_slack_name(name)
+        if not slack_name or slack_name in seen:
+            return
+        if slack_name in _SLACK_RESERVED_COMMANDS:
+            return
+        if len(entries) >= _SLACK_MAX_SLASH_COMMANDS:
+            return
+        # Slack description cap is 2000 chars; keep it short.
+        entries.append((slack_name, desc[:140], hint[:100]))
+        seen.add(slack_name)
+
+    # First pass: canonical names (so they win slots if we hit the cap).
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
             continue
-        entries = categories[cat][:_MAX_PER_GROUP]
-        hidden += max(0, len(categories[cat]) - _MAX_PER_GROUP)
-        trimmed_categories[cat] = entries
-        group_count += 1
+        _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Uncategorized skills also count against the 25 top-level limit
-    remaining_slots = _MAX_GROUPS - group_count
-    if len(uncategorized) > remaining_slots:
-        hidden += len(uncategorized) - remaining_slots
-        uncategorized = uncategorized[:remaining_slots]
+    # Second pass: aliases.
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        for alias in cmd.aliases:
+            # Skip aliases that only differ from canonical by case/punctuation
+            # normalization (already covered by _add dedup).
+            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
-    return trimmed_categories, uncategorized, hidden
+    # Third pass: plugin commands.
+    for name, description, args_hint in _iter_plugin_command_entries():
+        _add(name, description, args_hint or "")
+
+    return entries
+
+
+def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/commands") -> dict[str, Any]:
+    """Generate a Slack app manifest with all gateway commands as slashes.
+
+    ``request_url`` is required by Slack's manifest schema for every slash
+    command, but in Socket Mode (which we use) Slack ignores it and routes
+    the command event through the WebSocket. A placeholder URL is fine.
+
+    The returned dict is the ``features.slash_commands`` portion only —
+    callers compose it into a full manifest (or merge into an existing
+    one). Keeping it narrow avoids coupling us to the rest of the manifest
+    schema (display_information, oauth_config, settings, etc.) which users
+    set up once in the Slack UI and rarely change.
+    """
+    slashes = []
+    for name, desc, usage in slack_native_slashes():
+        entry = {
+            "command": f"/{name}",
+            "description": desc or f"Run /{name}",
+            "should_escape": False,
+            "url": request_url,
+        }
+        if usage:
+            entry["usage_hint"] = usage
+        slashes.append(entry)
+    return {"features": {"slash_commands": slashes}}
 
 
 def slack_subcommand_map() -> dict[str, str]:
@@ -750,6 +1042,9 @@ def slack_subcommand_map() -> dict[str, str]:
 
     Maps both canonical names and aliases so /hermes bg do stuff works
     the same as /hermes background do stuff.
+
+    Plugin-registered slash commands are included so ``/hermes <plugin-cmd>``
+    routes through the plugin handler.
     """
     overrides = _resolve_config_gates()
     mapping: dict[str, str] = {}
@@ -759,12 +1054,51 @@ def slack_subcommand_map() -> dict[str, str]:
         mapping[cmd.name] = f"/{cmd.name}"
         for alias in cmd.aliases:
             mapping[alias] = f"/{alias}"
+    for name, _description, _args_hint in _iter_plugin_command_entries():
+        if name not in mapping:
+            mapping[name] = f"/{name}"
     return mapping
 
 
 # ---------------------------------------------------------------------------
 # Autocomplete
 # ---------------------------------------------------------------------------
+
+
+# Per-process cache for /model<space> LM Studio autocomplete. Probing on
+# every keystroke would block the UI; a short TTL keeps it live without
+# hammering the server.
+_LMSTUDIO_COMPLETION_CACHE: tuple[float, list[str]] | None = None
+
+
+def _lmstudio_completion_models() -> list[str]:
+    """Locally-loaded LM Studio models for /model autocomplete (cached, gated)."""
+    global _LMSTUDIO_COMPLETION_CACHE
+    # Gate: don't probe 127.0.0.1 on every keystroke for users who don't use LM Studio.
+    if not (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL")):
+        try:
+            from hermes_cli.auth import _load_auth_store
+            store = _load_auth_store() or {}
+            if "lmstudio" not in (store.get("providers") or {}) \
+               and "lmstudio" not in (store.get("credential_pool") or {}):
+                return []
+        except Exception:
+            return []
+    now = time.time()
+    if _LMSTUDIO_COMPLETION_CACHE and (now - _LMSTUDIO_COMPLETION_CACHE[0]) < 30.0:
+        return _LMSTUDIO_COMPLETION_CACHE[1]
+    try:
+        from hermes_cli.models import fetch_lmstudio_models
+        models = fetch_lmstudio_models(
+            api_key=os.environ.get("LM_API_KEY", ""),
+            base_url=os.environ.get("LM_BASE_URL") or "http://127.0.0.1:1234/v1",
+            timeout=0.8,
+        )
+    except Exception:
+        models = []
+    _LMSTUDIO_COMPLETION_CACHE = (now, models)
+    return models
+
 
 class SlashCommandCompleter(Completer):
     """Autocomplete for built-in slash commands, subcommands, and skill commands."""
@@ -797,6 +1131,12 @@ class SlashCommandCompleter(Completer):
         except Exception:
             return {}
 
+    # Commands that open pickers when run without arguments.
+    # These should NOT receive a trailing space in completions because:
+    # - The TUI's submit handler applies completions on Enter if input differs
+    # - Adding space makes "/model" → "/model " which blocks picker execution
+    _PICKER_COMMANDS = frozenset({"model", "skin", "personality"})
+
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
         """Return replacement text for a completion.
@@ -805,8 +1145,17 @@ class SlashCommandCompleter(Completer):
         returning ``help`` would be a no-op and prompt_toolkit suppresses the
         menu. Appending a trailing space keeps the dropdown visible and makes
         backspacing retrigger it naturally.
+
+        However, commands that open pickers (model, skin, personality) should
+        NOT get a trailing space — the TUI would apply the completion on Enter
+        and block the picker from opening.
         """
-        return f"{cmd_name} " if cmd_name == word else cmd_name
+        if cmd_name != word:
+            return cmd_name
+        # Don't add space for picker commands — allows Enter to execute them
+        if cmd_name in SlashCommandCompleter._PICKER_COMMANDS:
+            return cmd_name
+        return f"{cmd_name} "
 
     @staticmethod
     def _extract_path_word(text: str) -> str | None:
@@ -924,12 +1273,22 @@ class SlashCommandCompleter(Completer):
                     display_meta=meta,
                 )
 
-        # If the user typed @file: or @folder:, delegate to path completions
+        # If the user typed @file: / @folder: (or just @file / @folder with
+        # no colon yet), delegate to path completions.  Accepting the bare
+        # form lets the picker surface directories as soon as the user has
+        # typed `@folder`, without requiring them to first accept the static
+        # `@folder:` hint and re-trigger completion.
         for prefix in ("@file:", "@folder:"):
-            if word.startswith(prefix):
-                path_part = word[len(prefix):] or "."
+            bare = prefix[:-1]
+
+            if word == bare or word.startswith(prefix):
+                want_dir = prefix == "@folder:"
+                path_part = '' if word == bare else word[len(prefix):]
                 expanded = os.path.expanduser(path_part)
-                if expanded.endswith("/"):
+
+                if not expanded or expanded == ".":
+                    search_dir, match_prefix = ".", ""
+                elif expanded.endswith("/"):
                     search_dir, match_prefix = expanded, ""
                 else:
                     search_dir = os.path.dirname(expanded) or "."
@@ -945,15 +1304,21 @@ class SlashCommandCompleter(Completer):
                 for entry in sorted(entries):
                     if match_prefix and not entry.lower().startswith(prefix_lower):
                         continue
-                    if count >= limit:
-                        break
                     full_path = os.path.join(search_dir, entry)
                     is_dir = os.path.isdir(full_path)
+                    # `@folder:` must only surface directories; `@file:` only
+                    # regular files.  Without this filter `@folder:` listed
+                    # every .env / .gitignore in the cwd, defeating the
+                    # explicit prefix and confusing users expecting a
+                    # directory picker.
+                    if want_dir != is_dir:
+                        continue
+                    if count >= limit:
+                        break
                     display_path = os.path.relpath(full_path)
                     suffix = "/" if is_dir else ""
-                    kind = "folder" if is_dir else "file"
                     meta = "dir" if is_dir else _file_size_label(full_path)
-                    completion = f"@{kind}:{display_path}{suffix}"
+                    completion = f"{prefix}{display_path}{suffix}"
                     yield Completion(
                         completion,
                         start_position=-len(word),
@@ -1173,6 +1538,19 @@ class SlashCommandCompleter(Completer):
                     )
         except Exception:
             pass
+        # LM Studio: surface locally-loaded models. Gated on the user actually
+        # having LM Studio configured (env var or auth-store entry) so we
+        # don't probe 127.0.0.1 on every keystroke for users who don't use it.
+        for name in _lmstudio_completion_models():
+            if name in seen:
+                continue
+            if name.startswith(sub_lower) and name != sub_lower:
+                yield Completion(
+                    name,
+                    start_position=-len(sub_text),
+                    display=name,
+                    display_meta="LM Studio",
+                )
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor

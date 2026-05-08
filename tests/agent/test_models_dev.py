@@ -82,6 +82,7 @@ class TestProviderMapping:
     def test_known_providers_mapped(self):
         assert PROVIDER_TO_MODELS_DEV["anthropic"] == "anthropic"
         assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
+        assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun"
         assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
         assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
 
@@ -222,6 +223,13 @@ CAPS_REGISTRY = {
                 "tool_call": True,
                 "limit": {"context": 32000, "output": 8192},
             },
+            "text-only-with-stale-attachment": {
+                "id": "text-only-with-stale-attachment",
+                "attachment": True,
+                "tool_call": True,
+                "modalities": {"input": ["text"]},
+                "limit": {"context": 128000, "output": 8192},
+            },
         },
     },
     "anthropic": {
@@ -242,7 +250,7 @@ class TestGetModelCapabilities:
     """Tests for get_model_capabilities vision detection."""
 
     def test_vision_from_attachment_flag(self):
-        """Models with attachment=True should report supports_vision=True."""
+        """Models with attachment=True and no modalities should report supports_vision=True."""
         with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "claude-sonnet-4")
         assert caps is not None
@@ -255,6 +263,13 @@ class TestGetModelCapabilities:
             caps = get_model_capabilities("google", "gemma-4-31b-it")
         assert caps is not None
         assert caps.supports_vision is True
+
+    def test_text_only_modalities_override_stale_attachment_flag(self):
+        """Text-only modalities must win over stale attachment=True metadata."""
+        with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+            caps = get_model_capabilities("google", "text-only-with-stale-attachment")
+        assert caps is not None
+        assert caps.supports_vision is False
 
     def test_no_vision_without_attachment_or_modalities(self):
         """Models with neither attachment nor image modality should be non-vision."""

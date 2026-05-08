@@ -220,6 +220,26 @@ async def test_discord_free_response_channel_can_come_from_config_extra(adapter,
     assert event.text == "allowed from config"
 
 
+def test_discord_free_response_channels_bare_int(adapter, monkeypatch):
+    # YAML `discord.free_response_channels: 1491973769726791812` (single bare
+    # integer) is loaded as an int and previously fell through the
+    # isinstance(str) branch in _discord_free_response_channels, silently
+    # returning an empty set.  Scalar → str coercion makes single-channel
+    # config work without having to quote the ID in YAML.
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["free_response_channels"] = 1491973769726791812
+
+    assert adapter._discord_free_response_channels() == {"1491973769726791812"}
+
+
+def test_discord_free_response_channels_int_list(adapter, monkeypatch):
+    # YAML list form with bare numeric entries — each element should be coerced.
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["free_response_channels"] = [1491973769726791812, 99999]
+
+    assert adapter._discord_free_response_channels() == {"1491973769726791812", "99999"}
+
+
 @pytest.mark.asyncio
 async def test_discord_forum_parent_in_free_response_list_allows_forum_thread(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")

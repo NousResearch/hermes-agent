@@ -1,16 +1,42 @@
-import type { DashboardTheme } from "./types";
+import type { DashboardTheme, ThemeTypography, ThemeLayout } from "./types";
 
 /**
  * Built-in dashboard themes.
  *
- * The `default` theme mirrors LENS_0 (canonical Hermes teal) exactly — the
- * same triplet `src/index.css` declares on `:root`. Applying it should be a
- * visual no-op; other themes override the triplet + warm-glow and let the DS
- * cascade handle every derived surface.
+ * Each theme defines its own palette, typography, and layout so switching
+ * themes produces visible changes beyond just color — fonts, density, and
+ * corner-radius all shift to match the theme's personality.
  *
  * Theme names must stay in sync with the backend's
  * `_BUILTIN_DASHBOARD_THEMES` list in `hermes_cli/web_server.py`.
  */
+
+// ---------------------------------------------------------------------------
+// Shared typography / layout presets
+// ---------------------------------------------------------------------------
+
+/** Default system stack — neutral, safe fallback for every platform. */
+const SYSTEM_SANS =
+  'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+const SYSTEM_MONO =
+  'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace';
+
+const DEFAULT_TYPOGRAPHY: ThemeTypography = {
+  fontSans: SYSTEM_SANS,
+  fontMono: SYSTEM_MONO,
+  baseSize: "15px",
+  lineHeight: "1.55",
+  letterSpacing: "0",
+};
+
+const DEFAULT_LAYOUT: ThemeLayout = {
+  radius: "0.5rem",
+  density: "comfortable",
+};
+
+// ---------------------------------------------------------------------------
+// Themes
+// ---------------------------------------------------------------------------
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
@@ -23,6 +49,8 @@ export const defaultTheme: DashboardTheme = {
     warmGlow: "rgba(255, 189, 56, 0.35)",
     noiseOpacity: 1,
   },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: DEFAULT_LAYOUT,
 };
 
 export const midnightTheme: DashboardTheme = {
@@ -35,6 +63,18 @@ export const midnightTheme: DashboardTheme = {
     foreground: { hex: "#ffffff", alpha: 0 },
     warmGlow: "rgba(167, 139, 250, 0.32)",
     noiseOpacity: 0.8,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
+    letterSpacing: "-0.005em",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.75rem",
   },
 };
 
@@ -49,6 +89,21 @@ export const emberTheme: DashboardTheme = {
     warmGlow: "rgba(249, 115, 22, 0.38)",
     noiseOpacity: 1,
   },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Spectral", Georgia, "Times New Roman", serif`,
+    fontMono: `"IBM Plex Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.25rem",
+  },
+  colorOverrides: {
+    destructive: "#c92d0f",
+    warning: "#f97316",
+  },
 };
 
 export const monoTheme: DashboardTheme = {
@@ -61,6 +116,17 @@ export const monoTheme: DashboardTheme = {
     foreground: { hex: "#ffffff", alpha: 0 },
     warmGlow: "rgba(255, 255, 255, 0.1)",
     noiseOpacity: 0.6,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"IBM Plex Sans", ${SYSTEM_SANS}`,
+    fontMono: `"IBM Plex Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0",
   },
 };
 
@@ -75,6 +141,22 @@ export const cyberpunkTheme: DashboardTheme = {
     warmGlow: "rgba(0, 255, 136, 0.22)",
     noiseOpacity: 1.2,
   },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Share Tech Mono", "JetBrains Mono", ${SYSTEM_MONO}`,
+    fontMono: `"Share Tech Mono", "JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;700&display=swap",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0",
+  },
+  colorOverrides: {
+    success: "#00ff88",
+    warning: "#ffd700",
+    destructive: "#ff0055",
+  },
 };
 
 export const roseTheme: DashboardTheme = {
@@ -88,10 +170,43 @@ export const roseTheme: DashboardTheme = {
     warmGlow: "rgba(249, 168, 212, 0.3)",
     noiseOpacity: 0.9,
   },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Fraunces", Georgia, serif`,
+    fontMono: `"DM Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=DM+Mono:wght@400;500&display=swap",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "1rem",
+  },
+};
+
+/**
+ * Same look as ``defaultTheme`` but with a larger root font size, looser
+ * line-height, and ``spacious`` density so every rem-based size in the
+ * dashboard scales up. For users who find the default 15px UI too dense.
+ */
+export const defaultLargeTheme: DashboardTheme = {
+  name: "default-large",
+  label: "Hermes Teal (Large)",
+  description: "Hermes Teal with bigger fonts and roomier spacing",
+  palette: defaultTheme.palette,
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    baseSize: "18px",
+    lineHeight: "1.65",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    density: "spacious",
+  },
 };
 
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
+  "default-large": defaultLargeTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

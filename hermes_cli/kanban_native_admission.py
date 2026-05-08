@@ -128,6 +128,11 @@ def build_native_body(req: NativeAdmissionRequest, public_id: str, idempotency_k
             "profile": req.profile.strip(),
             "skills": list(req.skills),
         },
+        "routing": {
+            "verdict": req.executor.strip(),
+            "reason": "native admission captures requested executor; dispatch remains forbidden until live preflight",
+            "approval_boundary": req.approval_boundary,
+        },
         "closeout": {
             "policy": req.closeout_policy.strip(),
             "worker_done_review_ready_closed_are_distinct": True,
@@ -194,6 +199,31 @@ def build_native_admission_payload(
             "profile": req.profile.strip() or None,
             "skills": list(req.skills),
         },
+        "authority": {
+            "review_phase": None,
+            "routing_verdict": {
+                "verdict": "Hermes direct" if req.executor.strip() == "hermes-direct" else "blocked",
+                "reason": "native admission records routing intent only; executor dispatch is forbidden during admission",
+                "boundary": req.approval_boundary,
+            },
+            "admission_snapshot": {
+                "source": "kanban_native",
+                "linear_required": False,
+                "public_id": public_id,
+                "idempotency_key": idempotency_key,
+                "tenant": req.tenant.strip() or None,
+                "repo_full_name": req.repo_full_name.strip() or None,
+                "profile": req.profile.strip() or None,
+                "executor": req.executor.strip() or None,
+                "closeout_policy": req.closeout_policy.strip() or None,
+                "executor_dispatch": "forbidden_during_admission",
+            },
+            "closeout_evidence": {
+                "policy": req.closeout_policy.strip() or None,
+                "worker_done_review_ready_closed_are_distinct": True,
+                "evidence_status": "not_started",
+            },
+        },
         "side_effects": {
             "kanban_task_written": False,
             "executor_spawned": False,
@@ -240,6 +270,10 @@ def create_native_work(
         idempotency_key=task["idempotency_key"],
         skills=task["skills"] or None,
         public_id=task["public_id"],
+        review_phase=payload["authority"]["review_phase"],
+        routing_verdict=payload["authority"]["routing_verdict"],
+        admission_snapshot=payload["authority"]["admission_snapshot"],
+        closeout_evidence=payload["authority"]["closeout_evidence"],
     )
     payload.update(
         {

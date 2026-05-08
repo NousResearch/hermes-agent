@@ -242,7 +242,7 @@ def check_config(groq_key, eleven_key):
     if config_path.exists():
         try:
             import yaml
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
 
             stt_provider = cfg.get("stt", {}).get("provider", "local")

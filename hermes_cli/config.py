@@ -221,7 +221,7 @@ def get_container_exec_info() -> Optional[dict]:
 
     try:
         info = {}
-        with open(container_mode_file, "r") as f:
+        with open(container_mode_file, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
@@ -306,7 +306,7 @@ def _is_container() -> bool:
         return True
     # LXC / cgroup-based detection
     try:
-        with open("/proc/1/cgroup", "r") as f:
+        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
             cgroup_content = f.read()
         if "docker" in cgroup_content or "lxc" in cgroup_content or "kubepods" in cgroup_content:
             return True
@@ -3461,7 +3461,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         if not manifest_file.exists():
                             continue
                         try:
-                            with open(manifest_file) as _mf:
+                            with open(manifest_file, encoding="utf-8") as _mf:
                                 manifest = yaml.safe_load(_mf) or {}
                         except Exception:
                             manifest = {}

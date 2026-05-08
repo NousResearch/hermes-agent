@@ -1992,7 +1992,7 @@ def _snapshot_child_pids() -> set:
     # Linux: read from /proc
     try:
         children_path = f"/proc/{my_pid}/task/{my_pid}/children"
-        with open(children_path) as f:
+        with open(children_path, encoding="utf-8") as f:
             return {int(p) for p in f.read().split() if p.strip()}
     except (FileNotFoundError, OSError, ValueError):
         pass

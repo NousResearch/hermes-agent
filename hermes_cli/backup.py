@@ -573,7 +573,7 @@ def create_quick_snapshot(
         "total_size": sum(manifest.values()),
         "files": manifest,
     }
-    with open(snap_dir / "manifest.json", "w") as f:
+    with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
     # Auto-prune
@@ -599,7 +599,7 @@ def list_quick_snapshots(
         manifest_path = d / "manifest.json"
         if manifest_path.exists():
             try:
-                with open(manifest_path) as f:
+                with open(manifest_path, encoding="utf-8") as f:
                     results.append(json.load(f))
             except (json.JSONDecodeError, OSError):
                 results.append({"id": d.name, "file_count": 0, "total_size": 0})
@@ -629,7 +629,7 @@ def restore_quick_snapshot(
     if not manifest_path.exists():
         return False
 
-    with open(manifest_path) as f:
+    with open(manifest_path, encoding="utf-8") as f:
         meta = json.load(f)
 
     restored = 0

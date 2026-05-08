@@ -158,7 +158,7 @@ def _load_json_store(path: Path) -> dict:
     """Load a JSON file as a dict, returning ``{}`` on any error."""
     if path.exists():
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             pass
     return {}
@@ -167,7 +167,7 @@ def _load_json_store(path: Path) -> dict:
 def _save_json_store(path: Path, data: dict) -> None:
     """Write *data* as pretty-printed JSON to *path*."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def _file_mtime_key(host_path: str) -> tuple[float, int] | None:

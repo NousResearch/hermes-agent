@@ -526,7 +526,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # messages are preserved for troubleshooting.
             whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
             self._bridge_log = self._session_path.parent / "bridge.log"
-            bridge_log_fh = open(self._bridge_log, "a")
+            bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_log_fh = bridge_log_fh
 
             # Build bridge subprocess environment.
@@ -1170,7 +1170,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             if file_size > MAX_TEXT_INJECT_BYTES:
                                 print(f"[{self.name}] Skipping text injection for {doc_path} ({file_size} bytes > {MAX_TEXT_INJECT_BYTES})", flush=True)
                                 continue
-                            content = Path(doc_path).read_text(errors="replace")
+                            content = Path(doc_path).read_text(encoding="utf-8", errors="replace")
                             fname = Path(doc_path).name
                             # Remove the doc_<hex>_ prefix for display
                             display_name = fname

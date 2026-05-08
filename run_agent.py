@@ -3824,7 +3824,7 @@ class AIAgent:
                 pass
             review_agent = None
             try:
-                with open(os.devnull, "w") as _devnull, \
+                with open(os.devnull, "w", encoding="utf-8") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
                     # Inherit the parent agent's live runtime (provider, model,

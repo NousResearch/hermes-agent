@@ -692,7 +692,7 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     if not path.exists():
         return []
     try:
-        text = path.read_text(errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     lines = text.splitlines()

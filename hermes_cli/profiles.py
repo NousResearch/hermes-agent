@@ -395,7 +395,7 @@ def _read_config_model(profile_dir: Path) -> tuple:
         return None, None
     try:
         import yaml
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):

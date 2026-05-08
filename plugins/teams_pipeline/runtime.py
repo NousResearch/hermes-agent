@@ -111,9 +111,19 @@ def bind_gateway_runtime(gateway: Any) -> bool:
         error_message = str(exc)
         gateway._teams_pipeline_runtime_error = error_message
         logger.warning(
-            "Teams pipeline runtime unavailable; leaving webhook scheduler unchanged: %s",
+            "Teams pipeline runtime unavailable: %s. Installing a drop-scheduler "
+            "so Graph notifications ack cleanly without piling up unbound.",
             error_message,
         )
+
+        async def _drop(notification: dict[str, Any], event: Any) -> None:
+            logger.debug(
+                "Dropping Graph notification because runtime is unavailable: id=%s resource=%s",
+                notification.get("id"),
+                notification.get("resource"),
+            )
+
+        adapter.set_notification_scheduler(_drop)
         return False
 
     async def _schedule(notification: dict[str, Any], event: Any) -> None:

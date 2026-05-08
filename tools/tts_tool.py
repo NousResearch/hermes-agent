@@ -6,6 +6,8 @@ Built-in TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
+- OpenRouter TTS: OpenAI-compatible aggregator (OpenAI / Google / Mistral /
+  ... routed under one key), needs OPENROUTER_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
@@ -136,6 +138,13 @@ DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+# OpenRouter exposes OpenAI-compatible /v1/audio/speech, but routes the request
+# to the underlying provider implied by the model slug ("openai/...",
+# "google/...", "mistral/..."). The default below tracks the model OpenRouter
+# recommends for the OpenAI route as of the May 2026 audio API launch.
+DEFAULT_OPENROUTER_TTS_MODEL = "openai/gpt-4o-mini-tts-2025-12-15"
+DEFAULT_OPENROUTER_TTS_VOICE = "alloy"
+DEFAULT_OPENROUTER_TTS_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MINIMAX_MODEL = "speech-01"
 DEFAULT_MINIMAX_VOICE_ID = "female-shaonv"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.chat/v1/text_to_speech"
@@ -170,6 +179,7 @@ DEFAULT_OUTPUT_DIR = _get_default_output_dir()
 PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "edge": 5000,         # edge-tts practical sync limit
     "openai": 4096,       # https://platform.openai.com/docs/guides/text-to-speech
+    "openrouter": 4096,   # follows the underlying OpenAI cap; OR routes ride on it
     "xai": 15000,         # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
@@ -317,6 +327,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "edge",
     "elevenlabs",
     "openai",
+    "openrouter",
     "minimax",
     "xai",
     "mistral",
@@ -847,6 +858,59 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
         response = client.audio.speech.create(**create_kwargs)
 
+        response.stream_to_file(output_path)
+        return output_path
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+
+# ===========================================================================
+# Provider: OpenRouter TTS
+# ===========================================================================
+def _generate_openrouter_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using OpenRouter's /v1/audio/speech endpoint.
+
+    OpenRouter exposes the same JSON request shape as OpenAI's audio.speech
+    API, so we reuse the OpenAI client with a swapped base_url + key. The
+    underlying provider (OpenAI, Google, Mistral, ...) is selected by the
+    ``tts.openrouter.model`` slug.
+    """
+    api_key = (get_env_value("OPENROUTER_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "OPENROUTER_API_KEY not set. Get one at https://openrouter.ai/keys"
+        )
+
+    or_config = tts_config.get("openrouter", {})
+    model = str(or_config.get("model") or DEFAULT_OPENROUTER_TTS_MODEL).strip() \
+        or DEFAULT_OPENROUTER_TTS_MODEL
+    voice = str(or_config.get("voice") or DEFAULT_OPENROUTER_TTS_VOICE).strip() \
+        or DEFAULT_OPENROUTER_TTS_VOICE
+    base_url = str(
+        or_config.get("base_url")
+        or get_env_value("TTS_OPENROUTER_BASE_URL")
+        or DEFAULT_OPENROUTER_TTS_BASE_URL
+    ).strip() or DEFAULT_OPENROUTER_TTS_BASE_URL
+    speed = float(or_config.get("speed", tts_config.get("speed", 1.0)))
+
+    # OpenRouter's /v1/audio/speech accepts only `mp3` or `pcm` (per the
+    # May 2026 audio API launch). Telegram-bound `.ogg` outputs are converted
+    # downstream via ffmpeg, same path Edge TTS takes.
+    OpenAIClient = _import_openai_client()
+    client = OpenAIClient(api_key=api_key, base_url=base_url)
+    try:
+        create_kwargs = dict(
+            model=model,
+            voice=voice,
+            input=text,
+            response_format="mp3",
+            extra_headers={"x-idempotency-key": str(uuid.uuid4())},
+        )
+        if speed != 1.0:
+            create_kwargs["speed"] = max(0.25, min(4.0, speed))
+        response = client.audio.speech.create(**create_kwargs)
         response.stream_to_file(output_path)
         return output_path
     finally:
@@ -1641,6 +1705,17 @@ def text_to_speech_tool(
             logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config)
 
+        elif provider == "openrouter":
+            try:
+                _import_openai_client()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "OpenRouter provider selected but 'openai' package not installed (OpenRouter reuses the OpenAI client with a swapped base_url)."
+                }, ensure_ascii=False)
+            logger.info("Generating speech with OpenRouter TTS...")
+            _generate_openrouter_tts(text, file_str, tts_config)
+
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
@@ -1750,7 +1825,7 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in ("edge", "neutts", "minimax", "xai", "kittentts", "piper") and not file_str.endswith(".ogg"):
+        elif provider in ("edge", "openrouter", "neutts", "minimax", "xai", "kittentts", "piper") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path

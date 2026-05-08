@@ -14,13 +14,14 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with ten providers:
+Convert text to speech with eleven providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
 | **Edge TTS** (default) | Good | Free | None needed |
 | **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
 | **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
+| **OpenRouter TTS** | Good | Paid | `OPENROUTER_API_KEY` |
 | **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` |
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
@@ -43,7 +44,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "openrouter" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -56,6 +57,14 @@ tts:
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
     speed: 1.0                  # 0.25 - 4.0
+  openrouter:
+    # OpenAI-compatible aggregator: same JSON shape, OPENROUTER_API_KEY auth.
+    # The model slug picks the underlying provider (openai/google/mistral/...).
+    # Discoverable via Models API with output_modalities=audio.
+    model: "openai/gpt-4o-mini-tts-2025-12-15"
+    voice: "alloy"
+    speed: 1.0                  # 0.25 - 4.0
+    # base_url: "https://openrouter.ai/api/v1"  # override for self-hosted/proxy
   minimax:
     model: "speech-2.8-hd"     # speech-2.8-hd (default), speech-2.8-turbo
     voice_id: "English_Graceful_Lady"  # See https://platform.minimax.io/faq/system-voice-id
@@ -106,6 +115,7 @@ Each provider has a documented per-request input-character cap. Hermes truncates
 |----------|---------------------|
 | Edge TTS | 5000 |
 | OpenAI | 4096 |
+| OpenRouter | 4096 |
 | xAI | 15000 |
 | MiniMax | 10000 |
 | Mistral | 4000 |

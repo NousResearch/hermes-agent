@@ -885,19 +885,19 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             id: The approval ID from permissions_list_open
             decision: One of "allow-once", "allow-always", or "deny"
         """
-        id, error = _require_str(id, "id")
+        approval_id, error = _require_str(id, "id")
         if error:
             return json.dumps({"error": error})
-        decision, error = _require_str(decision, "decision")
+        decision_value, error = _require_str(decision, "decision")
         if error:
             return json.dumps({"error": error})
-        if decision not in {"allow-once", "allow-always", "deny"}:
+        if decision_value not in {"allow-once", "allow-always", "deny"}:
             return json.dumps({
-                "error": f"Invalid decision: {decision}. "
+                "error": f"Invalid decision: {decision_value}. "
                          f"Must be allow-once, allow-always, or deny"
             })
 
-        result = bridge.respond_to_approval(id, decision)
+        result = bridge.respond_to_approval(approval_id, decision_value)
         return json.dumps(result, indent=2)
 
     return mcp

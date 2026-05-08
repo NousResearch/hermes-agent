@@ -657,6 +657,10 @@ platform_toolsets:
 # platforms:
 #   telegram:
 #     reply_to_mode: "first"  # off | first | all
+#     # guest_mode lets explicit @mentions from non-allowlisted groups through.
+#     # Default false; ordinary messages, replies, and regex wake words stay blocked.
+#     guest_mode: false
+#     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 

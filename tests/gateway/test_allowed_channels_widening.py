@@ -23,10 +23,10 @@ from gateway.config import Platform, PlatformConfig
 # Telegram
 # ---------------------------------------------------------------------------
 
-def _make_telegram_adapter(*, allowed_chats=None, require_mention=None):
+def _make_telegram_adapter(*, allowed_chats=None, require_mention=None, guest_mode=False):
     from gateway.platforms.telegram import TelegramAdapter
 
-    extra = {}
+    extra = {"guest_mode": guest_mode}
     if allowed_chats is not None:
         extra["allowed_chats"] = allowed_chats
     if require_mention is not None:

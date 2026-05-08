@@ -613,14 +613,24 @@ function Install-Repository {
         # directory OR a symlink OR a submodule-style gitfile — and also when
         # it's a broken stub left over from a failed previous install (e.g.
         # a partial Remove-Item that couldn't delete a locked index.lock).
-        # Validate the repo properly by asking git itself.  If git can't see
-        # it as a real repo, fall through to the clone-or-zip path.
+        # Validate the repo properly by asking git itself.  Two checks
+        # belt-and-braces: rev-parse AND git status.  If either fails the
+        # repo is broken and we fall through to a fresh clone.
         $repoValid = $false
         if (Test-Path "$InstallDir\.git") {
             Push-Location $InstallDir
             try {
-                $null = git -c windows.appendAtomically=false rev-parse --is-inside-work-tree 2>$null
-                if ($LASTEXITCODE -eq 0) {
+                # Reset $LASTEXITCODE before the probe so we don't pick up
+                # a stale 0 from an earlier git call in this session.
+                $global:LASTEXITCODE = 0
+                $revParseOut = & git -c windows.appendAtomically=false rev-parse --is-inside-work-tree 2>&1
+                $revParseOk = ($LASTEXITCODE -eq 0) -and ($revParseOut -match "true")
+
+                $global:LASTEXITCODE = 0
+                $null = & git -c windows.appendAtomically=false status --short 2>&1
+                $statusOk = ($LASTEXITCODE -eq 0)
+
+                if ($revParseOk -and $statusOk) {
                     $repoValid = $true
                 }
             } catch {}
@@ -1179,7 +1189,25 @@ function Write-Completion {
 
 function Main {
     Write-Banner
-    
+
+    # Windows refuses to delete a directory any shell is currently cd'd
+    # inside — and silently leaves orphan files behind, which then wedge
+    # "is this a valid git repo" probes on re-install.  If the current
+    # working dir is under $InstallDir, step out to the user's home
+    # BEFORE doing anything else.  Harmless when the user ran the
+    # installer from somewhere else.
+    try {
+        $currentResolved = (Get-Location).ProviderPath
+        $installResolved = $null
+        if (Test-Path $InstallDir) {
+            $installResolved = (Resolve-Path $InstallDir -ErrorAction SilentlyContinue).ProviderPath
+        }
+        if ($installResolved -and $currentResolved.ToLower().StartsWith($installResolved.ToLower())) {
+            Write-Info "Stepping out of $InstallDir so Windows can replace files there if needed..."
+            Set-Location $env:USERPROFILE
+        }
+    } catch {}
+
     if (-not (Install-Uv)) { throw "uv installation failed — cannot continue" }
     if (-not (Test-Python)) { throw "Python $PythonVersion not available — cannot continue" }
     if (-not (Install-Git)) { throw "Git not available and auto-install failed — install from https://git-scm.com/download/win then re-run" }
@@ -1189,7 +1217,7 @@ function Main {
     # console between the "Node found" line and the next installer step.
     [void](Test-Node)
     Install-SystemPackages  # ripgrep + ffmpeg in one step
-    
+
     Install-Repository
     Install-Venv
     Install-Dependencies
@@ -1198,7 +1226,7 @@ function Main {
     Copy-ConfigTemplates
     Invoke-SetupWizard
     Start-GatewayIfConfigured
-    
+
     Write-Completion
 }
 

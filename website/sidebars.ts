@@ -181,6 +181,7 @@ const sidebars: SidebarsConfig = {
         'guides/migrate-from-openclaw',
         'guides/aws-bedrock',
         'guides/azure-foundry',
+        'guides/microsoft-graph-app-registration',
       ],
     },
     {

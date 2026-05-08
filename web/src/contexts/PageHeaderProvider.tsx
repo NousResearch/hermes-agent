@@ -47,7 +47,7 @@ export function PageHeaderProvider({
 
   return (
     <PageHeaderContext.Provider value={value}>
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-visible">
         <header
           className={cn(
             "z-1 w-full shrink-0",
@@ -94,8 +94,8 @@ export function PageHeaderProvider({
           className={cn(
             "min-h-0 w-full min-w-0 flex-1 flex flex-col",
             isChatRoute
-              ? "overflow-hidden"
-              : "overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",
+              ? "overflow-visible"
+              : "overflow-y-auto overflow-x-auto [scrollbar-gutter:stable]",
           )}
         >
           {children}

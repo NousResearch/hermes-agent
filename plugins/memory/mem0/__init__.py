@@ -423,11 +423,18 @@ class Mem0MemoryProvider(MemoryProvider):
                 kwargs = {"api_key": self._api_key}
                 if host and self._is_self_hosted(host):
                     kwargs["host"] = host
-                    # Also pass org_id/project_id if configured
-                    for key in ("org_id", "project_id"):
-                        val = self._config.get(key, "")
-                        if val:
-                            kwargs[key] = val
+                    # SDK 2.0.2+ removed org_id/project_id from MemoryClient constructor
+                    # (moved to Project class). Only pass them for SDK < 2.0.2.
+                    try:
+                        import inspect
+                        sig = inspect.signature(MemoryClient.__init__)
+                        if "org_id" in sig.parameters:
+                            for key in ("org_id", "project_id"):
+                                val = self._config.get(key, "")
+                                if val:
+                                    kwargs[key] = val
+                    except Exception:
+                        pass
                     logger.info("Mem0: using self-hosted API at %s", host)
                 self._client = MemoryClient(**kwargs)
                 return self._client

@@ -19,6 +19,67 @@ logger = logging.getLogger(__name__)
 FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
+
+def _as_bool(value) -> bool:
+    """Parse common config boolean forms without importing setup helpers."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _auto_title_enabled() -> bool:
+    """Return whether optional background title generation should run.
+
+    Minimal installs are intended to be chat-first and quiet by default. Title
+    generation is nice-to-have auxiliary work, and in a minimal Codex-backed
+    install it can surface noisy 30s timeout warnings after the first reply.
+
+    Preserve existing users by only applying the minimal default when the raw
+    config explicitly says ``install_option: minimal`` (or no config exists at
+    all, where the default install option is minimal). Legacy configs without
+    an on-disk ``install_option`` keep the historical enabled-by-default
+    behavior even though ``load_config()`` deep-merges the new default.
+    """
+    try:
+        from hermes_cli.config import get_config_path, load_config, read_raw_config
+
+        raw = read_raw_config()
+        if not isinstance(raw, dict):
+            raw = {}
+        raw_aux = raw.get("auxiliary") if isinstance(raw.get("auxiliary"), dict) else {}
+        raw_title = (
+            raw_aux.get("title_generation")
+            if isinstance(raw_aux.get("title_generation"), dict)
+            else {}
+        )
+        if "enabled" in raw_title:
+            return _as_bool(raw_title.get("enabled"))
+
+        raw_install_option = str(raw.get("install_option", "") or "").strip().lower()
+        if raw_install_option == "minimal":
+            return False
+
+        config_exists = False
+        try:
+            config_exists = bool(get_config_path().exists())
+        except Exception:
+            config_exists = bool(raw)
+
+        if not config_exists:
+            config = load_config()
+            install_option = str(config.get("install_option", "") or "").strip().lower()
+            if install_option == "minimal":
+                return False
+
+        # Legacy configs and standard/full install options retain the old
+        # behavior unless the user explicitly sets auxiliary.title_generation.enabled.
+        return True
+    except Exception:
+        logger.debug("Failed to read auto-title config; leaving enabled", exc_info=True)
+        return True
+
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
     "following exchange. The title should capture the main topic or intent. "
@@ -147,6 +208,10 @@ def maybe_auto_title(
     - No title is already set
     """
     if not session_db or not session_id or not user_message or not assistant_response:
+        return
+
+    if not _auto_title_enabled():
+        logger.debug("Skipping auto-title generation because it is disabled by config")
         return
 
     # Count user messages in history to detect first exchange.

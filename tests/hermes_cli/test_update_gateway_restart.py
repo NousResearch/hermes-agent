@@ -431,8 +431,11 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
-        # Graceful drain succeeded — no SIGTERM fallback needed.
-        kill.assert_not_called()
+        # The post-restart survivor sweep runs unconditionally and sends SIGKILL
+        # to PIDs that ignored SIGTERM.  The gateway may not have exited yet
+        # (e.g. drain still in progress), so the SIGKILL is expected.
+        sigkill_calls = [c for c in kill.call_args_list if c.args[1].value == 9]
+        assert len(sigkill_calls) == 1, f"Expected 1 SIGKILL from survivor sweep, got {kill.call_args_list}"
         assert "Restarting manual gateway profile(s): coder" in captured
         assert "Restart manually: hermes gateway run" not in captured
 
@@ -473,8 +476,12 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
-        # Graceful drain returned False → SIGTERM fallback.
-        kill.assert_called_once()
+        # Graceful drain returned False → SIGTERM fallback.  The post-restart
+        # survivor sweep (3s sleep + SIGKILL to any gateway that ignored SIGTERM)
+        # runs unconditionally after all graceful paths; the SIGKILL is expected
+        # in addition to the SIGTERM.
+        sigterm_calls = [c for c in kill.call_args_list if c.args[1].value == 15]
+        assert len(sigterm_calls) == 1, f"Expected 1 SIGTERM call, got {kill.call_args_list}"
         assert "Restarting manual gateway profile(s): coder" in captured
 
     @patch("shutil.which", return_value=None)
@@ -905,9 +912,13 @@ class TestServicePidExclusion:
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured
-        # Manual PID should be killed
-        manual_kills = [c for c in mock_kill.call_args_list if c.args[0] == MANUAL_PID]
-        assert len(manual_kills) == 1
+        # Manual PID receives SIGTERM first; if still alive after the survivor
+        # sweep's 3s wait, it also receives SIGKILL.  Only verify SIGTERM here.
+        manual_sigterm = [
+            c for c in mock_kill.call_args_list
+            if c.args[0] == MANUAL_PID and c.args[1].value == 15
+        ]
+        assert len(manual_sigterm) == 1, f"Expected 1 SIGTERM for manual PID, got {mock_kill.call_args_list}"
         # Service PID should NOT be killed
         service_kills = [c for c in mock_kill.call_args_list if c.args[0] == SERVICE_PID]
         assert len(service_kills) == 0

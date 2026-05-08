@@ -448,14 +448,17 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
 
 @pytest.mark.asyncio
 async def test_discord_free_channel_skips_auto_thread(adapter, monkeypatch):
-    """Free-response channels must NOT auto-create threads — bot replies inline.
+    """Free-response channels bypass @mention requirement and — if
+    DISCORD_NO_THREAD_CHANNELS is set for that channel — skip auto-threading.
 
-    Without this, every message in a free-response channel would spin off a
-    thread (since the channel bypasses the @mention gate), defeating the
-    lightweight-chat purpose of free-response mode.
+    Issue #ad4542bf6 changed free-response channels so auto_thread still
+    applies there by default (previously it was unconditionally skipped).
+    The skip is now opt-in via DISCORD_NO_THREAD_CHANNELS, consistent with
+    the no_thread_channels config.
     """
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "789")  # opt-out of auto-thread
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
 
     adapter._auto_create_thread = AsyncMock()
@@ -467,6 +470,7 @@ async def test_discord_free_channel_skips_auto_thread(adapter, monkeypatch):
 
     await adapter._handle_message(message)
 
+    # NO_THREAD_CHANNELS=789 → no auto-thread; bot replies inline instead.
     adapter._auto_create_thread.assert_not_awaited()
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]

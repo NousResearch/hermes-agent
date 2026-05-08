@@ -88,7 +88,7 @@ class TestBedrockContext1MBeta:
         from agent.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-7",
+            model="claude-opus-4-6",
             messages=[{"role": "user", "content": "hi"}],
             tools=None,
             max_tokens=1024,

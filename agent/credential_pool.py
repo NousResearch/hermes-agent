@@ -1407,7 +1407,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     # changes to the .env file.
     def _get_env_prefer_dotenv(key: str) -> str:
         env_file = load_env()
-        val = env_file.get(key) or os.environ.get(key) or ""
+        val = os.environ.get(key) or env_file.get(key) or ""
         return val.strip()
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an

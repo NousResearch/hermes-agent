@@ -301,7 +301,7 @@ class TestProviderPersistsAfterModelSave:
             lambda api_key=None, base_url=None, timeout=5.0: ["publisher/model-a"],
         )
 
-        with patch("builtins.input", side_effect=[""]):
+        with patch("builtins.input", side_effect=["k", ""]):
             _model_flow_api_key_provider(load_config(), "lmstudio", "old-model")
 
         import yaml
@@ -403,6 +403,8 @@ class TestBaseUrlValidation:
             return_value="step-3-agent-lite",
         ), patch(
             "hermes_cli.auth.deactivate_provider",
+        ), patch(
+            "builtins.input", return_value="k",
         ):
             _model_flow_stepfun(load_config(), "old-model")
 

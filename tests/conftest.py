@@ -427,6 +427,16 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # --- tools.skill_provenance — ContextVar<str> for write origin ---
+    # _write_origin defaults to "foreground". If set by a prior test (e.g.
+    # test_set_and_get_origin) and not reset, the next test sees the stale
+    # value and test_default_origin_is_foreground fails.
+    try:
+        from tools import skill_provenance as _sp_mod
+        _sp_mod._write_origin.set("foreground")
+    except Exception:
+        pass
+
     # --- tools.file_tools — per-task read history + file-ops cache ---
     # _read_tracker accumulates per-task_id read history for loop detection,
     # capped by _READ_HISTORY_CAP. If entries from a prior test persist, the

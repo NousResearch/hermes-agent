@@ -155,7 +155,12 @@ def is_lycus_command() -> bool:
 
 
 def get_dynamic_greeting() -> str:
-    """Generate a dynamic greeting for Lycus with time and weather context."""
+    """Generate a greeting prompt for Lycus with time and weather context.
+
+    This returns a prompt that is sent to the LLM to generate a unique greeting
+    for each session. The LLM receives the current time, weather, and personality
+    template and crafts a personalized greeting.
+    """
     try:
         from agent.prompt_builder import get_lycus_agent_name
         name = get_lycus_agent_name()
@@ -168,32 +173,28 @@ def get_dynamic_greeting() -> str:
         now = datetime.now()
         hour = now.hour
 
-        # Time of day greeting
+        # Time of day
         if 5 <= hour < 12:
             time_of_day = "early in the morning"
-            greeting = "Good morning"
         elif 12 <= hour < 17:
             time_of_day = "the middle of the day"
-            greeting = "Good afternoon"
         elif 17 <= hour < 21:
             time_of_day = "late in the evening"
-            greeting = "Good evening"
         else:
             time_of_day = "late at night"
-            greeting = "Good evening"
 
         time_str = now.strftime("%I:%M %p")
+        date_str = now.strftime("%A, %B %d, %Y")
     except Exception:
         time_of_day = "some time"
-        greeting = "Hello"
         time_str = "now"
+        date_str = "today"
 
-    # Get weather and location
+    # Get location from IP
     try:
         import urllib.request
         import json
 
-        # Get location from IP
         with urllib.request.urlopen('https://ipapi.co/json/', timeout=5) as resp:
             geo_data = json.loads(resp.read())
             city = geo_data.get('city', 'your area')
@@ -209,7 +210,6 @@ def get_dynamic_greeting() -> str:
         import urllib.request
         import json
 
-        # Use wttr.in for simple weather (no API key needed)
         with urllib.request.urlopen(f'https://wttr.in/{city}?format=j1', timeout=5) as resp:
             weather_data = json.loads(resp.read())
             current = weather_data.get('current_condition', [{}])[0]
@@ -237,24 +237,21 @@ def get_dynamic_greeting() -> str:
     except Exception:
         template = ""
 
-    # Generate greeting from template
-    if template:
-        try:
-            greeting_text = template.format(
-                name=name,
-                greeting=greeting,
-                time=time_str,
-                weather=weather_str,
-                temperature=f"{temp_f}°F",
-                location=location,
-                time_of_day=time_of_day
-            )
-            return greeting_text.strip()
-        except Exception:
-            pass
+    # Build the prompt that will be sent to the LLM
+    prompt = f"""I just started a new session. Please greet me warmly and uniquely.
 
-    # Fallback greeting
-    return f"Hello Friend! This is {name} reporting for duty. I see it's {time_of_day} and {weather_str} outside {location}. How can I help you out today?"
+Context:
+- My name is {name}
+- It's currently {time_str} ({time_of_day}) on {date_str}
+- The weather outside {location} is: {weather_str}
+"""
+    if template:
+        prompt += f"""- My personality/style guide:
+{template}
+"""
+    prompt += """Based on this context, give me a warm, unique greeting. Be creative and natural — don't sound robotic. Keep it to 1-3 sentences. After greeting me, briefly ask what I'd like to work on."""
+
+    return prompt.strip()
 
 
 # -------------------------------------------------------------------------

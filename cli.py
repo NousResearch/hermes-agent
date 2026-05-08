@@ -12690,16 +12690,6 @@ class HermesCLI:
             self._startup_skills_line_shown = True
         self._console_print()
 
-        # First-run agent greeting — only shown when invoked as 'lycus'
-        # The agent introduces itself by name via an auto-prompt with dynamic context.
-        try:
-            from agent.onboarding import get_dynamic_greeting, is_lycus_command
-            if is_lycus_command():
-                _greeting = get_dynamic_greeting()
-                self._console_print(f"[bold {_welcome_color}]{_greeting}[/]")
-        except Exception:
-            pass  # greeting is non-critical — never break startup
-
         # State for async operation
         self._agent_running = False
         self._pending_input = queue.Queue()     # For normal input (commands + new queries)
@@ -12709,6 +12699,16 @@ class HermesCLI:
         self._last_turn_interrupted = False
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+
+        # First-run agent greeting — only shown when invoked as 'lycus'
+        # The greeting prompt is queued through _pending_input so the LLM generates it.
+        try:
+            from agent.onboarding import get_dynamic_greeting, is_lycus_command
+            if is_lycus_command():
+                _greeting = get_dynamic_greeting()
+                self._pending_input.put(_greeting)
+        except Exception:
+            pass  # greeting is non-critical — never break startup
 
         # Give plugin manager a CLI reference so plugins can inject messages
         from hermes_cli.plugins import get_plugin_manager

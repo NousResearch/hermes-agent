@@ -5915,6 +5915,43 @@ class HermesCLI:
             print("  Usage: /personality <name>")
             print()
     
+    def _handle_b00t_command(self, cmd: str):
+        """Handle /b00t command — route to b00t-cli for execution."""
+        import shlex, subprocess, textwrap
+
+        # Strip command prefix, get args
+        parts = shlex.split(cmd)
+        # parts[0] is "/b00t" or "b00t"
+        b00t_args = parts[1:] if len(parts) > 1 else ["--help"]
+
+        # Check b00t-cli exists
+        b00t_bin = shutil.which("b00t-cli") or shutil.which("b00t")
+        if not b00t_bin:
+            print("🥾 b00t-cli not found in PATH")
+            print("  Install: cd ~/.b00t && just install")
+            print("  Or:     cargo install --path ~/.b00t/b00t-cli --force")
+            return
+
+        try:
+            result = subprocess.run(
+                [b00t_bin] + b00t_args,
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.stdout:
+                # Strip trailing whitespace, present cleanly
+                out = result.stdout.rstrip()
+                _cprint(_rich_text_from_ansi(out))
+            if result.stderr:
+                err = result.stderr.rstrip()
+                if err:
+                    _cprint(f"[dim]{err}[/]")
+            if result.returncode != 0:
+                _cprint(f"[bold red]🥾 b00t exited {result.returncode}[/]")
+        except subprocess.TimeoutExpired:
+            _cprint("[bold red]🥾 b00t command timed out (30s)[/]")
+        except Exception as e:
+            _cprint(f"[bold red]🥾 b00t error: {e}[/]")
+
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         import shlex
@@ -6521,6 +6558,11 @@ class HermesCLI:
                         print(f"  {status} {p['name']}{version}{detail}{error}")
             except Exception as e:
                 print(f"Plugin system error: {e}")
+        elif canonical == "b00t":
+            self._handle_b00t_command(cmd_original)
+        elif canonical == "hive":
+            # /hive is an alias for /b00t hive
+            self._handle_b00t_command(f"/b00t hive {cmd_original.split(None, 1)[1] if len(cmd_original.split(None, 1)) > 1 else ''}".strip())
         elif canonical == "rollback":
             self._handle_rollback_command(cmd_original)
         elif canonical == "snapshot":

@@ -175,6 +175,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 
+    # b00t Integration (PromptExecution fork)
+    CommandDef("b00t", "Run a b00t command (hive, grok, learn, task, etc.)", "b00t",
+               cli_only=True, args_hint="<command> [args...]"),
+    CommandDef("hive", "Alias for b00t hive — system state CMDB", "b00t",
+               cli_only=True, args_hint="[status|list|plan|activate|peers]"),
+
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),

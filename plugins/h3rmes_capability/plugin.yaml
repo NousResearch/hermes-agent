@@ -1,0 +1,9 @@
+name: h3rmes-capability
+version: 1.0.0
+description: "h3rmes capability monitor — detects missing subsystems (irontology-mcp, codebase-memory) on session start and dispatches operator sub-agents to auto-remediate. Self-healing CMDB for h3rmes."
+author: PromptExecution
+kind: hook
+platforms:
+  - linux
+hooks:
+  - on_session_start

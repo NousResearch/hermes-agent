@@ -159,11 +159,22 @@ This method requires **Public Bot** to be set to **ON** in Step 2. If you set Pu
 :::
 
 1. In the left sidebar, click **Installation**.
-2. Under **Installation Contexts**, enable **Guild Install**.
+2. Under **Installation Contexts**, enable **Guild Install**. If you want slash commands to work in DMs too, also enable **User Install**.
 3. For **Install Link**, select **Discord Provided Link**.
 4. Under **Default Install Settings** for Guild Install:
    - **Scopes**: select `bot` and `applications.commands`
    - **Permissions**: select the permissions listed below.
+
+::::warning[Guild Install and User Install are separate]
+Discord treats **Guild Install** and **User Install** as separate authorizations. Checking both boxes only declares that your app supports both contexts; it does not install both.
+
+If you enable both contexts, open the Discord-provided link twice:
+
+1. Complete the **Guild Install** flow and choose your server.
+2. Open the same link again and complete the **User Install** flow by choosing **Add to My Apps**.
+
+If only one context is authorized, slash commands may appear in autocomplete but fail with **Unknown integration** in the other context.
+::::
 
 ### Option B: Manual URL
 
@@ -209,6 +220,12 @@ You need the **Manage Server** permission on the Discord server to invite a bot.
 :::
 
 After authorizing, the bot will appear in your server's member list (it will show as offline until you start the Hermes gateway).
+
+::::important[Turn Public Bot back off]
+If you temporarily enabled **Public Bot** to use Discord's provided install link, return to **Developer Portal → Bot → Authorization Flow** after installing and set **Public Bot** back to **OFF**.
+
+Existing guild/user installs keep working when Public Bot is disabled. Leaving it on allows anyone with the application ID to install your bot to their own server or account, even though Hermes still enforces your allowlist before responding.
+::::
 
 ## Step 7: Find Your Discord User ID
 

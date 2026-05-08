@@ -2189,8 +2189,12 @@ class DiscordAdapter(BasePlatformAdapter):
         has_roles = bool(allowed_roles)
         if not has_users and not has_roles:
             return True
-        # Check user ID allowlist (works for both DMs and guild messages)
-        if has_users and user_id in allowed_users:
+        # Check user ID allowlist (works for both DMs and guild messages).
+        # ``"*"`` is honored as an open-mode wildcard, mirroring
+        # ``SIGNAL_ALLOWED_USERS`` (signal.py:199-201) and the existing
+        # ``DISCORD_ALLOWED_CHANNELS`` / ``DISCORD_IGNORED_CHANNELS`` /
+        # ``DISCORD_FREE_RESPONSE_CHANNELS`` semantics.
+        if has_users and ("*" in allowed_users or user_id in allowed_users):
             return True
         # Role allowlist is only consulted when configured.
         if not has_roles:

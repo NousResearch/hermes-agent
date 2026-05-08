@@ -138,6 +138,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/qqbot',
         'user-guide/messaging/yuanbao',
         'user-guide/messaging/teams',
+        'user-guide/messaging/teams-meetings',
         'user-guide/messaging/msgraph-webhook',
         'user-guide/messaging/open-webui',
         'user-guide/messaging/webhooks',
@@ -185,6 +186,7 @@ const sidebars: SidebarsConfig = {
         'guides/aws-bedrock',
         'guides/azure-foundry',
         'guides/microsoft-graph-app-registration',
+        'guides/operate-teams-meeting-pipeline',
       ],
     },
     {

@@ -100,6 +100,40 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesAndRunsVibrationRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        HermesAutomationStore(context).clear()
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_vibration_task",
+                org.json.JSONObject()
+                    .put("id", "auto-vibration")
+                    .put("vibration_pattern_ms", org.json.JSONArray(listOf(0, 15, 20, 25))),
+            ),
+        )
+
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        assertEquals(ACTION_TYPE_VIBRATION_ACTION, automation.getString("action_type"))
+        val command = org.json.JSONObject(automation.getString("command"))
+        assertEquals(60, command.getLong("duration_ms"))
+        assertEquals(4, command.getJSONArray("pattern_ms").length())
+
+        val run = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run",
+                org.json.JSONObject().put("id", "auto-vibration"),
+            ),
+        )
+        assertTrue(run.toString(), run.getBoolean("success"))
+        assertEquals("vibrate", run.getJSONObject("result").getString("action"))
+        assertEquals(60, run.getJSONObject("result").getLong("duration_ms"))
+    }
+
+    @Test
     fun bridgeCreatesPhoneStateTriggerRecords() {
         val context = RuntimeEnvironment.getApplication()
         HermesAutomationStore(context).clear()
@@ -1106,20 +1140,28 @@ class HermesAutomationStoreTest {
                   <Int sr="arg1" val="0"/>
                 </Action>
                 <Action sr="act1" ve="7">
+                  <code>61</code>
+                  <Int sr="arg0" val="30"/>
+                </Action>
+                <Action sr="act2" ve="7">
+                  <code>62</code>
+                  <Str sr="arg0" ve="3">0,10,20,30</Str>
+                </Action>
+                <Action sr="act3" ve="7">
                   <code>410</code>
                   <Str sr="arg0" ve="3">tasker-import.txt</Str>
                   <Str sr="arg1" ve="3">Tasker says %MESSAGE</Str>
                   <Int sr="arg2" val="1"/>
                 </Action>
-                <Action sr="act2" ve="7">
+                <Action sr="act4" ve="7">
                   <code>104</code>
                   <Str sr="arg0" ve="3">https://nousresearch.com/</Str>
                 </Action>
-                <Action sr="act3" ve="7">
+                <Action sr="act5" ve="7">
                   <code>105</code>
                   <Str sr="arg0" ve="3">Copy %MESSAGE</Str>
                 </Action>
-                <Action sr="act4" ve="7">
+                <Action sr="act6" ve="7">
                   <code>9999</code>
                 </Action>
               </Task>
@@ -1142,15 +1184,16 @@ class HermesAutomationStoreTest {
         assertTrue(imported.toString(), imported.getBoolean("success"))
         assertEquals("tasker_xml", imported.getString("source"))
         assertEquals(1, imported.getInt("tasker_task_count"))
-        assertEquals(4, imported.getInt("tasker_imported_action_count"))
+        assertEquals(6, imported.getInt("tasker_imported_action_count"))
         assertEquals(1, imported.getJSONArray("tasker_skipped_actions").length())
-        assertEquals(4, imported.getInt("imported_automation_count"))
+        assertEquals(6, imported.getInt("imported_automation_count"))
         assertEquals("hello", store.getVariable("MESSAGE"))
 
         val records = store.list()
         assertTrue(records.any { it.actionType == ACTION_TYPE_SHELL && it.command == "printf tasker-shell-ok" })
         assertTrue(records.any { it.actionType == ACTION_TYPE_INTENT && it.command.contains("nousresearch.com") })
         assertTrue(records.any { it.actionType == ACTION_TYPE_CLIPBOARD_ACTION && it.command.contains("Copy %MESSAGE") })
+        assertTrue(records.any { it.actionType == ACTION_TYPE_VIBRATION_ACTION && it.command.contains("pattern_ms") })
         assertTrue(records.none { it.enabled })
 
         val fileRecord = records.first { it.actionType == ACTION_TYPE_FILE_WRITE }

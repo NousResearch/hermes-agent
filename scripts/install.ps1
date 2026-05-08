@@ -903,13 +903,21 @@ function Copy-ConfigTemplates {
         Write-Info "~/.hermes/config.yaml already exists, keeping it"
     }
     
-    # Create SOUL.md if it doesn't exist (global persona file)
+    # Create SOUL.md if it doesn't exist (global persona file).
+    # IMPORTANT: write without a BOM.  Windows PowerShell 5.1's
+    # ``Set-Content -Encoding UTF8`` writes UTF-8 WITH a byte-order-mark
+    # (the default PS5 behaviour), and Hermes's prompt-injection scanner
+    # flags the BOM as an invisible unicode character and refuses to
+    # load the file.  PS7's ``-Encoding utf8NoBOM`` fixes that but we
+    # don't control which PowerShell version the user has.  Go direct
+    # to .NET with an explicit UTF8Encoding($false) — BOM-free on every
+    # PowerShell version.
     $soulPath = "$HermesHome\SOUL.md"
     if (-not (Test-Path $soulPath)) {
-        @"
+        $soulContent = @"
 # Hermes Agent Persona
 
-<!-- 
+<!--
 This file defines the agent's personality and tone.
 The agent will embody whatever you write here.
 Edit this to customize how Hermes communicates with you.
@@ -922,7 +930,9 @@ Examples:
 This file is loaded fresh each message -- no restart needed.
 Delete the contents (or this file) to use the default personality.
 -->
-"@ | Set-Content -Path $soulPath -Encoding UTF8
+"@
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($soulPath, $soulContent, $utf8NoBom)
         Write-Success "Created ~/.hermes/SOUL.md (edit to customize personality)"
     }
     
@@ -964,83 +974,64 @@ function Install-NodeDeps {
     }
     $npmExe = $npmCmd.Source
 
-    Push-Location $InstallDir
-
-    if (Test-Path "package.json") {
-        Write-Info "Installing Node.js dependencies (browser tools)..."
-        # Use Start-Process so we can capture the real exit code.  PowerShell's
-        # try/catch doesn't trigger on npm's non-zero exit — only on an unhandled
-        # .NET exception (e.g. npm.cmd missing).  Capturing stderr to a file
-        # lets us surface the actual failure reason instead of a generic
-        # "npm install failed" that hides what went wrong.
-        $browserLog = "$env:TEMP\hermes-npm-browser-$(Get-Random).log"
+    # Helper: run "npm install" in a given directory and surface the real
+    # error when it fails.  Returns $true on success.
+    #
+    # Implementation note: ``Start-Process -FilePath npm.cmd`` fails with
+    # ``%1 is not a valid Win32 application`` on some PowerShell versions
+    # because Start-Process bypasses cmd.exe / PATHEXT and expects a real
+    # PE file.  The invocation-operator ``& $npmExe`` routes through the
+    # PowerShell command pipeline which DOES honour .cmd batch shims, so
+    # it works uniformly for npm.cmd, npx.cmd, and bare .exe files.
+    function _Run-NpmInstall([string]$label, [string]$installDir, [string]$logPath, [string]$npmPath) {
+        Push-Location $installDir
         try {
-            $proc = Start-Process -FilePath $npmExe `
-                -ArgumentList "install", "--silent" `
-                -NoNewWindow -Wait -PassThru `
-                -RedirectStandardOutput "NUL" `
-                -RedirectStandardError $browserLog
-            if ($proc.ExitCode -eq 0) {
-                Write-Success "Node.js dependencies installed"
-                Remove-Item -Force $browserLog -ErrorAction SilentlyContinue
-            } else {
-                Write-Warn "npm install failed (browser tools may not work) — exit code $($proc.ExitCode)"
-                if (Test-Path $browserLog) {
-                    $errText = (Get-Content $browserLog -Raw -ErrorAction SilentlyContinue)
-                    if ($errText) {
-                        # Show first ~800 chars — enough to see the real cause.
-                        $snippet = if ($errText.Length -gt 800) { $errText.Substring(0, 800) + "..." } else { $errText }
-                        Write-Info "  npm stderr:"
-                        foreach ($line in $snippet -split "`n") {
-                            Write-Host "    $line" -ForegroundColor DarkGray
-                        }
-                        Write-Info "  Full log: $browserLog"
-                    }
-                }
-                Write-Info "Run manually later: cd `"$InstallDir`"; npm install"
+            # Redirect ALL output streams to the log file via 2>&1 and then
+            # ``Tee-Object`` / ``Out-File``.  Simpler approach: call npm
+            # with output redirected and inspect $LASTEXITCODE afterwards.
+            & $npmPath install --silent *> $logPath
+            $code = $LASTEXITCODE
+            if ($code -eq 0) {
+                Write-Success "$label dependencies installed"
+                Remove-Item -Force $logPath -ErrorAction SilentlyContinue
+                return $true
             }
+            Write-Warn "$label npm install failed — exit code $code"
+            if (Test-Path $logPath) {
+                $errText = (Get-Content $logPath -Raw -ErrorAction SilentlyContinue)
+                if ($errText) {
+                    $snippet = if ($errText.Length -gt 1200) { $errText.Substring(0, 1200) + "..." } else { $errText }
+                    Write-Info "  npm output:"
+                    foreach ($line in $snippet -split "`n") {
+                        Write-Host "    $line" -ForegroundColor DarkGray
+                    }
+                    Write-Info "  Full log: $logPath"
+                }
+            }
+            Write-Info "Run manually later: cd `"$installDir`"; npm install"
+            return $false
         } catch {
-            Write-Warn "npm install could not be launched: $_"
+            Write-Warn "$label npm install could not be launched: $_"
+            return $false
+        } finally {
+            Pop-Location
         }
     }
 
-    # Install TUI dependencies
+    # Browser tools
+    if (Test-Path "$InstallDir\package.json") {
+        Write-Info "Installing Node.js dependencies (browser tools)..."
+        $browserLog = "$env:TEMP\hermes-npm-browser-$(Get-Random).log"
+        [void](_Run-NpmInstall "Browser tools" $InstallDir $browserLog $npmExe)
+    }
+
+    # TUI
     $tuiDir = "$InstallDir\ui-tui"
     if (Test-Path "$tuiDir\package.json") {
         Write-Info "Installing TUI dependencies..."
-        Push-Location $tuiDir
         $tuiLog = "$env:TEMP\hermes-npm-tui-$(Get-Random).log"
-        try {
-            $proc = Start-Process -FilePath $npmExe `
-                -ArgumentList "install", "--silent" `
-                -NoNewWindow -Wait -PassThru `
-                -RedirectStandardOutput "NUL" `
-                -RedirectStandardError $tuiLog
-            if ($proc.ExitCode -eq 0) {
-                Write-Success "TUI dependencies installed"
-                Remove-Item -Force $tuiLog -ErrorAction SilentlyContinue
-            } else {
-                Write-Warn "TUI npm install failed (hermes --tui may not work) — exit code $($proc.ExitCode)"
-                if (Test-Path $tuiLog) {
-                    $errText = (Get-Content $tuiLog -Raw -ErrorAction SilentlyContinue)
-                    if ($errText) {
-                        $snippet = if ($errText.Length -gt 800) { $errText.Substring(0, 800) + "..." } else { $errText }
-                        Write-Info "  npm stderr:"
-                        foreach ($line in $snippet -split "`n") {
-                            Write-Host "    $line" -ForegroundColor DarkGray
-                        }
-                        Write-Info "  Full log: $tuiLog"
-                    }
-                }
-                Write-Info "Run manually later: cd `"$tuiDir`"; npm install"
-            }
-        } catch {
-            Write-Warn "TUI npm install could not be launched: $_"
-        }
-        Pop-Location
+        [void](_Run-NpmInstall "TUI" $tuiDir $tuiLog $npmExe)
     }
-
-    Pop-Location
 }
 
 function Invoke-SetupWizard {

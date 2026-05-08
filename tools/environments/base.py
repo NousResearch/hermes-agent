@@ -99,12 +99,33 @@ def get_sandbox_dir() -> Path:
 
 
 def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
-    """Write *data* to proc.stdin on a daemon thread to avoid pipe-buffer deadlocks."""
+    """Write *data* to proc.stdin on a daemon thread to avoid pipe-buffer deadlocks.
+
+    On Windows, text-mode stdin (``text=True`` / ``encoding="utf-8"``)
+    translates ``\\n`` → ``\\r\\n`` as the data flows through the pipe —
+    which corrupts every write_file / patch call because the bytes that
+    land on disk include injected carriage returns.  The file IS created,
+    but every subsequent byte-count / content compare against the
+    caller's ``\\n``-only string fails.
+
+    Workaround: write through ``proc.stdin.buffer`` (the underlying byte
+    buffer), encoding to UTF-8 ourselves.  That bypasses Python's
+    newline translation entirely on every platform.  No behaviour change
+    on POSIX — the byte sequence is identical to what text-mode would
+    produce there.
+    """
 
     def _write():
         try:
-            proc.stdin.write(data)
-            proc.stdin.close()
+            # proc.stdin is a TextIOWrapper when text=True was set on the
+            # Popen.  Its ``.buffer`` attribute is the raw BufferedWriter
+            # that bypasses newline translation.  When Popen was created
+            # in byte mode, proc.stdin is already a BufferedWriter with
+            # no ``.buffer`` attribute — fall back to .write() directly.
+            raw = data.encode("utf-8") if isinstance(data, str) else data
+            target = getattr(proc.stdin, "buffer", proc.stdin)
+            target.write(raw)
+            target.close()
         except (BrokenPipeError, OSError):
             pass
 

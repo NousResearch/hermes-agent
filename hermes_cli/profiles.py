@@ -205,6 +205,12 @@ def validate_profile_name(name: str) -> None:
     call :func:`normalize_profile_name` first. This separation keeps validate
     honest about what the on-disk directory name must look like, while
     ingress-point normalization handles UX flexibility (see #18498).
+
+    Also rejects names in :data:`_RESERVED_NAMES` (``hermes``, ``test``,
+    ``tmp``, ``root``, ``sudo``) that would create confusing on-disk
+    collisions (a ``hermes`` profile inside ``~/.hermes/``) or get refused
+    at alias-creation time anyway. ``default`` is a special pass-through —
+    it's a valid alias for the built-in root profile.
     """
     if name == "default":
         return  # special alias for ~/.hermes
@@ -212,6 +218,12 @@ def validate_profile_name(name: str) -> None:
         raise ValueError(
             f"Invalid profile name {name!r}. Must match "
             f"[a-z0-9][a-z0-9_-]{{0,63}}"
+        )
+    if name in _RESERVED_NAMES:
+        raise ValueError(
+            f"Profile name {name!r} is reserved — it collides with either "
+            f"the Hermes installation itself or a common system binary.  "
+            f"Pick a different name."
         )
 
 

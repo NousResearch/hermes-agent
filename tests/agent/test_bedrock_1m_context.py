@@ -15,23 +15,26 @@ from unittest.mock import MagicMock, patch
 class TestBedrockContext1MBeta:
     """``context-1m-2025-08-07`` must reach Bedrock Claude requests."""
 
-    def test_common_betas_includes_1m(self):
+    def test_common_betas_excludes_1m_by_default(self):
         from agent.anthropic_adapter import _COMMON_BETAS, _CONTEXT_1M_BETA
 
         assert _CONTEXT_1M_BETA == "context-1m-2025-08-07"
-        assert _CONTEXT_1M_BETA in _COMMON_BETAS
+        assert _CONTEXT_1M_BETA not in _COMMON_BETAS
 
-    def test_common_betas_for_native_anthropic_includes_1m(self):
-        """Native Anthropic endpoints (and Bedrock with empty base_url) get 1M."""
+    def test_common_betas_for_endpoint_specific_1m_paths(self):
+        """Only endpoint paths that still require 1M opt in to that beta."""
         from agent.anthropic_adapter import (
             _common_betas_for_base_url,
             _CONTEXT_1M_BETA,
         )
 
-        assert _CONTEXT_1M_BETA in _common_betas_for_base_url(None)
-        assert _CONTEXT_1M_BETA in _common_betas_for_base_url("")
-        assert _CONTEXT_1M_BETA in _common_betas_for_base_url(
+        assert _CONTEXT_1M_BETA not in _common_betas_for_base_url(None)
+        assert _CONTEXT_1M_BETA not in _common_betas_for_base_url("")
+        assert _CONTEXT_1M_BETA not in _common_betas_for_base_url(
             "https://api.anthropic.com"
+        )
+        assert _CONTEXT_1M_BETA in _common_betas_for_base_url(
+            "https://example.services.ai.azure.com/models/anthropic"
         )
 
     def test_common_betas_strips_1m_for_minimax(self):
@@ -79,27 +82,26 @@ class TestBedrockContext1MBeta:
         assert "interleaved-thinking-2025-05-14" in beta_header
         assert "fine-grained-tool-streaming-2025-05-14" in beta_header
 
-    def test_build_anthropic_kwargs_includes_1m_for_bedrock_fastmode(self):
-        """Fast-mode requests (per-request extra_headers) still include 1M beta.
+    def test_build_anthropic_kwargs_fastmode_does_not_reintroduce_1m_for_native(self):
+        """Native fast-mode requests must not reintroduce the 1M beta.
 
-        Per-request extra_headers override client-level default_headers, so
-        the fast-mode path must re-include everything in _COMMON_BETAS.
+        Some native Anthropic subscriptions reject the long-context beta even
+        for short auxiliary requests.  Bedrock gets the beta through its own
+        ``build_anthropic_bedrock_client`` path above.
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-7",
+            model="claude-opus-4-6",
             messages=[{"role": "user", "content": "hi"}],
             tools=None,
             max_tokens=1024,
             reasoning_config=None,
             is_oauth=False,
-            # Empty base_url mirrors AnthropicBedrock (no HTTP base URL)
             base_url=None,
             fast_mode=True,
         )
         beta_header = kwargs.get("extra_headers", {}).get("anthropic-beta", "")
-        assert "context-1m-2025-08-07" in beta_header, (
-            "fast-mode extra_headers must carry the 1M beta or it overrides "
-            "client-level default_headers and Bedrock drops back to 200K"
-        )
+        assert "context-1m-2025-08-07" not in beta_header
+        assert "fast-mode-2026-02-01" in beta_header
+        assert "interleaved-thinking-2025-05-14" in beta_header

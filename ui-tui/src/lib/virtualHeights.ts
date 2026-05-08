@@ -1,3 +1,5 @@
+import { stringWidth } from '@hermes/ink'
+
 import type { Msg } from '../types.js'
 
 import { transcriptBodyWidth } from './inputMetrics.js'
@@ -33,7 +35,18 @@ export const messageHeightKey = (msg: Msg) => {
 export const wrappedLines = (text: string, width: number) => {
   const w = Math.max(1, width)
 
-  return text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / w)), 0)
+  return text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(stringWidth(line) / w)), 0)
+}
+
+export const buildMessageCacheKey = (
+  msg: Msg,
+  index: number,
+  historyLength: number,
+  fullRenderTailItems: number
+) => {
+  const isTruncated = index < historyLength - fullRenderTailItems
+
+  return `${messageHeightKey(msg)}:${isTruncated ? 'H' : 'T'}`
 }
 
 export const estimatedMsgHeight = (

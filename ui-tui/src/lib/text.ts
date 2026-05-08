@@ -1,3 +1,5 @@
+import { stringWidth } from '@hermes/ink'
+
 import {
   HISTORY_RENDER_MAX_CHARS,
   HISTORY_RENDER_MAX_LINES,
@@ -256,7 +258,7 @@ export const estimateRows = (text: string, w: number, compact = false) => {
         fence = { char: marker[0] as '`' | '~', len: marker.length }
 
         if (lang) {
-          rows += Math.ceil((`─ ${lang}`.length || 1) / w)
+          rows += Math.ceil((stringWidth(`─ ${lang}`) || 1) / w)
         }
       } else if (marker[0] === fence.char && marker.length >= fence.len) {
         fence = null
@@ -278,7 +280,7 @@ export const estimateRows = (text: string, w: number, compact = false) => {
       continue
     }
 
-    rows += Math.ceil((rendered.length || 1) / w)
+    rows += Math.ceil((stringWidth(rendered) || 1) / w)
   }
 
   return Math.max(1, rows)

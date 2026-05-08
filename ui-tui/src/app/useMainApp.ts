@@ -22,7 +22,7 @@ import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../l
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
-import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
+import { estimatedMsgHeight } from '../lib/virtualHeights.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
@@ -219,22 +219,21 @@ export function useMainApp(gw: GatewayClient) {
       .catch(() => {})
   }, [])
 
-  const messageId = useCallback((msg: Msg) => {
-    const hit = msgIdsRef.current.get(msg)
+  const messageId = useCallback((msg: Msg, index: number) => {
+    let baseId = msgIdsRef.current.get(msg)
 
-    if (hit) {
-      return hit
+    if (!baseId) {
+      baseId = `${++msgIdSeqRef.current}`
+      msgIdsRef.current.set(msg, baseId)
     }
 
-    const next = `${messageHeightKey(msg)}:${++msgIdSeqRef.current}`
+    const suffix = index < historyItems.length - FULL_RENDER_TAIL_ITEMS ? 'H' : 'T'
 
-    msgIdsRef.current.set(msg, next)
-
-    return next
-  }, [])
+    return `${baseId}:${suffix}`
+  }, [historyItems])
 
   const virtualRows = useMemo<TranscriptRow[]>(
-    () => historyItems.map((msg, index) => ({ index, key: messageId(msg), msg })),
+    () => historyItems.map((msg, index) => ({ index, key: messageId(msg, index), msg })),
     [historyItems, messageId]
   )
 

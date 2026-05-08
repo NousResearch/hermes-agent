@@ -163,4 +163,24 @@ describe('estimateRows', () => {
 
     expect(estimateRows(snake, w)).toBe(estimateRows(plain, w))
   })
+
+  it('counts wide unicode characters by display width', () => {
+    const cjk = '这是一段中文测试文本'.repeat(4) // 40 CJK chars = 80 display width
+
+    // At width 50, naive .length would give ceil(40/50)=1, but stringWidth
+    // correctly counts 80 display columns → ceil(80/50)=2
+    expect(estimateRows(cjk, 50)).toBe(2)
+
+    // At width 80, fits exactly in 1 line
+    expect(estimateRows(cjk, 80)).toBe(1)
+  })
+
+  it('counts CJK characters as double width in code blocks', () => {
+    const codeBlock = ['```', '这是一段中文测试文本'.repeat(4), '```'].join('\n')
+
+    // Code fences don't add rows; content wraps to 2 lines at width 40
+    expect(estimateRows(codeBlock, 40)).toBe(2)
+    // Content fits in 1 line at width 80
+    expect(estimateRows(codeBlock, 80)).toBe(1)
+  })
 })

@@ -25,7 +25,13 @@ def _touch_tui_entry(root: Path) -> None:
     entry.write_text("console.log('tui')")
 
 
-def _touch_ink_bundle(root: Path) -> None:
+def _touch_ink_entry_exports(root: Path) -> None:
+    bundle = root / "packages" / "hermes-ink" / "dist" / "entry-exports.js"
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    bundle.write_text("export {}")
+
+
+def _touch_legacy_ink_bundle(root: Path) -> None:
     bundle = root / "packages" / "hermes-ink" / "dist" / "ink-bundle.js"
     bundle.parent.mkdir(parents=True, exist_ok=True)
     bundle.write_text("export {}")
@@ -130,9 +136,17 @@ def test_build_needed_when_local_ink_bundle_missing(tmp_path: Path, main_mod) ->
     assert main_mod._tui_build_needed(tmp_path) is True
 
 
-def test_build_not_needed_when_entry_and_ink_bundle_present(tmp_path: Path, main_mod) -> None:
+def test_build_not_needed_when_entry_and_current_ink_bundle_present(tmp_path: Path, main_mod) -> None:
     _touch_tui_entry(tmp_path)
     _touch_ink(tmp_path)
-    _touch_ink_bundle(tmp_path)
+    _touch_ink_entry_exports(tmp_path)
+
+    assert main_mod._tui_build_needed(tmp_path) is False
+
+
+def test_build_not_needed_when_entry_and_legacy_ink_bundle_present(tmp_path: Path, main_mod) -> None:
+    _touch_tui_entry(tmp_path)
+    _touch_ink(tmp_path)
+    _touch_legacy_ink_bundle(tmp_path)
 
     assert main_mod._tui_build_needed(tmp_path) is False

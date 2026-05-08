@@ -972,9 +972,15 @@ def _tui_build_needed(tui_dir: Path) -> bool:
 
 def _hermes_ink_bundle_stale(tui_dir: Path) -> bool:
     ink_root = tui_dir / "packages" / "hermes-ink"
-    bundle = ink_root / "dist" / "ink-bundle.js"
+    # Current @hermes/ink build outputs entry-exports.js. Older builds used
+    # ink-bundle.js; accept either so dashboard /api/pty doesn't rebuild on
+    # every WebSocket connection and time out before the TUI starts.
+    bundle = ink_root / "dist" / "entry-exports.js"
     if not bundle.exists():
-        return True
+        legacy_bundle = ink_root / "dist" / "ink-bundle.js"
+        if not legacy_bundle.exists():
+            return True
+        bundle = legacy_bundle
     bm = bundle.stat().st_mtime
     skip = frozenset({"node_modules", "dist"})
     for dirpath, dirnames, filenames in os.walk(ink_root, topdown=True):

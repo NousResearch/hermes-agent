@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest  # type: ignore[unresolved-import]
@@ -276,27 +277,28 @@ class TestStore:
             source_file="conversation",
             chunk_index=0,
         )
+        typed_base: dict[str, Any] = base
         id1 = make_drawer_id(
-            wing=base["wing"],
-            room=base["room"],
-            source_file=base["source_file"],
-            chunk_index=base["chunk_index"],
+            wing=str(typed_base["wing"]),
+            room=str(typed_base["room"]),
+            source_file=str(typed_base["source_file"]),
+            chunk_index=int(typed_base["chunk_index"]),
             content="alpha",
             session_id="s1",
         )
         id2 = make_drawer_id(
-            wing=base["wing"],
-            room=base["room"],
-            source_file=base["source_file"],
-            chunk_index=base["chunk_index"],
+            wing=str(typed_base["wing"]),
+            room=str(typed_base["room"]),
+            source_file=str(typed_base["source_file"]),
+            chunk_index=int(typed_base["chunk_index"]),
             content="beta",
             session_id="s1",
         )
         id3 = make_drawer_id(
-            wing=base["wing"],
-            room=base["room"],
-            source_file=base["source_file"],
-            chunk_index=base["chunk_index"],
+            wing=str(typed_base["wing"]),
+            room=str(typed_base["room"]),
+            source_file=str(typed_base["source_file"]),
+            chunk_index=int(typed_base["chunk_index"]),
             content="alpha",
             session_id="s2",
         )
@@ -332,9 +334,9 @@ class TestPackageExports:
     def test_register_registers_provider(self):
         ctx = MagicMock()
         original = MemPalaceMemoryProvider.is_available
-        MemPalaceMemoryProvider.is_available = lambda self: True
+        setattr(MemPalaceMemoryProvider, "is_available", lambda self: True)
         try:
             register(ctx)
         finally:
-            MemPalaceMemoryProvider.is_available = original
+            setattr(MemPalaceMemoryProvider, "is_available", original)
         ctx.register_memory_provider.assert_called_once()

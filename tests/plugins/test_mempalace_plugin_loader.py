@@ -114,9 +114,9 @@ def test_dedup_uses_cheap_filters_before_sequence_matcher(plugin_module):
 
     provider = plugin_module.MemPalaceMemoryProvider()
     original: Any = tools_module.SequenceMatcher
-    tools_module.SequenceMatcher = lambda *args, **kwargs: (_ for _ in ()).throw(  # type: ignore[assignment]
+    setattr(tools_module, "SequenceMatcher", lambda *args, **kwargs: (_ for _ in ()).throw(
         AssertionError("SequenceMatcher should not run for unrelated content")
-    )
+    ))
     try:
         assert (
             provider._looks_like_duplicate(
@@ -126,7 +126,7 @@ def test_dedup_uses_cheap_filters_before_sequence_matcher(plugin_module):
             is False
         )
     finally:
-        tools_module.SequenceMatcher = original
+        setattr(tools_module, "SequenceMatcher", original)
 
 
 def test_write_queue_drops_after_retry_limit(plugin_module, caplog):
@@ -134,8 +134,10 @@ def test_write_queue_drops_after_retry_limit(plugin_module, caplog):
 
     calls = []
     original_upsert = writer.upsert_memory_item
-    writer.upsert_memory_item = lambda *args, **kwargs: (_ for _ in ()).throw(
-        RuntimeError("wedged")
+    setattr(
+        writer,
+        "upsert_memory_item",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("wedged")),
     )
 
     class InlineThread:
@@ -162,7 +164,7 @@ def test_write_queue_drops_after_retry_limit(plugin_module, caplog):
         retry_payload = q._q.get_nowait()
         q._flush(*retry_payload)
     finally:
-        writer.upsert_memory_item = original_upsert
+        setattr(writer, "upsert_memory_item", original_upsert)
 
     assert "MemPalace dropped batch after 1 retries" in caplog.text
 

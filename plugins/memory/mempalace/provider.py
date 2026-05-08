@@ -163,6 +163,8 @@ class MemPalaceMemoryProvider(MemPalaceHooksMixin, MemPalaceToolsMixin, MemoryPr
         }
 
         self._collection_name = resolve_collection_name(cfg, self._runtime_ctx)
+        if get_collection is None:
+            raise RuntimeError("mempalace package is not installed")
         self._collection = get_collection(
             palace_path=self._palace_path,
             collection_name=self._collection_name,
@@ -175,6 +177,8 @@ class MemPalaceMemoryProvider(MemPalaceHooksMixin, MemPalaceToolsMixin, MemoryPr
 
         if self._kg_enabled:
             kg_path = os.path.join(self._palace_path, "knowledge_graph.db")
+            if KnowledgeGraph is None:
+                raise RuntimeError("mempalace knowledge graph is not installed")
             self._kg = KnowledgeGraph(db_path=kg_path)
             logger.info("MemPalace knowledge graph initialized at %s", kg_path)
         else:

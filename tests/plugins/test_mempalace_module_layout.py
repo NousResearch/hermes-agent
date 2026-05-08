@@ -17,9 +17,10 @@ def _ensure_package(name: str, package_dir: Path) -> None:
         package_dir / "__init__.py",
         submodule_search_locations=[str(package_dir)],
     )
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    if spec and spec.loader and (package_dir / "__init__.py").exists():
+    if spec.loader and (package_dir / "__init__.py").exists():
         spec.loader.exec_module(module)
 
 
@@ -31,9 +32,10 @@ def _load_plugin_root():
         PLUGIN_DIR / "__init__.py",
         submodule_search_locations=[str(PLUGIN_DIR)],
     )
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[MODULE_NAME] = module
-    assert spec and spec.loader
+    assert spec.loader
     spec.loader.exec_module(module)
     return module
 

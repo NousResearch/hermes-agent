@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest  # type: ignore[unresolved-import]
 
+pytest.importorskip("mempalace")
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_DIR = REPO_ROOT / "plugins" / "memory" / "mempalace"
 INIT_FILE = PLUGIN_DIR / "__init__.py"
@@ -37,9 +39,10 @@ def load_plugin_module():
         INIT_FILE,
         submodule_search_locations=[str(PLUGIN_DIR)],
     )
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[MODULE_NAME] = module
-    assert spec and spec.loader
+    assert spec.loader
     spec.loader.exec_module(module)
     return module
 

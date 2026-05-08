@@ -132,7 +132,8 @@ class MemPalaceToolsMixin:
                 n_results=query_limit,
                 where=where_filter,
             )
-            return self._format_search_result(result, raw=True, limit=top_k)
+            formatted = self._format_search_result(result, raw=True, limit=top_k)
+            return formatted if isinstance(formatted, dict) else {"results": []}
         except Exception as exc:
             raise MemPalaceBackendError(
                 "Search failed", {"cause": str(exc), "query": query, "room": room}
@@ -395,7 +396,7 @@ class MemPalaceToolsMixin:
     def _looks_like_duplicate(self, left: str, right: str) -> bool:
         if left == right:
             return True
-        shorter, longer = sorted((left, right), key=len)  # type: ignore[assignment]
+        shorter, longer = sorted([left, right], key=len)
         if shorter and longer.startswith(shorter[: min(len(shorter), 120)]):
             if len(shorter) >= 40:
                 return True

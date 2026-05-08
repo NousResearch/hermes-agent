@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import datetime, timezone
 import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol, cast
 
 import aiohttp
@@ -37,6 +39,8 @@ class RealtimeVoiceConfig:
     input_rate: int = 24_000
     output_rate: int = 24_000
     turn_detection: str = "semantic_vad"
+    audit_log_path: str | None = None
+    audit_include_text: bool = True
 
 
 class RealtimeVoiceSession:
@@ -66,8 +70,17 @@ class RealtimeVoiceSession:
     async def start(self) -> None:
         if self._ws is not None:
             return
+        self._audit("session.start", {
+            "model": self.config.model,
+            "voice": self.config.voice,
+            "turn_detection": self.config.turn_detection,
+            "tools_enabled": self.config.tools_enabled,
+            "instructions_chars": len(self.config.instructions or ""),
+        })
         self._ws = await self._connect()
-        await self._send_json(self._session_update_event())
+        session_update = self._session_update_event()
+        self._audit("client.session_update", self._summarize_payload(session_update))
+        await self._send_json(session_update)
         self._receiver_task = asyncio.create_task(self._receive_loop())
 
     async def stop(self) -> None:
@@ -100,6 +113,11 @@ class RealtimeVoiceSession:
         pcm_24k_mono = discord_pcm_to_realtime_pcm(pcm_48k_stereo)
         if not pcm_24k_mono:
             return
+        self._audit("client.input_audio_buffer.append", {
+            "user_id": str(user_id),
+            "discord_pcm_bytes": len(pcm_48k_stereo),
+            "realtime_pcm_bytes": len(pcm_24k_mono),
+        })
         await self._send_json({
             "type": "input_audio_buffer.append",
             "audio": base64.b64encode(pcm_24k_mono).decode("ascii"),
@@ -163,6 +181,7 @@ class RealtimeVoiceSession:
 
     async def _handle_server_event(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type", ""))
+        self._audit("server.event", self._summarize_payload(event))
         if event_type in {"response.output_audio.delta", "response.audio.delta"}:
             delta = event.get("delta")
             if isinstance(delta, str) and delta:
@@ -244,3 +263,87 @@ class RealtimeVoiceSession:
             raise RuntimeError("Realtime voice session is not started")
         async with self._send_lock:
             await ws.send_json(payload)
+
+    def _summarize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return a safe, compact audit summary for a Realtime event.
+
+        Raw base64 audio and API keys are never logged. Text is included only
+        when ``audit_include_text`` is enabled because transcripts can be
+        private.
+        """
+        event_type = str(payload.get("type", ""))
+        summary: dict[str, Any] = {"type": event_type}
+        if "event_id" in payload:
+            summary["event_id"] = payload.get("event_id")
+
+        delta = payload.get("delta")
+        if isinstance(delta, str):
+            if "audio" in event_type:
+                summary["audio_delta_b64_chars"] = len(delta)
+                try:
+                    summary["audio_delta_bytes"] = len(base64.b64decode(delta))
+                except Exception:
+                    pass
+            elif self.config.audit_include_text:
+                summary["delta"] = delta
+                summary["delta_chars"] = len(delta)
+            else:
+                summary["delta_chars"] = len(delta)
+
+        transcript = payload.get("transcript")
+        if isinstance(transcript, str):
+            if self.config.audit_include_text:
+                summary["transcript"] = transcript
+            summary["transcript_chars"] = len(transcript)
+
+        audio = payload.get("audio")
+        if isinstance(audio, str):
+            summary["audio_b64_chars"] = len(audio)
+            try:
+                summary["audio_bytes"] = len(base64.b64decode(audio))
+            except Exception:
+                pass
+
+        session = payload.get("session")
+        if isinstance(session, dict):
+            summary["session"] = {
+                "model": session.get("model"),
+                "output_modalities": session.get("output_modalities"),
+                "instructions_chars": len(str(session.get("instructions") or "")),
+                "tools_count": len(session.get("tools") or []),
+                "tool_choice": session.get("tool_choice"),
+            }
+
+        item = payload.get("item")
+        if isinstance(item, dict):
+            summary["item"] = {
+                "type": item.get("type"),
+                "name": item.get("name"),
+                "call_id": item.get("call_id"),
+            }
+            if self.config.audit_include_text:
+                text = item.get("text") or item.get("transcript")
+                if isinstance(text, str):
+                    summary["item"]["text"] = text
+                    summary["item"]["text_chars"] = len(text)
+
+        if event_type == "error":
+            summary["error"] = payload.get("error")
+        return summary
+
+    def _audit(self, event: str, payload: dict[str, Any]) -> None:
+        path = self.config.audit_log_path
+        if not path:
+            return
+        try:
+            audit_path = Path(path).expanduser()
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            row = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "event": event,
+                **payload,
+            }
+            with audit_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        except Exception as exc:
+            self._logger.debug("Realtime voice audit logging failed: %s", exc)

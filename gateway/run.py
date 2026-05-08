@@ -8860,6 +8860,44 @@ class GatewayRunner:
         tools_enabled = bool(realtime_cfg.get("tools_enabled", False))
         stable_user_id = f"discord:{event.source.user_id}"
         safety_identifier = hashlib.sha256(stable_user_id.encode("utf-8")).hexdigest()
+        audit_enabled = bool(realtime_cfg.get("audit_log", False) or realtime_cfg.get("debug_log", False))
+        audit_log_path = None
+        if audit_enabled:
+            configured_audit_path = realtime_cfg.get("audit_log_path")
+            audit_log_path = str(
+                Path(str(configured_audit_path)).expanduser()
+                if configured_audit_path
+                else Path.home() / ".hermes" / "logs" / "realtime_voice_audit.jsonl"
+            )
+        audit_include_text = bool(realtime_cfg.get("audit_include_text", True))
+
+        recent_context = ""
+        if bool(realtime_cfg.get("include_recent_text_context", True)):
+            try:
+                entry = self.session_store.get_or_create_session(event.source)
+                transcript = self.session_store.load_transcript(entry.session_id)
+                recent_lines = []
+                for msg in transcript[-12:]:
+                    if not isinstance(msg, dict):
+                        continue
+                    role = msg.get("role")
+                    if role not in {"user", "assistant"}:
+                        continue
+                    content = msg.get("content")
+                    if not isinstance(content, str) or not content.strip():
+                        continue
+                    compact = " ".join(content.split())
+                    if len(compact) > 600:
+                        compact = compact[:597] + "..."
+                    recent_lines.append(f"{role}: {compact}")
+                if recent_lines:
+                    recent_context = (
+                        "\n\nRecent text-session context at voice start:\n"
+                        + "\n".join(recent_lines[-8:])
+                    )
+            except Exception:
+                logger.debug("Failed to build realtime voice recent context", exc_info=True)
+
         instructions = (
             "You are Ariadne, Hákon's operational AI assistant. This is a live "
             "voice conversation. Be brief, direct, and conversational. Do not "
@@ -8869,6 +8907,7 @@ class GatewayRunner:
             "requires tools unavailable in this realtime session, summarize the "
             "intended action and ask Hákon to send it as text or approve handoff "
             "to the normal Hermes tool loop."
+            + recent_context
         )
         config = RealtimeVoiceConfig(
             api_key=api_key,
@@ -8880,6 +8919,8 @@ class GatewayRunner:
             input_rate=input_rate,
             output_rate=output_rate,
             turn_detection=turn_detection,
+            audit_log_path=audit_log_path,
+            audit_include_text=audit_include_text,
         )
         realtime_context = SimpleNamespace(config=config)
 

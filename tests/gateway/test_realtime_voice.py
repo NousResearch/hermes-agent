@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -201,3 +202,35 @@ async def test_function_call_executes_tool_and_returns_output_when_enabled(
         },
     }
     assert fake_ws.sent[2] == {"type": "response.create"}
+
+
+@pytest.mark.asyncio
+async def test_audit_log_records_metadata_without_raw_audio(
+    session_factory,
+    fake_ws: FakeWebSocket,
+    tmp_path,
+):
+    audit_path = tmp_path / "realtime_audit.jsonl"
+    session = session_factory(config_overrides={"audit_log_path": str(audit_path)})
+
+    await session.start()
+    await session.append_discord_pcm(user_id=42, pcm_48k_stereo=b"\x00" * 3840)
+    fake_ws.feed_json({
+        "type": "response.output_audio.delta",
+        "delta": base64.b64encode(b"audio").decode("ascii"),
+    })
+    await asyncio.sleep(0)
+    await session.stop()
+
+    rows = [json.loads(line) for line in audit_path.read_text().splitlines()]
+    assert [row["event"] for row in rows[:3]] == [
+        "session.start",
+        "client.session_update",
+        "client.input_audio_buffer.append",
+    ]
+    assert rows[2]["discord_pcm_bytes"] == 3840
+    assert rows[2]["realtime_pcm_bytes"] == 960
+    assert "audio" not in rows[2]
+    audio_event = next(row for row in rows if row.get("type") == "response.output_audio.delta")
+    assert audio_event["audio_delta_bytes"] == 5
+    assert "delta" not in audio_event

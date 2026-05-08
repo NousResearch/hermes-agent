@@ -9,11 +9,6 @@ from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
-try:  # pragma: no cover - depends on install extras / Python version.
-    import audioop
-except ImportError:  # Python 3.13 without audioop-lts in a minimal dev env.
-    audioop = None
-
 try:  # pragma: no cover - exercised through tests with a fake discord module.
     import discord
 except ImportError:  # pragma: no cover
@@ -44,17 +39,10 @@ def discord_pcm_to_realtime_pcm(pcm_48k_stereo: bytes) -> bytes:
     """Convert Discord 48 kHz stereo PCM16 into Realtime 24 kHz mono PCM16."""
     if not pcm_48k_stereo:
         return b""
-    if audioop is not None:
-        mono = audioop.tomono(pcm_48k_stereo, SAMPLE_WIDTH_BYTES, 0.5, 0.5)
-        converted, _state = audioop.ratecv(
-            mono,
-            SAMPLE_WIDTH_BYTES,
-            1,
-            DISCORD_SAMPLE_RATE,
-            REALTIME_SAMPLE_RATE,
-            None,
-        )
-        return converted
+    # Discord and Realtime use a fixed 2:1 sample-rate relationship.  Use the
+    # deterministic integer-ratio converter so each stateless 20 ms Discord
+    # frame maps to an exact 20 ms Realtime frame; audioop.ratecv can drop a
+    # boundary sample without retained state, which breaks Discord frame sizing.
     return _downsample_48k_stereo_to_24k_mono(pcm_48k_stereo)
 
 
@@ -62,16 +50,6 @@ def realtime_pcm_to_discord_pcm(pcm_24k_mono: bytes) -> bytes:
     """Convert Realtime 24 kHz mono PCM16 into Discord 48 kHz stereo PCM16."""
     if not pcm_24k_mono:
         return b""
-    if audioop is not None:
-        upsampled, _state = audioop.ratecv(
-            pcm_24k_mono,
-            SAMPLE_WIDTH_BYTES,
-            1,
-            REALTIME_SAMPLE_RATE,
-            DISCORD_SAMPLE_RATE,
-            None,
-        )
-        return audioop.tostereo(upsampled, SAMPLE_WIDTH_BYTES, 1.0, 1.0)
     return _upsample_24k_mono_to_48k_stereo(pcm_24k_mono)
 
 

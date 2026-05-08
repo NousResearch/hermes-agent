@@ -2244,6 +2244,14 @@ def _aux_select_for_task(task: str) -> None:
             current_provider=current_provider,
             current_model=current_model,
             current_base_url=current_base_url,
+            user_providers=(
+                cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+            ),
+            custom_providers=(
+                cfg.get("custom_providers")
+                if isinstance(cfg.get("custom_providers"), list)
+                else []
+            ),
         )
     except Exception as exc:
         print(f"Could not detect authenticated providers: {exc}")

@@ -528,6 +528,7 @@ def get_authenticated_provider_slugs(
     current_provider: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
+    only_configured: bool | None = None,
 ) -> list[str]:
     """Return slugs of providers that have credentials.
 
@@ -540,6 +541,7 @@ def get_authenticated_provider_slugs(
             user_providers=user_providers,
             custom_providers=custom_providers,
             max_models=0,
+            only_configured=only_configured,
         )
         return [p["slug"] for p in providers]
     except Exception:
@@ -1052,6 +1054,7 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     max_models: int = 8,
     current_model: str = "",
+    only_configured: bool | None = None,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1094,17 +1097,13 @@ def list_authenticated_providers(
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
-    only_configured = False
-    if isinstance(user_providers, dict):
-        only_configured = _truthy_config(user_providers.get("only_configured", False))
-    else:
-        try:
-            from hermes_cli.config import load_config
-            _cfg_providers = load_config().get("providers", {})
-            if isinstance(_cfg_providers, dict):
-                only_configured = _truthy_config(_cfg_providers.get("only_configured", False))
-        except Exception:
+    if only_configured is None:
+        if isinstance(user_providers, dict):
+            only_configured = _truthy_config(user_providers.get("only_configured", False))
+        else:
             only_configured = False
+    else:
+        only_configured = _truthy_config(only_configured)
 
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
     # Section 4 uses this to hide ``custom_providers`` entries that point at the
@@ -1550,7 +1549,7 @@ def list_authenticated_providers(
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
             discover = False if only_configured else ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
-                discover = discover.lower() not in ("false", "no", "0")
+                discover = discover.strip().lower() not in ("false", "no", "0", "off")
             if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
@@ -1762,6 +1761,7 @@ def list_picker_providers(
     custom_providers: list | None = None,
     max_models: int = 8,
     current_model: str = "",
+    only_configured: bool | None = None,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -1791,6 +1791,7 @@ def list_picker_providers(
         custom_providers=custom_providers,
         max_models=max_models,
         current_model=current_model,
+        only_configured=only_configured,
     )
 
     filtered: List[dict] = []

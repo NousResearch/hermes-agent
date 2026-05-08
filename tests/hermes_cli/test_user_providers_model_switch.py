@@ -234,6 +234,82 @@ def test_only_configured_limits_picker_to_configured_user_provider_models(monkey
     assert providers[0]["total_models"] == 1
 
 
+def test_discover_models_false_string_strips_whitespace(monkeypatch):
+    """discover_models string values should parse like booleans even with whitespace."""
+    monkeypatch.setenv("CRS_TEST_KEY", "sk-test")
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["live-model"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="crs-henkee",
+        user_providers={
+            "crs-henkee": {
+                "name": "CRS Henkee",
+                "base_url": "http://127.0.0.1:3000/api/v1",
+                "key_env": "CRS_TEST_KEY",
+                "default_model": "configured-model",
+                "discover_models": " false ",
+            },
+        },
+        custom_providers=[],
+        max_models=50,
+    )
+
+    assert calls == []
+    assert providers[0]["models"] == ["configured-model"]
+
+
+def test_list_authenticated_providers_does_not_load_config_implicitly(monkeypatch):
+    """Callers pass loaded config; the provider lister should not reload it."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    def fail_load_config():
+        raise AssertionError("list_authenticated_providers should not call load_config")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", fail_load_config)
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        user_providers=None,
+        custom_providers=[],
+    )
+
+    assert isinstance(providers, list)
+
+
+def test_list_authenticated_providers_accepts_explicit_only_configured_flag(monkeypatch):
+    """Callers can pass only_configured separately from providers config."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "dummy-openrouter-key")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {"openrouter": {"env": ["OPENROUTER_API_KEY"]}},
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="configured-provider",
+        user_providers={
+            "configured-provider": {
+                "api": "https://example.invalid/v1",
+                "default_model": "configured-model",
+            }
+        },
+        custom_providers=[],
+        only_configured=True,
+    )
+
+    assert [p["slug"] for p in providers] == ["configured-provider"]
+
+
 def test_list_authenticated_providers_dict_models_without_default_model(monkeypatch):
     """Dict-format ``models:`` without a ``default_model`` must still expose
     every dict key, not collapse to an empty list."""

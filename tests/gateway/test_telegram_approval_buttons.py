@@ -441,3 +441,33 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+
+def test_model_keyboard_uses_friendly_model_labels_but_keeps_raw_callbacks():
+    adapter = _make_adapter()
+    created_buttons = []
+
+    class FakeButton:
+        def __init__(self, text, callback_data):
+            self.text = text
+            self.callback_data = callback_data
+            created_buttons.append(self)
+
+    class FakeMarkup:
+        def __init__(self, rows):
+            self.rows = rows
+
+    with patch("gateway.platforms.telegram.InlineKeyboardButton", FakeButton):
+        with patch("gateway.platforms.telegram.InlineKeyboardMarkup", FakeMarkup):
+            keyboard, page_info = adapter._build_model_keyboard(
+                ["accounts/fireworks/routers/kimi-k2p5-turbo"],
+                0,
+                {
+                    "accounts/fireworks/routers/kimi-k2p5-turbo": "kimi-k2p5-turbo",
+                },
+            )
+
+    assert page_info == ""
+    assert keyboard.rows[0][0].text == "kimi-k2p5-turbo"
+    assert keyboard.rows[0][0].callback_data == "mm:0"
+    assert created_buttons[0].text == "kimi-k2p5-turbo"

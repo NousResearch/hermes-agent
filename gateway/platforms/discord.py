@@ -4849,9 +4849,11 @@ if DISCORD_AVAILABLE:
                 return
 
             models = provider.get("models", [])
+            model_labels = provider.get("model_labels", {}) or {}
             options = []
             for model_id in models[:25]:
-                short = model_id.split("/")[-1] if "/" in model_id else model_id
+                label = model_labels.get(model_id) or model_id
+                short = label.split("/")[-1] if "/" in label else label
                 options.append(
                     discord.SelectOption(
                         label=short[:100],

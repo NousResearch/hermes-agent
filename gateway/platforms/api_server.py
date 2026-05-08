@@ -917,6 +917,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 "type": "bearer",
                 "required": bool(self._api_key),
             },
+            "runtime": {
+                "mode": "server_agent",
+                "tool_execution": "server",
+                "split_runtime": False,
+                "description": (
+                    "The API server creates a server-side Hermes AIAgent; "
+                    "tools execute on the API-server host unless a future "
+                    "explicit split-runtime mode is enabled."
+                ),
+            },
             "features": {
                 "chat_completions": True,
                 "chat_completions_streaming": True,
@@ -1316,8 +1326,8 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
 
             # Finish chunk
             finish_chunk = {
@@ -1888,12 +1898,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
                 }
-                full_history = list(conversation_history)
-                full_history.append({"role": "user", "content": user_message})
-                if isinstance(result, dict) and result.get("messages"):
-                    full_history.extend(result["messages"])
-                else:
-                    full_history.append({"role": "assistant", "content": final_response_text})
+                full_history = self._build_response_conversation_history(
+                    conversation_history,
+                    user_message,
+                    result,
+                    final_response_text,
+                )
                 _persist_response_snapshot(
                     completed_env,
                     conversation_history_snapshot=full_history,
@@ -2192,17 +2202,22 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Build the full conversation history for storage
         # (includes tool calls from the agent run)
-        full_history = list(conversation_history)
-        full_history.append({"role": "user", "content": user_message})
-        # Add agent's internal messages if available
-        agent_messages = result.get("messages", [])
-        if agent_messages:
-            full_history.extend(agent_messages)
-        else:
-            full_history.append({"role": "assistant", "content": final_response})
+        full_history = self._build_response_conversation_history(
+            conversation_history,
+            user_message,
+            result,
+            final_response,
+        )
 
-        # Build output items (includes tool calls + final message)
-        output_items = self._extract_output_items(result)
+        # Build output items from the current turn only.  AIAgent returns a
+        # full transcript in result["messages"], while older/mocked paths may
+        # return only the current turn suffix.
+        output_start_index = self._response_messages_turn_start_index(
+            conversation_history,
+            user_message,
+            result,
+        )
+        output_items = self._extract_output_items(result, start_index=output_start_index)
 
         response_data = {
             "id": response_id,
@@ -2494,17 +2509,70 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_output_items(result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Build the full output item array from the agent's messages.
+    def _build_response_conversation_history(
+        conversation_history: List[Dict[str, Any]],
+        user_message: Any,
+        result: Dict[str, Any],
+        final_response: Any,
+    ) -> List[Dict[str, Any]]:
+        """Build the stored Responses transcript without duplicating history."""
+        prior = list(conversation_history)
+        current_user = {"role": "user", "content": user_message}
+        agent_messages = result.get("messages") if isinstance(result, dict) else None
 
-        Walks *result["messages"]* and emits:
+        if isinstance(agent_messages, list) and agent_messages:
+            turn_start = APIServerAdapter._response_messages_turn_start_index(
+                conversation_history,
+                user_message,
+                result,
+            )
+            if turn_start:
+                return list(agent_messages)
+
+            full_history = prior
+            full_history.append(current_user)
+            full_history.extend(agent_messages)
+            return full_history
+
+        full_history = prior
+        full_history.append(current_user)
+        full_history.append({"role": "assistant", "content": final_response})
+        return full_history
+
+    @staticmethod
+    def _response_messages_turn_start_index(
+        conversation_history: List[Dict[str, Any]],
+        user_message: Any,
+        result: Dict[str, Any],
+    ) -> int:
+        """Detect transcript-shaped result["messages"] and return turn start."""
+        agent_messages = result.get("messages") if isinstance(result, dict) else None
+        if not isinstance(agent_messages, list) or not agent_messages:
+            return 0
+
+        prior = list(conversation_history)
+        current_user = {"role": "user", "content": user_message}
+        expected_prefix = prior + [current_user]
+        if agent_messages[:len(expected_prefix)] == expected_prefix:
+            return len(expected_prefix)
+        if prior and agent_messages[:len(prior)] == prior:
+            return len(prior)
+        return 0
+
+    @staticmethod
+    def _extract_output_items(result: Dict[str, Any], start_index: int = 0) -> List[Dict[str, Any]]:
+        """
+        Build the output item array from the agent's messages.
+
+        Walks *result["messages"]* starting at *start_index* and emits:
         - ``function_call`` items for each tool_call on assistant messages
         - ``function_call_output`` items for each tool-role message
         - a final ``message`` item with the assistant's text reply
         """
         items: List[Dict[str, Any]] = []
         messages = result.get("messages", [])
+        if start_index > 0:
+            messages = messages[start_index:]
 
         for msg in messages:
             role = msg.get("role")

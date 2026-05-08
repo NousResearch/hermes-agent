@@ -3,7 +3,9 @@
 import json
 import logging
 import os
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -24,6 +26,7 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    _CodexCompletionsAdapter,
 )
 
 
@@ -55,6 +58,18 @@ def codex_auth_dir(tmp_path, monkeypatch):
         lambda: "codex-test-token-abc123",
     )
     return codex_dir
+
+
+class TestAuxiliaryMaxTokensParam:
+    def test_uses_max_completion_tokens_for_github_copilot_custom_base(self):
+        with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com", "key", None)), \
+             patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
+
+    def test_uses_max_completion_tokens_for_github_copilot_custom_base_path(self):
+        with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com/chat/completions", "key", None)), \
+             patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
 
 
 class TestNormalizeAuxProvider:
@@ -1880,6 +1895,85 @@ class TestVisionAutoSkipsKimiCoding:
             "kimi-coding",
             "kimi-coding-cn",
         })
+
+
+class TestCodexAuxiliaryAdapterTimeout:
+    def test_forwards_timeout_to_responses_stream(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="summary")],
+                    )],
+                    usage=None,
+                )
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def stream(self, **kwargs):
+                self.kwargs = kwargs
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "summarize this"}],
+            timeout=12.5,
+        )
+
+        assert fake_client.responses.kwargs["timeout"] == 12.5
+        assert response.choices[0].message.content == "summary"
+
+    def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
+        class SlowAliveStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                for _ in range(5):
+                    time.sleep(0.03)
+                    yield SimpleNamespace(type="response.in_progress")
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="late")],
+                    )],
+                    usage=None,
+                )
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return SlowAliveStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            adapter.create(
+                messages=[{"role": "user", "content": "summarize this"}],
+                timeout=0.05,
+            )
+
+        assert time.monotonic() - started < 0.14
 
 
 # ---------------------------------------------------------------------------

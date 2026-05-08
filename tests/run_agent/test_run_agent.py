@@ -724,6 +724,56 @@ class TestInit:
             )
             assert a._cache_ttl == "1h"
 
+    def test_model_max_tokens_from_config(self):
+        """model.max_tokens config populates the chat-completions request cap."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"max_tokens": 4096}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            kwargs = a._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert a.max_tokens == 4096
+        assert kwargs["max_tokens"] == 4096
+
+    def test_constructor_max_tokens_wins_over_config(self):
+        """Explicit constructor max_tokens keeps programmatic callers stable."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"max_tokens": 4096}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                max_tokens=8192,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert a.max_tokens == 8192
+
     def test_prompt_caching_cache_ttl_invalid_falls_back(self):
         """Non-Anthropic TTL values keep default 5m without raising."""
         with (
@@ -3663,6 +3713,18 @@ class TestMaxTokensParam:
     def test_returns_max_completion_tokens_for_azure(self, agent):
         """Azure OpenAI requires max_completion_tokens for gpt-5.x models."""
         agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_github_copilot(self, agent):
+        """GitHub Copilot's OpenAI-compatible API rejects max_tokens for newer models."""
+        agent.base_url = "https://api.githubcopilot.com"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_github_copilot_path(self, agent):
+        """Detect Copilot by hostname even when the configured URL includes a path."""
+        agent.base_url = "https://api.githubcopilot.com/chat/completions"
         result = agent._max_tokens_param(4096)
         assert result == {"max_completion_tokens": 4096}
 

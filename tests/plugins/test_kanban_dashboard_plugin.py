@@ -127,6 +127,43 @@ def test_tenant_filter(client):
     assert total == 1
 
 
+def test_dashboard_select_filters_use_sdk_value_change_handler():
+    """Tenant/assignee filters must work with the dashboard SDK Select API.
+
+    The dashboard Select component is shadcn-like and calls
+    ``onValueChange(value)`` instead of native ``onChange(event)``. A native-only
+    handler leaves the tenant dropdown visually selectable but never updates the
+    filtered board query.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function selectChangeHandler(setter)" in js
+    assert "onValueChange: function (v)" in js
+    assert "onChange: function (e)" in js
+    assert "selectChangeHandler(props.setTenantFilter)" in js
+    assert "selectChangeHandler(props.setAssigneeFilter)" in js
+
+
+def test_dashboard_client_side_filtering_includes_tenant_filter():
+    """The rendered board must also filter by tenant.
+
+    The API request includes ``?tenant=...``, but the dashboard also filters the
+    locally cached board for search/assignee changes. Without checking
+    ``tenantFilter`` here, switching tenants can leave stale cards visible until a
+    full reload finishes.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "if (tenantFilter && t.tenant !== tenantFilter) return false;" in js
+    assert "[boardData, tenantFilter, assigneeFilter, search]" in js
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------
@@ -551,6 +588,67 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         "/api/plugins/kanban/events?token=secret-xyz"
     ) as ws:
         assert ws is not None  # handshake succeeded
+
+
+def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
+    """``asyncio.CancelledError`` while sleeping in the poll loop is the
+    normal uvicorn-shutdown path (``BaseException``, so the bare
+    ``except Exception:`` does NOT catch it). Without the explicit
+    clause the cancellation surfaces as an application traceback.
+
+    Regression test for #20790 (fix in #20938). Drives the coroutine
+    directly (rather than through FastAPI TestClient) so we can observe
+    the cancellation outcome deterministically.
+    """
+    import asyncio
+    import types
+    import sys as _sys
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    # Short-circuit the token check — this test is about the cancellation
+    # path, not auth.
+    import plugins.kanban.dashboard.plugin_api as pa
+    monkeypatch.setattr(pa, "_check_ws_token", lambda t: True)
+
+    class _FakeWS:
+        def __init__(self):
+            self.query_params = {"token": "x", "since": "0"}
+            self.accepted = False
+            self.closed = False
+
+        async def accept(self):
+            self.accepted = True
+
+        async def send_json(self, data):
+            pass
+
+        async def close(self, code=None):
+            self.closed = True
+
+    async def _run():
+        ws = _FakeWS()
+        task = asyncio.create_task(pa.stream_events(ws))
+        # Give the handler a tick to accept + start polling.
+        await asyncio.sleep(0.05)
+        assert ws.accepted is True
+        task.cancel()
+        # stream_events should swallow CancelledError and return cleanly.
+        # If it doesn't, this await re-raises the CancelledError.
+        result = await task
+        return result, ws
+
+    result, ws = asyncio.run(_run())
+    assert result is None, (
+        f"stream_events should return cleanly after cancellation, got {result!r}"
+    )
+    # The bug symptom was a traceback; we don't assert on stderr because
+    # capturing asyncio's internal "exception was never retrieved" logging
+    # is flaky. The assertion that matters is: no CancelledError escaped.
 
 
 # ---------------------------------------------------------------------------

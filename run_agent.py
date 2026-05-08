@@ -2766,11 +2766,48 @@ class AIAgent:
             msg = response.choices[0].message
             suggestion = (msg.content or getattr(msg, 'reasoning_content', None) or "").strip()
 
+            # Extract the actual suggestion from reasoning content
+            if suggestion:
+                import re as _re
+                # Strip "Thinking Process" prefix
+                suggestion = _re.sub(r'^Thinking Process:?\s*', '', suggestion, flags=_re.IGNORECASE).strip()
+                # Try to find the final decision/suggestion (last occurrence wins)
+                for _marker in ['Final Decision:', '建议', 'Suggestion:']:
+                    if _marker in suggestion:
+                        suggestion = suggestion[suggestion.rfind(_marker) + len(_marker):].strip()
+                        break
+                # Truncate at reasoning continuation markers like "*   ", "-   ", numbered lists
+                for _pat in [r'\n\s+\*\s+', r'\n\s*-\s+', r'\n\s*\d+\.\s+']:
+                    _m2 = _re.search(_pat, suggestion)
+                    if _m2:
+                        suggestion = suggestion[:_m2.start()].strip()
+                # If still too long, take the last paragraph
+                if len(suggestion) > 500:
+                    _parts = suggestion.split('\n\n')
+                    suggestion = _parts[-1].strip()
+                    # Strip leading numbering like "1." or "*"
+                    suggestion = _re.sub(r'^[\d\*\.\-\s]+', '', suggestion).strip()
+                # Truncate at English continuation words (incomplete reasoning)
+                suggestion = _re.sub(
+                    r'[\.\s]+(Actually|However|But\s|Wait|Let me|I need|In fact|Note that|In particular|The key|The main|I should).*',
+                    '', suggestion, flags=_re.IGNORECASE | _re.DOTALL
+                ).strip()
+                # Also handle bare continuations (no leading period)
+                suggestion = _re.sub(
+                    r'\s+(Actually|However|But\s|Wait|Let me|I need)\s+.*',
+                    '', suggestion, flags=_re.IGNORECASE | _re.DOTALL
+                ).strip()
+
             if suggestion:
                 logger.warning(
                     "辅助模型建议: %s (%d次) → %s",
                     tool_name, consecutive, suggestion[:100],
                 )
+                import sys as _sys
+                from tools.i18n import format_zh
+                _sug_clean = suggestion[:120].replace('\n', ' ')
+                print(f"\033[90m  ┊ 🤖 {format_zh('Auxiliary Model')}  {_sug_clean}\033[0m",
+                      flush=True, file=_sys.stderr)
                 return (
                     f"[辅助模型建议] 工具 '{tool_name}' 已连续调用 {consecutive} 次，"
                     f"可能陷入循环。\n辅助模型建议：{suggestion}\n"
@@ -2836,6 +2873,14 @@ class AIAgent:
             
             msg = response.choices[0].message
             suggestion = (msg.content or getattr(msg, 'reasoning_content', None) or "").strip()
+            # Clean up reasoning content
+            if suggestion:
+                import re as _re
+                suggestion = _re.sub(r'^Thinking Process:?\s*', '', suggestion, flags=_re.IGNORECASE).strip()
+                for _marker in ['Final Decision:', '建议', 'Suggestion:']:
+                    if _marker in suggestion:
+                        suggestion = suggestion[suggestion.rfind(_marker) + len(_marker):].strip()
+                        break
             if len(suggestion) > 100:
                 suggestion = suggestion[:97] + "..."
             return suggestion
@@ -9538,8 +9583,6 @@ class AIAgent:
         independent: read-only tools may always share the parallel path, while
         file reads/writes may do so only when their target paths do not overlap.
         """
-        tool_names_trace = [tc.function.name for tc in assistant_message.tool_calls]
-        print(f"[CB_TRACE] _execute_tool_calls tools={tool_names_trace} len={len(tool_names_trace)}", flush=True, file=__import__("sys").stderr)
         tool_calls = assistant_message.tool_calls
 
         # Allow _vprint during tool execution even with stream consumers
@@ -10202,7 +10245,6 @@ class AIAgent:
                 self._consecutive_tool_calls[function_name] = (
                     self._consecutive_tool_calls.get(function_name, 0) + 1
                 )
-                print(f"[CNT] {function_name} counter={self._consecutive_tool_calls[function_name]}", flush=True, file=__import__('sys').stderr)
             tool_start_time = time.time()
 
             if _block_msg is not None:
@@ -10707,7 +10749,6 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
-        print("[RUN_CONV_ENTERED] run_conversation called", flush=True, file=__import__("sys").stderr)
         """
         Run a complete conversation with tool calling until completion.
 
@@ -11569,8 +11610,6 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
                     
                     _has_choices = hasattr(response, 'choices')
-                    _choices_len = len(response.choices) if _has_choices and response.choices else 0
-                    print(f"[API_RESP] response type={type(response).__name__} has_choices={_has_choices} choices_len={_choices_len}", flush=True, file=__import__("sys").stderr)
                     if self.verbose_logging:
                         # Log response with provider info if available
                         resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'

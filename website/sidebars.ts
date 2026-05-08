@@ -136,6 +136,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/qqbot',
         'user-guide/messaging/yuanbao',
         'user-guide/messaging/teams',
+        'user-guide/messaging/msgraph-webhook',
         'user-guide/messaging/open-webui',
         'user-guide/messaging/webhooks',
       ],

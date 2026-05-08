@@ -70,3 +70,29 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# 敏感配置文件
+cli-config.yaml
+config.yaml
+*.env
+*.env.local
+*.env.production
+
+# Python 缓存与编译文件
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 系统与 IDE 文件
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志文件
+*.log
+logs/

@@ -1,0 +1,15 @@
+.git/
+node_modules/
+__pycache__/
+*.log
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+docs/
+tests/
+.vscode/
+.idea/
+*.env
+*.env.*

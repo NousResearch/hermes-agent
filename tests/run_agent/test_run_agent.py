@@ -2072,6 +2072,32 @@ class TestConcurrentToolExecution:
         assert starts == [("c1", "web_search", {"query": "hello"})]
         assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
 
+    def test_sequential_memory_tool_forwards_aliases(self, agent):
+        agent._memory_store = object()
+        tool_call = _mock_tool_call(
+            name="memory",
+            arguments='{"action":"remove","target":"memory","old_string":"legacy"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        with patch("tools.memory_tool.memory_tool", return_value='{"success": true}') as mock_memory:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_memory.assert_called_once_with(
+            action="remove",
+            target="memory",
+            content=None,
+            old_text="legacy",
+            new_text=None,
+            old_string="legacy",
+            new_string=None,
+            store=agent._memory_store,
+        )
+        assert len(messages) == 1
+        assert json.loads(messages[0]["content"]) == {"success": True}
+
     def test_concurrent_tool_callbacks_fire_for_each_tool(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='{"query":"two"}', call_id="c2")
@@ -2099,6 +2125,32 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+    def test_invoke_tool_forwards_memory_aliases(self, agent):
+        agent._memory_store = object()
+        with patch("tools.memory_tool.memory_tool", return_value='{"ok":true}') as mock_memory:
+            result = agent._invoke_tool(
+                "memory",
+                {
+                    "action": "replace",
+                    "target": "memory",
+                    "old_string": "before",
+                    "new_text": "after",
+                },
+                "task-1",
+            )
+
+        mock_memory.assert_called_once_with(
+            action="replace",
+            target="memory",
+            content="after",
+            old_text="before",
+            new_text="after",
+            old_string="before",
+            new_string=None,
+            store=agent._memory_store,
+        )
+        assert result == '{"ok":true}'
 
     def test_invoke_tool_blocked_returns_error_and_skips_execution(self, agent, monkeypatch):
         """_invoke_tool should return error JSON when a plugin blocks the tool."""

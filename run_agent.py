@@ -9713,12 +9713,23 @@ class AIAgent:
             )
         elif function_name == "memory":
             target = function_args.get("target", "memory")
+            old_text = function_args.get("old_text")
+            if old_text is None:
+                old_text = function_args.get("old_string")
+            content = function_args.get("content")
+            if content is None:
+                content = function_args.get("new_text")
+            if content is None:
+                content = function_args.get("new_string")
             from tools.memory_tool import memory_tool as _memory_tool
             result = _memory_tool(
                 action=function_args.get("action"),
                 target=target,
-                content=function_args.get("content"),
-                old_text=function_args.get("old_text"),
+                content=content,
+                old_text=old_text,
+                new_text=function_args.get("new_text"),
+                old_string=function_args.get("old_string"),
+                new_string=function_args.get("new_string"),
                 store=self._memory_store,
             )
             # Bridge: notify external memory provider of built-in memory writes
@@ -9727,7 +9738,7 @@ class AIAgent:
                     self._memory_manager.on_memory_write(
                         function_args.get("action", ""),
                         target,
-                        function_args.get("content", ""),
+                        content or "",
                         metadata=self._build_memory_write_metadata(
                             task_id=effective_task_id,
                             tool_call_id=tool_call_id,
@@ -10320,12 +10331,23 @@ class AIAgent:
                     self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
                 target = function_args.get("target", "memory")
+                old_text = function_args.get("old_text")
+                if old_text is None:
+                    old_text = function_args.get("old_string")
+                content = function_args.get("content")
+                if content is None:
+                    content = function_args.get("new_text")
+                if content is None:
+                    content = function_args.get("new_string")
                 from tools.memory_tool import memory_tool as _memory_tool
                 function_result = _memory_tool(
                     action=function_args.get("action"),
                     target=target,
-                    content=function_args.get("content"),
-                    old_text=function_args.get("old_text"),
+                    content=content,
+                    old_text=old_text,
+                    new_text=function_args.get("new_text"),
+                    old_string=function_args.get("old_string"),
+                    new_string=function_args.get("new_string"),
                     store=self._memory_store,
                 )
                 # Bridge: notify external memory provider of built-in memory writes
@@ -10334,7 +10356,7 @@ class AIAgent:
                         self._memory_manager.on_memory_write(
                             function_args.get("action", ""),
                             target,
-                            function_args.get("content", ""),
+                            content or "",
                             metadata=self._build_memory_write_metadata(
                                 task_id=effective_task_id,
                                 tool_call_id=getattr(tool_call, "id", None),

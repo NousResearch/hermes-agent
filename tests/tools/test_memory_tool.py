@@ -4,6 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
+from tools.registry import registry
 from tools.memory_tool import (
     MemoryStore,
     memory_tool,
@@ -252,6 +253,32 @@ class TestMemoryToolDispatcher:
         result = json.loads(memory_tool(action="replace", content="new", store=store))
         assert result["success"] is False
 
+    def test_replace_accepts_edit_tool_aliases(self, store):
+        store.add("memory", "legacy value")
+        result = json.loads(
+            memory_tool(
+                action="replace",
+                target="memory",
+                old_string="legacy value",
+                new_text="updated value",
+                store=store,
+            )
+        )
+        assert result["success"] is True
+        assert "updated value" in result["entries"]
+
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+    def test_registry_handler_forwards_memory_aliases(self, store):
+        store.add("memory", "remove me")
+        entry = registry.get_entry("memory")
+        result = json.loads(
+            entry.handler(
+                {"action": "remove", "target": "memory", "old_string": "remove me"},
+                store=store,
+            )
+        )
+        assert result["success"] is True
+        assert "remove me" not in result["entries"]

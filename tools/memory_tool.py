@@ -467,6 +467,9 @@ def memory_tool(
     target: str = "memory",
     content: str = None,
     old_text: str = None,
+    new_text: str = None,
+    old_string: str = None,
+    new_string: str = None,
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
@@ -476,6 +479,15 @@ def memory_tool(
     """
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+
+    # Accept common edit-tool aliases without changing the canonical schema.
+    if old_text is None:
+        old_text = old_string
+    if content is None:
+        if new_text is not None:
+            content = new_text
+        elif new_string is not None:
+            content = new_string
 
     if target not in ("memory", "user"):
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
@@ -576,11 +588,13 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        new_text=args.get("new_text"),
+        old_string=args.get("old_string"),
+        new_string=args.get("new_string"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 

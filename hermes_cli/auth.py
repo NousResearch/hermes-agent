@@ -3111,17 +3111,16 @@ def _refresh_access_token(
     refresh_token: str,
 ) -> Dict[str, Any]:
     url = f"{portal_base_url}/api/oauth/token"
-    data = {
-        "grant_type": "refresh_token",
-        "client_id": client_id,
-        "refresh_token": refresh_token,
-    }
 
     try:
         response = retryable_post(
             client,
             url,
-            data=data,
+            headers={"x-nous-refresh-token": refresh_token},
+            data={
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+            },
             max_attempts=3,
             base_delay=0.5,
             backoff_factor=2.0,

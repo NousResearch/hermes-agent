@@ -91,6 +91,15 @@ def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     return steps
 
 
+def _termux_install_all_fallback_notes() -> list[str]:
+    return [
+        "Termux install profile: use .[termux-all] for broad compatibility (installer default on Termux).",
+        "Matrix E2EE extra is excluded on Termux (python-olm currently fails to build).",
+        "Local faster-whisper extra is excluded on Termux (ctranslate2/av build path unavailable).",
+        "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY).",
+    ]
+
+
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
@@ -1078,11 +1087,23 @@ def run_doctor(args):
                         f"{label} deps",
                         f"({critical} critical, {high} high, {moderate} moderate — run: cd {npm_dir} && npm audit fix)"
                     )
-                    issues.append(f"{label} has {total} npm vulnerability(ies)")
+                    issues.append(
+                        f"{label} has {total} npm "
+                        f"{'vulnerability' if total == 1 else 'vulnerabilities'}"
+                    )
                 else:
-                    check_ok(f"{label} deps", f"({moderate} moderate vulnerability(ies))")
+                    check_ok(
+                        f"{label} deps",
+                        f"({moderate} moderate "
+                        f"{'vulnerability' if moderate == 1 else 'vulnerabilities'})",
+                    )
             except Exception:
                 pass
+
+    if _is_termux():
+        check_info("Termux compatibility fallbacks:")
+        for note in _termux_install_all_fallback_notes():
+            check_info(note)
 
     # =========================================================================
     # Check: API connectivity

@@ -28,6 +28,10 @@ if [ -n "${PYTHONHOME:-}" ]; then
     unset PYTHONHOME
 fi
 
+# Prevent uv from discovering config files (uv.toml, pyproject.toml) from the
+# wrong user's home directory when running under sudo -u <user>.  See #21269.
+export UV_NO_CONFIG=1
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -615,6 +619,41 @@ install_node() {
     HAS_NODE=true
 }
 
+check_network_prerequisites() {
+    log_info "Checking internet connectivity for package install and web tools..."
+
+    local url
+    local failed=false
+    local checks=("https://pypi.org/simple/" "https://duckduckgo.com/")
+
+    if ! command -v curl >/dev/null 2>&1; then
+        log_warn "curl not found; skipping connectivity probes"
+        return 0
+    fi
+
+    for url in "${checks[@]}"; do
+        if ! curl -fsSI --max-time 8 "$url" >/dev/null 2>&1; then
+            failed=true
+            log_warn "Could not reach $url"
+        fi
+    done
+
+    if [ "$failed" = false ]; then
+        log_success "Internet connectivity looks good"
+        return 0
+    fi
+
+    if [ "$DISTRO" = "termux" ]; then
+        log_warn "Termux network prerequisites may be incomplete."
+        log_info "Try: pkg install -y ca-certificates curl && pkg update"
+        log_info "If mirrors are stale: termux-change-repo"
+        log_info "Then test: curl -I https://pypi.org/simple/ && curl -I https://duckduckgo.com/"
+    else
+        log_warn "Network checks failed. Hermes install may complete, but web search and dependency downloads can fail."
+        log_info "Verify internet/DNS and retry if pip install fails."
+    fi
+}
+
 install_system_packages() {
     # Detect what's missing
     HAS_RIPGREP=false
@@ -642,7 +681,7 @@ install_system_packages() {
     # Termux always needs the Android build toolchain for the tested pip path,
     # even when ripgrep/ffmpeg are already present.
     if [ "$DISTRO" = "termux" ]; then
-        local termux_pkgs=(clang rust make pkg-config libffi openssl)
+        local termux_pkgs=(clang rust make pkg-config libffi openssl ca-certificates curl)
         if [ "$need_ripgrep" = true ]; then
             termux_pkgs+=("ripgrep")
         fi
@@ -945,17 +984,24 @@ install_deps() {
         fi
 
         "$PIP_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null
-        if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
-            log_warn "Termux feature install (.[termux]) failed, trying base install..."
-            if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
-                log_error "Package installation failed on Termux."
-                log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl"
-                log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux]' -c constraints-termux.txt"
-                exit 1
+
+        # Try the broad Termux profile first (best-effort "install all" for Android),
+        # then fall back to the conservative Termux baseline, then base package.
+        if ! "$PIP_PYTHON" -m pip install -e '.[termux-all]' -c constraints-termux.txt; then
+            log_warn "Termux broad profile (.[termux-all]) failed, trying baseline Termux profile..."
+            if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
+                log_warn "Termux baseline profile (.[termux]) failed, trying base install..."
+                if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
+                    log_error "Package installation failed on Termux."
+                    log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl ca-certificates curl"
+                    log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
+                    exit 1
+                fi
             fi
         fi
 
         log_success "Main package installed"
+        log_info "Termux note: matrix e2ee and local faster-whisper extras are excluded from .[termux-all] due to upstream Android wheel/toolchain blockers."
         log_info "Termux note: browser/WhatsApp tooling is not installed by default; see the Termux guide for optional follow-up steps."
 
         if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
@@ -1047,7 +1093,7 @@ setup_path() {
         log_warn "hermes entry point not found at $HERMES_BIN"
         log_info "This usually means the pip install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
-            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux]' -c constraints-termux.txt"
+            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
         else
             log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[all]'"
         fi
@@ -1570,6 +1616,7 @@ main() {
     check_python
     check_git
     check_node
+    check_network_prerequisites
     install_system_packages
 
     clone_repo

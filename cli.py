@@ -5804,12 +5804,15 @@ class HermesCLI:
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
+        # Always overwrite explicit overrides so stale credentials from the
+        # previous provider (e.g. Ollama api_key/base_url) don't leak into
+        # the new provider's credential resolution on the next turn.
+        self._explicit_api_key = result.api_key
+        self._explicit_base_url = result.base_url
         if result.api_key:
             self.api_key = result.api_key
-            self._explicit_api_key = result.api_key
         if result.base_url:
             self.base_url = result.base_url
-            self._explicit_base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
 
@@ -6027,12 +6030,15 @@ class HermesCLI:
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
+        # Always overwrite explicit overrides so stale credentials from the
+        # previous provider (e.g. Ollama api_key/base_url) don't leak into
+        # the new provider's credential resolution on the next turn.
+        self._explicit_api_key = result.api_key
+        self._explicit_base_url = result.base_url
         if result.api_key:
             self.api_key = result.api_key
-            self._explicit_api_key = result.api_key
         if result.base_url:
             self.base_url = result.base_url
-            self._explicit_base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
 
@@ -7991,6 +7997,7 @@ class HermesCLI:
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
         cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
         cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
+        reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
         prompt = agent.session_prompt_tokens
         completion = agent.session_completion_tokens
         total = agent.session_total_tokens
@@ -8022,6 +8029,8 @@ class HermesCLI:
         print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
         print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
         print(f"  Output tokens:             {output_tokens:>10,}")
+        if reasoning_tokens:
+            print(f"  ↳ Reasoning (subset):      {reasoning_tokens:>10,}")
         print(f"  Prompt tokens (total):     {prompt:>10,}")
         print(f"  Completion tokens:         {completion:>10,}")
         print(f"  Total tokens:              {total:>10,}")
@@ -10440,7 +10449,11 @@ class HermesCLI:
 
             # --- /model picker modal ---
             if self._model_picker_state:
-                self._handle_model_picker_selection()
+                try:
+                    self._handle_model_picker_selection()
+                except Exception as _exc:
+                    _cprint(f"  ✗ Model selection failed: {_exc}")
+                    self._close_model_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return

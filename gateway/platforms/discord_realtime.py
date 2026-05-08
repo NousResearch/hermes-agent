@@ -376,7 +376,7 @@ class OpenAIRealtimeDiscordBridge:
             if not isinstance(frame, dict):
                 continue
             ftype = frame.get("type")
-            if ftype == "response.audio.delta":
+            if ftype in ("response.audio.delta", "response.output_audio.delta"):
                 b64 = frame.get("delta") or frame.get("audio") or ""
                 try:
                     pcm24 = base64.b64decode(b64)

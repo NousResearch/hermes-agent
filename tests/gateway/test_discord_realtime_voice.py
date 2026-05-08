@@ -1,3 +1,5 @@
+import base64
+import json
 import queue
 
 from gateway.platforms.discord_realtime import (
@@ -132,4 +134,33 @@ def test_enqueue_output_lazily_starts_discord_playback():
 
     bridge._enqueue_output(b"\x01" * DISCORD_FRAME_BYTES)
 
+    assert voice_client.played_source is not None
+
+
+class _FakeRealtimeWebSocket:
+    def __init__(self, frames):
+        self._frames = queue.Queue()
+        for frame in frames:
+            self._frames.put(json.dumps(frame))
+        self.closed = False
+
+    def recv(self, timeout=None):
+        return self._frames.get_nowait()
+
+    def close(self):
+        self.closed = True
+
+
+def test_recv_loop_accepts_ga_output_audio_delta_event_name():
+    voice_client = _FakeVoiceClient()
+    bridge = OpenAIRealtimeDiscordBridge(api_key="test", voice_client=voice_client)
+    bridge._ws = _FakeRealtimeWebSocket([
+        {"type": "response.output_audio.delta", "delta": base64.b64encode(b"\x01\x00" * 480).decode()},
+        {"type": "response.done"},
+    ])
+
+    bridge._recv_loop()
+
+    assert bridge.output_bytes > 0
+    assert bridge.last_output_at is not None
     assert voice_client.played_source is not None

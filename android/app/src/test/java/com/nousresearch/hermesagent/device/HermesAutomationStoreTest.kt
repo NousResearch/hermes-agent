@@ -10,6 +10,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.shadows.ShadowToast
 import java.util.Calendar
 
 @RunWith(RobolectricTestRunner::class)
@@ -131,6 +132,53 @@ class HermesAutomationStoreTest {
         assertTrue(run.toString(), run.getBoolean("success"))
         assertEquals("vibrate", run.getJSONObject("result").getString("action"))
         assertEquals(60, run.getJSONObject("result").getLong("duration_ms"))
+    }
+
+    @Test
+    fun bridgeCreatesAndRunsToastRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+        store.setVariable("MESSAGE", "toast-ok")
+        ShadowToast.reset()
+
+        val direct = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "show_toast",
+                org.json.JSONObject()
+                    .put("toast_text", "Direct %MESSAGE")
+                    .put("toast_long", true),
+            ),
+        )
+        assertTrue(direct.toString(), direct.getBoolean("success"))
+        assertEquals("show_toast", direct.getString("action"))
+        assertTrue(direct.getBoolean("long"))
+        assertEquals("Direct %MESSAGE", ShadowToast.getTextOfLatestToast())
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_toast_task",
+                org.json.JSONObject()
+                    .put("id", "auto-toast")
+                    .put("toast_text", "Tasker %MESSAGE")
+                    .put("toast_long", true),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals(ACTION_TYPE_TOAST_ACTION, created.getJSONObject("automation").getString("action_type"))
+
+        val run = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run",
+                org.json.JSONObject().put("id", "auto-toast"),
+            ),
+        )
+        assertTrue(run.toString(), run.getBoolean("success"))
+        assertEquals("show_toast", run.getJSONObject("result").getString("action"))
+        assertEquals("Tasker toast-ok", ShadowToast.getTextOfLatestToast())
     }
 
     @Test
@@ -1283,6 +1331,11 @@ class HermesAutomationStoreTest {
                   <Str sr="arg0" ve="3">Copy %MESSAGE</Str>
                 </Action>
                 <Action sr="act6" ve="7">
+                  <code>548</code>
+                  <Str sr="arg0" ve="3">Flash %MESSAGE</Str>
+                  <Int sr="arg1" val="1"/>
+                </Action>
+                <Action sr="act7" ve="7">
                   <code>9999</code>
                 </Action>
               </Task>
@@ -1305,15 +1358,16 @@ class HermesAutomationStoreTest {
         assertTrue(imported.toString(), imported.getBoolean("success"))
         assertEquals("tasker_xml", imported.getString("source"))
         assertEquals(1, imported.getInt("tasker_task_count"))
-        assertEquals(6, imported.getInt("tasker_imported_action_count"))
+        assertEquals(7, imported.getInt("tasker_imported_action_count"))
         assertEquals(1, imported.getJSONArray("tasker_skipped_actions").length())
-        assertEquals(6, imported.getInt("imported_automation_count"))
+        assertEquals(7, imported.getInt("imported_automation_count"))
         assertEquals("hello", store.getVariable("MESSAGE"))
 
         val records = store.list()
         assertTrue(records.any { it.actionType == ACTION_TYPE_SHELL && it.command == "printf tasker-shell-ok" })
         assertTrue(records.any { it.actionType == ACTION_TYPE_INTENT && it.command.contains("nousresearch.com") })
         assertTrue(records.any { it.actionType == ACTION_TYPE_CLIPBOARD_ACTION && it.command.contains("Copy %MESSAGE") })
+        assertTrue(records.any { it.actionType == ACTION_TYPE_TOAST_ACTION && it.command.contains("Flash %MESSAGE") })
         assertTrue(records.any { it.actionType == ACTION_TYPE_VIBRATION_ACTION && it.command.contains("pattern_ms") })
         assertTrue(records.none { it.enabled })
 
@@ -1333,6 +1387,18 @@ class HermesAutomationStoreTest {
         assertTrue(run.toString(), run.getBoolean("success"))
         assertTrue(run.getJSONObject("result").getString("path").endsWith("tasker-import.txt"))
         assertTrue(run.getJSONObject("result").getBoolean("append"))
+
+        ShadowToast.reset()
+        val toastRecord = records.first { it.actionType == ACTION_TYPE_TOAST_ACTION }
+        val toastRun = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run",
+                org.json.JSONObject().put("id", toastRecord.id),
+            ),
+        )
+        assertTrue(toastRun.toString(), toastRun.getBoolean("success"))
+        assertEquals("Flash hello", ShadowToast.getTextOfLatestToast())
 
         val rejected = org.json.JSONObject(
             HermesAutomationBridge.performActionJson(

@@ -254,6 +254,18 @@ object HermesTaskerImportBridge {
                             .toString(),
                     )
             }
+            TASKER_FLASH -> {
+                val text = argText(action, 0)
+                if (text.isBlank() || text.indexOf('\u0000') >= 0) return null
+                base.put("action_type", ACTION_TYPE_TOAST_ACTION)
+                    .put(
+                        "command",
+                        JSONObject()
+                            .put("text", text.take(MAX_TOAST_TEXT_CHARS))
+                            .put("long", argBoolean(action, 1))
+                            .toString(),
+                    )
+            }
             in TASKER_GLOBAL_UI_ACTIONS -> {
                 base.put("action_type", ACTION_TYPE_UI_ACTION)
                     .put(
@@ -459,6 +471,7 @@ object HermesTaskerImportBridge {
     private const val TASKER_WRITE_FILE = 410
     private const val TASKER_NOTIFY = 523
     private const val TASKER_VARIABLE_SET = 547
+    private const val TASKER_FLASH = 548
     private const val TASKER_VARIABLE_CLEAR = 549
     private const val TASKER_NFC_SETTINGS = 956
     private const val MAX_TASKER_XML_CHARS = 512_000
@@ -470,6 +483,7 @@ object HermesTaskerImportBridge {
     private const val MAX_NOTIFICATION_FIELD_CHARS = 120
     private const val MAX_NOTIFICATION_TEXT_CHARS = 2_000
     private const val MAX_CLIPBOARD_TEXT_CHARS = 8_000
+    private const val MAX_TOAST_TEXT_CHARS = 1_000
     private val ANDROID_PACKAGE_REGEX = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
     private val DOCTYPE_REGEX = Regex("<!\\s*DOCTYPE", RegexOption.IGNORE_CASE)
     private val ENTITY_REGEX = Regex("<!\\s*ENTITY", RegexOption.IGNORE_CASE)
@@ -512,6 +526,7 @@ object HermesTaskerImportBridge {
         TASKER_WRITE_FILE to "Write File",
         TASKER_NOTIFY to "Notify",
         TASKER_VARIABLE_SET to "Variable Set",
+        TASKER_FLASH to "Flash",
         TASKER_VARIABLE_CLEAR to "Variable Clear",
         TASKER_NFC_SETTINGS to "NFC Settings",
     )

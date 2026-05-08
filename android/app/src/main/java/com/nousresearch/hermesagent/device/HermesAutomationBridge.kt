@@ -40,6 +40,8 @@ object HermesAutomationBridge {
             "create_clipboard_task", "create_set_clipboard_task", "set_clipboard_task", "clipboard_task" -> createClipboardTaskJson(context, arguments)
             "create_vibration_task", "create_vibrate_task", "vibrate_task", "vibration_task" -> createVibrationTaskJson(context, arguments)
             "create_overlay_scene_task", "create_scene_task", "overlay_scene_task", "scene_task" -> createOverlaySceneTaskJson(context, arguments)
+            "create_toast_task", "create_flash_task", "toast_task", "flash_task" -> createToastTaskJson(context, arguments)
+            "show_toast", "toast", "flash_message", "flash" -> showToastJson(context, arguments)
             "overlay_scene_status", "scene_status", "overlay_status", "show_overlay_scene", "show_scene", "overlay_scene", "hide_overlay_scene", "dismiss_overlay_scene", "clear_overlay_scene", "hide_scene" -> HermesOverlaySceneBridge.performSceneJson(context, action, arguments)
             "create_launcher_shortcut", "create_shortcut", "create_home_screen_shortcut", "pin_automation_shortcut" -> HermesLauncherShortcutBridge.createShortcutJson(context, arguments)
             "list_launcher_shortcuts", "list_shortcuts", "launcher_shortcuts" -> HermesLauncherShortcutBridge.listShortcutsJson(context)
@@ -706,6 +708,26 @@ object HermesAutomationBridge {
         )
     }
 
+    fun createToastTaskJson(context: Context, arguments: JSONObject): String {
+        val payload = runCatching { toastPayloadFromArguments(arguments) }.getOrElse { error ->
+            return errorJson(error.message ?: "create_toast_task arguments are invalid")
+        }
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_TOAST_ACTION,
+            payload = payload.toString(),
+            defaultLabel = "Hermes toast automation",
+        )
+    }
+
+    fun showToastJson(context: Context, arguments: JSONObject): String {
+        val payload = runCatching { toastPayloadFromArguments(arguments) }.getOrElse { error ->
+            return errorJson(error.message ?: "show_toast arguments are invalid")
+        }
+        return HermesToastActionBridge.showToastJson(context, payload).toString()
+    }
+
     private fun createRecordJson(
         context: Context,
         arguments: JSONObject,
@@ -1339,6 +1361,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_CLIPBOARD_ACTION -> runClipboardActionRecord(context, record, variables)
             ACTION_TYPE_VIBRATION_ACTION -> runVibrationActionRecord(context, record, variables)
             ACTION_TYPE_OVERLAY_SCENE -> runOverlaySceneRecord(context, record, variables)
+            ACTION_TYPE_TOAST_ACTION -> runToastActionRecord(context, record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
         }
         val exitCode = rawResult.optInt("exit_code", if (rawResult.optBoolean("success", false)) 0 else -1)
@@ -1485,6 +1508,12 @@ object HermesAutomationBridge {
         val expanded = expandOverlayScenePayload(payload, variables)
         val sceneAction = expanded.optString("scene_action").ifBlank { "show" }
         return JSONObject(HermesOverlaySceneBridge.performSceneJson(context, "${sceneAction}_overlay_scene", expanded))
+    }
+
+    private fun runToastActionRecord(context: Context, record: HermesAutomationRecord, variables: JSONObject): JSONObject {
+        val payload = runCatching { JSONObject(record.command) }.getOrNull()
+            ?: return JSONObject(errorJson("Saved toast automation payload is invalid"))
+        return HermesToastActionBridge.showToastJson(context, expandToastPayload(payload, variables))
     }
 
     private fun runVariableActionRecord(
@@ -2728,6 +2757,17 @@ object HermesAutomationBridge {
         return HermesOverlaySceneBridge.payloadFromArguments(expanded)
     }
 
+    private fun expandToastPayload(payload: JSONObject, variables: JSONObject): JSONObject {
+        val expanded = JSONObject()
+        payload.keys().forEach { key ->
+            when (val value = payload.opt(key)) {
+                is String -> expanded.put(key, expandVariables(value, variables))
+                else -> expanded.put(key, value)
+            }
+        }
+        return toastPayloadFromArguments(expanded)
+    }
+
     private fun waitDurationMsFromPayload(payload: JSONObject, variables: JSONObject): Long {
         val expanded = JSONObject()
         payload.keys().forEach { key ->
@@ -2786,6 +2826,30 @@ object HermesAutomationBridge {
         return JSONObject()
             .put("vibration_action", VIBRATION_ACTION_VIBRATE)
             .put("duration_ms", boundedVibrationDurationMs(durationMs))
+    }
+
+    private fun toastPayloadFromArguments(arguments: JSONObject): JSONObject {
+        val text = stringArgument(
+            arguments,
+            "toast_text",
+            "flash_text",
+            "message",
+            "text",
+            "content",
+            "value",
+            allowEmpty = true,
+        ) ?: throw IllegalArgumentException("show_toast requires toast_text, flash_text, message, text, content, or value")
+        require(text.indexOf('\u0000') < 0) { "toast text must not contain NUL bytes" }
+        require(text.isNotBlank()) { "toast text must not be blank" }
+        val long = booleanArgument(arguments, "toast_long", "flash_long", "long", "duration_long") ?: when (
+            stringArgument(arguments, "toast_duration", "flash_duration", "duration").orEmpty().trim().lowercase()
+        ) {
+            "long", "longer", "1", "true" -> true
+            else -> false
+        }
+        return JSONObject()
+            .put("text", text.take(MAX_TOAST_TEXT_CHARS))
+            .put("long", long)
     }
 
     private fun vibrationPatternMsFromArguments(arguments: JSONObject): List<Long>? {
@@ -3690,6 +3754,24 @@ object HermesAutomationBridge {
         }
     }
 
+    private fun booleanArgument(arguments: JSONObject, vararg keys: String): Boolean? {
+        for (key in keys) {
+            if (!arguments.has(key) || arguments.isNull(key)) {
+                continue
+            }
+            return when (val raw = arguments.opt(key)) {
+                is Boolean -> raw
+                is Number -> raw.toInt() != 0
+                else -> when (raw?.toString()?.trim()?.lowercase()) {
+                    "1", "true", "yes", "on", "long" -> true
+                    "0", "false", "no", "off", "short" -> false
+                    else -> null
+                }
+            }
+        }
+        return null
+    }
+
     private fun constantTimeEquals(left: String, right: String): Boolean {
         return MessageDigest.isEqual(left.toByteArray(Charsets.UTF_8), right.toByteArray(Charsets.UTF_8))
     }
@@ -3720,6 +3802,8 @@ object HermesAutomationBridge {
         "create_clipboard_task",
         "create_vibration_task",
         "create_overlay_scene_task",
+        "create_toast_task",
+        "show_toast",
         "overlay_scene_status",
         "show_overlay_scene",
         "hide_overlay_scene",
@@ -3778,6 +3862,7 @@ object HermesAutomationBridge {
         ACTION_TYPE_CLIPBOARD_ACTION,
         ACTION_TYPE_VIBRATION_ACTION,
         ACTION_TYPE_OVERLAY_SCENE,
+        ACTION_TYPE_TOAST_ACTION,
     )
     private val ACTION_TYPE_SYNONYMS = mapOf(
         "shizuku" to ACTION_TYPE_SHIZUKU_ACTION,
@@ -3804,6 +3889,9 @@ object HermesAutomationBridge {
         "scene" to ACTION_TYPE_OVERLAY_SCENE,
         "overlay" to ACTION_TYPE_OVERLAY_SCENE,
         "overlay_scene" to ACTION_TYPE_OVERLAY_SCENE,
+        "toast" to ACTION_TYPE_TOAST_ACTION,
+        "flash" to ACTION_TYPE_TOAST_ACTION,
+        "flash_message" to ACTION_TYPE_TOAST_ACTION,
         "android_intent" to ACTION_TYPE_INTENT,
         "start_activity" to ACTION_TYPE_INTENT,
         "open_uri" to ACTION_TYPE_INTENT,
@@ -4063,6 +4151,7 @@ object HermesAutomationBridge {
     private const val MAX_VIBRATION_PATTERN_ENTRIES = 32
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
     private const val MAX_CLIPBOARD_LABEL_CHARS = 80
+    private const val MAX_TOAST_TEXT_CHARS = 1_000
     private const val MAX_RESULT_CHARS = 2_000
     private const val MAX_EVENT_VALUE_CHARS = 500
     private const val MAX_NOTIFICATION_BUTTONS = 3

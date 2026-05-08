@@ -246,7 +246,7 @@ def auth_add_command(args) -> None:
 
     if provider == "nous":
         # Codex-style auto-import: if a shared Nous credential lives at
-        # ~/.hermes/shared/nous_auth.json (written by any previous
+        # <hermes-root>/shared/nous_auth.json (written by any previous
         # successful login), offer to import it instead of running the
         # full device-code flow. This makes `hermes --profile <name>
         # auth add nous --type oauth` a one-tap operation for users who

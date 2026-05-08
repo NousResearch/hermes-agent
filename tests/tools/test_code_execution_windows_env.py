@@ -10,6 +10,14 @@ These tests cover ``_scrub_child_env`` directly so they run on every OS
 — the logic is conditional on a passed-in ``is_windows`` flag, not on
 the host platform.  We also keep a live Winsock smoke test that only runs
 on a real Windows host.
+
+Also covers the companion Windows bug: the sandbox writes
+``hermes_tools.py`` and ``script.py`` into a temp dir, and those files
+must be written as UTF-8 on every platform — the generated stub contains
+em-dash/en-dash characters in docstrings, and the default ``open(path, "w")``
+on Windows uses the system locale (cp1252 typically), corrupting those
+bytes.  The child then fails to import with a SyntaxError:
+``'utf-8' codec can't decode byte 0x97``.
 """
 
 import os
@@ -400,3 +408,158 @@ class TestPosixEquivalence:
                 f"Unexpected extra var in windows-mode output: {k} "
                 f"(not in _WINDOWS_ESSENTIAL_ENV_VARS)"
             )
+
+
+# ---------------------------------------------------------------------------
+# UTF-8 file-write regression test
+# ---------------------------------------------------------------------------
+#
+# The sandbox writes two Python files into a temp dir — the generated
+# ``hermes_tools.py`` stub, and the LLM's ``script.py``.  Both contain
+# non-ASCII characters in practice: the stub has em-dashes in docstrings
+# ("``tcp://host:port`` — the parent falls back..."), and user scripts
+# routinely contain non-ASCII strings, comments, or Unicode identifiers.
+#
+# On Windows, ``open(path, "w")`` without encoding= uses the system locale
+# (cp1252 on US/UK installs), which cannot encode em-dashes.  Python then
+# tries to decode the file as UTF-8 when importing it (PEP 3120), fails,
+# and the sandbox aborts with:
+#
+#     SyntaxError: (unicode error) 'utf-8' codec can't decode byte 0x97
+#                  in position N: invalid start byte
+#
+# This was the *second* Windows-specific bug (WinError 10106 was the first).
+# The fix is to always pass ``encoding="utf-8"`` when writing Python source.
+
+
+class TestSandboxWritesUtf8:
+    """Verify the file-write call sites use UTF-8 explicitly, not the
+    platform default.  We check the source of ``execute_code`` rather
+    than spawning a real sandbox because the latter needs a full agent
+    context — but the code inspection is deterministic and fast."""
+
+    def test_stub_and_script_writes_specify_utf8(self):
+        """Both ``hermes_tools.py`` and ``script.py`` writes in
+        ``_execute_local`` must pass ``encoding="utf-8"``."""
+        import tools.code_execution_tool as cet
+        src = open(cet.__file__, encoding="utf-8").read()
+
+        # There should be no ``open(path, "w")`` without encoding= for
+        # the two staging files.  Grep-style check: find every write of
+        # a .py file inside tmpdir and assert the line also contains
+        # ``encoding="utf-8"`` within a short window.
+        import re
+        pattern = re.compile(
+            r'open\(\s*os\.path\.join\(\s*tmpdir\s*,\s*"[^"]+\.py"\s*\)\s*,\s*"w"[^)]*\)'
+        )
+        for match in pattern.finditer(src):
+            line = match.group(0)
+            assert 'encoding="utf-8"' in line or "encoding='utf-8'" in line, (
+                f"Sandbox file write missing encoding=\"utf-8\" on Windows: {line!r}"
+            )
+
+    def test_file_rpc_stub_uses_utf8(self):
+        """The file-based RPC transport stub (used by remote backends)
+        reads/writes JSON response files.  Those must also specify UTF-8
+        so non-ASCII tool results survive the round-trip intact."""
+        from tools.code_execution_tool import generate_hermes_tools_module
+        stub = generate_hermes_tools_module(["terminal"], transport="file")
+        # The generated stub should open response + request files as UTF-8.
+        assert 'encoding="utf-8"' in stub, (
+            "File-based RPC stub does not specify encoding=\"utf-8\" — "
+            "will corrupt non-ASCII tool results on non-UTF-8 locales."
+        )
+
+    def test_stub_source_roundtrips_through_utf8(self):
+        """Concrete regression: write the generated stub to a temp file
+        using ``encoding="utf-8"``, then parse it.  This is what the
+        sandbox does, and it must succeed even when the stub contains
+        em-dashes (which it does — check the transport-header docstring).
+        """
+        from tools.code_execution_tool import generate_hermes_tools_module
+        import tempfile, ast
+        stub = generate_hermes_tools_module(
+            ["terminal", "read_file", "write_file"], transport="uds"
+        )
+        # Sanity: stub actually contains a non-ASCII character, otherwise
+        # this test wouldn't prove anything meaningful.
+        non_ascii = [c for c in stub if ord(c) > 127]
+        assert non_ascii, (
+            "Generated stub is pure ASCII — test is meaningless.  If the "
+            "stub's docstrings have lost their em-dashes, update this "
+            "assertion, but be aware the original regression is no longer "
+            "covered."
+        )
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(stub)
+            tmp_path = f.name
+
+        try:
+            # Re-read and parse exactly like the child Python would.
+            with open(tmp_path, encoding="utf-8") as fh:
+                round_tripped = fh.read()
+            assert round_tripped == stub, "UTF-8 round-trip corrupted the stub"
+            ast.parse(round_tripped)  # must not raise SyntaxError
+        finally:
+            os.unlink(tmp_path)
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="cp1252 default-encoding regression is Windows-specific",
+    )
+    def test_windows_default_encoding_would_have_failed(self):
+        """Negative control: prove that on Windows, writing the stub
+        *without* ``encoding="utf-8"`` would corrupt the file.  If this
+        test ever starts failing (i.e. default write succeeds), it means
+        Python's default encoding has changed and the explicit UTF-8
+        requirement may be obsolete — reconsider the fix."""
+        from tools.code_execution_tool import generate_hermes_tools_module
+        import tempfile
+
+        stub = generate_hermes_tools_module(["terminal"], transport="uds")
+        # Find a non-ASCII character we can use to prove the corruption.
+        non_ascii = [c for c in stub if ord(c) > 127]
+        if not non_ascii:
+            pytest.skip("stub has no non-ASCII chars — nothing to corrupt")
+
+        # Write with default encoding (simulating the old buggy code).
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False
+        ) as f:
+            try:
+                f.write(stub)
+                tmp_path = f.name
+                wrote_successfully = True
+            except UnicodeEncodeError:
+                # Default encoding can't even encode it — that's the bug
+                # in a different form.  Still proves the point.
+                tmp_path = f.name
+                wrote_successfully = False
+
+        try:
+            if not wrote_successfully:
+                # Default-encoding write raised outright.  The bug is real.
+                return
+
+            # Read back as UTF-8 (what Python does on import).
+            with open(tmp_path, encoding="utf-8") as fh:
+                try:
+                    fh.read()
+                    # If this succeeds on Windows, the platform default is
+                    # already UTF-8 (e.g. Python 3.15 with UTF-8 mode on).
+                    # In that case the explicit encoding= is belt-and-
+                    # suspenders but no longer strictly required.  Skip.
+                    pytest.skip(
+                        "Default text-file encoding is UTF-8-compatible on "
+                        "this Windows build — explicit encoding= is no "
+                        "longer load-bearing, but keep it for belt-and-"
+                        "suspenders."
+                    )
+                except UnicodeDecodeError:
+                    # Exactly the failure mode that motivated the fix.
+                    pass
+        finally:
+            os.unlink(tmp_path)

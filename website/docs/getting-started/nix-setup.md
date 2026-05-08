@@ -466,7 +466,7 @@ Set `auth = "oauth"` for servers using OAuth 2.1. Hermes implements the full PKC
 }
 ```
 
-Tokens are stored in `$HERMES_HOME/mcp-tokens/<server-name>.json` and persist across restarts and rebuilds.
+OAuth state is stored under `$HERMES_HOME/mcp-tokens/` and persists across restarts and rebuilds. Each OAuth server can have up to three files: `<server-name>.json` for tokens, `<server-name>.client.json` for client registration, and `<server-name>.meta.json` for discovered OAuth server metadata.
 
 <details>
 <summary><strong>Initial OAuth authorization on headless servers</strong></summary>
@@ -491,7 +491,7 @@ The container uses `--network=host`, so the OAuth callback listener on `127.0.0.
 
 ```bash
 hermes mcp add my-oauth-server --url https://mcp.example.com/mcp --auth oauth
-scp ~/.hermes/mcp-tokens/my-oauth-server{,.client}.json \
+scp ~/.hermes/mcp-tokens/my-oauth-server{,.client,.meta}.json \
     server:/var/lib/hermes/.hermes/mcp-tokens/
 # Ensure: chown hermes:hermes, chmod 0600
 ```

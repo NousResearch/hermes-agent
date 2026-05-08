@@ -242,6 +242,8 @@ mcp_servers:
 Behavior:
 - Hermes uses the MCP SDK's OAuth 2.1 PKCE flow (metadata discovery, dynamic client registration, token exchange, and refresh)
 - On first connect, a browser window opens for authorization
-- Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` and reused across sessions
+- OAuth state is persisted under `~/.hermes/mcp-tokens/` and reused across sessions: `<server>.json` for tokens, `<server>.client.json` for client registration, and `<server>.meta.json` for discovered OAuth server metadata such as the token endpoint
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
+
+If you pre-seed OAuth state on another machine, copy all three files for that server. Missing metadata is recoverable, but keeping `<server>.meta.json` avoids a cold-start discovery/refresh path that can otherwise fall back to the wrong token endpoint on some providers.

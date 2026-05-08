@@ -1059,7 +1059,8 @@ def run_doctor(args):
             check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
-    if _safe_which("npm"):
+    _npm_bin = _safe_which("npm")
+    if _npm_bin:
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),
             (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
@@ -1068,8 +1069,10 @@ def run_doctor(args):
             if not (npm_dir / "node_modules").exists():
                 continue
             try:
+                # Use resolved absolute path so Windows can execute
+                # npm.cmd (CreateProcessW can't run bare .cmd names).
                 audit_result = subprocess.run(
-                    ["npm", "audit", "--json"],
+                    [_npm_bin, "audit", "--json"],
                     cwd=str(npm_dir),
                     capture_output=True, text=True, timeout=30,
                 )

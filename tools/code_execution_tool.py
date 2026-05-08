@@ -235,10 +235,27 @@ _call_lock = threading.Lock()
 ''' + _COMMON_HELPERS + '''\
 
 def _connect():
+    """Connect to the parent's RPC server via the transport it picked.
+
+    HERMES_RPC_SOCKET can be either:
+      - a filesystem path (POSIX Unix domain socket — the default on
+        Linux and macOS)
+      - a string of the form ``tcp://127.0.0.1:<port>`` (Windows, where
+        AF_UNIX is unreliable — the parent falls back to loopback TCP)
+    """
     global _sock
     if _sock is None:
-        _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        _sock.connect(os.environ["HERMES_RPC_SOCKET"])
+        endpoint = os.environ["HERMES_RPC_SOCKET"]
+        if endpoint.startswith("tcp://"):
+            # tcp://host:port  (host is always 127.0.0.1 in practice — we
+            # only bind loopback server-side)
+            _host_port = endpoint[len("tcp://"):]
+            _host, _, _port = _host_port.rpartition(":")
+            _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            _sock.connect((_host or "127.0.0.1", int(_port)))
+        else:
+            _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            _sock.connect(endpoint)
         _sock.settimeout(300)
     return _sock
 
@@ -988,8 +1005,22 @@ def execute_code(
     # Use /tmp on macOS to avoid the long /var/folders/... path that pushes
     # Unix domain socket paths past the 104-byte macOS AF_UNIX limit.
     # On Linux, tempfile.gettempdir() already returns /tmp.
+    #
+    # Windows: Python 3.9+ added partial AF_UNIX support but the file-backed
+    # variant is flaky across Windows builds (requires Windows 10 1803+,
+    # still fails under some configurations, and the socket file can't live
+    # on the same temp drive as the script).  Fall back to loopback TCP —
+    # same ephemeral port, same 1-connection listen queue, same serialized
+    # request/response framing.  The generated client reads the transport
+    # selector from HERMES_RPC_SOCKET (path vs. ``tcp://host:port``).
     _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
-    sock_path = os.path.join(_sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
+    _use_tcp_rpc = _IS_WINDOWS
+    if _use_tcp_rpc:
+        sock_path = None  # not used on Windows; TCP endpoint stored below
+        rpc_endpoint = None  # set after bind()
+    else:
+        sock_path = os.path.join(_sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
+        rpc_endpoint = sock_path
 
     tool_call_log: list = []
     tool_call_counter = [0]  # mutable so the RPC thread can increment
@@ -1008,10 +1039,24 @@ def execute_code(
         with open(os.path.join(tmpdir, "script.py"), "w") as f:
             f.write(code)
 
-        # --- Start UDS server ---
-        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server_sock.bind(sock_path)
-        os.chmod(sock_path, 0o600)
+        # --- Start RPC server ---
+        # Two transports:
+        #   POSIX: AF_UNIX stream socket on sock_path, chmod 0600 for
+        #   owner-only access.  Filesystem permissions gate the socket.
+        #   Windows: AF_INET stream socket on 127.0.0.1 with an ephemeral
+        #   port.  No filesystem permission story, but loopback-only bind
+        #   means only the current user's processes (not remote) can
+        #   connect.  HERMES_RPC_SOCKET is set to ``tcp://127.0.0.1:<port>``
+        #   which the generated client parses to pick AF_INET.
+        if _use_tcp_rpc:
+            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_sock.bind(("127.0.0.1", 0))  # ephemeral port
+            _host, _port = server_sock.getsockname()[:2]
+            rpc_endpoint = f"tcp://{_host}:{_port}"
+        else:
+            server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server_sock.bind(sock_path)
+            os.chmod(sock_path, 0o600)
         server_sock.listen(1)
 
         rpc_thread = threading.Thread(
@@ -1053,7 +1098,7 @@ def execute_code(
             # Allow vars with known safe prefixes.
             if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
                 child_env[k] = v
-        child_env["HERMES_RPC_SOCKET"] = sock_path
+        child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Ensure the hermes-agent root is importable in the sandbox so
         # repo-root modules are available to child scripts.  We also prepend
@@ -1302,7 +1347,10 @@ def execute_code(
         import shutil
         shutil.rmtree(tmpdir, ignore_errors=True)
         try:
-            os.unlink(sock_path)
+            # Only UDS has a filesystem socket to unlink; TCP sockets are
+            # freed by server_sock.close() above.
+            if sock_path:
+                os.unlink(sock_path)
         except OSError:
             pass  # already cleaned up or never created
 

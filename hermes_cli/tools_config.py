@@ -531,8 +531,12 @@ def _run_post_setup(post_setup_key: str):
         if not node_modules.exists() and npm_bin:
             _print_info("    Installing Node.js dependencies for browser tools...")
             import subprocess
+            # Use the resolved npm_bin absolute path so subprocess.Popen can
+            # execute npm.cmd on Windows (CreateProcessW otherwise rejects
+            # batch shims).  On POSIX npm_bin is the plain path — same
+            # behaviour as before.
             result = subprocess.run(
-                ["npm", "install", "--silent"],
+                [npm_bin, "install", "--silent"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
@@ -631,11 +635,13 @@ def _run_post_setup(post_setup_key: str):
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
-        if not camofox_dir.exists() and shutil.which("npm"):
+        _npm_bin = shutil.which("npm")
+        if not camofox_dir.exists() and _npm_bin:
             _print_info("    Installing Camofox browser server...")
             import subprocess
+            # Absolute npm path so .cmd shim executes on Windows.
             result = subprocess.run(
-                ["npm", "install", "--silent"],
+                [_npm_bin, "install", "--silent"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:

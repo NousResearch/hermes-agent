@@ -9,6 +9,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
@@ -249,7 +250,15 @@ def _make_run_env(env: dict) -> dict:
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
-    if "/usr/bin" not in existing_path.split(":"):
+    # The "/usr/bin not already present → inject sane POSIX path" heuristic
+    # only makes sense on POSIX.  On Windows the PATH separator is ";"
+    # (the split(":") above turns a full Windows PATH into a single
+    # unrecognisable chunk, which then triggers prepending POSIX paths
+    # to a Windows PATH — completely wrong).  Skip the injection entirely
+    # on Windows; the native PATH already points at whatever shell
+    # Hermes is driving via _find_bash (Git Bash), and Git Bash itself
+    # prepends its MSYS2 /usr/bin equivalent via the shell-init files.
+    if not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":"):
         run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
 
     # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
@@ -371,7 +380,29 @@ class LocalEnvironment(BaseEnvironment):
         Check the environment configured for this backend first so callers can
         override the temp root explicitly (for example via terminal.env or a
         custom TMPDIR), then fall back to the host process environment.
+
+        **Windows:** hardcoded ``/tmp`` is wrong in two ways — native Python
+        can't open the path, and the Windows default temp (``%TEMP%``) often
+        contains spaces (``C:\\Users\\Some Name\\AppData\\Local\\Temp``) that
+        break unquoted bash interpolations.  Use a dedicated cache dir under
+        ``HERMES_HOME`` instead — single-word path, guaranteed to exist, same
+        string resolves in both Git Bash and native Python.
         """
+        if _IS_WINDOWS:
+            # Derive a Windows-safe temp dir under HERMES_HOME.  Using
+            # forward slashes makes the same string work unchanged in bash
+            # command interpolations AND in Python ``open()`` — Windows
+            # accepts forward slashes in filesystem paths, and we control
+            # the path so we can guarantee no spaces.
+            try:
+                from hermes_constants import get_hermes_home
+                cache_dir = get_hermes_home() / "cache" / "terminal"
+            except Exception:
+                cache_dir = Path(tempfile.gettempdir()) / "hermes_terminal"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            # Force forward slashes so the same string serves both contexts.
+            return str(cache_dir).replace("\\", "/")
+
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):

@@ -21,6 +21,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 import signal
 import subprocess
 
@@ -177,10 +178,15 @@ def check_whatsapp_requirements() -> bool:
     
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Check for Node.js
+    # Check for Node.js.  Resolve via shutil.which so we respect PATHEXT
+    # (node.exe vs node) and get a meaningful "not installed" signal
+    # instead of spawning a cmd flash on Windows.
+    _node = shutil.which("node")
+    if not _node:
+        return False
     try:
         result = subprocess.run(
-            ["node", "--version"],
+            [_node, "--version"],
             capture_output=True,
             text=True,
             timeout=5
@@ -464,9 +470,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
             bridge_dir = bridge_path.parent
             if not (bridge_dir / "node_modules").exists():
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
+                # Resolve npm path so Windows can execute the .cmd shim.
+                # shutil.which honours PATHEXT; on POSIX it returns the
+                # plain executable path.
+                _npm_bin = shutil.which("npm") or "npm"
                 try:
                     install_result = subprocess.run(
-                        ["npm", "install", "--silent"],
+                        [_npm_bin, "install", "--silent"],
                         cwd=str(bridge_dir),
                         capture_output=True,
                         text=True,

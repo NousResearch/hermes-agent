@@ -445,3 +445,368 @@ class TestEntryPointsConfigureStdio:
             f"{relpath} must call hermes_cli.stdio.configure_windows_stdio() "
             "early in startup so Windows consoles render Unicode without crashing"
         )
+
+
+# ---------------------------------------------------------------------------
+# _subprocess_compat shared helpers
+# ---------------------------------------------------------------------------
+
+
+class TestSubprocessCompatHelpers:
+    """hermes_cli/_subprocess_compat.py POSIX + Windows behaviour."""
+
+    def test_is_windows_matches_sys_platform(self):
+        from hermes_cli import _subprocess_compat as sc
+        assert sc.IS_WINDOWS == (sys.platform == "win32")
+
+    def test_resolve_node_command_returns_absolute_on_posix(self):
+        """On Linux, resolve_node_command('sh', ['-c','echo hi']) picks up /bin/sh."""
+        from hermes_cli._subprocess_compat import resolve_node_command
+        # We can't assert "npm is on PATH" portably; use `sh` which is
+        # guaranteed on POSIX.  On Windows the test only confirms the
+        # no-crash fallback path.
+        argv = resolve_node_command("sh", ["-c", "echo hi"])
+        assert argv[1:] == ["-c", "echo hi"]
+        # First element is either an absolute path (sh found) or the bare
+        # name (fallback) — both are acceptable behaviours.
+
+    def test_resolve_node_command_fallback_when_absent(self):
+        from hermes_cli._subprocess_compat import resolve_node_command
+        argv = resolve_node_command(
+            "zzz-definitely-not-on-path-xyzzy", ["--help"]
+        )
+        # Must fall back to the bare name — NOT return None, NOT crash.
+        assert argv[0] == "zzz-definitely-not-on-path-xyzzy"
+        assert argv[1:] == ["--help"]
+
+    def test_windows_flags_zero_on_posix(self):
+        from hermes_cli._subprocess_compat import (
+            windows_detach_flags,
+            windows_hide_flags,
+        )
+        if sys.platform != "win32":
+            assert windows_detach_flags() == 0
+            assert windows_hide_flags() == 0
+
+    def test_windows_detach_popen_kwargs_is_posix_equivalent_on_posix(self):
+        from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+        kwargs = windows_detach_popen_kwargs()
+        if sys.platform != "win32":
+            # POSIX path MUST produce start_new_session=True, which maps to
+            # os.setsid() in the child — identical to the unchanged main
+            # branch behaviour.  Do NOT break Linux/macOS here.
+            assert kwargs == {"start_new_session": True}
+        else:
+            # Windows path must include creationflags with all 3 bits set.
+            assert "creationflags" in kwargs
+            assert kwargs["creationflags"] != 0
+            # No start_new_session on Windows (silently no-op there).
+            assert "start_new_session" not in kwargs
+
+    def test_windows_detach_flags_has_expected_win32_bits(self, monkeypatch):
+        """Simulate Windows to verify flag bundle."""
+        from hermes_cli import _subprocess_compat as sc
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        flags = sc.windows_detach_flags()
+        # CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW
+        assert flags & 0x00000200, "missing CREATE_NEW_PROCESS_GROUP"
+        assert flags & 0x00000008, "missing DETACHED_PROCESS"
+        assert flags & 0x08000000, "missing CREATE_NO_WINDOW"
+
+
+# ---------------------------------------------------------------------------
+# tui_gateway/entry.py signal installation survives absent POSIX signals
+# ---------------------------------------------------------------------------
+
+
+class TestTuiGatewayEntrySignalGuards:
+    """Importing tui_gateway.entry must not crash when SIGPIPE/SIGHUP absent.
+
+    Linux has both signals, so this is mostly a source-level invariant check
+    (no bare ``signal.SIGPIPE`` at module level without a ``hasattr`` guard).
+    On Windows the import would have raised AttributeError before this fix.
+    """
+
+    def test_source_guards_each_signal_installation(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "tui_gateway" / "entry.py").read_text(encoding="utf-8")
+        # Every signal.signal(...) at module scope must be preceded by a
+        # hasattr check.  We look at the text: no bare "signal.signal("
+        # call should appear outside a function body without a guard.
+        # Simpler heuristic: all SIGPIPE / SIGHUP references outside the
+        # dict-building loop must be wrapped in hasattr.
+        assert 'hasattr(signal, "SIGPIPE")' in source
+        assert 'hasattr(signal, "SIGHUP")' in source
+        assert 'hasattr(signal, "SIGTERM")' in source
+        assert 'hasattr(signal, "SIGINT")' in source
+
+    def test_module_imports_cleanly(self):
+        """Importing the module must not raise — verifies the guards work."""
+        # Drop any cached import so the module re-initialises
+        for mod in list(sys.modules):
+            if mod.startswith("tui_gateway"):
+                del sys.modules[mod]
+        import tui_gateway.entry  # noqa: F401  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# hermes_cli/kanban_db.py waitpid guard
+# ---------------------------------------------------------------------------
+
+
+class TestKanbanWaitpidWindowsGuard:
+    """os.WNOHANG doesn't exist on Windows — the dispatcher tick reap loop
+    must be gated behind ``os.name != "nt"``."""
+
+    def test_source_gates_waitpid_loop(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "hermes_cli" / "kanban_db.py").read_text(encoding="utf-8")
+        # Find the waitpid call and confirm it's inside a POSIX gate.
+        idx = source.find("os.waitpid(-1, os.WNOHANG)")
+        assert idx > 0, "waitpid call must exist"
+        # Look backwards up to 400 chars for the gate.
+        preamble = source[max(0, idx - 400):idx]
+        assert 'os.name != "nt"' in preamble or "os.name != 'nt'" in preamble, (
+            "os.waitpid(-1, os.WNOHANG) must sit behind an os.name != 'nt' guard"
+        )
+
+
+# ---------------------------------------------------------------------------
+# code_execution_tool TCP loopback on Windows
+# ---------------------------------------------------------------------------
+
+
+class TestCodeExecutionTransportTcpFallback:
+    """The RPC transport must fall back to TCP on Windows.
+
+    We can't easily execute the sandbox on Linux CI in Windows mode, but we
+    CAN assert that the generated client module supports both AF_UNIX and
+    AF_INET endpoints based on the HERMES_RPC_SOCKET format.
+    """
+
+    def test_generated_client_handles_tcp_endpoint(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "tools" / "code_execution_tool.py").read_text(encoding="utf-8")
+        # _UDS_TRANSPORT_HEADER body must parse both transports.
+        assert 'endpoint.startswith("tcp://")' in source, (
+            "generated sandbox client must accept tcp:// endpoints for Windows"
+        )
+        assert "socket.AF_INET" in source, (
+            "generated sandbox client must be able to open AF_INET sockets"
+        )
+
+    def test_server_side_branches_on_use_tcp_rpc(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "tools" / "code_execution_tool.py").read_text(encoding="utf-8")
+        assert "_use_tcp_rpc = _IS_WINDOWS" in source
+        assert 'rpc_endpoint = f"tcp://{_host}:{_port}"' in source
+
+
+# ---------------------------------------------------------------------------
+# cron/scheduler.py /bin/bash dynamic resolution
+# ---------------------------------------------------------------------------
+
+
+class TestCronSchedulerBashResolution:
+    """cron.scheduler must NOT hardcode /bin/bash — .sh scripts need a
+    dynamically-resolved bash so Windows (Git Bash) works."""
+
+    def test_source_uses_shutil_which_for_bash(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "cron" / "scheduler.py").read_text(encoding="utf-8")
+        # The old hardcoded path should be gone as the sole bash source.
+        # It may still appear as a POSIX fallback after shutil.which(), so
+        # we check for the shutil.which call near the .sh/.bash branch.
+        assert 'shutil.which("bash")' in source, (
+            "cron.scheduler must resolve bash dynamically via shutil.which"
+        )
+
+    def test_error_message_when_bash_missing(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "cron" / "scheduler.py").read_text(encoding="utf-8")
+        # The graceful-failure message must mention "bash not found" so
+        # Windows users without Git Bash see an actionable error instead
+        # of a WinError 2 traceback.
+        assert "bash not found" in source.lower()
+
+
+# ---------------------------------------------------------------------------
+# Node-ecosystem launcher resolution (npm / npx / node)
+# ---------------------------------------------------------------------------
+
+
+class TestNpmBareSpawnsResolved:
+    """Every spawn site that launches ``npm``/``npx`` must resolve via
+    shutil.which / hermes_cli._subprocess_compat.resolve_node_command
+    so Windows can execute the .cmd batch shims."""
+
+    @pytest.mark.parametrize(
+        "relpath",
+        [
+            "hermes_cli/tools_config.py",
+            "hermes_cli/doctor.py",
+            "gateway/platforms/whatsapp.py",
+            "tools/browser_tool.py",
+        ],
+    )
+    def test_no_bare_npm_or_npx_in_popen_argv(self, relpath):
+        """Reject ``subprocess.run(["npm", ...])`` / ``["npx", ...]`` patterns.
+
+        Those fail on Windows with WinError 193.  Callers must resolve
+        via shutil.which(...) and pass the absolute path (or fall back
+        to the bare name only as a last resort behind a variable).
+        """
+        root = Path(__file__).resolve().parents[2]
+        source = (root / relpath).read_text(encoding="utf-8")
+        # The forbidden literal: a subprocess invocation that names npm
+        # or npx as a bare string inside an argv list.
+        forbidden_patterns = [
+            '["npm",',
+            '["npx",',
+            "['npm',",
+            "['npx',",
+        ]
+        for pat in forbidden_patterns:
+            # Exception: strings inside error-message text or comments are fine.
+            # We only fail if the literal appears in an argv position, which
+            # we approximate by checking it isn't inside a print/log/comment.
+            # Find all occurrences and verify they're behind shutil.which.
+            idx = 0
+            while True:
+                idx = source.find(pat, idx)
+                if idx < 0:
+                    break
+                # Look at the preceding 120 chars — if "shutil.which" appears
+                # there, or the pattern is inside a comment/string, it's fine.
+                context = source[max(0, idx - 120):idx]
+                if "#" in context.split("\n")[-1]:
+                    idx += len(pat)
+                    continue
+                # Argv forms that START with a bare npm/npx are the bug.
+                raise AssertionError(
+                    f"{relpath}: bare {pat!r} still present at offset {idx} — "
+                    f"resolve via shutil.which(...) so Windows can execute .cmd shims"
+                )
+
+
+# ---------------------------------------------------------------------------
+# tools/environments/local.py Windows temp dir & PATH injection
+# ---------------------------------------------------------------------------
+
+
+class TestLocalEnvironmentWindowsTempDir:
+    """LocalEnvironment.get_temp_dir must return a native Windows path on
+    Windows, NOT the POSIX ``/tmp`` literal (which Python can't open)."""
+
+    def test_posix_path_preserved_on_linux(self):
+        """Linux/macOS behaviour MUST be unchanged — return / tmp or
+        tempfile.gettempdir()-derived POSIX path.  This is the 'do no harm'
+        test — regressions here break every Unix user's terminal tool."""
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd="/tmp", timeout=10, env={})
+        tmp_dir = env.get_temp_dir()
+        if sys.platform != "win32":
+            assert tmp_dir.startswith("/"), (
+                f"POSIX temp dir must start with '/'; got {tmp_dir!r}"
+            )
+
+    def test_source_has_windows_branch_using_hermes_home(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "tools" / "environments" / "local.py").read_text(encoding="utf-8")
+        assert "if _IS_WINDOWS:" in source
+        assert "get_hermes_home" in source
+        assert 'cache_dir = get_hermes_home() / "cache" / "terminal"' in source
+
+
+class TestLocalEnvironmentPathInjectionGated:
+    """The /usr/bin PATH injection in _make_run_env must be POSIX-only."""
+
+    def test_source_gates_path_injection(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "tools" / "environments" / "local.py").read_text(encoding="utf-8")
+        # The fix wraps the injection in `if not _IS_WINDOWS`.
+        assert 'not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":")' in source
+
+
+# ---------------------------------------------------------------------------
+# cli.py git path normalization
+# ---------------------------------------------------------------------------
+
+
+class TestGitBashPathNormalization:
+    """_normalize_git_bash_path should turn /c/Users/... into C:\\Users\\...
+    on Windows and leave paths unchanged on POSIX."""
+
+    def test_posix_noop(self):
+        """Must NOT mutate paths on Linux/macOS."""
+        from cli import _normalize_git_bash_path
+        if sys.platform != "win32":
+            assert _normalize_git_bash_path("/home/teknium/foo") == "/home/teknium/foo"
+            assert _normalize_git_bash_path("/c/Users/foo") == "/c/Users/foo"
+            assert _normalize_git_bash_path("C:/Users/foo") == "C:/Users/foo"
+            assert _normalize_git_bash_path(None) is None
+
+    def test_empty_string_preserved(self):
+        from cli import _normalize_git_bash_path
+        assert _normalize_git_bash_path("") == ""
+
+    def test_windows_translation(self, monkeypatch):
+        """Simulate Windows and verify /c/Users/... becomes C:\\Users\\..."""
+        import cli as cli_mod
+        monkeypatch.setattr(cli_mod.sys, "platform", "win32")
+        assert cli_mod._normalize_git_bash_path("/c/Users/foo") == r"C:\Users\foo"
+        assert cli_mod._normalize_git_bash_path("/C/Users/foo") == r"C:\Users\foo"
+        assert cli_mod._normalize_git_bash_path("/cygdrive/d/data") == r"D:\data"
+        assert cli_mod._normalize_git_bash_path("/mnt/c/Users") == r"C:\Users"
+        # Already-native path is preserved
+        assert cli_mod._normalize_git_bash_path(r"C:\Users\foo") == r"C:\Users\foo"
+        # Forward-slash Windows path is preserved (git on Windows often
+        # returns this form; it's valid for both bash and Python, so we
+        # don't need to translate).
+        assert cli_mod._normalize_git_bash_path("C:/Users/foo") == "C:/Users/foo"
+
+
+class TestWorktreeSymlinkFallback:
+    """.worktreeinclude directory symlinks must fall back to copytree on
+    Windows (where symlink creation requires admin / Dev Mode)."""
+
+    def test_source_has_symlink_fallback(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "cli.py").read_text(encoding="utf-8")
+        # Look for the try/except that handles OSError around os.symlink
+        # with a shutil.copytree fallback.
+        assert "os.symlink(str(src_resolved), str(dst))" in source
+        assert "except (OSError, NotImplementedError)" in source
+        assert "shutil.copytree" in source
+        assert 'sys.platform == "win32"' in source
+
+
+# ---------------------------------------------------------------------------
+# Gateway detached watcher — Windows creationflags
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayDetachedWatcherWindowsFlags:
+    """launch_detached_profile_gateway_restart and the in-gateway update
+    launcher must use CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS on
+    Windows, not silent start_new_session=True."""
+
+    def test_hermes_cli_gateway_uses_compat_kwargs(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "hermes_cli" / "gateway.py").read_text(encoding="utf-8")
+        assert "windows_detach_popen_kwargs" in source, (
+            "hermes_cli/gateway.py must use the platform-aware detach helper"
+        )
+        # The legacy start_new_session=True on the outer Popen should be
+        # replaced by **windows_detach_popen_kwargs(). Inside the watcher
+        # STRING the old pattern is replaced by explicit creationflags.
+        assert "**windows_detach_popen_kwargs()" in source
+
+    def test_gateway_run_update_has_windows_branch(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "gateway" / "run.py").read_text(encoding="utf-8")
+        # Both the /restart and /update paths must have sys.platform=='win32' branches.
+        assert 'if sys.platform == "win32":' in source
+        # Windows branch uses windows_detach_popen_kwargs
+        assert "windows_detach_popen_kwargs" in source

@@ -448,21 +448,22 @@ object HermesAutomationBridge {
             return errorJson("create_shizuku_action_task shizuku_action must not contain NUL bytes")
         }
 
-        val packageName = stringArgument(
-            arguments,
-            "package_name",
-            "packageName",
-            "package",
-            "app_package",
-            "application_id",
-        )?.trim() ?: return errorJson("create_shizuku_action_task requires a package_name argument")
-        if (packageName.indexOf('\u0000') >= 0) {
-            return errorJson("create_shizuku_action_task package_name must not contain NUL bytes")
-        }
-
         val payload = JSONObject()
             .put("shizuku_action", shizukuAction)
-            .put("package_name", packageName)
+        if (shizukuAction in SHIZUKU_PACKAGE_ACTIONS) {
+            val packageName = stringArgument(
+                arguments,
+                "package_name",
+                "packageName",
+                "package",
+                "app_package",
+                "application_id",
+            )?.trim() ?: return errorJson("create_shizuku_action_task $shizukuAction requires a package_name argument")
+            if (packageName.indexOf('\u0000') >= 0) {
+                return errorJson("create_shizuku_action_task package_name must not contain NUL bytes")
+            }
+            payload.put("package_name", packageName)
+        }
         if (shizukuAction in SHIZUKU_PERMISSION_ACTIONS) {
             val permission = stringArgument(arguments, "permission", "permission_name", "permissionName", "android_permission")
                 ?.trim()
@@ -472,7 +473,7 @@ object HermesAutomationBridge {
             }
             payload.put("permission", permission)
         }
-        if (shizukuAction == "set_app_enabled") {
+        if (shizukuAction in SHIZUKU_TOGGLE_STATE_ACTIONS) {
             when {
                 arguments.has("target_enabled") && !arguments.isNull("target_enabled") ->
                     payload.put("target_enabled", arguments.optBoolean("target_enabled"))
@@ -496,7 +497,7 @@ object HermesAutomationBridge {
 
         val recordArguments = JSONObject(arguments.toString())
             .put("use_shizuku", true)
-        if (shizukuAction == "set_app_enabled" && !recordArguments.has("automation_enabled")) {
+        if (shizukuAction in SHIZUKU_TOGGLE_STATE_ACTIONS && !recordArguments.has("automation_enabled")) {
             recordArguments.put("automation_enabled", true)
         }
         return createRecordJson(
@@ -504,7 +505,7 @@ object HermesAutomationBridge {
             arguments = recordArguments,
             actionType = ACTION_TYPE_SHIZUKU_ACTION,
             payload = payload.toString(),
-            defaultLabel = "Hermes Shizuku app automation",
+            defaultLabel = "Hermes Shizuku automation",
             forceUseShizuku = true,
         )
     }
@@ -1461,7 +1462,9 @@ object HermesAutomationBridge {
         val shizukuAction = HermesPrivilegedAccessBridge.normalizeStructuredAction(rawAction)
             ?: return JSONObject(errorJson("Unsupported saved Shizuku action: $rawAction"))
         val actionArguments = JSONObject()
-            .put("package_name", expandVariables(payload.optString("package_name"), variables))
+        if (shizukuAction in SHIZUKU_PACKAGE_ACTIONS) {
+            actionArguments.put("package_name", expandVariables(payload.optString("package_name"), variables))
+        }
         if (shizukuAction in SHIZUKU_PERMISSION_ACTIONS && payload.has("permission")) {
             actionArguments.put("permission", expandVariables(payload.optString("permission"), variables))
         }
@@ -4094,8 +4097,36 @@ object HermesAutomationBridge {
         "enable_app",
         "disable_app",
         "set_app_enabled",
+        "set_wifi_enabled",
+        "enable_wifi",
+        "disable_wifi",
+        "set_bluetooth_enabled",
+        "enable_bluetooth",
+        "disable_bluetooth",
+        "set_mobile_data_enabled",
+        "enable_mobile_data",
+        "disable_mobile_data",
+        "set_airplane_mode_enabled",
+        "enable_airplane_mode",
+        "disable_airplane_mode",
+    )
+    private val SHIZUKU_PACKAGE_ACTIONS = setOf(
+        "grant_runtime_permission",
+        "revoke_runtime_permission",
+        "force_stop_app",
+        "clear_app_data",
+        "enable_app",
+        "disable_app",
+        "set_app_enabled",
     )
     private val SHIZUKU_PERMISSION_ACTIONS = setOf("grant_runtime_permission", "revoke_runtime_permission")
+    private val SHIZUKU_TOGGLE_STATE_ACTIONS = setOf(
+        "set_app_enabled",
+        "set_wifi_enabled",
+        "set_bluetooth_enabled",
+        "set_mobile_data_enabled",
+        "set_airplane_mode_enabled",
+    )
     private val UI_GLOBAL_ACTIONS = setOf("back", "home", "recents", "notifications", "quick_settings")
     private val UI_SELECTOR_ACTIONS = setOf("click", "long_click", "focus", "set_text", "scroll_forward", "scroll_backward")
     private val UI_AUTOMATION_ACTIONS = UI_GLOBAL_ACTIONS + UI_SELECTOR_ACTIONS

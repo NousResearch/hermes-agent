@@ -56,6 +56,18 @@ private val DEFAULT_PRIVILEGED_ACTIONS = listOf(
     "enable_app",
     "disable_app",
     "set_app_enabled",
+    "set_wifi_enabled",
+    "enable_wifi",
+    "disable_wifi",
+    "set_bluetooth_enabled",
+    "enable_bluetooth",
+    "disable_bluetooth",
+    "set_mobile_data_enabled",
+    "enable_mobile_data",
+    "disable_mobile_data",
+    "set_airplane_mode_enabled",
+    "enable_airplane_mode",
+    "disable_airplane_mode",
 )
 
 object HermesPrivilegedAccessBridge {
@@ -139,12 +151,14 @@ object HermesPrivilegedAccessBridge {
         val appContext = context.applicationContext
         val packageName = stringArgument(arguments, "package_name", "packageName", "package", "app_package", "application_id")
             ?.trim()
-            ?: return structuredError(normalizedAction, "requires package_name")
-        if (!ANDROID_PACKAGE_OR_PERMISSION_REGEX.matches(packageName)) {
+        if (normalizedAction in PACKAGE_ACTIONS && packageName.isNullOrBlank()) {
+            return structuredError(normalizedAction, "requires package_name")
+        }
+        if (!packageName.isNullOrBlank() && !ANDROID_PACKAGE_OR_PERMISSION_REGEX.matches(packageName)) {
             return structuredError(normalizedAction, "package_name is not a valid Android package name", packageName = packageName)
         }
         if (normalizedAction in SELF_PROTECTING_ACTIONS && packageName == appContext.packageName) {
-            return structuredError(normalizedAction, "Hermes will not disable or force-stop itself", packageName = packageName)
+            return structuredError(normalizedAction, "Hermes will not disable, force-stop, or clear itself", packageName = packageName)
         }
 
         val permission = if (normalizedAction in PERMISSION_ACTIONS) {
@@ -176,6 +190,18 @@ object HermesPrivilegedAccessBridge {
             } else {
                 "pm disable-user $packageName"
             }
+            "set_wifi_enabled" -> wifiCommand(enabledArgument(arguments))
+            "enable_wifi" -> wifiCommand(true)
+            "disable_wifi" -> wifiCommand(false)
+            "set_bluetooth_enabled" -> bluetoothCommand(enabledArgument(arguments))
+            "enable_bluetooth" -> bluetoothCommand(true)
+            "disable_bluetooth" -> bluetoothCommand(false)
+            "set_mobile_data_enabled" -> mobileDataCommand(enabledArgument(arguments))
+            "enable_mobile_data" -> mobileDataCommand(true)
+            "disable_mobile_data" -> mobileDataCommand(false)
+            "set_airplane_mode_enabled" -> airplaneModeCommand(enabledArgument(arguments))
+            "enable_airplane_mode" -> airplaneModeCommand(true)
+            "disable_airplane_mode" -> airplaneModeCommand(false)
             else -> return structuredError(normalizedAction, "unsupported action after normalization", packageName = packageName)
         }
         val shellResult = JSONObject(runShellCommandJson(appContext, command, arguments.optInt("timeout_seconds", DEFAULT_SHELL_TIMEOUT_SECONDS)))
@@ -394,6 +420,26 @@ object HermesPrivilegedAccessBridge {
         return state !in setOf("false", "off", "disabled", "disable", "0")
     }
 
+    private fun wifiCommand(enabled: Boolean): String {
+        return if (enabled) "svc wifi enable" else "svc wifi disable"
+    }
+
+    private fun bluetoothCommand(enabled: Boolean): String {
+        return if (enabled) "cmd bluetooth_manager enable" else "cmd bluetooth_manager disable"
+    }
+
+    private fun mobileDataCommand(enabled: Boolean): String {
+        return if (enabled) "svc data enable" else "svc data disable"
+    }
+
+    private fun airplaneModeCommand(enabled: Boolean): String {
+        return if (enabled) {
+            "cmd connectivity airplane-mode enable || (settings put global airplane_mode_on 1 && am broadcast -a android.intent.action.AIRPLANE_MODE --ez state true)"
+        } else {
+            "cmd connectivity airplane-mode disable || (settings put global airplane_mode_on 0 && am broadcast -a android.intent.action.AIRPLANE_MODE --ez state false)"
+        }
+    }
+
     fun normalizeStructuredAction(action: String): String? {
         val normalized = action.trim().lowercase().replace("-", "_").replace(" ", "_")
         return STRUCTURED_ACTION_SYNONYMS[normalized] ?: normalized.takeIf { it in STRUCTURED_PRIVILEGED_ACTIONS }
@@ -424,6 +470,18 @@ object HermesPrivilegedAccessBridge {
         "enable_app",
         "disable_app",
         "set_app_enabled",
+        "set_wifi_enabled",
+        "enable_wifi",
+        "disable_wifi",
+        "set_bluetooth_enabled",
+        "enable_bluetooth",
+        "disable_bluetooth",
+        "set_mobile_data_enabled",
+        "enable_mobile_data",
+        "disable_mobile_data",
+        "set_airplane_mode_enabled",
+        "enable_airplane_mode",
+        "disable_airplane_mode",
     )
     private val STRUCTURED_ACTION_SYNONYMS = mapOf(
         "grant_permission" to "grant_runtime_permission",
@@ -440,6 +498,31 @@ object HermesPrivilegedAccessBridge {
         "disable_package" to "disable_app",
         "disable_user_app" to "disable_app",
         "pm_disable" to "disable_app",
+        "set_wifi" to "set_wifi_enabled",
+        "wifi_enabled" to "set_wifi_enabled",
+        "wifi_on" to "enable_wifi",
+        "wifi_off" to "disable_wifi",
+        "set_bluetooth" to "set_bluetooth_enabled",
+        "bluetooth_enabled" to "set_bluetooth_enabled",
+        "bluetooth_on" to "enable_bluetooth",
+        "bluetooth_off" to "disable_bluetooth",
+        "set_mobile_data" to "set_mobile_data_enabled",
+        "mobile_data_enabled" to "set_mobile_data_enabled",
+        "mobile_data_on" to "enable_mobile_data",
+        "mobile_data_off" to "disable_mobile_data",
+        "set_airplane_mode" to "set_airplane_mode_enabled",
+        "airplane_mode_enabled" to "set_airplane_mode_enabled",
+        "airplane_mode_on" to "enable_airplane_mode",
+        "airplane_mode_off" to "disable_airplane_mode",
+    )
+    private val PACKAGE_ACTIONS = setOf(
+        "grant_runtime_permission",
+        "revoke_runtime_permission",
+        "force_stop_app",
+        "clear_app_data",
+        "enable_app",
+        "disable_app",
+        "set_app_enabled",
     )
     private val PERMISSION_ACTIONS = setOf("grant_runtime_permission", "revoke_runtime_permission")
     private val SELF_PROTECTING_ACTIONS = setOf("force_stop_app", "clear_app_data", "disable_app", "set_app_enabled")

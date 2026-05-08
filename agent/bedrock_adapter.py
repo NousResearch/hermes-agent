@@ -45,6 +45,13 @@ _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
 
 
+def _get_botocore_session():
+    """Return botocore's default session, or raise ImportError if unavailable."""
+    import botocore.session
+
+    return botocore.session.get_session()
+
+
 def _require_boto3():
     """Import boto3, raising a clear error if not installed."""
     try:
@@ -245,8 +252,7 @@ def resolve_aws_auth_env_var(env: Optional[Dict[str, str]] = None) -> Optional[s
     # No env vars — check if boto3 can resolve credentials via IMDS or other
     # implicit sources (EC2 instance role, ECS task role, Lambda, etc.)
     try:
-        import botocore.session
-        session = botocore.session.get_session()
+        session = _get_botocore_session()
         credentials = session.get_credentials()
         if credentials is not None:
             resolved = credentials.get_frozen_credentials()
@@ -276,8 +282,7 @@ def has_aws_credentials(env: Optional[Dict[str, str]] = None) -> bool:
     # metadata (IMDS), ECS container credentials, and other implicit sources
     # that don't set environment variables.
     try:
-        import botocore.session
-        session = botocore.session.get_session()
+        session = _get_botocore_session()
         credentials = session.get_credentials()
         if credentials is not None:
             resolved = credentials.get_frozen_credentials()
@@ -310,8 +315,7 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
     if explicit:
         return explicit
     try:
-        import botocore.session
-        region = botocore.session.get_session().get_config_variable("region")
+        region = _get_botocore_session().get_config_variable("region")
         if region:
             return region
     except Exception:

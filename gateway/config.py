@@ -108,6 +108,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    GOOGLE_CHAT = "google_chat"
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -389,6 +390,9 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     ),
     Platform.YUANBAO: lambda cfg: bool(
         cfg.extra.get("app_id") and cfg.extra.get("app_secret")
+    ),
+    Platform.GOOGLE_CHAT: lambda cfg: bool(
+        cfg.extra.get("project_id") and cfg.extra.get("subscription_name")
     ),
     Platform.DINGTALK: lambda cfg: bool(
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
@@ -1362,6 +1366,31 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             chat_id=sms_home,
             name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
             thread_id=os.getenv("SMS_HOME_CHANNEL_THREAD_ID") or None,
+        )
+
+    # Google Chat (plugin platform, but keep env-only config independent of
+    # plugin-discovery order so GatewayConfig can answer status queries using
+    # the stable Platform enum member.)
+    google_chat_project_id = os.getenv("GOOGLE_CHAT_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+    google_chat_subscription = os.getenv("GOOGLE_CHAT_SUBSCRIPTION_NAME") or os.getenv("GOOGLE_CHAT_SUBSCRIPTION")
+    if google_chat_project_id and google_chat_subscription:
+        if Platform.GOOGLE_CHAT not in config.platforms:
+            config.platforms[Platform.GOOGLE_CHAT] = PlatformConfig()
+        config.platforms[Platform.GOOGLE_CHAT].enabled = True
+        config.platforms[Platform.GOOGLE_CHAT].extra.update({
+            "project_id": google_chat_project_id,
+            "subscription_name": google_chat_subscription,
+        })
+        google_chat_sa = os.getenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if google_chat_sa:
+            config.platforms[Platform.GOOGLE_CHAT].extra["service_account_json"] = google_chat_sa
+    google_chat_home = os.getenv("GOOGLE_CHAT_HOME_CHANNEL")
+    if google_chat_home and Platform.GOOGLE_CHAT in config.platforms:
+        config.platforms[Platform.GOOGLE_CHAT].home_channel = HomeChannel(
+            platform=Platform.GOOGLE_CHAT,
+            chat_id=google_chat_home,
+            name=os.getenv("GOOGLE_CHAT_HOME_CHANNEL_NAME", "Home"),
+            thread_id=os.getenv("GOOGLE_CHAT_HOME_CHANNEL_THREAD_ID") or None,
         )
 
     # API Server

@@ -120,6 +120,9 @@ except ImportError:
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
     FeishuWSClient = None  # type: ignore[assignment]
+    AccessTokenType = None  # type: ignore[assignment]
+    HttpMethod = None  # type: ignore[assignment]
+    BaseRequest = None  # type: ignore[assignment]
     FEISHU_DOMAIN = None  # type: ignore[assignment]
     LARK_DOMAIN = None  # type: ignore[assignment]
 
@@ -3878,13 +3881,20 @@ class FeishuAdapter(BasePlatformAdapter):
         # extra scopes required. This is the same endpoint the onboarding wizard
         # uses via probe_bot().
         try:
-            req = (
-                BaseRequest.builder()
-                .http_method(HttpMethod.GET)
-                .uri("/open-apis/bot/v3/info")
-                .token_types({AccessTokenType.TENANT})
-                .build()
-            )
+            if BaseRequest is not None:
+                req = (
+                    BaseRequest.builder()
+                    .http_method(HttpMethod.GET)
+                    .uri("/open-apis/bot/v3/info")
+                    .token_types({AccessTokenType.TENANT})
+                    .build()
+                )
+            else:
+                req = SimpleNamespace(
+                    http_method="GET",
+                    uri="/open-apis/bot/v3/info",
+                    token_types={"tenant"},
+                )
             resp = await asyncio.to_thread(self._client.request, req)
             content = getattr(getattr(resp, "raw", None), "content", None)
             if content:

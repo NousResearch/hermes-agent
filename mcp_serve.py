@@ -356,7 +356,9 @@ class EventBridge:
         except OSError:
             sj_mtime = 0.0
 
-        if sj_mtime != self._sessions_json_mtime:
+        previous_sessions_json_mtime = self._sessions_json_mtime
+        sessions_changed = sj_mtime != previous_sessions_json_mtime
+        if sessions_changed:
             self._sessions_json_mtime = sj_mtime
             self._cached_sessions_index = _load_sessions_index()
 
@@ -372,7 +374,7 @@ class EventBridge:
         except OSError:
             db_mtime = 0.0
 
-        if db_mtime == self._state_db_mtime and sj_mtime == self._sessions_json_mtime:
+        if not sessions_changed and db_mtime == self._state_db_mtime:
             return  # Nothing changed since last poll — skip entirely
 
         self._state_db_mtime = db_mtime

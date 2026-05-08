@@ -97,6 +97,14 @@ def save_state(data: Dict[str, Any]) -> None:
     path = _state_file()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Best-effort cleanup of stale temp files from interrupted previous
+        # writes.  Normal success below replaces its own temp path atomically;
+        # this only handles process-kill / test-time interruption leftovers.
+        for stale in path.parent.glob(".curator_state_*.tmp"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".curator_state_", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:

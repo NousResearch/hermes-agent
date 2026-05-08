@@ -207,12 +207,18 @@ class SessionManager:
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
-        """Create a new session with a unique ID and a fresh AIAgent."""
+    def create_session(self, cwd: str = ".", session_id: str | None = None) -> SessionState:
+        """Create a new session with a fresh AIAgent.
+
+        When an ACP client resumes an unknown session id, the protocol response
+        has no field for returning a replacement id.  In that case callers can
+        pass the requested id here so the subsequent prompt using that id still
+        resolves to the newly-created session.
+        """
         import threading
 
         cwd = _translate_acp_cwd(cwd)
-        session_id = str(uuid.uuid4())
+        session_id = str(session_id or uuid.uuid4()).strip() or str(uuid.uuid4())
         agent = self._make_agent(session_id=session_id, cwd=cwd)
         state = SessionState(
             session_id=session_id,

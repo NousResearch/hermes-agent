@@ -4,6 +4,7 @@ description: "Use when building creative browser demos with @chenglou/pretext â€
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [creative-coding, typography, pretext, ascii-art, canvas, generative, text-layout, kinetic-typography]

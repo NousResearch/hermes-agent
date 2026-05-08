@@ -809,6 +809,12 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "reactions" in slack_cfg and not os.getenv("SLACK_REACTIONS"):
                     os.environ["SLACK_REACTIONS"] = str(slack_cfg["reactions"]).lower()
+                # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
+                ac = slack_cfg.get("allowed_channels")
+                if ac is not None and not os.getenv("SLACK_ALLOWED_CHANNELS"):
+                    if isinstance(ac, list):
+                        ac = ",".join(str(v) for v in ac)
+                    os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
 
             # Discord settings → env vars (env vars take precedence)
             discord_cfg = yaml_cfg.get("discord", {})
@@ -893,6 +899,12 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+                # allowed_chats: if set, bot ONLY responds in these group chats (whitelist)
+                ac = telegram_cfg.get("allowed_chats")
+                if ac is not None and not os.getenv("TELEGRAM_ALLOWED_CHATS"):
+                    if isinstance(ac, list):
+                        ac = ",".join(str(v) for v in ac)
+                    os.environ["TELEGRAM_ALLOWED_CHATS"] = str(ac)
                 ignored_threads = telegram_cfg.get("ignored_threads")
                 if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
                     if isinstance(ignored_threads, list):
@@ -976,11 +988,34 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["DINGTALK_FREE_RESPONSE_CHATS"] = str(frc)
+                # allowed_chats: if set, bot ONLY responds in these group chats (whitelist)
+                ac = dingtalk_cfg.get("allowed_chats")
+                if ac is not None and not os.getenv("DINGTALK_ALLOWED_CHATS"):
+                    if isinstance(ac, list):
+                        ac = ",".join(str(v) for v in ac)
+                    os.environ["DINGTALK_ALLOWED_CHATS"] = str(ac)
                 allowed = dingtalk_cfg.get("allowed_users")
                 if allowed is not None and not os.getenv("DINGTALK_ALLOWED_USERS"):
                     if isinstance(allowed, list):
                         allowed = ",".join(str(v) for v in allowed)
                     os.environ["DINGTALK_ALLOWED_USERS"] = str(allowed)
+
+            # Mattermost settings → env vars (env vars take precedence)
+            mattermost_cfg = yaml_cfg.get("mattermost", {})
+            if isinstance(mattermost_cfg, dict):
+                if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
+                    os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
+                frc = mattermost_cfg.get("free_response_channels")
+                if frc is not None and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["MATTERMOST_FREE_RESPONSE_CHANNELS"] = str(frc)
+                # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
+                ac = mattermost_cfg.get("allowed_channels")
+                if ac is not None and not os.getenv("MATTERMOST_ALLOWED_CHANNELS"):
+                    if isinstance(ac, list):
+                        ac = ",".join(str(v) for v in ac)
+                    os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
 
             # Matrix settings → env vars (env vars take precedence)
             matrix_cfg = yaml_cfg.get("matrix", {})
@@ -992,6 +1027,12 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["MATRIX_FREE_RESPONSE_ROOMS"] = str(frc)
+                # allowed_rooms: if set, bot ONLY responds in these rooms (whitelist)
+                ar = matrix_cfg.get("allowed_rooms")
+                if ar is not None and not os.getenv("MATRIX_ALLOWED_ROOMS"):
+                    if isinstance(ar, list):
+                        ar = ",".join(str(v) for v in ar)
+                    os.environ["MATRIX_ALLOWED_ROOMS"] = str(ar)
                 if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
                     os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
@@ -1152,10 +1193,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     
     # WhatsApp (typically uses different auth mechanism)
     whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in ("true", "1", "yes")
-    if whatsapp_enabled:
-        if Platform.WHATSAPP not in config.platforms:
-            config.platforms[Platform.WHATSAPP] = PlatformConfig()
-        config.platforms[Platform.WHATSAPP].enabled = True
+    whatsapp_disabled_explicitly = os.getenv("WHATSAPP_ENABLED", "").lower() in ("false", "0", "no")
+    if Platform.WHATSAPP in config.platforms:
+        # YAML config exists — respect explicit disable
+        wa_cfg = config.platforms[Platform.WHATSAPP]
+        if whatsapp_disabled_explicitly:
+            wa_cfg.enabled = False
+        elif whatsapp_enabled:
+            wa_cfg.enabled = True
+        # else: keep whatever the YAML set
+    elif whatsapp_enabled:
+        config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=True)
     whatsapp_home = os.getenv("WHATSAPP_HOME_CHANNEL")
     if whatsapp_home and Platform.WHATSAPP in config.platforms:
         config.platforms[Platform.WHATSAPP].home_channel = HomeChannel(
@@ -1616,7 +1664,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Registry-driven enable for plugin platforms.  Built-ins have explicit
     # blocks above; plugins expose check_fn() which is the single source of
     # truth for "are my env vars set?".  When it returns True, ensure the
-    # platform is enabled so start() will create its adapter.
+    # platform is enabled so start() will create its adapter.  Plugins that
+    # need to seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's
+    # project_id / subscription_name) can supply ``env_enablement_fn`` on
+    # their PlatformEntry — called here BEFORE adapter construction.
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
@@ -1632,5 +1683,31 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
             config.platforms[platform].enabled = True
+            # Seed extras from env if the plugin opted in.
+            if entry.env_enablement_fn is not None:
+                try:
+                    seed = entry.env_enablement_fn()
+                except Exception as e:
+                    logger.debug(
+                        "env_enablement_fn for %s raised: %s", entry.name, e
+                    )
+                    seed = None
+                if isinstance(seed, dict) and seed:
+                    # Extract the home_channel dict (if provided) so we wire it
+                    # up as a proper HomeChannel dataclass.  Everything else is
+                    # merged into ``extra``.
+                    home = seed.pop("home_channel", None)
+                    config.platforms[platform].extra.update(seed)
+                    if isinstance(home, dict) and home.get("chat_id"):
+                        config.platforms[platform].home_channel = HomeChannel(
+                            platform=platform,
+                            chat_id=str(home["chat_id"]),
+                            name=str(home.get("name") or "Home"),
+                            thread_id=(
+                                str(home["thread_id"])
+                                if home.get("thread_id")
+                                else None
+                            ),
+                        )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)

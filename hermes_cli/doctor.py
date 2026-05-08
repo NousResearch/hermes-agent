@@ -91,6 +91,15 @@ def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     return steps
 
 
+def _termux_install_all_fallback_notes() -> list[str]:
+    return [
+        "Termux install profile: use .[termux-all] for broad compatibility (installer default on Termux).",
+        "Matrix E2EE extra is excluded on Termux (python-olm currently fails to build).",
+        "Local faster-whisper extra is excluded on Termux (ctranslate2/av build path unavailable).",
+        "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY).",
+    ]
+
+
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
@@ -1084,6 +1093,11 @@ def run_doctor(args):
             except Exception:
                 pass
 
+    if _is_termux():
+        check_info("Termux compatibility fallbacks:")
+        for note in _termux_install_all_fallback_notes():
+            check_info(note)
+
     # =========================================================================
     # Check: API connectivity
     # =========================================================================
@@ -1225,6 +1239,16 @@ def run_doctor(args):
                     headers=_headers,
                     timeout=10,
                 )
+                if (
+                    _pname == "Alibaba/DashScope"
+                    and not _base
+                    and _resp.status_code == 401
+                ):
+                    _resp = httpx.get(
+                        "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+                        headers=_headers,
+                        timeout=10,
+                    )
                 if _resp.status_code == 200:
                     print(f"\r  {color('✓', Colors.GREEN)} {_label}                          ")
                 elif _resp.status_code == 401:

@@ -97,6 +97,12 @@
   const API = "/api/plugins/kanban";
   const MIME_TASK = "text/x-hermes-task";
 
+  // Docs link — surfaced as a `?` icon next to the board switcher and as
+  // `title=` hints on unlabelled controls. Kept in one place so rebrands or
+  // path changes are a single edit.
+  const DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban";
+  const DOCS_TUTORIAL_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban-tutorial";
+
   // localStorage key for the user's selected board. Independent of the
   // CLI's on-disk ``<root>/kanban/current`` pointer so browser users
   // can inspect any board without shifting the CLI's active board out
@@ -112,17 +118,30 @@
 
   function writeSelectedBoard(slug) {
     try {
-      if (slug && slug !== "default") window.localStorage.setItem(LS_BOARD_KEY, slug);
+      // Persist the user's dashboard-side board pin even for "default".
+      // Previously this stripped "default" to keep localStorage empty,
+      // but the fetch layer read that absence as "no opinion" and fell
+      // through to the server-side ``current`` file — which the board
+      // switcher also writes. Result: selecting the default tab after
+      // creating a new board with "switch" checked showed the new
+      // board's (wrong) data because the URL omitted ``?board=`` and
+      // the backend happily returned whichever board was "current".
+      // Persisting every selection keeps the dashboard's board opinion
+      // independent of the CLI's active board, which was the original
+      // design intent. Regression: #20879.
+      if (slug) window.localStorage.setItem(LS_BOARD_KEY, slug);
       else window.localStorage.removeItem(LS_BOARD_KEY);
     } catch (_e) { /* ignore quota / private mode */ }
   }
 
   function withBoard(url, board) {
-    // Append ?board=<slug> when a non-default board is active. Omitted
-    // for default so the URL stays clean and the backend falls through
-    // to its own resolution chain (env var → ``current`` file →
-    // default) which is already correct.
-    if (!board || board === "default") return url;
+    // Always append ?board=<slug> when we have one picked — including
+    // "default". Omitting the param would fall through to the backend's
+    // resolution chain (env var → ``current`` file → default), which
+    // means the dashboard's tab selection gets silently overridden by
+    // whatever board the CLI or "switch" checkbox last activated.
+    // Regression: #20879.
+    if (!board) return url;
     const sep = url.indexOf("?") >= 0 ? "&" : "?";
     return `${url}${sep}board=${encodeURIComponent(board)}`;
   }
@@ -447,9 +466,11 @@
           token: token,
         };
         // Pin the WS stream to the currently-selected board so events
-        // from other boards don't bleed in. Only set for non-default so
-        // single-board installs keep the cleaner URL.
-        if (board && board !== "default") qsParams.board = board;
+        // from other boards don't bleed in. Includes "default" so the
+        // dashboard's own board pin always wins over the server-side
+        // ``current`` file — same rationale as ``withBoard()`` above.
+        // Regression: #20879.
+        if (board) qsParams.board = board;
         const qs = new URLSearchParams(qsParams);
         const url = `${proto}//${window.location.host}${API}/events?${qs}`;
         let ws;
@@ -496,6 +517,7 @@
       if (!boardData) return null;
       const q = search.trim().toLowerCase();
       const filterTask = function (t) {
+        if (tenantFilter && t.tenant !== tenantFilter) return false;
         if (assigneeFilter && t.assignee !== assigneeFilter) return false;
         if (q) {
           const hay = `${t.id} ${t.title || ""} ${t.assignee || ""} ${t.tenant || ""}`.toLowerCase();
@@ -508,7 +530,7 @@
           return Object.assign({}, col, { tasks: col.tasks.filter(filterTask) });
         }),
       });
-    }, [boardData, assigneeFilter, search]);
+    }, [boardData, tenantFilter, assigneeFilter, search]);
 
     // --- actions ------------------------------------------------------------
     const moveTask = useCallback(function (taskId, newStatus) {
@@ -1112,6 +1134,20 @@
   // Board switcher (multi-project)
   // -------------------------------------------------------------------------
 
+  // Small `?` affordance next to the board controls. Opens the kanban docs
+  // page in a new tab so users can look up what any of the widgets mean
+  // without losing the current board view.
+  function DocsLink() {
+    return h("a", {
+      href: DOCS_URL,
+      target: "_blank",
+      rel: "noopener noreferrer",
+      className: "hermes-kanban-docs-link",
+      title: "Open Hermes Kanban docs in a new tab",
+      "aria-label": "Hermes Kanban documentation",
+    }, "?");
+  }
+
   function BoardSwitcher(props) {
     const list = props.boardList || [];
     const current = list.find(function (b) { return b.slug === props.board; });
@@ -1136,6 +1172,7 @@
           size: "sm",
           className: "h-7 text-xs",
         }, "+ New board"),
+        h(DocsLink, null),
       );
     }
 
@@ -1149,6 +1186,7 @@
               value: props.board,
               className: "h-8 min-w-[220px]",
               "aria-label": "Switch kanban board",
+              title: "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
             }, selectChangeHandler(function (v) { if (v) props.onSwitch(v); })),
               list.map(function (b) {
                 const label = b.total > 0
@@ -1162,10 +1200,12 @@
           ),
         ),
         h("div", { className: "flex-1" }),
+        h(DocsLink, null),
         h(Button, {
           onClick: props.onNewClick,
           size: "sm",
           className: "h-8",
+          title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
         }, "+ New board"),
         props.board !== "default"
           ? h(Button, {
@@ -1310,7 +1350,8 @@
     const tenants = (props.board && props.board.tenants) || [];
     const assignees = (props.board && props.board.assignees) || [];
     return h("div", { className: "flex flex-wrap items-end gap-3" },
-      h("div", { className: "flex flex-col gap-1" },
+      h("div", { className: "flex flex-col gap-1",
+                 title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
         h(Label, { className: "text-xs text-muted-foreground" }, "Search"),
         h(Input, {
           placeholder: "Filter cards…",
@@ -1319,7 +1360,8 @@
           className: "w-56 h-8",
         }),
       ),
-      h("div", { className: "flex flex-col gap-1" },
+      h("div", { className: "flex flex-col gap-1",
+                 title: "Tenants are free-form tags on a task (e.g. customer, project, team). Set them via the task drawer or kanban_create." },
         h(Label, { className: "text-xs text-muted-foreground" }, "Tenant"),
         h(Select, Object.assign({
           value: props.tenantFilter,
@@ -1331,7 +1373,8 @@
           }),
         ),
       ),
-      h("div", { className: "flex flex-col gap-1" },
+      h("div", { className: "flex flex-col gap-1",
+                 title: "Filter by assigned Hermes profile. Profiles are the named agent identities that claim and work on tasks." },
         h(Label, { className: "text-xs text-muted-foreground" }, "Assignee"),
         h(Select, Object.assign({
           value: props.assigneeFilter,
@@ -1343,7 +1386,8 @@
           }),
         ),
       ),
-      h("label", { className: "flex items-center gap-2 text-xs" },
+      h("label", { className: "flex items-center gap-2 text-xs",
+                   title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
         h("input", {
           type: "checkbox",
           checked: props.includeArchived,
@@ -1364,10 +1408,12 @@
       h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",
+        title: "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately.",
       }, "Nudge dispatcher"),
       h(Button, {
         onClick: props.onRefresh,
         size: "sm",
+        title: "Reload the board from the database. The board auto-refreshes on task events; this is for forcing a re-read.",
       }, "Refresh"),
     );
   }
@@ -1384,6 +1430,7 @@
       h(Button, {
         onClick: function () { props.onApply({ status: "ready" }); },
         size: "sm",
+        title: "Move selected tasks to Ready. Ready tasks are picked up by the dispatcher on the next tick.",
       }, "→ ready"),
       h(Button, {
         onClick: function () {
@@ -1391,6 +1438,7 @@
             `Mark ${props.count} task(s) as done?`);
         },
         size: "sm",
+        title: "Mark selected tasks as done. Releases any claims and unblocks dependent children. You'll be asked for a completion summary.",
       }, "Complete"),
       h(Button, {
         onClick: function () {
@@ -1398,8 +1446,10 @@
             `Archive ${props.count} task(s)?`);
         },
         size: "sm",
+        title: "Archive selected tasks. They disappear from the default board view but remain in the database.",
       }, "Archive"),
-      h("div", { className: "hermes-kanban-bulk-reassign" },
+      h("div", { className: "hermes-kanban-bulk-reassign",
+                 title: "Reassign selected tasks to a different Hermes profile. Pick a profile (or unassign) and click Apply." },
         h(Select, {
           value: assignee,
           onChange: function (e) { setAssignee(e.target.value); },
@@ -1419,12 +1469,14 @@
           },
           disabled: !assignee,
           size: "sm",
+          title: "Apply the selected assignee to all selected tasks.",
         }, "Apply"),
       ),
       h("div", { className: "flex-1" }),
       h(Button, {
         onClick: props.onClear,
         size: "sm",
+        title: "Deselect all tasks and hide this bar.",
       }, "Clear"),
     );
   }
@@ -1505,11 +1557,13 @@
       onDragLeave: handleDragLeave,
       onDrop: handleDrop,
     },
-      h("div", { className: "hermes-kanban-column-header" },
+      h("div", { className: "hermes-kanban-column-header",
+                 title: COLUMN_HELP[props.column.name] || "" },
         h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[props.column.name]) }),
         h("span", { className: "hermes-kanban-column-label" },
           COLUMN_LABEL[props.column.name] || props.column.name),
-        h("span", { className: "hermes-kanban-column-count" },
+        h("span", { className: "hermes-kanban-column-count",
+                    title: `${props.column.tasks.length} task${props.column.tasks.length === 1 ? "" : "s"} in this column` },
           props.column.tasks.length),
         h("button", {
           type: "button",
@@ -1636,7 +1690,8 @@
               onClick: function (e) { e.stopPropagation(); },
               title: "Select for bulk actions",
             }),
-            h("span", { className: "hermes-kanban-card-id" }, t.id),
+            h("span", { className: "hermes-kanban-card-id",
+                        title: `Task id: ${t.id}. Use this id with kanban_show, /kanban show, or hermes kanban show.` }, t.id),
             t.warnings && t.warnings.count > 0
               ? h("span", {
                   className: cn(
@@ -1653,10 +1708,12 @@
                    t.warnings.highest_severity === "error" ? "!!" : "⚠")
               : null,
             t.priority > 0
-              ? h(Badge, { className: "hermes-kanban-priority" }, `P${t.priority}`)
+              ? h(Badge, { className: "hermes-kanban-priority",
+                           title: `Priority ${t.priority}. Higher-priority tasks are claimed first by the dispatcher.` }, `P${t.priority}`)
               : null,
             t.tenant
-              ? h(Badge, { variant: "outline", className: "hermes-kanban-tag" }, t.tenant)
+              ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
+                           title: `Tenant: ${t.tenant}. Free-form tag for grouping tasks (customer, project, team).` }, t.tenant)
               : null,
             progress
               ? h("span", {
@@ -1671,16 +1728,21 @@
           h("div", { className: "hermes-kanban-card-title" }, t.title || "(untitled)"),
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
             t.assignee
-              ? h("span", { className: "hermes-kanban-assignee" }, "@", t.assignee)
-              : h("span", { className: "hermes-kanban-unassigned" }, "unassigned"),
+              ? h("span", { className: "hermes-kanban-assignee",
+                            title: `Assigned to Hermes profile @${t.assignee}` }, "@", t.assignee)
+              : h("span", { className: "hermes-kanban-unassigned",
+                            title: "No profile assigned. The dispatcher will pick one from available profiles when the task is Ready." }, "unassigned"),
             t.comment_count > 0
-              ? h("span", { className: "hermes-kanban-count" }, "💬 ", t.comment_count)
+              ? h("span", { className: "hermes-kanban-count",
+                            title: `${t.comment_count} comment${t.comment_count === 1 ? "" : "s"} on this task` }, "💬 ", t.comment_count)
               : null,
             t.link_counts && (t.link_counts.parents + t.link_counts.children) > 0
-              ? h("span", { className: "hermes-kanban-count" },
+              ? h("span", { className: "hermes-kanban-count",
+                            title: `${t.link_counts.parents} parent${t.link_counts.parents === 1 ? "" : "s"}, ${t.link_counts.children} child${t.link_counts.children === 1 ? "" : "ren"}. Children stay blocked until their parent is done.` },
                   "↔ ", t.link_counts.parents + t.link_counts.children)
               : null,
-            h("span", { className: "hermes-kanban-ago" },
+            h("span", { className: "hermes-kanban-ago",
+                        title: t.created_at ? `Created ${t.created_at}` : "" },
               timeAgo ? timeAgo(t.created_at) : ""),
           ),
         ),
@@ -1741,18 +1803,19 @@
       : "workspace path (optional, derived from assignee if blank)";
 
     return h("div", { className: "hermes-kanban-inline-create" },
-      h(Input, {
+      h("textarea", {
         value: title,
         onChange: function (e) { setTitle(e.target.value); },
         onKeyDown: function (e) {
-          if (e.key === "Enter") { e.preventDefault(); submit(); }
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
           if (e.key === "Escape") props.onCancel();
         },
         placeholder: props.columnName === "triage"
           ? "Rough idea — AI will spec it…"
           : "New task title…",
         autoFocus: true,
-        className: "h-8 text-sm",
+        className: "text-sm min-h-[2rem] max-h-32 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+        rows: 2,
       }),
       h("div", { className: "flex gap-2" },
         h(Input, {
@@ -1760,6 +1823,9 @@
           onChange: function (e) { setAssignee(e.target.value); },
           placeholder: props.columnName === "triage" ? "specifier" : "assignee",
           className: "h-7 text-xs flex-1",
+          title: props.columnName === "triage"
+            ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
+            : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
         }),
         h(Input, {
           type: "number",
@@ -1767,6 +1833,7 @@
           onChange: function (e) { setPriority(e.target.value); },
           placeholder: "pri",
           className: "h-7 text-xs w-16",
+          title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
         }),
       ),
       h(Input, {
@@ -1798,6 +1865,7 @@
         value: parent,
         onChange: function (e) { setParent(e.target.value); },
         className: "h-7 text-xs",
+        title: "Optional parent task. A child stays blocked in its current column until the parent is marked done.",
       },
         h(SelectOption, { value: "" }, "— no parent —"),
         (props.allTasks || []).map(function (t) {
@@ -1886,6 +1954,29 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalPatch),
       }).then(function () { load(); props.onRefresh(); });
+    };
+
+    // Triage specifier — calls the auxiliary LLM to flesh out a rough
+    // idea in the Triage column into a concrete spec (title + body with
+    // goal, approach, acceptance criteria) and promotes it to todo.
+    // Not a PATCH: runs through a dedicated POST endpoint because the
+    // LLM call can take tens of seconds, and its outcome is richer than
+    // a status flip (may update title AND body AND emit an audit
+    // comment — or fail with a human-readable reason that the UI
+    // surfaces inline without treating it as an HTTP error).
+    const doSpecify = function () {
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/specify`, boardSlug),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }
+      ).then(function (res) {
+        load();
+        props.onRefresh();
+        return res;
+      });
     };
 
     const addLink = function (parentId) {
@@ -1977,6 +2068,7 @@
           assignees: props.assignees || [],
           boardSlug: boardSlug,
           onPatch: doPatch,
+          onSpecify: doSpecify,
           onAddParent: addLink,
           onRemoveParent: removeLink,
           onAddChild: addChild,
@@ -2045,7 +2137,11 @@
         }) : null,
         t.created_by ? h(MetaRow, { label: "Created by", value: t.created_by }) : null,
       ),
-      h(StatusActions, { task: t, onPatch: props.onPatch }),
+      h(StatusActions, {
+        task: t,
+        onPatch: props.onPatch,
+        onSpecify: props.onSpecify,
+      }),
       h(DiagnosticsSection, {
         task: t,
         boardSlug: props.boardSlug,
@@ -2478,6 +2574,8 @@
 
   function StatusActions(props) {
     const t = props.task;
+    const [specifyBusy, setSpecifyBusy] = useState(false);
+    const [specifyMsg, setSpecifyMsg] = useState(null);
     const b = function (label, patch, enabled, confirmMsg) {
       return h(Button, {
         onClick: function () { if (enabled !== false) props.onPatch(patch, { confirm: confirmMsg }); },
@@ -2485,22 +2583,67 @@
         size: "sm",
       }, label);
     };
-    return h("div", { className: "hermes-kanban-actions" },
-      b("→ triage",  { status: "triage" },   t.status !== "triage"),
-      b("→ ready",   { status: "ready" },    t.status !== "ready"),
-      // No direct → running button: /tasks/:id PATCH rejects status=running
-      // with 400 (issue #19535). Tasks enter running only through the
-      // dispatcher's claim_task path, which atomically creates the run row,
-      // claim lock, and worker process metadata.
-      b("Block",     { status: "blocked" },
-        t.status === "running" || t.status === "ready",
-        DESTRUCTIVE_TRANSITIONS.blocked),
-      b("Unblock",   { status: "ready" },    t.status === "blocked"),
-      b("Complete",  { status: "done" },
-        t.status === "running" || t.status === "ready" || t.status === "blocked",
-        DESTRUCTIVE_TRANSITIONS.done),
-      b("Archive",   { status: "archived" }, t.status !== "archived",
-        DESTRUCTIVE_TRANSITIONS.archived),
+
+    // "Specify" appears only when the task is in the Triage column — the
+    // one column where an auxiliary LLM pass is meaningful. Elsewhere
+    // the backend would return ok:false with "not in triage" anyway,
+    // so hiding the button keeps the action row uncluttered.
+    const specifyButton = (t.status === "triage" && props.onSpecify)
+      ? h(Button, {
+          onClick: function () {
+            if (specifyBusy) return;
+            setSpecifyBusy(true);
+            setSpecifyMsg(null);
+            props.onSpecify().then(function (res) {
+              if (res && res.ok) {
+                const suffix = res.new_title
+                  ? ` — retitled: ${res.new_title}`
+                  : "";
+                setSpecifyMsg({ ok: true, text: `Specified${suffix}` });
+              } else {
+                setSpecifyMsg({
+                  ok: false,
+                  text: "Specify failed: " + ((res && res.reason) || "unknown error"),
+                });
+              }
+            }).catch(function (err) {
+              setSpecifyMsg({
+                ok: false,
+                text: "Specify failed: " + (err.message || String(err)),
+              });
+            }).then(function () {
+              setSpecifyBusy(false);
+            });
+          },
+          disabled: specifyBusy,
+          size: "sm",
+        }, specifyBusy ? "Specifying…" : "✨ Specify")
+      : null;
+
+    return h("div", null,
+      h("div", { className: "hermes-kanban-actions" },
+        specifyButton,
+        b("→ triage",  { status: "triage" },   t.status !== "triage"),
+        b("→ ready",   { status: "ready" },    t.status !== "ready"),
+        // No direct → running button: /tasks/:id PATCH rejects status=running
+        // with 400 (issue #19535). Tasks enter running only through the
+        // dispatcher's claim_task path, which atomically creates the run row,
+        // claim lock, and worker process metadata.
+        b("Block",     { status: "blocked" },
+          t.status === "running" || t.status === "ready",
+          DESTRUCTIVE_TRANSITIONS.blocked),
+        b("Unblock",   { status: "ready" },    t.status === "blocked"),
+        b("Complete",  { status: "done" },
+          t.status === "running" || t.status === "ready" || t.status === "blocked",
+          DESTRUCTIVE_TRANSITIONS.done),
+        b("Archive",   { status: "archived" }, t.status !== "archived",
+          DESTRUCTIVE_TRANSITIONS.archived),
+      ),
+      specifyMsg ? h("div", {
+        className: specifyMsg.ok
+          ? "hermes-kanban-msg-ok"
+          : "hermes-kanban-msg-err",
+      }, specifyMsg.text) : null,
     );
   }
 

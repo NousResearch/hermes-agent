@@ -585,10 +585,10 @@ def _wait_for_systemd_service_restart(
 
     svc = get_service_name()
     scope_label = _service_scope_label(system).capitalize()
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     printed_runtime_wait = False
 
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         props = _read_systemd_unit_properties(system=system)
         active_state = props.get("ActiveState", "")
         sub_state = props.get("SubState", "")
@@ -828,6 +828,46 @@ def _print_other_profiles_gateway_status() -> None:
             print(f"  ✓ {proc.profile:<16s} — PID {proc.pid}")
     except Exception:
         pass
+
+
+def _gateway_list() -> None:
+    """List all profiles and their gateway running status.
+
+    Provides a single-command overview of every known profile and whether
+    its gateway is currently running, so multi-profile users don't have to
+    check each profile individually.
+    """
+    try:
+        from hermes_cli.profiles import list_profiles, get_active_profile_name
+    except Exception:
+        print("Unable to list profiles.")
+        return
+
+    profiles = list_profiles()
+    if not profiles:
+        print("No profiles found.")
+        return
+
+    current = get_active_profile_name()
+
+    print("Gateways:")
+    for prof in profiles:
+        marker = "✓" if prof.gateway_running else "✗"
+        label = prof.name
+        if prof.name == current:
+            label += " (current)"
+        parts = [f"  {marker} {label:<24s}"]
+        if prof.gateway_running:
+            try:
+                from gateway.status import get_running_pid
+                pid = get_running_pid(prof.path / "gateway.pid", cleanup_stale=False)
+                if pid:
+                    parts.append(f"PID {pid}")
+            except Exception:
+                pass
+        else:
+            parts.append("not running")
+        print(" — ".join(parts))
 
 
 def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
@@ -2730,6 +2770,42 @@ def launchd_status(deep: bool = False):
 # Gateway Runner
 # =============================================================================
 
+def _truthy_env(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_official_docker_checkout() -> bool:
+    return (
+        str(PROJECT_ROOT) == "/opt/hermes"
+        and (PROJECT_ROOT / "docker" / "entrypoint.sh").is_file()
+    )
+
+
+def _guard_official_docker_root_gateway() -> None:
+    """Refuse gateway startup when the official Docker privilege drop was bypassed."""
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    if _truthy_env(os.getenv("HERMES_ALLOW_ROOT_GATEWAY")):
+        return
+    if not _is_official_docker_checkout():
+        return
+
+    print_error(
+        "Refusing to run the Hermes gateway as root inside the official Docker image."
+    )
+    print(
+        "  The image entrypoint normally drops privileges to the 'hermes' user. "
+        "If you override entrypoint in Docker Compose, include "
+        "/opt/hermes/docker/entrypoint.sh before the Hermes command."
+    )
+    print(
+        "  Running the gateway as root can leave root-owned files in "
+        "$HERMES_HOME and break later non-root dashboard/gateway runs."
+    )
+    print("  Set HERMES_ALLOW_ROOT_GATEWAY=1 only if you intentionally accept this risk.")
+    sys.exit(1)
+
+
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """Run the gateway in foreground.
     
@@ -2740,6 +2816,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
     """
+    _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
 
     # Refresh the systemd unit definition on every boot so that restart
@@ -4797,6 +4874,9 @@ def _gateway_command_inner(args):
 
         # Show other profiles' gateway status for multi-profile awareness
         _print_other_profiles_gateway_status()
+
+    elif subcmd == "list":
+        _gateway_list()
 
     elif subcmd == "migrate-legacy":
         # Stop, disable, and remove legacy Hermes gateway unit files from

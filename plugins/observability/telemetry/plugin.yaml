@@ -1,0 +1,31 @@
+name: observability/telemetry
+description: |
+  Local OTEL-style span tracing — emits spans for every LLM call and tool execution
+  to a local SQLite db (~/.hermes/telemetry.db). No external service required.
+
+  Enable: HERMES_TELEMETRY=true in ~/.hermes/.env
+  Debug:  HERMES_TELEMETRY_DEBUG=true
+
+  Spans tracked:
+    - llm:{model}  (post_llm_call — captures token usage, latency, errors)
+    - tool:{name}  (post_tool_call — captures args preview, result preview, errors)
+
+traces:
+  - Hermes LLM calls
+  - Hermes tool executions
+  - Session-span hierarchy (tool spans children of session)
+env:
+  HERMES_TELEMETRY:
+    description: "Enable telemetry plugin (set to 'true')"
+    required: false
+  HERMES_TELEMETRY_DEBUG:
+    description: "Verbose logging"
+    required: false
+  HERMES_TELEMETRY_DB:
+    description: "SQLite DB path (default: ~/.hermes/telemetry.db)"
+    required: false
+hooks:
+  pre_llm_call: on_pre_llm_call
+  post_llm_call: on_post_llm_call
+  pre_tool_call: on_pre_tool_call
+  post_tool_call: on_post_tool_call

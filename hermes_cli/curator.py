@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 
@@ -57,7 +58,8 @@ def _cmd_status(args) -> int:
     print(f"  last summary:   {summary}")
     _report = state.get("last_report_path")
     if _report:
-        print(f"  last report:    {_report}")
+        suffix = "" if Path(_report).exists() else " (missing)"
+        print(f"  last report:    {_report}{suffix}")
     _ih = curator.get_interval_hours()
     _interval_label = (
         f"{_ih // 24}d" if _ih % 24 == 0 and _ih >= 24
@@ -161,6 +163,8 @@ def _cmd_run(args) -> int:
         return 1
 
     dry = bool(getattr(args, "dry_run", False))
+    background = bool(getattr(args, "background", False))
+    synchronous = bool(getattr(args, "synchronous", False)) or not background
     if dry:
         print("curator: running DRY-RUN (report only, no mutations)...")
     else:
@@ -171,7 +175,7 @@ def _cmd_run(args) -> int:
 
     result = curator.run_curator_review(
         on_summary=_on_summary,
-        synchronous=bool(args.synchronous),
+        synchronous=synchronous,
         dry_run=dry,
     )
     auto = result.get("auto_transitions", {})
@@ -188,13 +192,19 @@ def _cmd_run(args) -> int:
                 f"archived={auto.get('archived', 0)} "
                 f"reactivated={auto.get('reactivated', 0)}"
             )
-    if not args.synchronous:
+    if not synchronous:
         print("llm pass running in background — check `hermes curator status` later")
     if dry:
-        print(
-            "dry-run: no changes applied. When the report lands, read it with "
-            "`hermes curator status` and run `hermes curator run` (no flag) to apply."
-        )
+        if synchronous:
+            print(
+                "dry-run: no changes applied. Read the report with "
+                "`hermes curator status` and run `hermes curator run` (no flag) to apply."
+            )
+        else:
+            print(
+                "dry-run: no changes applied. When the report lands, read it with "
+                "`hermes curator status` and run `hermes curator run` (no flag) to apply."
+            )
     return 0
 
 
@@ -442,6 +452,18 @@ def _cmd_rollback(args) -> int:
     return 1
 
 
+def _cmd_list_archived(args) -> int:
+    """List archived (recoverable) skills."""
+    from tools import skill_usage
+    names = skill_usage.list_archived_skill_names()
+    if not names:
+        print("curator: no archived skills")
+        return 0
+    for name in names:
+        print(name)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # argparse wiring (called from hermes_cli.main)
 # ---------------------------------------------------------------------------
@@ -461,7 +483,11 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_run = subs.add_parser("run", help="Trigger a curator review now")
     p_run.add_argument(
         "--sync", "--synchronous", dest="synchronous", action="store_true",
-        help="Wait for the LLM review pass to finish (default: background thread)",
+        help="Wait for the LLM review pass to finish (default for manual runs)",
+    )
+    p_run.add_argument(
+        "--background", dest="background", action="store_true",
+        help="Start the LLM review pass in a background thread and return immediately",
     )
     p_run.add_argument(
         "--dry-run", dest="dry_run", action="store_true",
@@ -487,6 +513,9 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_restore = subs.add_parser("restore", help="Restore an archived skill")
     p_restore.add_argument("skill", help="Skill name")
     p_restore.set_defaults(func=_cmd_restore)
+
+    subs.add_parser("list-archived", help="List archived skills") \
+        .set_defaults(func=_cmd_list_archived)
 
     p_archive = subs.add_parser(
         "archive",

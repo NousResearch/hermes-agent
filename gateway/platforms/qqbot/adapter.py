@@ -447,6 +447,8 @@ class QQAdapter(BasePlatformAdapter):
             },
             timeout=CONNECT_TIMEOUT_SECONDS,
             proxy=ws_proxy,
+            # WS-level ping/pong to prevent idle disconnects (60s timeout bug)
+            heartbeat=20,
         )
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 
@@ -630,10 +632,20 @@ class QQAdapter(BasePlatformAdapter):
         )
         await asyncio.sleep(delay)
 
+        # Cancel old heartbeat task before opening new WebSocket
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+
         try:
             await self._ensure_token()
             gateway_url = await self._get_gateway_url()
             await self._open_ws(gateway_url)
+            # Start fresh heartbeat task for the new connection
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self._heartbeat_interval = 30.0  # reset after successful connection
             self._mark_connected()
             logger.info("[%s] Reconnected", self._log_tag)

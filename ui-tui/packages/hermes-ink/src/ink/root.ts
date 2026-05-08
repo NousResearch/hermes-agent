@@ -75,11 +75,13 @@ export type Root = {
 
 export const forceRedraw = (stdout: NodeJS.WriteStream = process.stdout): boolean => {
   const instance = instances.get(stdout)
+
   if (!instance) {
     return false
   }
 
   instance.forceRedraw()
+
   return true
 }
 

@@ -79,9 +79,32 @@ describe('configureTerminalKeybindings', () => {
     expect(writeFile).toHaveBeenCalledTimes(1)
     expect(copyFile).not.toHaveBeenCalled() // no existing file to back up
     const written = writeFile.mock.calls[0]?.[1] as string
+    expect(written).toContain('cmd+c')
+    expect(written).toContain('terminalTextSelected')
+    expect(written).toContain('\\u001b[99;13u')
     expect(written).toContain('shift+enter')
     expect(written).toContain('cmd+enter')
     expect(written).toContain('cmd+z')
+  })
+
+  it('only adds the Cmd+C forwarding binding on macOS', async () => {
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }))
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const copyFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      fileOps: { copyFile, mkdir, readFile, writeFile },
+      homeDir: '/home/me',
+      platform: 'linux'
+    })
+
+    expect(result.success).toBe(true)
+    const written = writeFile.mock.calls[0]?.[1] as string
+    expect(written).not.toContain('cmd+c')
+    expect(written).not.toContain('terminalTextSelected')
+    expect(written).not.toContain('\\u001b[99;13u')
+    expect(written).toContain('shift+enter')
   })
 
   it('reports conflicts without overwriting existing bindings', async () => {
@@ -111,6 +134,126 @@ describe('configureTerminalKeybindings', () => {
     expect(result.message).toContain('cmd+z')
     expect(writeFile).not.toHaveBeenCalled()
     expect(copyFile).not.toHaveBeenCalled() // no backup when not writing
+  })
+
+  it('flags a global (when-less) binding on the same key as a conflict', async () => {
+    // A user's keybindings.json `cmd+c` with no `when` clause is global —
+    // it overlaps any context, including our terminal scope. We must NOT
+    // silently add a terminal-scoped cmd+c that would shadow it.
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+
+    const readFile = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          key: 'cmd+c',
+          command: 'myExtension.smartCopy'
+        }
+      ])
+    )
+
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const copyFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      fileOps: { copyFile, mkdir, readFile, writeFile },
+      homeDir: '/Users/me',
+      platform: 'darwin'
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('cmd+c')
+    expect(writeFile).not.toHaveBeenCalled()
+  })
+
+  it('flags an overlapping terminal-context binding as a conflict', async () => {
+    // Existing `cmd+c` scoped to plain `terminalFocus` overlaps with our
+    // `terminalFocus && terminalTextSelected` — both fire when the
+    // terminal is focused with text selected, so the existing binding
+    // would shadow ours. Treat as a conflict even though the strings
+    // aren't identical.
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+
+    const readFile = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          key: 'cmd+c',
+          command: 'workbench.action.terminal.copySelection',
+          when: 'terminalFocus'
+        }
+      ])
+    )
+
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const copyFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      fileOps: { copyFile, mkdir, readFile, writeFile },
+      homeDir: '/Users/me',
+      platform: 'darwin'
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('cmd+c')
+    expect(writeFile).not.toHaveBeenCalled()
+  })
+
+  it('does not flag a negated terminalTextSelected binding as a conflict', async () => {
+    // A binding scoped to "terminal focused but no selected text" is
+    // logically disjoint from our copy-forwarding binding, which requires
+    // terminalTextSelected.
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+
+    const readFile = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          key: 'cmd+c',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus && !terminalTextSelected',
+          args: { text: '\u0003' }
+        }
+      ])
+    )
+
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const copyFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      fileOps: { copyFile, mkdir, readFile, writeFile },
+      homeDir: '/Users/me',
+      platform: 'darwin'
+    })
+
+    expect(result.success).toBe(true)
+    expect(writeFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not flag a disjoint-when binding on the same key as a conflict', async () => {
+    // VS Code allows multiple bindings for the same key when their `when`
+    // clauses don't overlap. A user's pre-existing cmd+c binding scoped to
+    // editor focus should NOT block our terminal-scoped cmd+c binding.
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+
+    const readFile = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          key: 'cmd+c',
+          command: 'editor.action.clipboardCopyAction',
+          when: 'editorFocus'
+        }
+      ])
+    )
+
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const copyFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      fileOps: { copyFile, mkdir, readFile, writeFile },
+      homeDir: '/Users/me',
+      platform: 'darwin'
+    })
+
+    expect(result.success).toBe(true)
+    expect(writeFile).toHaveBeenCalledTimes(1)
   })
 
   it('backs up existing keybindings.json only when writing changes', async () => {
@@ -186,6 +329,12 @@ describe('configureTerminalKeybindings', () => {
 
     const readComplete = vi.fn().mockResolvedValue(
       JSON.stringify([
+        {
+          key: 'cmd+c',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus && terminalTextSelected',
+          args: { text: '\u001b[99;13u' }
+        },
         {
           key: 'shift+enter',
           command: 'workbench.action.terminal.sendSequence',

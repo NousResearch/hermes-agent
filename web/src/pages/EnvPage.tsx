@@ -21,9 +21,17 @@ import { Toast } from "@/components/Toast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { useToast } from "@/hooks/useToast";
 import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
@@ -36,25 +44,25 @@ import { PluginSlot } from "@/plugins";
 /** Map env-var key prefixes to a human-friendly provider name + ordering. */
 const PROVIDER_GROUPS: { prefix: string; name: string; priority: number }[] = [
   // Nous Portal first
-  { prefix: "NOUS_",            name: "Nous Portal",       priority: 0 },
+  { prefix: "NOUS_", name: "Nous Portal", priority: 0 },
   // Then alphabetical by display name
-  { prefix: "ANTHROPIC_",       name: "Anthropic",         priority: 1 },
-  { prefix: "DASHSCOPE_",       name: "DashScope (Qwen)",  priority: 2 },
-  { prefix: "HERMES_QWEN_",    name: "DashScope (Qwen)",  priority: 2 },
-  { prefix: "DEEPSEEK_",        name: "DeepSeek",          priority: 3 },
-  { prefix: "GOOGLE_",          name: "Gemini",            priority: 4 },
-  { prefix: "GEMINI_",          name: "Gemini",            priority: 4 },
-  { prefix: "GLM_",             name: "GLM / Z.AI",        priority: 5 },
-  { prefix: "ZAI_",             name: "GLM / Z.AI",        priority: 5 },
-  { prefix: "Z_AI_",            name: "GLM / Z.AI",        priority: 5 },
-  { prefix: "HF_",              name: "Hugging Face",      priority: 6 },
-  { prefix: "KIMI_",            name: "Kimi / Moonshot",   priority: 7 },
-  { prefix: "MINIMAX_CN_",      name: "MiniMax (China)",   priority: 9 },
-  { prefix: "MINIMAX_",         name: "MiniMax",           priority: 8 },
-  { prefix: "OPENCODE_GO_",     name: "OpenCode Go",       priority: 10 },
-  { prefix: "OPENCODE_ZEN_",    name: "OpenCode Zen",      priority: 11 },
-  { prefix: "OPENROUTER_",      name: "OpenRouter",        priority: 12 },
-  { prefix: "XIAOMI_",          name: "Xiaomi MiMo",       priority: 13 },
+  { prefix: "ANTHROPIC_", name: "Anthropic", priority: 1 },
+  { prefix: "DASHSCOPE_", name: "DashScope (Qwen)", priority: 2 },
+  { prefix: "HERMES_QWEN_", name: "DashScope (Qwen)", priority: 2 },
+  { prefix: "DEEPSEEK_", name: "DeepSeek", priority: 3 },
+  { prefix: "GOOGLE_", name: "Gemini", priority: 4 },
+  { prefix: "GEMINI_", name: "Gemini", priority: 4 },
+  { prefix: "GLM_", name: "GLM / Z.AI", priority: 5 },
+  { prefix: "ZAI_", name: "GLM / Z.AI", priority: 5 },
+  { prefix: "Z_AI_", name: "GLM / Z.AI", priority: 5 },
+  { prefix: "HF_", name: "Hugging Face", priority: 6 },
+  { prefix: "KIMI_", name: "Kimi / Moonshot", priority: 7 },
+  { prefix: "MINIMAX_CN_", name: "MiniMax (China)", priority: 9 },
+  { prefix: "MINIMAX_", name: "MiniMax", priority: 8 },
+  { prefix: "OPENCODE_GO_", name: "OpenCode Go", priority: 10 },
+  { prefix: "OPENCODE_ZEN_", name: "OpenCode Zen", priority: 11 },
+  { prefix: "OPENROUTER_", name: "OpenRouter", priority: 12 },
+  { prefix: "XIAOMI_", name: "Xiaomi MiMo", priority: 13 },
 ];
 
 function getProviderGroup(key: string): string {
@@ -117,26 +125,39 @@ function EnvVarRow({
   const { t } = useI18n();
   const isEditing = edits[varKey] !== undefined;
   const isRevealed = !!revealed[varKey];
-  const displayValue = isRevealed ? revealed[varKey] : (info.redacted_value ?? "---");
+  const displayValue = isRevealed
+    ? revealed[varKey]
+    : (info.redacted_value ?? "---");
 
   // Compact inline row for unset, non-editing keys (used inside provider groups)
   if (compact && !info.is_set && !isEditing) {
     return (
       <div className="flex items-center justify-between gap-3 py-1.5 opacity-50 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="font-mono-ui text-[0.7rem] text-muted-foreground">{varKey}</span>
-          <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">{info.description}</span>
+          <span className="font-mono-ui text-[0.7rem] text-muted-foreground">
+            {varKey}
+          </span>
+          <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">
+            {info.description}
+          </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {info.url && (
-            <a href={info.url} target="_blank" rel="noreferrer"
-              className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline">
+            <a
+              href={info.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline"
+            >
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
-          <Button size="sm" variant="outline" className="h-6 text-[0.6rem] px-2"
-            onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
-            <Pencil className="h-2.5 w-2.5" />
+          <Button
+            size="sm"
+            outlined
+            prefix={<Pencil />}
+            onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}
+          >
             {t.common.set}
           </Button>
         </div>
@@ -149,19 +170,30 @@ function EnvVarRow({
     return (
       <div className="flex items-center justify-between gap-3 border border-border/50 px-4 py-2.5 opacity-60 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-3 min-w-0">
-          <Label className="font-mono-ui text-[0.7rem] text-muted-foreground">{varKey}</Label>
-          <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">{info.description}</span>
+          <Label className="font-mono-ui text-[0.7rem] text-muted-foreground">
+            {varKey}
+          </Label>
+          <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">
+            {info.description}
+          </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {info.url && (
-            <a href={info.url} target="_blank" rel="noreferrer"
-              className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline">
+            <a
+              href={info.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline"
+            >
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
-          <Button size="sm" variant="outline" className="h-7 text-[0.6rem]"
-            onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
-            <Pencil className="h-3 w-3" />
+          <Button
+            size="sm"
+            outlined
+            prefix={<Pencil />}
+            onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}
+          >
             {t.common.set}
           </Button>
         </div>
@@ -175,13 +207,17 @@ function EnvVarRow({
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Label className="font-mono-ui text-[0.7rem]">{varKey}</Label>
-          <Badge variant={info.is_set ? "success" : "outline"}>
+          <Badge tone={info.is_set ? "success" : "outline"}>
             {info.is_set ? t.common.set : t.env.notSet}
           </Badge>
         </div>
         {info.url && (
-          <a href={info.url} target="_blank" rel="noreferrer"
-            className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline">
+          <a
+            href={info.url}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline"
+          >
             {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
           </a>
         )}
@@ -192,40 +228,59 @@ function EnvVarRow({
       {info.tools.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {info.tools.map((tool) => (
-            <Badge key={tool} variant="secondary" className="text-[0.6rem] py-0 px-1.5">{tool}</Badge>
+            <Badge
+              key={tool}
+              tone="secondary"
+              className="text-[0.6rem] py-0 px-1.5"
+            >
+              {tool}
+            </Badge>
           ))}
         </div>
       )}
 
       {!isEditing && (
         <div className="flex items-center gap-2">
-          <div className={`flex-1 border border-border px-3 py-2 font-mono-ui text-xs ${
-            isRevealed ? "bg-background text-foreground select-all" : "bg-muted/30 text-muted-foreground"
-          }`}>
+          <div
+            className={`flex-1 border border-border px-3 py-2 font-mono-ui text-xs ${
+              isRevealed
+                ? "bg-background text-foreground select-all"
+                : "bg-muted/30 text-muted-foreground"
+            }`}
+          >
             {info.is_set ? displayValue : "---"}
           </div>
 
           {info.is_set && (
-            <Button size="sm" variant="ghost" onClick={() => onReveal(varKey)}
+            <Button
+              ghost
+              size="icon"
+              onClick={() => onReveal(varKey)}
               title={isRevealed ? t.env.hideValue : t.env.showValue}
-              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}>
-              {isRevealed
-                ? <EyeOff className="h-4 w-4" />
-                : <Eye className="h-4 w-4" />}
+              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}
+            >
+              {isRevealed ? <EyeOff /> : <Eye />}
             </Button>
           )}
 
-          <Button size="sm" variant="outline"
-            onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
-            <Pencil className="h-3 w-3" />
+          <Button
+            size="sm"
+            outlined
+            prefix={<Pencil />}
+            onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}
+          >
             {info.is_set ? t.common.replace : t.common.set}
           </Button>
 
           {info.is_set && (
-            <Button size="sm" variant="ghost"
-              className="text-destructive hover:text-destructive hover:bg-destructive/10"
-              onClick={() => onClear(varKey)} disabled={saving === varKey || clearDialogOpen}>
-              <Trash2 className="h-3 w-3" />
+            <Button
+              size="sm"
+              outlined
+              destructive
+              prefix={<Trash2 />}
+              onClick={() => onClear(varKey)}
+              disabled={saving === varKey || clearDialogOpen}
+            >
               {saving === varKey ? "..." : t.common.clear}
             </Button>
           )}
@@ -234,17 +289,38 @@ function EnvVarRow({
 
       {isEditing && (
         <div className="flex items-center gap-2">
-          <Input autoFocus type="text" value={edits[varKey]}
-            onChange={(e) => setEdits((prev) => ({ ...prev, [varKey]: e.target.value }))}
-            placeholder={info.is_set ? t.env.replaceCurrentValue.replace("{preview}", info.redacted_value ?? "---") : t.env.enterValue}
-            className="flex-1 font-mono-ui text-xs" />
-          <Button size="sm" onClick={() => onSave(varKey)}
-            disabled={saving === varKey || !edits[varKey]}>
-            <Save className="h-3 w-3" />
+          <Input
+            autoFocus
+            type="text"
+            value={edits[varKey]}
+            onChange={(e) =>
+              setEdits((prev) => ({ ...prev, [varKey]: e.target.value }))
+            }
+            placeholder={
+              info.is_set
+                ? t.env.replaceCurrentValue.replace(
+                    "{preview}",
+                    info.redacted_value ?? "---",
+                  )
+                : t.env.enterValue
+            }
+            className="flex-1 font-mono-ui text-xs"
+          />
+          <Button
+            size="sm"
+            onClick={() => onSave(varKey)}
+            prefix={<Save />}
+            disabled={saving === varKey || !edits[varKey]}
+          >
             {saving === varKey ? "..." : t.common.save}
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => onCancelEdit(varKey)}>
-            <X className="h-3 w-3" /> {t.common.cancel}
+          <Button
+            size="sm"
+            outlined
+            prefix={<X />}
+            onClick={() => onCancelEdit(varKey)}
+          >
+            {t.common.cancel}
           </Button>
         </div>
       )}
@@ -283,11 +359,20 @@ function ProviderGroupCard({
   const { t } = useI18n();
 
   // Separate API keys from base URLs and other settings
-  const apiKeys = group.entries.filter(([k]) => k.endsWith("_API_KEY") || k.endsWith("_TOKEN"));
+  const apiKeys = group.entries.filter(
+    ([k]) => k.endsWith("_API_KEY") || k.endsWith("_TOKEN"),
+  );
   const baseUrls = group.entries.filter(([k]) => k.endsWith("_BASE_URL"));
-  const other = group.entries.filter(([k]) => !k.endsWith("_API_KEY") && !k.endsWith("_TOKEN") && !k.endsWith("_BASE_URL"));
+  const other = group.entries.filter(
+    ([k]) =>
+      !k.endsWith("_API_KEY") &&
+      !k.endsWith("_TOKEN") &&
+      !k.endsWith("_BASE_URL"),
+  );
   const hasAnyConfigured = group.entries.some(([, info]) => info.is_set);
-  const configuredCount = group.entries.filter(([, info]) => info.is_set).length;
+  const configuredCount = group.entries.filter(
+    ([, info]) => info.is_set,
+  ).length;
 
   // Get a representative URL for "Get key" link
   const keyUrl = apiKeys.find(([, info]) => info.url)?.[1]?.url ?? null;
@@ -295,61 +380,98 @@ function ProviderGroupCard({
   return (
     <div className="border border-border">
       {/* Header — always visible */}
-      <button
-        type="button"
+      <ListItem
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 cursor-pointer hover:bg-primary/5 transition-colors"
+        aria-expanded={expanded}
+        className="justify-between gap-3 px-4 py-3 hover:bg-primary/5"
       >
         <div className="flex items-center gap-3 min-w-0">
-          {expanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
-          <span className="font-semibold text-sm tracking-wide">{group.name === "Other" ? t.common.other : group.name}</span>
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          )}
+          <span className="font-semibold text-sm tracking-wide">
+            {group.name === "Other" ? t.common.other : group.name}
+          </span>
           {hasAnyConfigured && (
-            <Badge variant="success" className="text-[0.6rem]">
+            <Badge tone="success" className="text-[0.6rem]">
               {configuredCount} {t.common.set.toLowerCase()}
             </Badge>
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {keyUrl && (
-            <a href={keyUrl} target="_blank" rel="noreferrer"
+            <a
+              href={keyUrl}
+              target="_blank"
+              rel="noreferrer"
               className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline"
-              onClick={(e) => e.stopPropagation()}>
+              onClick={(e) => e.stopPropagation()}
+            >
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
           <span className="text-[0.65rem] text-muted-foreground/60">
-            {t.env.keysCount.replace("{count}", String(group.entries.length)).replace("{s}", group.entries.length !== 1 ? "s" : "")}
+            {t.env.keysCount
+              .replace("{count}", String(group.entries.length))
+              .replace("{s}", group.entries.length !== 1 ? "s" : "")}
           </span>
         </div>
-      </button>
+      </ListItem>
 
-      {/* Expanded content */}
       {expanded && (
         <div className="border-t border-border px-4 py-3 grid gap-2">
-          {/* API keys first (most important) */}
           {apiKeys.map(([key, info]) => (
             <EnvVarRow
-              key={key} varKey={key} info={info} compact
-              edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
-              onSave={onSave} onClear={onClear} onReveal={onReveal} onCancelEdit={onCancelEdit}
+              key={key}
+              varKey={key}
+              info={info}
+              compact
+              edits={edits}
+              setEdits={setEdits}
+              revealed={revealed}
+              saving={saving}
+              onSave={onSave}
+              onClear={onClear}
+              onReveal={onReveal}
+              onCancelEdit={onCancelEdit}
               clearDialogOpen={clearDialogOpen}
             />
           ))}
-          {/* Base URLs (secondary) */}
+
           {baseUrls.map(([key, info]) => (
             <EnvVarRow
-              key={key} varKey={key} info={info} compact
-              edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
-              onSave={onSave} onClear={onClear} onReveal={onReveal} onCancelEdit={onCancelEdit}
+              key={key}
+              varKey={key}
+              info={info}
+              compact
+              edits={edits}
+              setEdits={setEdits}
+              revealed={revealed}
+              saving={saving}
+              onSave={onSave}
+              onClear={onClear}
+              onReveal={onReveal}
+              onCancelEdit={onCancelEdit}
               clearDialogOpen={clearDialogOpen}
             />
           ))}
-          {/* Anything else */}
+
           {other.map(([key, info]) => (
             <EnvVarRow
-              key={key} varKey={key} info={info} compact
-              edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
-              onSave={onSave} onClear={onClear} onReveal={onReveal} onCancelEdit={onCancelEdit}
+              key={key}
+              varKey={key}
+              info={info}
+              compact
+              edits={edits}
+              setEdits={setEdits}
+              revealed={revealed}
+              saving={saving}
+              onSave={onSave}
+              onClear={onClear}
+              onReveal={onReveal}
+              onCancelEdit={onCancelEdit}
               clearDialogOpen={clearDialogOpen}
             />
           ))}
@@ -373,7 +495,10 @@ export default function EnvPage() {
   const { t } = useI18n();
 
   useEffect(() => {
-    api.getEnvVars().then(setVars).catch(() => {});
+    api
+      .getEnvVars()
+      .then(setVars)
+      .catch(() => {});
   }, []);
 
   const handleSave = async (key: string) => {
@@ -386,12 +511,24 @@ export default function EnvPage() {
         prev
           ? {
               ...prev,
-              [key]: { ...prev[key], is_set: true, redacted_value: value.slice(0, 4) + "..." + value.slice(-4) },
+              [key]: {
+                ...prev[key],
+                is_set: true,
+                redacted_value: value.slice(0, 4) + "..." + value.slice(-4),
+              },
             }
           : prev,
       );
-      setEdits((prev) => { const n = { ...prev }; delete n[key]; return n; });
-      setRevealed((prev) => { const n = { ...prev }; delete n[key]; return n; });
+      setEdits((prev) => {
+        const n = { ...prev };
+        delete n[key];
+        return n;
+      });
+      setRevealed((prev) => {
+        const n = { ...prev };
+        delete n[key];
+        return n;
+      });
       showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
     } catch (e) {
       showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
@@ -408,11 +545,22 @@ export default function EnvPage() {
           await api.deleteEnvVar(key);
           setVars((prev) =>
             prev
-              ? { ...prev, [key]: { ...prev[key], is_set: false, redacted_value: null } }
+              ? {
+                  ...prev,
+                  [key]: { ...prev[key], is_set: false, redacted_value: null },
+                }
               : prev,
           );
-          setEdits((prev) => { const n = { ...prev }; delete n[key]; return n; });
-          setRevealed((prev) => { const n = { ...prev }; delete n[key]; return n; });
+          setEdits((prev) => {
+            const n = { ...prev };
+            delete n[key];
+            return n;
+          });
+          setRevealed((prev) => {
+            const n = { ...prev };
+            delete n[key];
+            return n;
+          });
           showToast(`${key} ${t.common.removed}`, "success");
         } catch (e) {
           showToast(`${t.common.failedToRemove} ${key}: ${e}`, "error");
@@ -427,7 +575,11 @@ export default function EnvPage() {
 
   const handleReveal = async (key: string) => {
     if (revealed[key]) {
-      setRevealed((prev) => { const n = { ...prev }; delete n[key]; return n; });
+      setRevealed((prev) => {
+        const n = { ...prev };
+        delete n[key];
+        return n;
+      });
       return;
     }
     try {
@@ -439,7 +591,11 @@ export default function EnvPage() {
   };
 
   const cancelEdit = (key: string) => {
-    setEdits((prev) => { const n = { ...prev }; delete n[key]; return n; });
+    setEdits((prev) => {
+      const n = { ...prev };
+      delete n[key];
+      return n;
+    });
   };
 
   /* ---- Build provider groups ---- */
@@ -447,7 +603,8 @@ export default function EnvPage() {
     if (!vars) return { providerGroups: [], nonProviderGrouped: [] };
 
     const providerEntries = Object.entries(vars).filter(
-      ([, info]) => info.category === "provider" && (showAdvanced || !info.advanced),
+      ([, info]) =>
+        info.category === "provider" && (showAdvanced || !info.advanced),
     );
 
     // Group by provider
@@ -496,7 +653,7 @@ export default function EnvPage() {
   if (!vars) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <Spinner className="text-2xl text-primary" />
       </div>
     );
   }
@@ -506,9 +663,7 @@ export default function EnvPage() {
 
   const pendingClearKey = keyClear.pendingId;
   const pendingKeyDescription =
-    pendingClearKey && vars
-      ? vars[pendingClearKey]?.description
-      : undefined;
+    pendingClearKey && vars ? vars[pendingClearKey]?.description : undefined;
 
   return (
     <div className="flex flex-col gap-6">
@@ -537,18 +692,20 @@ export default function EnvPage() {
             {t.env.changesNote}
           </p>
         </div>
-        <Button variant="ghost" size="sm" onClick={() => setShowAdvanced(!showAdvanced)}>
+        <Button
+          size="sm"
+          outlined
+          onClick={() => setShowAdvanced(!showAdvanced)}
+        >
           {showAdvanced ? t.env.hideAdvanced : t.env.showAdvanced}
         </Button>
       </div>
 
-      {/* ═══════════════ OAuth Logins ══ */}
       <OAuthProvidersCard
         onError={(msg) => showToast(msg, "error")}
         onSuccess={(msg) => showToast(msg, "success")}
       />
 
-      {/* ═══════════════ LLM Providers (grouped) ═══════════════ */}
       <Card>
         <CardHeader className="border-b border-border bg-card">
           <div className="flex items-center gap-2">
@@ -556,7 +713,9 @@ export default function EnvPage() {
             <CardTitle className="text-base">{t.env.llmProviders}</CardTitle>
           </div>
           <CardDescription>
-            {t.env.providersConfigured.replace("{configured}", String(configuredProviders)).replace("{total}", String(totalProviders))}
+            {t.env.providersConfigured
+              .replace("{configured}", String(configuredProviders))
+              .replace("{total}", String(totalProviders))}
           </CardDescription>
         </CardHeader>
 
@@ -565,53 +724,82 @@ export default function EnvPage() {
             <ProviderGroupCard
               key={group.name}
               group={group}
-              edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
-              onSave={handleSave} onClear={keyClear.requestDelete} onReveal={handleReveal} onCancelEdit={cancelEdit}
+              edits={edits}
+              setEdits={setEdits}
+              revealed={revealed}
+              saving={saving}
+              onSave={handleSave}
+              onClear={keyClear.requestDelete}
+              onReveal={handleReveal}
+              onCancelEdit={cancelEdit}
               clearDialogOpen={keyClear.isOpen}
             />
           ))}
         </CardContent>
       </Card>
 
-      {/* ═══════════════ Other categories (flat) ═══════════════ */}
-      {nonProviderGrouped.map(({ label, icon: Icon, setEntries, unsetEntries, totalEntries, category }) => {
-        if (totalEntries === 0) return null;
+      {nonProviderGrouped.map(
+        ({
+          label,
+          icon: Icon,
+          setEntries,
+          unsetEntries,
+          totalEntries,
+          category,
+        }) => {
+          if (totalEntries === 0) return null;
 
-        return (
-          <Card key={category}>
-            <CardHeader className="border-b border-border bg-card">
-              <div className="flex items-center gap-2">
-                <Icon className="h-5 w-5 text-muted-foreground" />
-                <CardTitle className="text-base">{label}</CardTitle>
-              </div>
-              <CardDescription>
-                {setEntries.length} {t.common.of} {totalEntries} {t.common.configured}
-              </CardDescription>
-            </CardHeader>
+          return (
+            <Card key={category}>
+              <CardHeader className="border-b border-border bg-card">
+                <div className="flex items-center gap-2">
+                  <Icon className="h-5 w-5 text-muted-foreground" />
+                  <CardTitle className="text-base">{label}</CardTitle>
+                </div>
+                <CardDescription>
+                  {setEntries.length} {t.common.of} {totalEntries}{" "}
+                  {t.common.configured}
+                </CardDescription>
+              </CardHeader>
 
-            <CardContent className="grid gap-3 pt-4">
-              {setEntries.map(([key, info]) => (
-                <EnvVarRow
-                  key={key} varKey={key} info={info}
-                  edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
-                  onSave={handleSave} onClear={keyClear.requestDelete} onReveal={handleReveal} onCancelEdit={cancelEdit}
-                  clearDialogOpen={keyClear.isOpen}
-                />
-              ))}
+              <CardContent className="grid gap-3 pt-4">
+                {setEntries.map(([key, info]) => (
+                  <EnvVarRow
+                    key={key}
+                    varKey={key}
+                    info={info}
+                    edits={edits}
+                    setEdits={setEdits}
+                    revealed={revealed}
+                    saving={saving}
+                    onSave={handleSave}
+                    onClear={keyClear.requestDelete}
+                    onReveal={handleReveal}
+                    onCancelEdit={cancelEdit}
+                    clearDialogOpen={keyClear.isOpen}
+                  />
+                ))}
 
-              {unsetEntries.length > 0 && (
-                <CollapsibleUnset
-                  category={category}
-                  unsetEntries={unsetEntries}
-                  edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
-                  onSave={handleSave} onClear={keyClear.requestDelete} onReveal={handleReveal} onCancelEdit={cancelEdit}
-                  clearDialogOpen={keyClear.isOpen}
-                />
-              )}
-            </CardContent>
-          </Card>
-        );
-      })}
+                {unsetEntries.length > 0 && (
+                  <CollapsibleUnset
+                    category={category}
+                    unsetEntries={unsetEntries}
+                    edits={edits}
+                    setEdits={setEdits}
+                    revealed={revealed}
+                    saving={saving}
+                    onSave={handleSave}
+                    onClear={keyClear.requestDelete}
+                    onReveal={handleReveal}
+                    onCancelEdit={cancelEdit}
+                    clearDialogOpen={keyClear.isOpen}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          );
+        },
+      )}
       <PluginSlot name="env:bottom" />
     </div>
   );
@@ -651,25 +839,34 @@ function CollapsibleUnset({
 
   return (
     <>
-      <button
-        type="button"
-        className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer pt-1"
+      <Button
+        ghost
+        size="sm"
+        prefix={collapsed ? <ChevronRight /> : <ChevronDown />}
         onClick={() => setCollapsed(!collapsed)}
+        aria-expanded={!collapsed}
+        className="self-start mt-1 normal-case tracking-normal text-xs text-muted-foreground hover:text-foreground"
       >
-        {collapsed
-          ? <ChevronRight className="h-3 w-3" />
-          : <ChevronDown className="h-3 w-3" />}
-        <span>{t.env.notConfigured.replace("{count}", String(unsetEntries.length))}</span>
-      </button>
+        {t.env.notConfigured.replace("{count}", String(unsetEntries.length))}
+      </Button>
 
-      {!collapsed && unsetEntries.map(([key, info]) => (
-        <EnvVarRow
-          key={key} varKey={key} info={info}
-          edits={edits} setEdits={setEdits} revealed={revealed} saving={saving}
-          onSave={onSave} onClear={onClear} onReveal={onReveal} onCancelEdit={onCancelEdit}
-          clearDialogOpen={clearDialogOpen}
-        />
-      ))}
+      {!collapsed &&
+        unsetEntries.map(([key, info]) => (
+          <EnvVarRow
+            key={key}
+            varKey={key}
+            info={info}
+            edits={edits}
+            setEdits={setEdits}
+            revealed={revealed}
+            saving={saving}
+            onSave={onSave}
+            onClear={onClear}
+            onReveal={onReveal}
+            onCancelEdit={onCancelEdit}
+            clearDialogOpen={clearDialogOpen}
+          />
+        ))}
     </>
   );
 }

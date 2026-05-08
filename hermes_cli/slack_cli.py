@@ -18,6 +18,7 @@ for reinstall when scopes/commands change.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -128,7 +129,7 @@ def slack_manifest_command(args) -> int:
 
                 target = Path(get_hermes_home()) / "slack-manifest.json"
             except Exception:
-                target = Path.home() / ".hermes" / "slack-manifest.json"
+                target = Path(os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")) / "slack-manifest.json"
         else:
             target = Path(write_target).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)

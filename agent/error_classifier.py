@@ -54,6 +54,8 @@ class FailoverReason(enum.Enum):
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
+    oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
+    llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -91,6 +93,7 @@ class ClassifiedError:
 _BILLING_PATTERNS = [
     "insufficient credits",
     "insufficient_quota",
+    "insufficient balance",
     "credit balance",
     "credits have been exhausted",
     "top up your credits",
@@ -449,6 +452,50 @@ def classify_api_error(
             should_compress=True,
         )
 
+    # Anthropic OAuth subscription rejects the 1M-context beta header.
+    # Observed error body: "The long context beta is not yet available for
+    # this subscription." Returned as HTTP 400 from native Anthropic when
+    # the subscription doesn't include 1M context, even though the request
+    # carries ``anthropic-beta: context-1m-2025-08-07``. The recovery path
+    # in run_agent.py rebuilds the Anthropic client with the beta stripped
+    # and retries once. Pattern is narrow enough that it won't collide with
+    # the 429 tier-gate pattern above (different status, different phrase).
+    if (
+        status_code == 400
+        and "long context beta" in error_msg
+        and "not yet available" in error_msg
+    ):
+        return _result(
+            FailoverReason.oauth_long_context_beta_forbidden,
+            retryable=True,
+            should_compress=False,
+        )
+
+    # llama.cpp's ``json-schema-to-grammar`` converter (used by its OAI
+    # server to build GBNF tool-call parsers) rejects regex escape classes
+    # like ``\d``/``\w``/``\s`` and most ``format`` values. MCP servers
+    # routinely emit ``"pattern": "\\d{4}-\\d{2}-\\d{2}"`` for date/phone/
+    # email params. llama.cpp surfaces this as HTTP 400 with one of a few
+    # recognizable phrases; on match we strip ``pattern``/``format`` from
+    # ``self.tools`` in the retry loop and retry once. Cloud providers are
+    # unaffected — they accept these keywords and we never hit this branch.
+    if (
+        status_code == 400
+        and (
+            "error parsing grammar" in error_msg
+            or "json-schema-to-grammar" in error_msg
+            or (
+                "unable to generate parser" in error_msg
+                and "template" in error_msg
+            )
+        )
+    ):
+        return _result(
+            FailoverReason.llama_cpp_grammar_pattern,
+            retryable=True,
+            should_compress=False,
+        )
+
     # ── 2. HTTP status code classification ──────────────────────────
 
     if status_code is not None:
@@ -499,7 +546,12 @@ def classify_api_error(
 
     is_disconnect = any(p in error_msg for p in _SERVER_DISCONNECT_PATTERNS)
     if is_disconnect and not status_code:
-        is_large = approx_tokens > context_length * 0.6 or approx_tokens > 120000 or num_messages > 200
+        # Absolute token/message-count thresholds are only a proxy for smaller
+        # context windows.  Large-context sessions can have hundreds of
+        # messages while still being far below their actual token budget.
+        is_large = approx_tokens > context_length * 0.6 or (
+            context_length <= 256000 and (approx_tokens > 120000 or num_messages > 200)
+        )
         if is_large:
             return _result(
                 FailoverReason.context_overflow,
@@ -745,7 +797,12 @@ def _classify_400(
         if not err_body_msg:
             err_body_msg = str(body.get("message") or "").strip().lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in ("error", "")
-    is_large = approx_tokens > context_length * 0.4 or approx_tokens > 80000 or num_messages > 80
+    # Absolute token/message-count thresholds are only a proxy for smaller
+    # context windows.  Large-context sessions can have many messages while
+    # still being far below their actual token budget.
+    is_large = approx_tokens > context_length * 0.4 or (
+        context_length <= 256000 and (approx_tokens > 80000 or num_messages > 80)
+    )
 
     if is_generic and is_large:
         return result_fn(

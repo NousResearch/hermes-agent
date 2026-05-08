@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Palette, Check } from "lucide-react";
-import { Typography } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Typography } from "@/components/NouiTypography";
 import { BUILTIN_THEMES, useTheme } from "@/themes";
+import type { DashboardTheme } from "@/themes";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 
@@ -9,8 +12,8 @@ import { cn } from "@/lib/utils";
  * Compact theme picker mounted next to the language switcher in the header.
  * Each dropdown row shows a 3-stop swatch (background / midground / warm
  * glow) so users can preview the palette before committing. User-defined
- * themes from `~/.hermes/dashboard-themes/*.yaml` that aren't in
- * `BUILTIN_THEMES` render without swatches and apply the default palette.
+ * themes from `~/.hermes/dashboard-themes/*.yaml` use their API-provided
+ * definitions so they show real palette swatches just like built-ins.
  *
  * When placed at the bottom of a container (e.g. the sidebar rail), pass
  * `dropUp` so the menu opens above the trigger instead of clipping below
@@ -50,27 +53,26 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
 
   return (
     <div ref={wrapperRef} className="relative">
-      <button
-        type="button"
+      <Button
+        ghost
         onClick={() => setOpen((o) => !o)}
-        className={cn(
-          "group relative inline-flex items-center gap-1.5 px-2 py-1 text-xs",
-          "text-muted-foreground hover:text-foreground transition-colors cursor-pointer",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-        )}
+        className="px-2 py-1 normal-case tracking-normal font-normal text-xs text-muted-foreground hover:text-foreground"
         title={t.theme?.switchTheme ?? "Switch theme"}
         aria-label={t.theme?.switchTheme ?? "Switch theme"}
         aria-expanded={open}
         aria-haspopup="listbox"
       >
-        <Palette className="h-3.5 w-3.5" />
-        <Typography
-          mondwest
-          className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
-        >
-          {label}
-        </Typography>
-      </button>
+        <span className="inline-flex items-center gap-1.5">
+          <Palette className="h-3.5 w-3.5" />
+
+          <Typography
+            mondwest
+            className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
+          >
+            {label}
+          </Typography>
+        </span>
+      </Button>
 
       {open && (
         <div
@@ -94,26 +96,22 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
 
           {availableThemes.map((th) => {
             const isActive = th.name === themeName;
-            const preset = BUILTIN_THEMES[th.name];
+            const paletteTheme = BUILTIN_THEMES[th.name] ?? th.definition;
 
             return (
-              <button
+              <ListItem
                 key={th.name}
-                type="button"
+                active={isActive}
                 role="option"
                 aria-selected={isActive}
                 onClick={() => {
                   setTheme(th.name);
                   close();
                 }}
-                className={cn(
-                  "flex w-full items-center gap-3 px-3 py-2 text-left transition-colors cursor-pointer",
-                  "hover:bg-midground/10",
-                  isActive ? "text-midground" : "text-midground/60",
-                )}
+                className="gap-3"
               >
-                {preset ? (
-                  <ThemeSwatch theme={preset.name} />
+                {paletteTheme ? (
+                  <ThemeSwatch theme={paletteTheme} />
                 ) : (
                   <PlaceholderSwatch />
                 )}
@@ -138,7 +136,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
                     isActive ? "opacity-100" : "opacity-0",
                   )}
                 />
-              </button>
+              </ListItem>
             );
           })}
         </div>
@@ -147,10 +145,8 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
   );
 }
 
-function ThemeSwatch({ theme }: { theme: string }) {
-  const preset = BUILTIN_THEMES[theme];
-  if (!preset) return <PlaceholderSwatch />;
-  const { background, midground, warmGlow } = preset.palette;
+function ThemeSwatch({ theme }: { theme: DashboardTheme }) {
+  const { background, midground, warmGlow } = theme.palette;
   return (
     <div
       aria-hidden

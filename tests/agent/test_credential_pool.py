@@ -250,6 +250,42 @@ def test_exhausted_402_entry_resets_after_one_hour(tmp_path, monkeypatch):
     assert entry.last_status == "ok"
 
 
+def test_exhausted_401_entry_resets_after_five_minutes(tmp_path, monkeypatch):
+    """Transient auth failures should not strand single-key setups for an hour."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 310,
+                        "last_error_code": 401,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent auto-seeding from Codex CLI tokens on the host
@@ -346,6 +382,64 @@ def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
     assert entry is not None
     assert entry.source == "env:OPENROUTER_API_KEY"
     assert entry.access_token == "sk-or-seeded"
+
+
+
+def test_load_pool_prefers_dotenv_over_stale_os_environ(tmp_path, monkeypatch):
+    """Regression for #18254: stale OPENROUTER_API_KEY in os.environ (inherited
+    from a parent shell) must NOT shadow the fresh key in ~/.hermes/.env when
+    seeding the credential pool. Before the fix, `get_env_value()` preferred
+    os.environ and silently wrote the stale value into auth.json, causing
+    persistent 401 errors after key rotation.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Simulate the bug: parent shell exported a stale test key
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-STALE-from-shell")
+
+    # User edited ~/.hermes/.env with the fresh key
+    (hermes_home / ".env").write_text(
+        "OPENROUTER_API_KEY=sk-or-FRESH-from-dotenv\n"
+    )
+
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.source == "env:OPENROUTER_API_KEY"
+    # The fresh key from .env must win over the stale shell export
+    assert entry.access_token == "sk-or-FRESH-from-dotenv", (
+        f"Expected .env to win, got {entry.access_token!r}"
+    )
+
+
+def test_load_pool_falls_back_to_os_environ_when_dotenv_empty(tmp_path, monkeypatch):
+    """When ~/.hermes/.env does not define OPENROUTER_API_KEY (typical Docker /
+    K8s / systemd deployment), seeding must still pick up the key from
+    os.environ. Guards against regressions that would break production
+    deployments relying on runtime-injected env vars.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-from-runtime-env")
+
+    # .env exists but does not define OPENROUTER_API_KEY
+    (hermes_home / ".env").write_text("SOME_OTHER_VAR=unrelated\n")
+
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.access_token == "sk-or-from-runtime-env"
 
 
 def test_load_pool_removes_stale_seeded_env_entry(tmp_path, monkeypatch):
@@ -866,6 +960,43 @@ def test_get_custom_provider_pool_key(tmp_path, monkeypatch):
     assert get_custom_provider_pool_key("") is None
 
 
+def test_get_custom_provider_pool_key_prefers_name_over_base_url(tmp_path, monkeypatch):
+    """When two custom providers share the same base_url, provider_name resolves to the correct one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "provider-a",
+                "base_url": "http://gateway:8080/v1",
+                "api_key": "sk-aaa",
+            },
+            {
+                "name": "provider-b",
+                "base_url": "http://gateway:8080/v1",
+                "api_key": "sk-bbb",
+            },
+        ]
+    }))
+
+    from agent.credential_pool import get_custom_provider_pool_key
+
+    # Without provider_name, first match wins (backward compatible)
+    assert get_custom_provider_pool_key("http://gateway:8080/v1") == "custom:provider-a"
+
+    # With provider_name, exact name match wins regardless of order
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="provider-b") == "custom:provider-b"
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="provider-a") == "custom:provider-a"
+
+    # Name match with non-matching base_url still works via fallback
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="nonexistent") == "custom:provider-a"
+
+    # Empty provider_name is same as None (backward compatible)
+    assert get_custom_provider_pool_key("http://gateway:8080/v1", provider_name="") == "custom:provider-a"
+
+
 def test_list_custom_pool_providers(tmp_path, monkeypatch):
     """list_custom_pool_providers returns custom: pool keys from auth.json."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -1370,3 +1501,143 @@ def test_nous_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch
     assert len(available) == 1
     assert available[0].refresh_token == "refresh-FRESH"
     assert available[0].last_status is None
+
+
+# ── OpenAI Codex OAuth cross-process sync tests ────────────────────────────
+
+def _codex_auth_store(access: str, refresh: str) -> dict:
+    return {
+        "version": 1,
+        "active_provider": "openai-codex",
+        "providers": {
+            "openai-codex": {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": access,
+                    "refresh_token": refresh,
+                    "id_token": "id-" + access,
+                },
+                "last_refresh": "2026-04-28T00:00:00Z",
+            }
+        },
+    }
+
+
+def test_sync_codex_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypatch):
+    """When auth.json has newer Codex tokens, the pool entry should adopt them."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_auth_store("access-OLD", "refresh-OLD"))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.access_token == "access-OLD"
+    assert entry.refresh_token == "refresh-OLD"
+
+    # Simulate `hermes auth openai-codex` replacing the token pair on disk.
+    _write_auth_store(tmp_path, _codex_auth_store("access-NEW", "refresh-NEW"))
+
+    synced = pool._sync_codex_entry_from_auth_store(entry)
+    assert synced is not entry
+    assert synced.access_token == "access-NEW"
+    assert synced.refresh_token == "refresh-NEW"
+    assert synced.last_status is None
+    assert synced.last_error_code is None
+    assert synced.last_error_reset_at is None
+
+
+def test_sync_codex_entry_noop_when_tokens_match(tmp_path, monkeypatch):
+    """When auth.json has the same tokens, sync should be a no-op."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_auth_store("access-same", "refresh-same"))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+
+    synced = pool._sync_codex_entry_from_auth_store(entry)
+    assert synced is entry
+
+
+def test_codex_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch):
+    """An exhausted Codex entry should recover when auth.json has newer tokens.
+
+    Reproduces the Discord report (p1aceho1der, Apr 2026): after a Codex
+    rate-limit reset the user ran `hermes model` to reauth, but the pool
+    entry stayed marked EXHAUSTED with last_error_reset_at many hours in
+    the future — so `_available_entries` kept returning empty and every
+    request failed with "no available entries (all exhausted or empty)".
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from dataclasses import replace as dc_replace
+
+    _write_auth_store(tmp_path, _codex_auth_store("access-OLD", "refresh-OLD"))
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+
+    # Mark entry as exhausted with last_error_reset_at one hour in the
+    # future (Codex 429 weekly-window pattern).
+    now = time.time()
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=now,
+        last_error_code=429,
+        last_error_reset_at=now + 3600,
+    )
+    pool._replace_entry(entry, exhausted)
+    pool._persist()
+
+    # Sanity: before the reauth, _available_entries refuses to return
+    # this entry because last_error_reset_at is in the future.
+    # (clear_expired would only clear it AFTER exhausted_until elapsed.)
+    available_before = pool._available_entries(clear_expired=True, refresh=False)
+    assert available_before == []
+
+    # Simulate `hermes model` / `hermes auth` refreshing the tokens.
+    _write_auth_store(tmp_path, _codex_auth_store("access-FRESH", "refresh-FRESH"))
+
+    available = pool._available_entries(clear_expired=True, refresh=False)
+    assert len(available) == 1
+    assert available[0].access_token == "access-FRESH"
+    assert available[0].refresh_token == "refresh-FRESH"
+    assert available[0].last_status is None
+    assert available[0].last_error_reset_at is None
+
+
+def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, monkeypatch):
+    """Regression guard: if auth.json tokens haven't changed, the exhausted
+    entry must stay stuck behind its reset window — sync must not spuriously
+    clear status just because the entry is STATUS_EXHAUSTED."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from dataclasses import replace as dc_replace
+
+    _write_auth_store(tmp_path, _codex_auth_store("access-same", "refresh-same"))
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+
+    now = time.time()
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=now,
+        last_error_code=429,
+        last_error_reset_at=now + 3600,
+    )
+    pool._replace_entry(entry, exhausted)
+    pool._persist()
+
+    # auth.json unchanged → sync returns same entry → exhausted_until check
+    # still skips it.
+    available = pool._available_entries(clear_expired=True, refresh=False)
+    assert available == []

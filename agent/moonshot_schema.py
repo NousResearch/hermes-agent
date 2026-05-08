@@ -81,15 +81,56 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
         return repaired
 
     # Rule 2: when anyOf is present, type belongs only on the children.
+    # Additionally, Moonshot rejects null-type branches inside anyOf
+    # (enum value (<nil>) does not match any type in [string]).
+    # Collapse the anyOf to the first non-null branch and infer its type.
     if "anyOf" in repaired and isinstance(repaired["anyOf"], list):
         repaired.pop("type", None)
-        return repaired
+        non_null = [b for b in repaired["anyOf"]
+                    if isinstance(b, dict) and b.get("type") != "null"]
+        if non_null and len(non_null) < len(repaired["anyOf"]):
+            # Drop the anyOf wrapper — keep only the non-null branch.
+            # If there's a single non-null branch, promote it and fall
+            # through to Rules 1/3 so nullable/enum cleanup still applies
+            # to the merged node.
+            if len(non_null) == 1:
+                merge = {k: v for k, v in repaired.items() if k != "anyOf"}
+                merge.update(non_null[0])
+                repaired = merge
+            else:
+                repaired["anyOf"] = non_null
+                return repaired
+        else:
+            # Nothing to collapse — parent type stripped, children already
+            # repaired by the recursive walk above.
+            return repaired
+
+    # Moonshot also rejects non-standard keywords like ``nullable`` on
+    # parameter schemas — strip it.
+    repaired.pop("nullable", None)
 
     # Rule 1: property schemas without type need one.  $ref nodes are exempt
     # — their type comes from the referenced definition.
-    if "$ref" in repaired:
-        return repaired
-    return _fill_missing_type(repaired)
+    # Fill missing type BEFORE Rule 3 so enum cleanup can check the type.
+    if "$ref" not in repaired:
+        repaired = _fill_missing_type(repaired)
+
+    # Rule 3: Moonshot rejects null/empty-string values inside enum arrays
+    # when the parent type is a scalar (string, integer, etc.).  The error:
+    #   "enum value (<nil>) does not match any type in [string]"
+    # Strip null and empty-string from enum values, and if the enum becomes
+    # empty, drop it entirely.
+    if "enum" in repaired and isinstance(repaired["enum"], list):
+        node_type = repaired.get("type")
+        if node_type in ("string", "integer", "number", "boolean"):
+            cleaned = [v for v in repaired["enum"]
+                       if v is not None and v != ""]
+            if cleaned:
+                repaired["enum"] = cleaned
+            else:
+                repaired.pop("enum")
+
+    return repaired
 
 
 def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:

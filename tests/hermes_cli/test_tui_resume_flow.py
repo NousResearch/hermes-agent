@@ -12,6 +12,7 @@ def _args(**overrides):
         "model": None,
         "provider": None,
         "resume": None,
+        "toolsets": None,
         "tui": True,
         "tui_dev": False,
     }
@@ -35,7 +36,14 @@ def test_cmd_chat_tui_continue_uses_latest_tui_session(monkeypatch, main_mod):
         calls.append(source)
         return "20260408_235959_a1b2c3" if source == "tui" else None
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None):
+    def fake_launch(
+        resume_session_id=None,
+        tui_dev=False,
+        model=None,
+        provider=None,
+        toolsets=None,
+        **kwargs,
+    ):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -62,7 +70,14 @@ def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch, mai
             return "20260408_235959_d4e5f6"
         return None
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None):
+    def fake_launch(
+        resume_session_id=None,
+        tui_dev=False,
+        model=None,
+        provider=None,
+        toolsets=None,
+        **kwargs,
+    ):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -80,7 +95,14 @@ def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch, mai
 def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod):
     captured = {}
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None):
+    def fake_launch(
+        resume_session_id=None,
+        tui_dev=False,
+        model=None,
+        provider=None,
+        toolsets=None,
+        **kwargs,
+    ):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -98,12 +120,20 @@ def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod)
 def test_cmd_chat_tui_passes_model_and_provider(monkeypatch, main_mod):
     captured = {}
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None):
+    def fake_launch(
+        resume_session_id=None,
+        tui_dev=False,
+        model=None,
+        provider=None,
+        toolsets=None,
+        **kwargs,
+    ):
         captured.update(
             {
                 "model": model,
                 "provider": provider,
                 "resume": resume_session_id,
+                "toolsets": toolsets,
                 "tui_dev": tui_dev,
             }
         )
@@ -120,11 +150,276 @@ def test_cmd_chat_tui_passes_model_and_provider(monkeypatch, main_mod):
         "model": "anthropic/claude-sonnet-4.6",
         "provider": "anthropic",
         "resume": None,
+        "toolsets": None,
         "tui_dev": False,
     }
 
 
-def test_launch_tui_exports_model_and_provider(monkeypatch, main_mod):
+def test_cmd_chat_tui_passes_toolsets(monkeypatch, main_mod):
+    captured = {}
+
+    def fake_launch(
+        resume_session_id=None,
+        tui_dev=False,
+        model=None,
+        provider=None,
+        toolsets=None,
+        **kwargs,
+    ):
+        captured["toolsets"] = toolsets
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+
+    with pytest.raises(SystemExit):
+        main_mod.cmd_chat(_args(toolsets="web,terminal"))
+
+    assert captured["toolsets"] == "web,terminal"
+
+
+def test_cmd_chat_tui_forwards_chat_flags(monkeypatch, main_mod):
+    captured = {}
+
+    def fake_launch(resume_session_id=None, **kwargs):
+        captured["resume_session_id"] = resume_session_id
+        captured.update(kwargs)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+
+    with pytest.raises(SystemExit):
+        main_mod.cmd_chat(
+            _args(
+                skills=["foo,bar"],
+                verbose=True,
+                quiet=True,
+                query="hello",
+                image="/tmp/cat.png",
+                worktree=True,
+                checkpoints=True,
+                pass_session_id=True,
+                max_turns=7,
+                accept_hooks=True,
+            )
+        )
+
+    assert captured["skills"] == ["foo,bar"]
+    assert captured["verbose"] is True
+    assert captured["quiet"] is True
+    assert captured["query"] == "hello"
+    assert captured["image"] == "/tmp/cat.png"
+    assert captured["worktree"] is True
+    assert captured["checkpoints"] is True
+    assert captured["pass_session_id"] is True
+    assert captured["max_turns"] == 7
+    assert captured["accept_hooks"] is True
+
+
+def test_main_top_level_tui_accepts_toolsets(monkeypatch, main_mod):
+    captured = {}
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(sys, "argv", ["hermes", "--tui", "--toolsets", "web,terminal"])
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: None),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(
+            register_from_config=lambda _cfg, accept_hooks=False: None
+        ),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "cmd_chat",
+        lambda args: captured.update({"toolsets": args.toolsets, "tui": args.tui}),
+    )
+
+    main_mod.main()
+
+    assert captured == {"toolsets": "web,terminal", "tui": True}
+
+
+def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
+    captured = {}
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        sys, "argv", ["hermes", "-z", "hello", "--toolsets", "web,terminal"]
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: None),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(
+            register_from_config=lambda _cfg, accept_hooks=False: None
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+
+    assert exc.value.code == 0
+    assert captured == {
+        "prompt": "hello",
+        "model": None,
+        "provider": None,
+        "toolsets": "web,terminal",
+    }
+
+
+def _stub_plugin_discovery(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+
+def test_oneshot_rejects_invalid_only_toolsets(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    from hermes_cli.oneshot import run_oneshot
+
+    assert run_oneshot("hello", toolsets="nope") == 2
+    err = capsys.readouterr().err
+    assert "nope" in err
+    assert "did not contain any valid toolsets" in err
+
+
+def test_oneshot_filters_invalid_toolsets_before_redirect(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    valid, error = _validate_explicit_toolsets("web,nope")
+
+    assert valid == ["web"]
+    assert error is None
+    assert "nope" in capsys.readouterr().err
+
+
+def test_oneshot_all_toolsets_means_all_not_configured_cli():
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    valid, error = _validate_explicit_toolsets("all")
+
+    assert valid is None
+    assert error is None
+
+
+def test_oneshot_all_toolsets_warns_about_ignored_extra_entries(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    valid, error = _validate_explicit_toolsets("all,nope")
+
+    assert valid is None
+    assert error is None
+    assert "ignoring additional entries: nope" in capsys.readouterr().err
+
+
+def test_oneshot_accepts_plugin_toolset_after_discovery(monkeypatch):
+    import toolsets
+
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    discovered = {"ready": False}
+    original_validate = toolsets.validate_toolset
+
+    def fake_validate(name):
+        return name == "plugin_demo" and discovered["ready"] or original_validate(name)
+
+    monkeypatch.setattr(toolsets, "validate_toolset", fake_validate)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(
+            discover_plugins=lambda: discovered.update({"ready": True})
+        ),
+    )
+
+    valid, error = _validate_explicit_toolsets("plugin_demo")
+
+    assert valid == ["plugin_demo"]
+    assert error is None
+
+
+def test_oneshot_rejects_disabled_mcp_toolset(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.config as config_mod
+
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+
+    valid, error = _validate_explicit_toolsets("mcp-off")
+
+    assert valid is None
+    assert error == "hermes -z: --toolsets did not contain any valid toolsets.\n"
+    err = capsys.readouterr().err
+    assert "ignoring disabled MCP servers" in err
+    assert "mcp-off" in err
+
+
+def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.config as config_mod
+
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+
+    valid, error = _validate_explicit_toolsets("web,mcp-off,nope")
+
+    assert valid == ["web"]
+    assert error is None
+    err = capsys.readouterr().err
+    assert "ignoring unknown --toolsets entries: nope" in err
+    assert "ignoring disabled MCP servers" in err
+    assert "mcp-off" in err
+
+
+def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None
 
@@ -144,13 +439,16 @@ def test_launch_tui_exports_model_and_provider(monkeypatch, main_mod):
     monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
 
     with pytest.raises(SystemExit):
-        main_mod._launch_tui(model="nous/hermes-test", provider="nous")
+        main_mod._launch_tui(
+            model="nous/hermes-test", provider="nous", toolsets="web, terminal"
+        )
 
     env = captured["env"]
     assert env["HERMES_MODEL"] == "nous/hermes-test"
     assert env["HERMES_INFERENCE_MODEL"] == "nous/hermes-test"
     assert env["HERMES_TUI_PROVIDER"] == "nous"
     assert env["HERMES_INFERENCE_PROVIDER"] == "nous"
+    assert env["HERMES_TUI_TOOLSETS"] == "web,terminal"
     active_path = Path(env["HERMES_TUI_ACTIVE_SESSION_FILE"])
     assert active_path.name.startswith("hermes-tui-active-session-")
     assert active_path.suffix == ".json"

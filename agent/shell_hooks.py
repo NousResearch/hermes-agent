@@ -76,6 +76,7 @@ except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 from hermes_constants import get_hermes_home
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -568,7 +569,7 @@ def save_allowlist(data: Dict[str, Any]) -> None:
         try:
             with os.fdopen(fd, "w") as fh:
                 fh.write(json.dumps(data, indent=2, sort_keys=True))
-            os.replace(tmp_path, p)
+            atomic_replace(tmp_path, p)
         except Exception:
             try:
                 os.unlink(tmp_path)

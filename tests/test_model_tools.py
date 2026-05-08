@@ -193,8 +193,15 @@ class TestPreToolCallBlocking:
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
         assert result == {"ok": True}
 
-    def test_skip_flag_prevents_double_block_check(self, monkeypatch):
-        """When skip_pre_tool_call_hook=True, blocking is not checked (caller did it)."""
+    def test_skip_flag_prevents_double_fire(self, monkeypatch):
+        """When skip_pre_tool_call_hook=True, the hook does not fire again.
+
+        The caller (e.g. run_agent._invoke_tool) has already called
+        get_pre_tool_call_block_message(), which fires the hook once.
+        handle_function_call must NOT fire it a second time — that was
+        the classic double-fire bug where observer hooks logged every
+        tool call twice.
+        """
         hook_calls = []
 
         def fake_invoke_hook(hook_name, **kwargs):
@@ -208,10 +215,58 @@ class TestPreToolCallBlocking:
         handle_function_call("web_search", {"q": "test"}, task_id="t1",
                              skip_pre_tool_call_hook=True)
 
-        # Hook still fires for observer notification, but get_pre_tool_call_block_message
-        # is not called — invoke_hook fires directly in the skip=True branch.
-        assert "pre_tool_call" in hook_calls
+        # Single-fire contract: when skip=True the caller already fired
+        # pre_tool_call, so handle_function_call must not fire it again.
+        assert hook_calls.count("pre_tool_call") == 0, (
+            f"pre_tool_call fired {hook_calls.count('pre_tool_call')} times "
+            f"with skip_pre_tool_call_hook=True; expected 0 "
+            f"(caller already fired it). hook_calls={hook_calls}"
+        )
+        # post_tool_call and transform_tool_result still fire — only the
+        # pre-call block-check path is suppressed by the skip flag.
         assert "post_tool_call" in hook_calls
+        assert "transform_tool_result" in hook_calls
+
+    def test_run_agent_pattern_fires_pre_tool_call_exactly_once(self, monkeypatch):
+        """End-to-end regression for the double-fire bug.
+
+        Mirrors run_agent._invoke_tool: first calls
+        get_pre_tool_call_block_message() (which fires the hook as part of
+        its block-directive poll), then calls
+        handle_function_call(skip_pre_tool_call_hook=True).  The plugin
+        hook MUST fire exactly once across both calls — not twice as it
+        did before the fix (observer plugins were seeing every tool
+        execution logged twice).
+        """
+        from hermes_cli.plugins import get_pre_tool_call_block_message
+
+        hook_calls = []
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append(hook_name)
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch",
+                            lambda *a, **kw: json.dumps({"ok": True}))
+
+        # Step 1: caller checks for a block directive (this fires pre_tool_call once).
+        block = get_pre_tool_call_block_message(
+            "web_search", {"q": "test"}, task_id="t1",
+        )
+        assert block is None
+
+        # Step 2: caller dispatches with skip=True so the hook isn't re-fired.
+        handle_function_call(
+            "web_search", {"q": "test"}, task_id="t1",
+            skip_pre_tool_call_hook=True,
+        )
+
+        assert hook_calls.count("pre_tool_call") == 1, (
+            f"pre_tool_call fired {hook_calls.count('pre_tool_call')} times "
+            f"across the run_agent (block-check + dispatch) path; "
+            f"expected exactly 1. hook_calls={hook_calls}"
+        )
 
 
 # =========================================================================

@@ -407,3 +407,44 @@ class TestReasoningCommand:
         assert result["final_response"] == "ok"
         assert _CapturingAgent.last_init is not None
         assert "homeassistant" in set(_CapturingAgent.last_init["enabled_toolsets"])
+
+
+class TestLoadShowReasoningCoercion:
+    """Regression: display.show_reasoning must be coerced, not bool()'d."""
+
+    def _load_with_config(self, tmp_path, monkeypatch, yaml_body: str) -> bool:
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml_body, encoding="utf-8")
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        return gateway_run.GatewayRunner._load_show_reasoning()
+
+    def test_quoted_false_is_false(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display:\n  show_reasoning: "false"\n',
+        ) is False
+
+    def test_quoted_off_is_false(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display:\n  show_reasoning: "off"\n',
+        ) is False
+
+    def test_quoted_true_is_true(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display:\n  show_reasoning: "true"\n',
+        ) is True
+
+    def test_bare_true_is_true(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display:\n  show_reasoning: true\n',
+        ) is True
+
+    def test_missing_is_false(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display: {}\n',
+        ) is False

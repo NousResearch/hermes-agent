@@ -1,15 +1,47 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
+import logging
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
 import tempfile
+import time
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_safe_cwd(cwd: str) -> str:
+    """Return ``cwd`` if it exists as a directory, else the nearest existing
+    ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
+    path can't find any existing directory (effectively never on a healthy
+    filesystem, but cheap belt-and-braces).
+
+    Used by ``_run_bash`` to recover when the configured cwd is gone — most
+    commonly because a previous tool call deleted its own working directory
+    (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
+    raises ``FileNotFoundError`` before bash starts, wedging every subsequent
+    terminal call until the gateway restarts.
+    """
+    if cwd and os.path.isdir(cwd):
+        return cwd
+    parent = os.path.dirname(cwd) if cwd else ""
+    while parent:
+        if os.path.isdir(parent):
+            return parent
+        next_parent = os.path.dirname(parent)
+        if next_parent == parent:
+            # Reached the filesystem root and it doesn't exist either —
+            # genuinely nothing to fall back to except the temp dir.
+            break
+        parent = next_parent
+    return tempfile.gettempdir()
 
 
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
@@ -100,6 +132,10 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "VERCEL_OIDC_TOKEN",
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
     })
     return frozenset(blocked)
 
@@ -305,6 +341,8 @@ class LocalEnvironment(BaseEnvironment):
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+        if cwd:
+            cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.init_session()
 
@@ -351,6 +389,27 @@ class LocalEnvironment(BaseEnvironment):
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
+        # Recover when the cwd has been deleted out from under us — usually by
+        # a previous tool call that ran ``rm -rf`` on its own working dir
+        # (issue #17558).  Popen would otherwise raise FileNotFoundError on
+        # the cwd before bash starts, wedging every subsequent call until the
+        # gateway restarts.
+        safe_cwd = _resolve_safe_cwd(self.cwd)
+        if safe_cwd != self.cwd:
+            logger.warning(
+                "LocalEnvironment cwd %r is missing on disk; "
+                "falling back to %r so terminal commands keep working.",
+                self.cwd,
+                safe_cwd,
+            )
+            self.cwd = safe_cwd
+
+        # On Windows, self.cwd may be a Git Bash-style path (/c/Users/...)
+        # from pwd output. subprocess.Popen needs a native Windows path.
+        _popen_cwd = self.cwd
+        if _IS_WINDOWS and _popen_cwd and re.match(r'^/[a-zA-Z]/', _popen_cwd):
+            _popen_cwd = _popen_cwd[1].upper() + ':' + _popen_cwd[2:].replace('/', '\\')
+
         proc = subprocess.Popen(
             args,
             text=True,
@@ -361,8 +420,13 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            cwd=self.cwd,
+            cwd=_popen_cwd,
         )
+        if not _IS_WINDOWS:
+            try:
+                proc._hermes_pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                pass
 
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
@@ -371,27 +435,86 @@ class LocalEnvironment(BaseEnvironment):
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
+
+        def _group_alive(pgid: int) -> bool:
+            try:
+                # POSIX-only: _IS_WINDOWS is handled before this helper is used.
+                os.killpg(pgid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                # The group exists, even if this process cannot signal it.
+                return True
+
+        def _wait_for_group_exit(pgid: int, timeout: float) -> bool:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                # Reap the wrapper promptly. A dead but unreaped group leader
+                # still makes killpg(pgid, 0) report the group as alive.
+                try:
+                    proc.poll()
+                except Exception:
+                    pass
+                if not _group_alive(pgid):
+                    return True
+                time.sleep(0.05)
+            try:
+                proc.poll()
+            except Exception:
+                pass
+            return not _group_alive(pgid)
+
         try:
             if _IS_WINDOWS:
                 proc.terminate()
             else:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGTERM)
                 try:
-                    proc.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
+                    pgid = os.getpgid(proc.pid)
+                except ProcessLookupError:
+                    pgid = getattr(proc, "_hermes_pgid", None)
+                    if pgid is None:
+                        raise
+
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                except ProcessLookupError:
+                    return
+
+                # Wait on the process group, not just the shell wrapper. Under
+                # load the wrapper can exit before grandchildren do; returning
+                # at that point leaves orphaned process-group members behind.
+                if _wait_for_group_exit(pgid, 1.0):
+                    return
+
+                try:
+                    # POSIX-only: _IS_WINDOWS is handled by the outer branch.
                     os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
+                except ProcessLookupError:
+                    return
+                _wait_for_group_exit(pgid, 2.0)
+                try:
+                    proc.wait(timeout=0.2)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+        except (ProcessLookupError, PermissionError, OSError):
             try:
                 proc.kill()
             except Exception:
                 pass
 
     def _update_cwd(self, result: dict):
-        """Read CWD from temp file (local-only, no round-trip needed)."""
+        """Read CWD from temp file (local-only, no round-trip needed).
+
+        Skip the assignment when the path no longer exists as a directory —
+        ``pwd -P`` on a deleted cwd can leave a stale value in the marker
+        file, and propagating it would re-wedge the next ``Popen``.  The
+        ``_run_bash`` recovery path will resolve a safe fallback if needed.
+        """
         try:
-            cwd_path = open(self._cwd_file).read().strip()
-            if cwd_path:
+            with open(self._cwd_file) as f:
+                cwd_path = f.read().strip()
+            if cwd_path and os.path.isdir(cwd_path):
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):
             pass

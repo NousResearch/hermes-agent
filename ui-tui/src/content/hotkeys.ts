@@ -5,8 +5,8 @@ const paste = isMac ? 'Cmd' : 'Alt'
 
 const copyHotkeys: [string, string][] = isMac
   ? [
-      ['Cmd+C', 'copy selection'],
-      ['Ctrl+C', 'interrupt / clear draft / exit']
+      ['Ctrl+C', 'interrupt / clear draft / exit'],
+      ['mouse selection', 'copy with your terminal copy gesture']
     ]
   : isRemoteShell()
     ? [
@@ -17,9 +17,9 @@ const copyHotkeys: [string, string][] = isMac
 
 export const HOTKEYS: [string, string][] = [
   ...copyHotkeys,
-  [action + '+D', 'exit'],
-  [action + '+G / Alt+G', 'open $EDITOR (Alt+G fallback for VSCode/Cursor)'],
-  [action + '+L', 'redraw / repaint'],
+  [isMac ? '/quit' : action + '+D', 'exit'],
+  [isMac ? 'Alt+G' : action + '+G / Alt+G', 'open $EDITOR'],
+  [isMac ? '/redraw' : action + '+L', 'redraw / repaint'],
   [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],

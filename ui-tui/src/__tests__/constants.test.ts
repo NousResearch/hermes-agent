@@ -26,8 +26,8 @@ describe('constants', () => {
     })
   })
 
-  it('documents Ctrl/Cmd+L as non-destructive redraw', () => {
-    const hotkey = HOTKEYS.find(([k]) => k.endsWith('+L'))
+  it('documents a non-destructive redraw shortcut or command', () => {
+    const hotkey = HOTKEYS.find(([k]) => k === '/redraw' || k.endsWith('+L'))
     expect(hotkey).toBeDefined()
     expect(hotkey?.[1]).toBe('redraw / repaint')
   })

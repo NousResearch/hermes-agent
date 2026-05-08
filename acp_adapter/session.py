@@ -596,7 +596,12 @@ class SessionManager:
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
+                # clarify is added alongside hermes-acp so mini-class models
+                # can ask for intent instead of triggering a safety refusal on
+                # ambiguous greetings. clarify_tool returns a graceful error
+                # when no interactive callback is registered (ACP path), so
+                # the model falls back to answering directly. See #21666.
+                ["hermes-acp", "clarify"],
                 mcp_server_names=configured_mcp_servers,
             ),
             "quiet_mode": True,

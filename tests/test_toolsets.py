@@ -246,3 +246,25 @@ class TestPluginToolsets:
         all_toolsets = get_all_toolsets()
         assert "plugin_bundle" in all_toolsets
         assert all_toolsets["plugin_bundle"]["tools"] == ["plugin_tool"]
+
+
+class TestAcpSessionToolsets:
+    def test_acp_session_default_toolsets_include_clarify(self):
+        """ACP sessions must include clarify alongside hermes-acp.
+
+        Without clarify, mini-class OpenRouter models trigger a canonical safety
+        refusal on plain greetings. clarify_tool gracefully handles the
+        no-callback ACP context (returns an error the model uses to answer
+        directly). See issue #21666.
+        """
+        from acp_adapter.session import _expand_acp_enabled_toolsets
+
+        toolsets = _expand_acp_enabled_toolsets(["hermes-acp", "clarify"])
+        assert "hermes-acp" in toolsets
+        assert "clarify" in toolsets
+
+    def test_acp_session_clarify_toolset_expands_to_clarify_tool(self):
+        """clarify standalone toolset resolves to the clarify tool name."""
+        ts = get_toolset("clarify")
+        assert ts is not None
+        assert "clarify" in ts["tools"]

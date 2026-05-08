@@ -1273,6 +1273,13 @@ class SlashCommandCompleter(Completer):
                     display_meta=meta,
                 )
 
+        # Bare `@` should stay instant and only surface the static references.
+        # The TUI gateway already short-circuits here; mirroring that behavior in
+        # the CLI avoids kicking off a project-wide fuzzy file scan on the first
+        # `@` keystroke.
+        if word == "@":
+            return
+
         # If the user typed @file: / @folder: (or just @file / @folder with
         # no colon yet), delegate to path completions.  Accepting the bare
         # form lets the picker surface directories as soon as the user has

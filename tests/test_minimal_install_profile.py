@@ -1,5 +1,8 @@
 """Regression coverage for the minimal installer profile."""
 
+import os
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -76,6 +79,81 @@ def test_install_script_defaults_to_minimal_profile_and_selected_extras() -> Non
     assert 'echo "all"' in text
     assert 'install_target=".[${extras}]"' in text
     assert 'uv pip install -e ".[all]"' not in text
+
+
+def test_installer_invokes_setup_with_install_profile_not_hermes_profile() -> None:
+    text = INSTALL_SH.read_text()
+    assert 'setup --install-profile "$INSTALL_PROFILE"' in text
+    assert 'setup --profile "$INSTALL_PROFILE"' not in text
+
+
+def test_setup_install_profile_flag_does_not_require_named_hermes_profile(tmp_path) -> None:
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(tmp_path / "hermes-home")
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "setup",
+            "--install-profile",
+            "minimal",
+            "--non-interactive",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+
+    output = result.stdout + result.stderr
+    assert "Profile 'minimal' does not exist" not in output
+    assert result.returncode == 0, output
+
+
+def test_install_profile_flag_can_be_combined_with_named_hermes_profile(tmp_path) -> None:
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(tmp_path / "hermes-root")
+    env.pop("PYTHONPATH", None)
+
+    create = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "profile", "create", "dev"],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    assert create.returncode == 0, create.stdout + create.stderr
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            "dev",
+            "setup",
+            "--install-profile",
+            "minimal",
+            "--non-interactive",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+
+    output = result.stdout + result.stderr
+    assert "Profile 'minimal' does not exist" not in output
+    assert result.returncode == 0, output
 
 
 def test_install_script_gates_heavy_probes_for_minimal_profile() -> None:

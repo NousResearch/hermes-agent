@@ -3062,7 +3062,7 @@ def run_setup_wizard(args):
         )
         return
 
-    requested_profile = getattr(args, "profile", None)
+    requested_profile = getattr(args, "install_profile", None)
     if getattr(args, "setup_minimal", False):
         requested_profile = "minimal"
 

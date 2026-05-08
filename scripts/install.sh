@@ -1583,9 +1583,9 @@ run_setup_wizard() {
     # Run hermes setup using the venv Python directly (no activation needed).
     # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
     if [ "$USE_VENV" = true ]; then
-        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup --profile "$INSTALL_PROFILE" < /dev/tty
+        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup --install-profile "$INSTALL_PROFILE" < /dev/tty
     else
-        python -m hermes_cli.main setup --profile "$INSTALL_PROFILE" < /dev/tty
+        python -m hermes_cli.main setup --install-profile "$INSTALL_PROFILE" < /dev/tty
     fi
 }
 

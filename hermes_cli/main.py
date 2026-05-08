@@ -8922,16 +8922,16 @@ def main():
         "or unset, instead of running the full reconfigure wizard.",
     )
     setup_parser.add_argument(
-        "--profile",
+        "--install-profile",
         choices=["minimal", "standard", "full"],
         default=None,
-        help="Setup profile. 'minimal' asks only for provider/model and enables the bare toolset.",
+        help="Installer/setup dependency profile. 'minimal' asks only for provider/model and enables the bare toolset.",
     )
     setup_parser.add_argument(
         "--minimal",
         dest="setup_minimal",
         action="store_true",
-        help="Alias for --profile minimal.",
+        help="Alias for --install-profile minimal.",
     )
     setup_parser.set_defaults(func=cmd_setup)
 

@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Union
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,17 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     """
     schedule = schedule.strip()
     original = schedule
+
+    timezone_name = None
+    timezone_match = re.match(r'^(?:CRON_TZ|TZ)=(\S+)\s+(.+)$', schedule, flags=re.IGNORECASE)
+    if timezone_match:
+        timezone_name = timezone_match.group(1)
+        try:
+            ZoneInfo(timezone_name)
+        except Exception as e:
+            raise ValueError(f"Invalid timezone '{timezone_name}' in schedule '{original}': {e}") from e
+        schedule = timezone_match.group(2).strip()
+
     schedule_lower = schedule.lower()
     
     # "every X" pattern → recurring interval
@@ -167,11 +179,14 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             croniter(schedule)
         except Exception as e:
             raise ValueError(f"Invalid cron expression '{schedule}': {e}")
-        return {
+        result = {
             "kind": "cron",
             "expr": schedule,
-            "display": schedule
+            "display": original if timezone_name else schedule,
         }
+        if timezone_name:
+            result["timezone"] = timezone_name
+        return result
     
     # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
@@ -230,6 +245,27 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt.astimezone(target_tz)
 
 
+def _schedule_cron_timezone(schedule: Dict[str, Any]) -> Optional[ZoneInfo]:
+    """Return an optional ZoneInfo for cron schedules with CRON_TZ/TZ.
+
+    Stored jobs may contain a `timezone` field from previous Hermes versions or
+    manual repair. Invalid stored values should not crash the scheduler; fall
+    back to the Hermes timezone after logging.
+    """
+    timezone_name = schedule.get("timezone")
+    if not timezone_name:
+        return None
+    try:
+        return ZoneInfo(str(timezone_name))
+    except Exception as exc:
+        logger.warning(
+            "Ignoring invalid cron timezone %r for schedule %r: %s",
+            timezone_name,
+            schedule.get("expr"),
+            exc,
+        )
+        return None
+
 def _recoverable_oneshot_run_at(
     schedule: Dict[str, Any],
     now: datetime,
@@ -277,7 +313,9 @@ def _compute_grace_seconds(schedule: dict) -> int:
     if kind == "cron" and HAS_CRONITER:
         try:
             now = _hermes_now()
-            cron = croniter(schedule["expr"], now)
+            cron_tz = _schedule_cron_timezone(schedule)
+            base_time = now.astimezone(cron_tz) if cron_tz else now
+            cron = croniter(schedule["expr"], base_time)
             first = cron.get_next(datetime)
             second = cron.get_next(datetime)
             period_seconds = int((second - first).total_seconds())
@@ -328,8 +366,14 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         base_time = now
         if last_run_at:
             base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
-        cron = croniter(schedule["expr"], base_time)
+        cron_tz = _schedule_cron_timezone(schedule)
+        cron_base = base_time.astimezone(cron_tz) if cron_tz else base_time
+        cron = croniter(schedule["expr"], cron_base)
         next_run = cron.get_next(datetime)
+        if cron_tz:
+            if next_run.tzinfo is None:
+                next_run = next_run.replace(tzinfo=cron_tz)
+            next_run = next_run.astimezone(now.tzinfo)
         return next_run.isoformat()
 
     return None

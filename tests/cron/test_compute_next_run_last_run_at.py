@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 pytest.importorskip("croniter")
 
-from cron.jobs import compute_next_run
+from cron.jobs import compute_next_run, parse_schedule
 
 
 class TestCronComputeNextRunUsesLastRunAt:
@@ -64,6 +64,40 @@ class TestCronComputeNextRunUsesLastRunAt:
             f"Expected next run on Apr 11 (from now), got {next_dt}"
         )
         assert next_dt.hour == 0
+
+    def test_cron_with_schedule_timezone_uses_that_zone_not_hermes_zone(self, monkeypatch):
+        """A New York cron should advance in New York wall time even when
+        Hermes itself runs in Bangkok.
+
+        Regression: Alpaca jobs stored timezone=America/New_York but computed
+        next_run_at as 12:45 Bangkok instead of 12:45 New York.
+        """
+        bangkok = ZoneInfo("Asia/Bangkok")
+
+        now = datetime(2026, 5, 7, 12, 53, 0, tzinfo=bangkok)
+        last_run = datetime(2026, 5, 6, 23, 51, 54, tzinfo=bangkok)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        schedule = {
+            "kind": "cron",
+            "expr": "45 12 * * 1-5",
+            "timezone": "America/New_York",
+        }
+
+        result = compute_next_run(schedule, last_run_at=last_run.isoformat())
+        assert result is not None
+        next_dt = datetime.fromisoformat(result)
+
+        assert next_dt.tzinfo is not None
+        assert next_dt.astimezone(bangkok).isoformat() == "2026-05-07T23:45:00+07:00"
+
+    def test_parse_schedule_accepts_cron_tz_prefix(self):
+        schedule = parse_schedule("CRON_TZ=America/New_York 45 12 * * 1-5")
+
+        assert schedule["kind"] == "cron"
+        assert schedule["expr"] == "45 12 * * 1-5"
+        assert schedule["timezone"] == "America/New_York"
+        assert schedule["display"] == "CRON_TZ=America/New_York 45 12 * * 1-5"
 
     def test_cron_weekly_consistent_with_interval(self, monkeypatch):
         """Both cron and interval jobs should anchor to last_run_at when

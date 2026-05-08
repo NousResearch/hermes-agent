@@ -406,6 +406,29 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
+        # Check payload action filter (GitHub/GitLab-style payloads).
+        # Event headers only identify the broad event type (for example,
+        # ``pull_request``); providers put the concrete action (``opened``,
+        # ``synchronize``, ``closed``) in the JSON payload. Filtering here
+        # prevents non-actionable deliveries from spawning an agent run or
+        # sending no-op messages to downstream platforms.
+        allowed_actions = route_config.get("actions", [])
+        payload_action = payload.get("action")
+        if allowed_actions and payload_action not in allowed_actions:
+            logger.debug(
+                "[webhook] Ignoring action %s for route %s (allowed: %s)",
+                payload_action,
+                route_name,
+                allowed_actions,
+            )
+            return web.json_response(
+                {
+                    "status": "ignored",
+                    "event": event_type,
+                    "action": payload_action,
+                }
+            )
+
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")
         prompt = self._render_prompt(

@@ -51,6 +51,9 @@ platforms:
           secret: "your-webhook-secret-here"   # must match the GitHub webhook secret exactly
           events:
             - pull_request
+          actions:
+            - opened
+            - synchronize
 
           # The agent is instructed to fetch the actual diff before reviewing.
           # {number} and {repository.full_name} are resolved from the GitHub payload.
@@ -82,6 +85,7 @@ platforms:
 |---|---|
 | `secret` (route-level) | HMAC secret for this route. Falls back to `extra.secret` global if omitted. |
 | `events` | List of `X-GitHub-Event` header values to accept. Empty list = accept all. |
+| `actions` | Optional list of payload `action` values to accept, such as `opened` or `synchronize`. Empty or omitted = accept all actions for the accepted events. |
 | `prompt` | Template; `{field}` and `{nested.field}` resolve from the GitHub payload. |
 | `deliver` | `github_comment` posts via `gh pr comment`. `log` just writes to the gateway log. |
 | `deliver_extra.repo` | Resolves to e.g. `org/repo` from the payload. |
@@ -182,13 +186,22 @@ tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/gateway.log"
 
 ## Filtering to specific actions
 
-GitHub sends `pull_request` events for many actions: `opened`, `synchronize`, `reopened`, `closed`, `labeled`, etc. The `events` list filters only by the `X-GitHub-Event` header value — it cannot filter by action sub-type at the routing level.
+GitHub sends `pull_request` events for many actions: `opened`, `synchronize`, `reopened`, `closed`, `labeled`, etc. The `events` list filters by the `X-GitHub-Event` header value, and `actions` filters by the JSON payload's `action` field before the agent runs.
 
-The prompt in Step 1 already handles this by instructing the agent to stop early for `closed` and `labeled` events.
+For example, review only newly opened PRs:
 
-:::warning The agent still runs and consumes tokens
-The "stop here" instruction prevents a meaningful review, but the agent still runs to completion for every `pull_request` event regardless of action. GitHub webhooks can only filter by event type (`pull_request`, `push`, `issues`, etc.) — not by action sub-type (`opened`, `closed`, `labeled`). There is no routing-level filter for sub-actions. For high-volume repos, accept this cost or filter upstream with a GitHub Actions workflow that calls your webhook URL conditionally.
-:::
+```yaml
+events: [pull_request]
+actions: [opened]
+```
+
+When an accepted event has a non-matching action, Hermes returns an ignored response and skips agent dispatch:
+
+```json
+{"status":"ignored","event":"pull_request","action":"synchronize"}
+```
+
+Use prompt instructions for any remaining business logic within the accepted actions.
 
 > There is no Jinja2 or conditional template syntax. `{field}` and `{nested.field}` are the only substitutions supported. Anything else is passed verbatim to the agent.
 

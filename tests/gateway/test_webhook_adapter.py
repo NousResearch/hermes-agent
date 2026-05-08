@@ -304,6 +304,58 @@ class TestEventFilter:
             )
             assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_action_filter_rejects_non_matching(self):
+        """Non-matching payload action is ignored before agent dispatch."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],
+                "actions": ["opened"],
+                "prompt": "PR: {action}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "synchronize"},
+                headers={"X-GitHub-Event": "pull_request"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+            assert data["event"] == "pull_request"
+            assert data["action"] == "synchronize"
+            adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_action_filter_accepts_matching(self):
+        """Matching payload action passes through."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],
+                "actions": ["opened"],
+                "prompt": "PR: {action}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "opened"},
+                headers={"X-GitHub-Event": "pull_request"},
+            )
+            assert resp.status == 202
+            adapter.handle_message.assert_called_once()
+
 
 # ===================================================================
 # HTTP handling
@@ -834,4 +886,3 @@ class TestInsecureNoAuthSafetyRail:
             assert result is True
         finally:
             await adapter.disconnect()
-

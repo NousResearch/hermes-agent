@@ -293,6 +293,10 @@ object HermesTaskerImportBridge {
             val enabled = taskerToggleEnabledFromAction(action) ?: return null
             payload.put("target_enabled", enabled)
         }
+        if (code == TASKER_DO_NOT_DISTURB) {
+            val mode = taskerDndModeFromAction(action) ?: return null
+            payload.put("dnd_mode", mode)
+        }
         return base.put("action_type", ACTION_TYPE_SHIZUKU_ACTION)
             .put("use_shizuku", true)
             .put("command", payload.toString())
@@ -343,6 +347,16 @@ object HermesTaskerImportBridge {
         return when (argText(action, 0).trim().lowercase()) {
             "1", "true", "yes", "on", "enabled", "enable" -> true
             "0", "false", "no", "off", "disabled", "disable" -> false
+            else -> null
+        }
+    }
+
+    private fun taskerDndModeFromAction(action: Element): String? {
+        return when (argText(action, 0).trim().lowercase()) {
+            "0", "none", "total_silence", "no_interruptions" -> "on"
+            "1", "priority", "important_interruptions" -> "priority"
+            "2", "all", "off", "disable", "disabled" -> "off"
+            "3", "alarms", "alarms_only" -> "alarms"
             else -> null
         }
     }
@@ -479,6 +493,7 @@ object HermesTaskerImportBridge {
     private const val TASKER_VIBRATE_PATTERN = 62
     private const val TASKER_BROWSE_URL = 104
     private const val TASKER_SET_CLIPBOARD = 105
+    private const val TASKER_WIFI_TETHER = 113
     private const val TASKER_RUN_SHELL = 123
     private const val TASKER_DEVELOPER_SETTINGS = 197
     private const val TASKER_AIRPLANE_MODE_SETTINGS = 201
@@ -492,6 +507,7 @@ object HermesTaskerImportBridge {
     private const val TASKER_SHOW_RECENTS = 247
     private const val TASKER_TURN_OFF = 248
     private const val TASKER_BLUETOOTH = 294
+    private const val TASKER_DO_NOT_DISTURB = 312
     private const val TASKER_AIRPLANE_MODE = 333
     private const val TASKER_DELETE_FILE = 406
     private const val TASKER_WRITE_FILE = 410
@@ -525,7 +541,9 @@ object HermesTaskerImportBridge {
     private val TASKER_SHIZUKU_FIXED_ACTIONS = mapOf(
         TASKER_TURN_OFF to "turn_screen_off",
         TASKER_BLUETOOTH to "set_bluetooth_enabled",
+        TASKER_DO_NOT_DISTURB to "set_dnd_mode",
         TASKER_AIRPLANE_MODE to "set_airplane_mode_enabled",
+        TASKER_WIFI_TETHER to "set_wifi_tethering_enabled",
         TASKER_WIFI to "set_wifi_enabled",
         TASKER_MOBILE_DATA to "set_mobile_data_enabled",
         TASKER_END_CALL to "end_call",
@@ -533,6 +551,7 @@ object HermesTaskerImportBridge {
     private val TASKER_SHIZUKU_TOGGLE_ACTIONS = setOf(
         TASKER_AIRPLANE_MODE,
         TASKER_BLUETOOTH,
+        TASKER_WIFI_TETHER,
         TASKER_WIFI,
         TASKER_MOBILE_DATA,
     )
@@ -554,6 +573,7 @@ object HermesTaskerImportBridge {
         TASKER_VIBRATE_PATTERN to "Vibrate Pattern",
         TASKER_BROWSE_URL to "Browse URL",
         TASKER_SET_CLIPBOARD to "Set Clipboard",
+        TASKER_WIFI_TETHER to "WiFi Tether",
         TASKER_RUN_SHELL to "Run Shell",
         TASKER_DEVELOPER_SETTINGS to "Developer Settings",
         TASKER_AIRPLANE_MODE_SETTINGS to "Airplane Mode Settings",
@@ -567,6 +587,7 @@ object HermesTaskerImportBridge {
         TASKER_SHOW_RECENTS to "Show Recents",
         TASKER_TURN_OFF to "Turn Off",
         TASKER_BLUETOOTH to "Bluetooth",
+        TASKER_DO_NOT_DISTURB to "Do Not Disturb",
         TASKER_AIRPLANE_MODE to "Airplane Mode",
         TASKER_DELETE_FILE to "Delete File",
         TASKER_WRITE_FILE to "Write File",

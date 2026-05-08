@@ -51,6 +51,7 @@ def test_is_session_expired_detects_session_terminated():
     from tools.mcp_tool import _is_session_expired_error
 
     assert _is_session_expired_error(RuntimeError("Session terminated")) is True
+    assert _is_session_expired_error(RuntimeError("SESSION TERMINATED")) is True
 
 
 def test_is_session_expired_detects_stale_pipe_and_closed_transport_variants():
@@ -103,7 +104,7 @@ def test_is_session_expired_rejects_empty_message():
 # ---------------------------------------------------------------------------
 
 
-def _install_stub_server(name: str = "wpcom"):
+def _install_stub_server(name: str = "wpcom", auto_replace_session: bool = True):
     """Register a minimal server stub that _handle_session_expired_and_retry
     can signal via _reconnect_event, and that reports ready+session after
     the event fires."""
@@ -119,6 +120,23 @@ def _install_stub_server(name: str = "wpcom"):
 
     class _EventAdapter:
         def set(self):
+            if auto_replace_session:
+                old_session = server.session
+                replacement = MagicMock(name=f"{name}-replacement-session")
+                for method_name in (
+                    "call_tool",
+                    "list_resources",
+                    "read_resource",
+                    "list_prompts",
+                    "get_prompt",
+                ):
+                    if method_name in vars(old_session):
+                        setattr(
+                            replacement,
+                            method_name,
+                            getattr(old_session, method_name),
+                        )
+                server.session = replacement
             reconnect_flag.set()
 
     server._reconnect_event = _EventAdapter()
@@ -301,6 +319,52 @@ def test_session_expired_handler_returns_none_when_retry_also_fails(
         )
     finally:
         mcp_tool._servers.pop("srv-retry-fail", None)
+
+
+def test_session_expired_retry_waits_for_replacement_session(monkeypatch, tmp_path):
+    """A reconnect can leave _ready set while the old session is still
+    installed. The retry must wait for a replacement ClientSession object,
+    not reuse the stale one just because the ready flag is true."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server, reconnect_flag = _install_stub_server(
+        "srv-reconnect-race",
+        auto_replace_session=False,
+    )
+    old_session = MagicMock(name="old-session")
+    new_session = MagicMock(name="new-session")
+    server.session = old_session
+    mcp_tool._servers["srv-reconnect-race"] = server
+
+    def _replace_after_reconnect():
+        assert reconnect_flag.wait(timeout=2), "reconnect was not signalled"
+        time.sleep(0.05)
+        server.session = new_session
+
+    replacer = threading.Thread(target=_replace_after_reconnect)
+    replacer.start()
+
+    observed_sessions = []
+
+    def _retry():
+        observed_sessions.append(server.session)
+        return json.dumps({"ok": server.session is new_session})
+
+    try:
+        out = _handle_session_expired_and_retry(
+            "srv-reconnect-race",
+            RuntimeError("Session terminated"),
+            _retry,
+            "tools/call",
+        )
+        assert json.loads(out) == {"ok": True}
+        assert observed_sessions == [new_session]
+    finally:
+        replacer.join(timeout=2)
+        mcp_tool._servers.pop("srv-reconnect-race", None)
 
 
 # ---------------------------------------------------------------------------

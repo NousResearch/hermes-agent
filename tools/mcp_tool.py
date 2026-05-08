@@ -1851,6 +1851,25 @@ _SESSION_EXPIRED_MARKERS: tuple = (
 )
 
 
+def _wait_for_replacement_session_ready(
+    srv: Any,
+    old_session: Any,
+    timeout: float,
+) -> bool:
+    """Wait until reconnect installs a ready session distinct from old_session."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current_session = getattr(srv, "session", None)
+        if (
+            current_session is not None
+            and current_session is not old_session
+            and srv._ready.is_set()
+        ):
+            return True
+        time.sleep(0.25)
+    return False
+
+
 def _is_session_expired_error(exc: BaseException) -> bool:
     """Return True if ``exc`` looks like an MCP transport session expiry.
 
@@ -1926,14 +1945,9 @@ def _handle_session_expired_and_retry(
 
     # Trigger the same reconnect mechanism the OAuth recovery path
     # uses, then wait briefly for the new session to come back ready.
+    old_session = srv.session
     loop.call_soon_threadsafe(srv._reconnect_event.set)
-    deadline = time.monotonic() + 15
-    ready = False
-    while time.monotonic() < deadline:
-        if srv.session is not None and srv._ready.is_set():
-            ready = True
-            break
-        time.sleep(0.25)
+    ready = _wait_for_replacement_session_ready(srv, old_session, timeout=15)
     if not ready:
         logger.warning(
             "MCP server '%s': reconnect did not ready within 15s after "

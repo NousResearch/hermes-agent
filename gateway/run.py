@@ -3852,6 +3852,23 @@ class GatewayRunner:
             )
             failure_limit = _kb.DEFAULT_FAILURE_LIMIT
 
+        # Allow config to pin the hermes executable so the dispatcher works
+        # when PATH inside the gateway process doesn't include the hermes shim
+        # (common in systemd/venv setups). kanban.executable in config.yaml.
+        configured_executable: "Optional[str]" = kanban_cfg.get("executable") or None
+        if configured_executable:
+            logger.info("kanban dispatcher: using configured executable %s", configured_executable)
+
+        def _make_spawn_fn():
+            _exe = configured_executable
+
+            def _spawn(task, workspace, *, board=None):
+                return _kb._default_spawn(task, workspace, board=board, executable=_exe)
+
+            return _spawn if _exe else None
+
+        _spawn_fn = _make_spawn_fn()
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -3885,6 +3902,7 @@ class GatewayRunner:
                     board=slug,
                     max_spawn=max_spawn,
                     failure_limit=failure_limit,
+                    spawn_fn=_spawn_fn,
                 )
             except Exception:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)

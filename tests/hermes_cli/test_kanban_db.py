@@ -914,3 +914,115 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
         assert out == {t1: "alpha", t3: "charlie"}
         # Empty input → empty dict, no SQL syntax error from "IN ()".
         assert kb.latest_summaries(conn, []) == {}
+
+
+# ---------------------------------------------------------------------------
+# _default_spawn: configured executable + venv fallback
+# ---------------------------------------------------------------------------
+
+class TestDefaultSpawnExecutable:
+    """_default_spawn must use the configured executable path rather than
+    a bare 'hermes' string when kanban.executable is set in config.yaml.
+    This lets the dispatcher work in systemd/venv setups where the hermes
+    shim is not on the process PATH."""
+
+    def _make_task(self):
+        return kb.Task(
+            id="t_exec_test",
+            title="exec test",
+            body=None,
+            assignee="default",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            current_run_id=None,
+            skills=None,
+        )
+
+    def test_explicit_executable_used_as_cmd_prefix(self, tmp_path, monkeypatch):
+        """When executable='/path/to/hermes' is passed, cmd[0] must be that path."""
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                self.pid = 1
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+
+        kb._default_spawn(
+            self._make_task(),
+            str(tmp_path / "ws"),
+            executable="/custom/bin/hermes",
+        )
+
+        assert captured["cmd"][0] == "/custom/bin/hermes"
+
+    def test_no_executable_falls_back_to_which(self, tmp_path, monkeypatch):
+        """Without explicit executable, cmd[0] must be whatever shutil.which returns."""
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                self.pid = 1
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        monkeypatch.setattr("shutil.which", lambda name: f"/found/{name}" if name == "hermes" else None)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+
+        kb._default_spawn(self._make_task(), str(tmp_path / "ws"))
+
+        assert captured["cmd"][0] == "/found/hermes"
+
+    def test_fallback_to_module_invocation_when_which_returns_none(self, tmp_path, monkeypatch):
+        """When shutil.which('hermes') returns None, fall back to sys.executable -m hermes_cli.main."""
+        import sys
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                self.pid = 1
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+
+        kb._default_spawn(self._make_task(), str(tmp_path / "ws"))
+
+        assert captured["cmd"][:3] == [sys.executable, "-m", "hermes_cli.main"]
+
+    def test_explicit_executable_overrides_which(self, tmp_path, monkeypatch):
+        """Explicit executable wins even when shutil.which would find a different one."""
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                self.pid = 1
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        monkeypatch.setattr("shutil.which", lambda name: "/wrong/hermes")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+
+        kb._default_spawn(
+            self._make_task(),
+            str(tmp_path / "ws"),
+            executable="/correct/bin/hermes",
+        )
+
+        assert captured["cmd"][0] == "/correct/bin/hermes"

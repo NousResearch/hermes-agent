@@ -3656,6 +3656,7 @@ def _default_spawn(
     workspace: str,
     *,
     board: Optional[str] = None,
+    executable: Optional[str] = None,
 ) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
@@ -3668,7 +3669,13 @@ def _default_spawn(
     ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root env
     vars all resolve to the same board the dispatcher claimed the task
     from. Workers cannot accidentally see other boards.
+
+    ``executable`` overrides the ``hermes`` binary path. When omitted the
+    dispatcher falls back to ``shutil.which("hermes")`` and then to
+    ``sys.executable -m hermes_cli.main`` so venv/systemd setups work even
+    when the shim is not on the process PATH.
     """
+    import shutil
     import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
@@ -3706,8 +3713,16 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
+    hermes_bin: list[str]
+    if executable:
+        hermes_bin = [executable]
+    elif shutil.which("hermes"):
+        hermes_bin = [shutil.which("hermes")]  # type: ignore[list-item]
+    else:
+        hermes_bin = [sys.executable, "-m", "hermes_cli.main"]
+
     cmd = [
-        "hermes",
+        *hermes_bin,
         "-p", profile_arg,
         # Auto-load the kanban-worker skill so every dispatched worker
         # has the pattern library (good summary/metadata shapes, retry

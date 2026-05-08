@@ -38,7 +38,9 @@ functionality is covered by the `nearby` command below, with the same
 
 Python 3.8+ (stdlib only — no pip installs needed).
 
-Script path: `~/.hermes/skills/maps/scripts/maps_client.py`
+Script path: `/opt/hermes/skills/productivity/maps/scripts/maps_client.py`
+
+Note: the `~/.hermes/skills/maps/` path is the logical alias — the actual installed path on this deployment is `/opt/hermes/skills/productivity/maps/scripts/maps_client.py`. Use the full path if `~/.hermes` doesn't resolve.
 
 ## Commands
 
@@ -186,9 +188,13 @@ current.
 ## Verification
 
 ```bash
-python3 ~/.hermes/skills/maps/scripts/maps_client.py search "Statue of Liberty"
+python3 /opt/hermes/skills/productivity/maps/scripts/maps_client.py search "Statue of Liberty"
 # Should return lat ~40.689, lon ~-74.044
 
-python3 ~/.hermes/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
+python3 /opt/hermes/skills/productivity/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
 # Should return a list of restaurants within ~500m of Times Square
 ```
+
+## References
+
+- `references/ventura-commute-times.md` — Gordon Rouse's commute times from 1920 E Linda Vista Ave, Ventura to key local employers (The Trade Desk, Northrop Grumman, Amgen). Useful for job-search and relocation research.

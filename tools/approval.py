@@ -100,7 +100,16 @@ def _is_gateway_approval_context() -> bool:
     Legacy gateway integrations set HERMES_GATEWAY_SESSION in process env.
     Newer concurrent gateway paths bind HERMES_SESSION_PLATFORM via
     contextvars so approval mode does not depend on process-global flags.
+
+    Cron jobs are NEVER gateway-approval contexts even when they originate
+    from a gateway platform (cron binds HERMES_SESSION_PLATFORM via
+    contextvars for delivery routing). Cron approvals are governed by
+    ``approvals.cron_mode`` config, not interactive resolve — letting cron
+    fall through to the gateway branch would submit a pending approval
+    with no listener and block the job indefinitely.
     """
+    if os.getenv("HERMES_CRON_SESSION"):
+        return False
     if os.getenv("HERMES_GATEWAY_SESSION"):
         return True
     return bool(_get_session_platform())

@@ -85,8 +85,9 @@ _IDENTIFIER_PATTERNS = [
     re.compile(r'(?:[/\.][\w\.\-]+){2,}'),
     # URLs: http://..., https://..., ftp://...
     re.compile(r'https?://[^\s\'"<>]+'),
-    # Variable / function names: snake_case or camelCase, >= 3 chars
-    re.compile(r'\b[a-zA-Z_][a-zA-Z0-9_]{2,}\b'),
+    # Variable / function names: >= 6 chars (filters out plain English words
+    # like "the", "for", "with"; keeps programming identifiers in any style)
+    re.compile(r'\b[a-zA-Z_][a-zA-Z0-9_]{5,}\b'),
     # Imports: from X import Y, import X
     re.compile(r'(?:from|import)\s+[a-zA-Z0-9_\.]+'),
     # Shell variables: $VAR, ${VAR}
@@ -100,11 +101,13 @@ _IDENTIFIER_PATTERNS = [
 
 def _extract_identifiers(content: str) -> List[str]:
     """Return ordered list of unique identifiers found in *content*."""
-    seen = []
+    seen_set: set[str] = set()
+    seen: list[str] = []
     for pat in _IDENTIFIER_PATTERNS:
         for m in pat.finditer(content):
             val = m.group()
-            if val not in seen:
+            if val not in seen_set:
+                seen_set.add(val)
                 seen.append(val)
 
     # Post-process: merge adjacent dotted segments (e.g. "agent" + "context_compressor"

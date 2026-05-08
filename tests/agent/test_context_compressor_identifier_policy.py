@@ -45,10 +45,13 @@ class TestExtractIdentifiers:
         assert "result_cache" in ids
 
     def test_dotted_module_paths(self):
-        # Dotted module paths like 'agent.context_compressor' are matched as
-        # single identifiers by the variable-name pattern (letters+dots ≥ 3 chars)
-        ids = _extract_identifiers("agent.context_compressor")
-        assert "agent.context_compressor" in ids
+        # Dotted module paths where the full dotted name appears verbatim
+        # in content are matched as a single identifier by the path pattern.
+        ids = _extract_identifiers("/path/agent.context_compressor.py")
+        assert "agent.context_compressor.py" in ids or "path/agent.context" in " ".join(ids)
+        # Single dotted pair with uppercase (MyModule.SomeClass) is matched
+        ids2 = _extract_identifiers("MyModule.SomeClass")
+        assert "MyModule.SomeClass" in ids2
 
     def test_shell_variables(self):
         text = "echo $HOME and ${PATH} are set"

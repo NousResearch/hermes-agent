@@ -1128,7 +1128,7 @@ class GatewayRunner:
         self._session_run_generation: Dict[str, int] = {}
         self._session_sources: "OrderedDict[str, SessionSource]" = OrderedDict()
         self._session_sources_max = 512
-        self._restart_caller_key: str = None  # session_key of the agent that triggered /restart
+        self._restart_caller_key: Optional[str] = None  # session_key of the agent that triggered /restart
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the

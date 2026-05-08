@@ -6,6 +6,16 @@ export type AttentionItem = {
   detail: string;
 };
 
+export type OfficeMapNode = {
+  id: "sessions" | "work" | "automation" | "routing";
+  label: string;
+  detail: string;
+  count: number;
+  health: "ok" | "partial" | "missing" | "error";
+  x: number;
+  y: number;
+};
+
 export function textField(row: Record<string, unknown>, key: string): string {
   const value = row[key];
   return typeof value === "string" && value.length > 0 ? value : "—";
@@ -28,6 +38,57 @@ export function groupByText(rows: Array<Record<string, unknown>>, key: string, f
 
 export function visibleRows<T>(rows: T[], limit: number, expanded: boolean): T[] {
   return expanded ? rows : rows.slice(0, limit);
+}
+
+export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
+  const sourceStatus = (id: string): OfficeMapNode["health"] => {
+    const status = state.data_sources.find((source) => source.id === id)?.status;
+    if (status === "error") return "error";
+    if (status === "partial" || status === "unavailable") return "partial";
+    if (status === "ok") return "ok";
+    return "missing";
+  };
+
+  const routingHealth: OfficeMapNode["health"] = state.topics.length > 0 || state.provenance.length > 0 ? "ok" : sourceStatus("topics");
+
+  return [
+    {
+      id: "sessions",
+      label: "Sessions",
+      detail: "recent safe session metadata",
+      count: state.agents.length,
+      health: sourceStatus("sessions"),
+      x: 24,
+      y: 30,
+    },
+    {
+      id: "work",
+      label: "Work",
+      detail: "Kanban/task cards without bodies",
+      count: state.work_items.length,
+      health: sourceStatus("kanban"),
+      x: 70,
+      y: 30,
+    },
+    {
+      id: "automation",
+      label: "Automation",
+      detail: "cron jobs as read-only machines",
+      count: state.automations.length,
+      health: sourceStatus("cron"),
+      x: 24,
+      y: 72,
+    },
+    {
+      id: "routing",
+      label: "Routing",
+      detail: "topic/provenance projection",
+      count: state.topics.length + state.provenance.length,
+      health: routingHealth,
+      x: 70,
+      y: 72,
+    },
+  ];
 }
 
 export function buildOfficeAttentionItems(state: OfficeState): AttentionItem[] {

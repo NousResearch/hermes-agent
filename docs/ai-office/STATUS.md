@@ -1,14 +1,67 @@
 # Hermes AI Office — STATUS
 
-Last updated: 2026-05-08 23:06 KST
+Last updated: 2026-05-09 00:17 KST
 
 ## Current phase
 
-Stage 8-A final density polish, Stage 8-B topic/provenance read-only depth, and Stage 8-C frontend tests/fixtures completed and verified on the Mac-local dashboard.
+Stage 9-A CSS/SVG office-map first slice completed on top of the Stage 8 read-only dashboard. Stage 8-A final density polish, Stage 8-B topic/provenance read-only depth, and Stage 8-C frontend tests/fixtures remain completed and verified.
 
-Next phase: keep the page read-only and localhost-first; recommended next work is either Stage 8-D fixture expansion/visual regression or a separate pixel/renderer research stage after dependency/licensing/security review.
+Next phase: keep the page read-only and localhost-first; recommended next work is either Stage 9-B richer office-map semantics/layout polish, Stage 8-D fixture expansion/visual regression, or a separate pixel/renderer research stage after dependency/licensing/security review.
 
 Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
+
+
+## Stage 9-A CSS/SVG office-map first slice completed
+
+The user approved the recommended path: add an office-map feeling without PixiJS/Phaser or mutation controls.
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `buildOfficeMapNodes()` and `OfficeMapNode` to derive four safe visual rooms from the redacted `OfficeState` DTO: sessions, work, automation, and routing.
+  - Counts and health come from safe DTO fields only; raw prompts, transcripts, task bodies, cron scripts, logs, auth, and secrets are not read.
+- `web/src/pages/OfficePage.tsx`
+  - Added a browser-local CSS/SVG `Office map` section in overview mode.
+  - The map renders four room-like clickable nodes, safe health colors, dashed SVG floor-plan connections, and explicit safety copy.
+  - Node clicks feed the existing Safe inspector with safe metadata only.
+  - No new dependency, pixel engine, backend schema, route, mutation control, or gateway integration was added.
+- `web/src/pages/OfficePage.test.ts`
+  - Added Vitest coverage proving office-map nodes are derived from safe counts and ignore raw-looking body/script/preview fixture fields.
+
+Verification performed on Mac:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 4 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed: 0 errors
+
+npm run build
+# passed: tsc -b && vite build
+
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 0.99s
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office
+# visible: OFFICE MAP, safe office projection, Sessions/Work/Automation/Routing nodes
+# node click updates Safe inspector with office-map safe metadata
+# console: no JS errors
+```
+
+Safety notes:
+
+- No PixiJS, Phaser, sprite assets, or copied Pixel Agents code/assets.
+- No mutation controls were added.
+- No backend API/schema change.
+- No Kanban/cron/topic registry/NAS/Obsidian writes.
+- The dashboard process was restarted only for local browser smoke of the rebuilt frontend bundle.
 
 ## Stage 8-A final density polish, Stage 8-B provenance depth, and Stage 8-C tests completed
 

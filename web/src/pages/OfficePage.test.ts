@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildOfficeAttentionItems,
+  buildOfficeMapNodes,
   groupByText,
   visibleRows,
 } from "./officeView";
@@ -85,4 +86,27 @@ describe("OfficePage view helpers", () => {
     ]);
     expect(attention.map((item) => item.label).join(" ")).not.toContain("prompt");
   });
+
+  it("builds a browser-local office map from safe DTO counts", () => {
+    const nodes = buildOfficeMapNodes(
+      officeFixture({
+        data_sources: [
+          { id: "kanban", status: "ok", checked_at: "2026-05-08T00:00:00Z", item_count: 2 },
+          { id: "topics", status: "missing", checked_at: "2026-05-08T00:00:00Z", item_count: 0 },
+        ],
+        agents: [{ id: "session-1", source_platform: "cli", status: "active", preview: "raw prompt must not matter" }],
+        work_items: [{ id: "task-1", title: "Safe task", status: "blocked", body: "raw task body must not matter" }],
+        automations: [{ id: "job-1", name: "Cron job job-1", state: "scheduled", script: "raw script must not matter" }],
+        topics: [],
+      }),
+    );
+
+    expect(nodes.map((node) => node.id)).toEqual(["sessions", "work", "automation", "routing"]);
+    expect(nodes.find((node) => node.id === "sessions")?.count).toBe(1);
+    expect(nodes.find((node) => node.id === "work")?.count).toBe(1);
+    expect(nodes.find((node) => node.id === "automation")?.count).toBe(1);
+    expect(nodes.find((node) => node.id === "routing")?.health).toBe("missing");
+    expect(nodes.map((node) => `${node.label} ${node.detail}`).join(" ")).not.toContain("raw");
+  });
+
 });

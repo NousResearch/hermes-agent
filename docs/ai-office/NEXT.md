@@ -1,6 +1,6 @@
 # Hermes AI Office — NEXT
 
-Last updated: 2026-05-08 23:06 KST
+Last updated: 2026-05-09 00:17 KST
 
 ## Start here after `/new`
 
@@ -64,7 +64,41 @@ When not to rely on `/goal` alone:
 
 ## Current next stage
 
-Stage 8-A final density polish, Stage 8-B topic/provenance read-only depth, and Stage 8-C frontend tests/fixtures are completed and verified on the Mac-local dashboard.
+Stage 9-A CSS/SVG office-map first slice is completed on top of the Stage 8 read-only dashboard. Stage 8-A/B/C remain completed and verified.
+
+
+Stage 9-A CSS/SVG office-map slice completed:
+
+- `web/src/pages/officeView.ts` adds `buildOfficeMapNodes()` and safe `OfficeMapNode` DTO projection.
+- `web/src/pages/OfficePage.tsx` renders an overview-only `Office map` with four room-like nodes: Sessions, Work, Automation, Routing.
+- The map is browser-local CSS/SVG only; no PixiJS/Phaser, new dependency, pixel assets, backend route/schema, or mutation controls.
+- Nodes inspect safe metadata through the existing Safe inspector.
+- `web/src/pages/OfficePage.test.ts` covers safe count projection and confirms raw-looking fixture fields are ignored.
+
+Verification for Stage 9-A:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 4 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed: 0 errors
+
+npm run build
+# passed: tsc -b && vite build
+
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 0.99s
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office
+# OFFICE MAP visible, four safe nodes visible, Safe inspector updates from node click, no console JS errors
+```
 
 Completed in this Stage 8 continuation:
 
@@ -114,10 +148,11 @@ TDD note:
 
 Immediate next action should remain a product/UX decision point, not a control-plane expansion:
 
-1. Stage 8-D hardening: add more frontend fixtures for empty/error/loading/source-health states and consider lightweight visual regression for `/office`.
-2. Or review the new topic registry read path against real local registry data if the user explicitly approves reading/creating a local seed registry.
-3. Or separately approve pixel/renderer research after dependency/licensing/security review.
-4. Do not add mutation controls, expose dashboard remotely, add Pixi/Phaser, create/edit topic registry data, or create/modify Kanban/Cron state without separate approval.
+1. Stage 9-B office-map semantics/layout polish: make the CSS/SVG map more spatially useful by grouping live rooms, showing safe flow hints between sessions/work/automation/routing, improving responsive layout, and adding fixtures for missing/error/partial states. Keep it dependency-free and read-only.
+2. Stage 8-D hardening: add more frontend fixtures for empty/error/loading/source-health states and consider lightweight visual regression for `/office`.
+3. Review the topic registry read path against real local registry data only if explicitly approved; do not create or edit registry data by default.
+4. Separately approve pixel/renderer research after dependency/licensing/security review if the project should move beyond CSS/SVG.
+5. Do not add mutation controls, expose dashboard remotely, add Pixi/Phaser, create/edit topic registry data, or create/modify Kanban/Cron state without separate approval.
 
 Completed Stage 6 files:
 

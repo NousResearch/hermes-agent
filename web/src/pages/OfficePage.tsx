@@ -18,7 +18,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api, type OfficeDataSource, type OfficeSourceStatus, type OfficeState } from "@/lib/api";
-import { buildOfficeAttentionItems, groupByText, numberField, textField, visibleRows } from "./officeView";
+import { buildOfficeAttentionItems, buildOfficeMapNodes, groupByText, numberField, textField, visibleRows, type OfficeMapNode } from "./officeView";
 
 const FOCUS_OPTIONS = ["overview", "work", "automation", "routing"] as const;
 const LIST_LIMIT = 6;
@@ -174,6 +174,58 @@ function MiniList({
   );
 }
 
+function mapNodeTone(health: OfficeMapNode["health"]): string {
+  if (health === "ok") return "border-emerald-400/40 bg-emerald-950/20 text-emerald-200";
+  if (health === "partial") return "border-yellow-400/40 bg-yellow-950/20 text-yellow-200";
+  if (health === "error") return "border-red-400/40 bg-red-950/20 text-red-200";
+  return "border-sky-400/35 bg-sky-950/15 text-sky-200";
+}
+
+function OfficeMap({ nodes, onInspect }: { nodes: OfficeMapNode[]; onInspect: (node: OfficeMapNode) => void }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <MapPinned className="h-4 w-4" /> Office map
+        </CardTitle>
+        <div className="text-xs text-midground/55">
+          Browser-local CSS/SVG floor plan over redacted DTO counts. No pixel engine, dependency, or mutation control.
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="relative min-h-[360px] overflow-hidden border border-current/15 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.14),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.04),rgba(0,0,0,0.16))] p-4">
+          <svg className="absolute inset-0 h-full w-full text-midground/20" role="img" aria-label="Read-only office floor connections" viewBox="0 0 100 100" preserveAspectRatio="none">
+            <path d="M24 30 H70 M24 72 H70 M24 30 V72 M70 30 V72" fill="none" stroke="currentColor" strokeDasharray="2 2" strokeWidth="0.8" />
+            <rect x="8" y="12" width="84" height="76" fill="none" stroke="currentColor" strokeWidth="0.5" />
+            <path d="M50 12 V88" fill="none" stroke="currentColor" strokeWidth="0.35" opacity="0.5" />
+          </svg>
+          <div className="absolute left-4 top-4 text-[10px] uppercase tracking-[0.22em] text-midground/50">safe office projection</div>
+          {nodes.map((node) => (
+            <button
+              key={node.id}
+              type="button"
+              onClick={() => onInspect(node)}
+              aria-label={`${node.label} office map room, ${node.count} safe item count, ${node.health} health`}
+              className={`absolute w-40 -translate-x-1/2 -translate-y-1/2 border p-3 text-left shadow-lg backdrop-blur transition hover:scale-[1.02] hover:border-current/60 ${mapNodeTone(node.health)}`}
+              style={{ left: `${node.x}%`, top: `${node.y}%` }}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs font-semibold uppercase tracking-[0.16em]">{node.label}</span>
+                <span className="text-2xl font-semibold">{node.count}</span>
+              </div>
+              <div className="mt-2 text-[11px] leading-4 text-current/75">{node.detail}</div>
+              <div className="mt-3 text-[10px] uppercase tracking-[0.16em] text-current/65">{node.health}</div>
+            </button>
+          ))}
+          <div className="absolute bottom-4 left-4 right-4 border border-current/10 bg-black/25 p-3 text-xs leading-5 text-midground/65">
+            This map is a visual index only: raw prompts, transcripts, cron scripts, task bodies, logs, auth, and secrets stay outside the browser DTO.
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function GroupBlock({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
   return (
     <div className="border border-current/10 bg-black/10 p-3">
@@ -298,6 +350,7 @@ export default function OfficePage() {
   }, []);
 
   const needsAttention = useMemo(() => (state ? buildOfficeAttentionItems(state) : []), [state]);
+  const mapNodes = useMemo(() => (state ? buildOfficeMapNodes(state) : []), [state]);
 
   const sourceCounts = useMemo(() => {
     if (!state) return { ok: 0, partial: 0, missing: 0, unavailable: 0, error: 0 };
@@ -394,6 +447,18 @@ export default function OfficePage() {
         <StatCard label="Automations" value={state.summary.automation_count ?? state.automations.length} detail="Cron-style jobs represented as read-only machines" />
         <StatCard label="Redactions" value={state.redactions.redacted_field_count} detail={`Policy v${state.redactions.policy_version}; raw sensitive fields omitted`} />
       </div>
+
+      {showOverview ? (
+        <OfficeMap
+          nodes={mapNodes}
+          onInspect={(node) => inspectRecord("office map room", node.label, [
+            ["room", node.id],
+            ["safe count", String(node.count)],
+            ["health", node.health],
+            ["detail", node.detail],
+          ])}
+        />
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
         <Card>

@@ -160,20 +160,101 @@ class MicrosoftGraphClient:
         headers: dict[str, str] | None = None,
         chunk_size: int = 65536,
     ) -> dict[str, Any]:
-        response = await self._request("GET", path, headers=headers)
+        """Download a Graph resource to disk, streaming the response body.
+
+        The body is written chunk-by-chunk via ``response.aiter_bytes`` with
+        the ``httpx.AsyncClient`` kept open for the duration of the iteration,
+        so recordings and other large artifacts do not need to fit in memory.
+        """
+        url = self._resolve_url(path)
         target = Path(destination)
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp_target = target.with_suffix(target.suffix + ".part")
-        with tmp_target.open("wb") as handle:
-            async for chunk in response.aiter_bytes(chunk_size=chunk_size):
-                if chunk:
-                    handle.write(chunk)
-        os.replace(tmp_target, target)
-        return {
-            "path": str(target),
-            "size_bytes": target.stat().st_size,
-            "content_type": response.headers.get("content-type"),
-        }
+
+        attempt = 0
+        last_error: Exception | None = None
+
+        while attempt <= self.max_retries:
+            token = await self.token_provider.get_access_token(
+                force_refresh=attempt > 0 and self._should_refresh_token(last_error)
+            )
+            request_headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": self.user_agent,
+            }
+            if headers:
+                request_headers.update(headers)
+
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(self.timeout),
+                    transport=self._transport,
+                ) as client:
+                    async with client.stream(
+                        "GET",
+                        url,
+                        headers=request_headers,
+                    ) as response:
+                        if response.status_code >= 400:
+                            # Materialize error body so we can surface a meaningful
+                            # message; error bodies are small.
+                            await response.aread()
+                            api_error = self._build_api_error("GET", url, response)
+                            last_error = api_error
+
+                            if (
+                                response.status_code == 401
+                                and attempt < self.max_retries
+                            ):
+                                self.token_provider.clear_cache()
+                                await self._sleep(
+                                    self._retry_delay(response, attempt)
+                                )
+                                attempt += 1
+                                continue
+
+                            if (
+                                self._should_retry(response)
+                                and attempt < self.max_retries
+                            ):
+                                await self._sleep(
+                                    self._retry_delay(response, attempt)
+                                )
+                                attempt += 1
+                                continue
+
+                            raise api_error
+
+                        content_type = response.headers.get("content-type")
+                        with tmp_target.open("wb") as handle:
+                            async for chunk in response.aiter_bytes(
+                                chunk_size=chunk_size
+                            ):
+                                if chunk:
+                                    handle.write(chunk)
+            except httpx.HTTPError as exc:
+                last_error = exc
+                tmp_target.unlink(missing_ok=True)
+                if attempt >= self.max_retries:
+                    raise MicrosoftGraphClientError(
+                        f"Microsoft Graph download failed for GET {url}: {exc}"
+                    ) from exc
+                await self._sleep(self._retry_delay(None, attempt))
+                attempt += 1
+                continue
+
+            os.replace(tmp_target, target)
+            return {
+                "path": str(target),
+                "size_bytes": target.stat().st_size,
+                "content_type": content_type,
+            }
+
+        tmp_target.unlink(missing_ok=True)
+        raise MicrosoftGraphClientError(
+            f"Microsoft Graph download exhausted retries for GET {url}."
+        )
 
     async def _request(
         self,

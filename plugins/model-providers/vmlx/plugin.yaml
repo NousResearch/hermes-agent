@@ -1,0 +1,5 @@
+name: vmlx
+kind: model-provider
+version: 0.1.0
+description: vMLX (Apple Silicon local inference) — OpenAI-compatible MLX server with primary/janitor split
+author: "maurice-jobst"

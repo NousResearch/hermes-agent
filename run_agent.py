@@ -12668,16 +12668,25 @@ class AIAgent:
 
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
+                        request_messages = api_kwargs.get("messages")
+                        if not isinstance(request_messages, list):
+                            request_messages = api_kwargs.get("input")
+                        if not isinstance(request_messages, list):
+                            request_messages = api_messages
                         _invoke_hook(
                             "pre_api_request",
                             task_id=effective_task_id,
                             session_id=self.session_id or "",
+                            user_message=original_user_message,
+                            conversation_history=list(messages),
+                            is_first_turn=(not bool(conversation_history)),
                             platform=self.platform or "",
                             model=self.model,
                             provider=self.provider,
                             base_url=self.base_url,
                             api_mode=self.api_mode,
                             api_call_count=api_call_count,
+                            request_messages=copy.deepcopy(request_messages),
                             message_count=len(api_messages),
                             tool_count=len(self.tools or []),
                             approx_input_tokens=approx_tokens,
@@ -14582,7 +14591,9 @@ class AIAgent:
                         finish_reason=finish_reason,
                         message_count=len(api_messages),
                         response_model=getattr(response, "model", None),
+                        response=response,
                         usage=self._usage_summary_for_api_request_hook(response),
+                        assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
                     )

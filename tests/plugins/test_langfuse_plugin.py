@@ -165,7 +165,7 @@ class TestHooksInert:
 
         # Each hook should just return; no exceptions.
         mod.on_pre_llm_call(task_id="t", session_id="s", messages=[{"role": "user", "content": "hi"}])
-        mod.on_pre_llm_request(task_id="t", session_id="s", api_call_count=1, messages=[])
+        mod.on_pre_llm_request(task_id="t", session_id="s", api_call_count=1, request_messages=[])
         mod.on_post_llm_call(task_id="t", session_id="s", api_call_count=1)
         mod.on_pre_tool_call(tool_name="read_file", args={}, task_id="t", session_id="s")
         mod.on_post_tool_call(tool_name="read_file", args={}, result="ok", task_id="t", session_id="s")
@@ -443,3 +443,26 @@ class TestPlaceholderKeyDetection:
         assert "placeholders" not in caplog.text.lower(), (
             f"Valid Langfuse keys tripped the placeholder guard: {caplog.text!r}"
         )
+
+
+class TestRequestMessageCoercion:
+    def test_prefers_request_messages_then_messages_then_history_then_user_message(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        assert mod._coerce_request_messages(
+            request_messages=[{"role": "system", "content": "s"}],
+            messages=[{"role": "user", "content": "m"}],
+            conversation_history=[{"role": "user", "content": "h"}],
+            user_message="u",
+        ) == [{"role": "system", "content": "s"}]
+        assert mod._coerce_request_messages(
+            messages=[{"role": "user", "content": "m"}],
+            conversation_history=[{"role": "user", "content": "h"}],
+            user_message="u",
+        ) == [{"role": "user", "content": "m"}]
+        assert mod._coerce_request_messages(
+            conversation_history=[{"role": "user", "content": "h"}],
+            user_message="u",
+        ) == [{"role": "user", "content": "h"}]
+        assert mod._coerce_request_messages(user_message="u") == [{"role": "user", "content": "u"}]

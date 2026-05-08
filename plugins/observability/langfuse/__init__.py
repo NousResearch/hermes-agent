@@ -402,6 +402,21 @@ def _extract_last_user_message(messages: Any) -> Any:
     return None
 
 
+def _coerce_request_messages(
+    *,
+    request_messages: Any = None,
+    messages: Any = None,
+    conversation_history: Any = None,
+    user_message: Any = None,
+) -> list[dict[str, Any]]:
+    for candidate in (request_messages, messages, conversation_history):
+        if isinstance(candidate, list):
+            return candidate
+    if user_message is None:
+        return []
+    return [{"role": "user", "content": user_message}]
+
+
 def _serialize_messages(messages: Any) -> list[dict[str, Any]]:
     if not isinstance(messages, list):
         return []
@@ -710,6 +725,7 @@ def on_pre_llm_request(
     base_url: str = "",
     api_mode: str = "",
     api_call_count: int = 0,
+    request_messages: Any = None,
     messages: Any = None,
     turn_type: str = "user",
     message_count: int = 0,
@@ -717,11 +733,20 @@ def on_pre_llm_request(
     approx_input_tokens: int = 0,
     request_char_count: int = 0,
     max_tokens: Any = None,
+    conversation_history: Any = None,
+    user_message: Any = None,
     **_: Any,
 ) -> None:
     client = _get_langfuse()
     if client is None:
         return
+
+    input_messages = _coerce_request_messages(
+        request_messages=request_messages,
+        messages=messages,
+        conversation_history=conversation_history,
+        user_message=user_message,
+    )
 
     task_key = _trace_key(task_id, session_id)
     req_key = _request_key(api_call_count)
@@ -737,7 +762,7 @@ def on_pre_llm_request(
                 provider=provider,
                 model=model,
                 api_mode=api_mode,
-                messages=messages,
+                messages=input_messages,
                 client=client,
             )
             _TRACE_STATE[task_key] = state
@@ -750,7 +775,7 @@ def on_pre_llm_request(
             client=client,
             name=f"LLM call {api_call_count}",
             as_type="generation",
-            input_value=_serialize_messages(messages),
+            input_value=_serialize_messages(input_messages),
             metadata={
                 "provider": provider,
                 "platform": platform,

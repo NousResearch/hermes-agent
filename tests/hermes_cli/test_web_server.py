@@ -205,6 +205,33 @@ class TestWebServerEndpoints:
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
 
+    def test_search_session_conversations_returns_json_conversations(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session("history-search-session", source="cli", model="test-model")
+            db.append_message("history-search-session", "user", "please find the dashboard needle")
+            db.append_message("history-search-session", "assistant", "the dashboard needle is here")
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/sessions/search/conversations",
+            params={"q": "needle", "limit": "10", "role": "user,assistant"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/json")
+        data = resp.json()
+        assert data["matched_messages"] >= 1
+        assert data["matched_sessions"] == 1
+        result = data["results"][0]
+        assert result["session_id"] == "history-search-session"
+        assert result["session"]["id"] == "history-search-session"
+        assert [message["role"] for message in result["messages"]] == ["user", "assistant"]
+        assert "needle" in result["matches"][0]["snippet"]
+
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
         assert resp.status_code == 200

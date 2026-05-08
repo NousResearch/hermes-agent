@@ -256,7 +256,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `TELEGRAM_PROXY` | Telegram 连接的代理 URL——覆盖 `HTTPS_PROXY`。支持 `http://`、`https://`、`socks5://` |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | 允许使用 bot 的逗号分隔 Discord 用户 ID |
-| `DISCORD_ALLOWED_ROLES` | 允许使用 bot 的逗号分隔 Discord 角色 ID（与 `DISCORD_ALLOWED_USERS` 取 OR）。自动启用 Members intent。适用于管理团队频繁变动的场景——角色授权自动传播。 |
+| `DISCORD_ALLOWED_ROLES` | 允许在消息所属服务器中使用 bot 的 Discord 角色 ID，逗号分隔（与 `DISCORD_ALLOWED_USERS` 取 OR）。自动启用 Members intent。私信中的角色授权默认关闭，需在 `config.yaml` 中设置 `discord.dm_role_auth_guild`；用户允许列表和已批准的 Hermes 配对可独立授权。 |
 | `DISCORD_ALLOWED_CHANNELS` | 逗号分隔的 Discord 频道 ID。设置后，bot 仅在这些频道（以及允许的私聊）中响应。覆盖 `config.yaml` 中的 `discord.allowed_channels`。 |
 | `DISCORD_PROXY` | Discord 连接的代理 URL——覆盖 `HTTPS_PROXY`。支持 `http://`、`https://`、`socks5://` |
 | `DISCORD_HOME_CHANNEL` | cron 投递的默认 Discord 频道 |

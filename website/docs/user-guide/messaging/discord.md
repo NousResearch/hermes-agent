@@ -304,8 +304,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DISCORD_BOT_TOKEN` | **Yes** | — | Bot token from the [Discord Developer Portal](https://discord.com/developers/applications). |
-| `DISCORD_ALLOWED_USERS` | Conditional | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this **or** `DISCORD_ALLOWED_ROLES`, the gateway denies all users unless `DISCORD_ALLOW_ALL_USERS=true`, `GATEWAY_ALLOW_ALL_USERS=true`, or `DISCORD_ALLOWED_CHANNELS` explicitly scopes guild access. Usernames also work: they are resolved to IDs when the bot connects (requires the **Server Members Intent**). Display names and server nicknames are never matched, because any member can set them. |
-| `DISCORD_ALLOWED_ROLES` | No | — | Comma-separated Discord role IDs. Any member with one of these roles is authorized — OR semantics with `DISCORD_ALLOWED_USERS`. Auto-enables the **Server Members Intent** on connect. Useful when moderation teams churn: new mods get access as soon as the role is granted, no config push needed. |
+| `DISCORD_ALLOWED_USERS` | Conditional | — | Comma-separated Discord user IDs allowed to interact with the bot. Without an allowlist or approved Hermes pairing, the gateway denies access unless `DISCORD_ALLOW_ALL_USERS=true`, `GATEWAY_ALLOW_ALL_USERS=true`, or `DISCORD_ALLOWED_CHANNELS` explicitly scopes guild access. Usernames also work: they are resolved to IDs when the bot connects (requires the **Server Members Intent**). Display names and server nicknames are never matched, because any member can set them. |
+| `DISCORD_ALLOWED_ROLES` | No | — | Comma-separated Discord role IDs. Members with an allowed role in the guild where the message or slash command originated are authorized, OR with `DISCORD_ALLOWED_USERS`. Auto-enables the **Server Members Intent** on connect. Role-based authorization in DMs requires `discord.dm_role_auth_guild` in `config.yaml`. |
 | `DISCORD_ALLOW_ALL_USERS` | No | `false` | Explicit opt-in to allow every Discord user who can reach the bot. This restores the pre-0.18 open behavior for Discord only; use only for trusted/private guilds or development. |
 | `GATEWAY_ALLOW_ALL_USERS` | No | `false` | Global allow-all opt-in for every gateway platform. Prefer the platform-specific `DISCORD_ALLOW_ALL_USERS` unless you intentionally want all connected platforms open. |
 | `DISCORD_HOME_CHANNEL` | No | — | Channel ID where the bot sends proactive messages (cron output, reminders, notifications). |
@@ -363,7 +363,7 @@ The existing `DISCORD_BOTS_REQUIRE_INLINE_MENTION=false` environment override is
 
 ### Config File (`config.yaml`)
 
-The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Config.yaml settings are applied as defaults — if the equivalent env var is already set, the env var wins.
+The `discord` section in `~/.hermes/config.yaml` mirrors most env vars above and includes config-only settings such as `dm_role_auth_guild`. Config.yaml settings are applied as defaults; if an equivalent env var is already set, the env var wins.
 
 ```yaml
 # Discord-specific settings
@@ -387,6 +387,7 @@ discord:
     max_dispatches: 10            # Recovery dispatch cap per reconnect
     max_attempts: 3               # Lifetime re-dispatch cap per message
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  dm_role_auth_guild: ""          # Optional trusted guild ID for role authorization in DMs
   voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
   voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
@@ -949,12 +950,12 @@ If you intentionally want a shared room conversation, leave it off — just expe
 ## Security
 
 :::warning
-Always set `DISCORD_ALLOWED_USERS` (or `DISCORD_ALLOWED_ROLES`) to restrict who can interact with the bot. Without either, the gateway denies all users by default as a safety measure. Only authorize people you trust — authorized users have full access to the agent's capabilities, including tool use and system access.
+Use `DISCORD_ALLOWED_USERS`, `DISCORD_ALLOWED_ROLES`, or approved Hermes pairings to authorize trusted users. Without these, access is denied unless an explicit allow-all setting or a validated guild channel allowlist grants access. Only authorize people you trust; authorized users have full access to the agent's capabilities, including tool use and system access.
 :::
 
 ### Role-Based Access Control
 
-For servers where access is managed by roles instead of individual user lists (moderator teams, support staff, internal tooling), use `DISCORD_ALLOWED_ROLES` — a comma-separated list of role IDs. Any member with one of those roles is authorized.
+For servers where access is managed by roles instead of individual user lists (moderator teams, support staff, internal tooling), use `DISCORD_ALLOWED_ROLES`, a comma-separated list of role IDs. A member with an allowed role in the originating guild is authorized. DM role authorization uses the separately configured trusted guild described below.
 
 ```bash
 # ~/.hermes/.env — works alongside or instead of DISCORD_ALLOWED_USERS
@@ -963,10 +964,16 @@ DISCORD_ALLOWED_ROLES=987654321098765432,876543210987654321
 
 Semantics:
 
-- **OR with user allowlist.** A user is authorized if their ID is in `DISCORD_ALLOWED_USERS` **or** they have any role in `DISCORD_ALLOWED_ROLES`.
+- **OR with user allowlist.** A user is authorized if their ID is in `DISCORD_ALLOWED_USERS` **or** they have an allowed role in the guild checked for that interaction, as described below.
 - **Server Members Intent auto-enabled.** When `DISCORD_ALLOWED_ROLES` is set, the bot enables the Members intent on connect — required for Discord to send role information with member records.
 - **Role IDs, not names.** Grab them from Discord: **User Settings → Advanced → Developer Mode ON**, then right-click any role → **Copy Role ID**.
-- **DM fallback.** In DMs the role check scans mutual guilds; a user with an allowed role in any shared server is authorized in DMs too.
+- **Guild-scoped checks.** Server messages and slash commands check roles only in the guild where they originated, never in other mutual guilds.
+- **DM role authorization is opt-in.** By default, roles do not authorize DMs. Set `discord.dm_role_auth_guild` in `config.yaml` to one trusted guild ID to check the DM sender's membership and allowed roles there. Hermes does not scan other mutual guilds. Explicit user allowlist entries and approved Hermes pairings authorize independently of this setting.
+
+```yaml
+discord:
+  dm_role_auth_guild: "123456789012345678"
+```
 
 This is the preferred pattern when the moderation team churns — new moderators get access the moment the role is granted, with no `.env` edit or gateway restart.
 

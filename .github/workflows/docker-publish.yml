@@ -10,19 +10,30 @@ on:
       - 'Dockerfile'
       - 'docker/**'
       - '.github/workflows/docker-publish.yml'
+      - '.github/actions/hermes-smoke-test/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - 'docker/**'
+      - '.github/workflows/docker-publish.yml'
+      - '.github/actions/hermes-smoke-test/**'
   release:
     types: [published]
 
 permissions:
   contents: read
 
-# Top-level concurrency: do NOT cancel in-flight builds when a new push lands.
-# Every commit deserves its own SHA-tagged image in the registry, and we guard
-# the :latest tag in a separate job below (with its own concurrency group) so
-# a slow run can't clobber :latest with older bits.
+# Concurrency: push/release runs are NEVER cancelled so every merge gets its
+# own SHA-tagged image; :latest is guarded separately by the move-latest job.
+# PR runs reuse a PR-scoped group with cancel-in-progress: true so rapid
+# pushes to the same PR collapse to the latest commit.
 concurrency:
-  group: docker-${{ github.ref }}
-  cancel-in-progress: false
+  group: docker-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE_NAME: nousresearch/hermes-agent
@@ -63,32 +74,10 @@ jobs:
           cache-from: type=gha,scope=docker-amd64
           cache-to: type=gha,mode=max,scope=docker-amd64
 
-      - name: Test image starts
-        run: |
-          mkdir -p /tmp/hermes-test
-          sudo chown -R 10000:10000 /tmp/hermes-test
-          # The image runs as the hermes user (UID 10000).  GitHub Actions
-          # creates /tmp/hermes-test root-owned by default, which hermes
-          # can't write to — chown it to match the in-container UID before
-          # bind-mounting.  Real users doing `docker run -v ~/.hermes:...`
-          # with their own UID hit the same issue and have their own
-          # remediations (HERMES_UID env var, or chown locally).
-          docker run --rm \
-            -v /tmp/hermes-test:/opt/data \
-            --entrypoint /opt/hermes/docker/entrypoint.sh \
-            ${{ env.IMAGE_NAME }}:test --help
-
-      - name: Test dashboard subcommand
-        run: |
-          mkdir -p /tmp/hermes-test
-          sudo chown -R 10000:10000 /tmp/hermes-test
-          # Verify the dashboard subcommand is included in the Docker image.
-          # This prevents regressions like #9153 where the dashboard command
-          # was present in source but missing from the published image.
-          docker run --rm \
-            -v /tmp/hermes-test:/opt/data \
-            --entrypoint /opt/hermes/docker/entrypoint.sh \
-            ${{ env.IMAGE_NAME }}:test dashboard --help
+      - name: Smoke test image
+        uses: ./.github/actions/hermes-smoke-test
+        with:
+          image: ${{ env.IMAGE_NAME }}:test
 
       - name: Log in to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
@@ -141,10 +130,11 @@ jobs:
   # ---------------------------------------------------------------------------
   # Build arm64 natively on GitHub's free arm64 runner.  This replaces the
   # previous QEMU-emulated arm64 build, which was ~5-10x slower and shared
-  # a cache scope with amd64.
+  # a cache scope with amd64.  Matches the amd64 job's shape: build+load,
+  # smoke test, then on push/release push by digest.
   # ---------------------------------------------------------------------------
   build-arm64:
-    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     outputs:
@@ -158,7 +148,27 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
+      # Build once, load into the local daemon for smoke testing.  Cached
+      # to gha with a per-arch scope; the push step below reuses every
+      # layer from this build.
+      - name: Build image (arm64, smoke test)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          platforms: linux/arm64
+          tags: ${{ env.IMAGE_NAME }}:test
+          cache-from: type=gha,scope=docker-arm64
+          cache-to: type=gha,mode=max,scope=docker-arm64
+
+      - name: Smoke test image
+        uses: ./.github/actions/hermes-smoke-test
+        with:
+          image: ${{ env.IMAGE_NAME }}:test
+
       - name: Log in to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -166,6 +176,7 @@ jobs:
 
       - name: Push arm64 by digest
         id: push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
           context: .
@@ -178,12 +189,14 @@ jobs:
           cache-to: type=gha,mode=max,scope=docker-arm64
 
       - name: Export digest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.push.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: digest-arm64

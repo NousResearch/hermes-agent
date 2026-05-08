@@ -221,6 +221,12 @@ def validate_profile_name(name: str) -> None:
     call :func:`normalize_profile_name` first. This separation keeps validate
     honest about what the on-disk directory name must look like, while
     ingress-point normalization handles UX flexibility (see #18498).
+
+    Also rejects names in :data:`_RESERVED_NAMES` (``hermes``, ``test``,
+    ``tmp``, ``root``, ``sudo``) that would create confusing on-disk
+    collisions (a ``hermes`` profile inside ``~/.hermes/``) or get refused
+    at alias-creation time anyway. ``default`` is a special pass-through —
+    it's a valid alias for the built-in root profile.
     """
     if name == "default":
         return  # special alias for ~/.hermes
@@ -228,6 +234,12 @@ def validate_profile_name(name: str) -> None:
         raise ValueError(
             f"Invalid profile name {name!r}. Must match "
             f"[a-z0-9][a-z0-9_-]{{0,63}}"
+        )
+    if name in _RESERVED_NAMES:
+        raise ValueError(
+            f"Profile name {name!r} is reserved — it collides with either "
+            f"the Hermes installation itself or a common system binary.  "
+            f"Pick a different name."
         )
 
 
@@ -345,6 +357,35 @@ class ProfileInfo:
     has_env: bool = False
     skill_count: int = 0
     alias_path: Optional[Path] = None
+    # Distribution metadata (None if the profile wasn't installed from a distribution).
+    distribution_name: Optional[str] = None
+    distribution_version: Optional[str] = None
+    distribution_source: Optional[str] = None
+
+
+def _read_distribution_meta(profile_dir: Path) -> tuple:
+    """Return ``(name, version, source)`` from the profile's ``distribution.yaml``
+    if present; ``(None, None, None)`` otherwise.
+
+    Failures (missing file, bad YAML) are swallowed — a bad manifest should
+    never break ``hermes profile list`` for an unrelated profile.
+    """
+    mf_path = profile_dir / "distribution.yaml"
+    if not mf_path.is_file():
+        return None, None, None
+    try:
+        import yaml
+        with open(mf_path, "r") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            return None, None, None
+        return (
+            data.get("name"),
+            data.get("version"),
+            data.get("source"),
+        )
+    except Exception:
+        return None, None, None
 
 
 def _read_config_model(profile_dir: Path) -> tuple:
@@ -400,6 +441,7 @@ def list_profiles() -> List[ProfileInfo]:
     default_home = _get_default_hermes_home()
     if default_home.is_dir():
         model, provider = _read_config_model(default_home)
+        dist_name, dist_version, dist_source = _read_distribution_meta(default_home)
         profiles.append(ProfileInfo(
             name="default",
             path=default_home,
@@ -409,6 +451,9 @@ def list_profiles() -> List[ProfileInfo]:
             provider=provider,
             has_env=(default_home / ".env").exists(),
             skill_count=_count_skills(default_home),
+            distribution_name=dist_name,
+            distribution_version=dist_version,
+            distribution_source=dist_source,
         ))
 
     # Named profiles
@@ -422,6 +467,7 @@ def list_profiles() -> List[ProfileInfo]:
                 continue
             model, provider = _read_config_model(entry)
             alias_path = wrapper_dir / name
+            dist_name, dist_version, dist_source = _read_distribution_meta(entry)
             profiles.append(ProfileInfo(
                 name=name,
                 path=entry,
@@ -432,6 +478,9 @@ def list_profiles() -> List[ProfileInfo]:
                 has_env=(entry / ".env").exists(),
                 skill_count=_count_skills(entry),
                 alias_path=alias_path if alias_path.exists() else None,
+                distribution_name=dist_name,
+                distribution_version=dist_version,
+                distribution_source=dist_source,
             ))
 
     return profiles
@@ -640,6 +689,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     model, provider = _read_config_model(profile_dir)
     gw_running = _check_gateway_running(profile_dir)
     skill_count = _count_skills(profile_dir)
+    dist_name, dist_version, dist_source = _read_distribution_meta(profile_dir)
 
     print(f"\nProfile: {canon}")
     print(f"Path:    {profile_dir}")
@@ -647,6 +697,10 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         print(f"Model:   {model}" + (f" ({provider})" if provider else ""))
     if skill_count:
         print(f"Skills:  {skill_count}")
+    if dist_name:
+        print(f"Distribution: {dist_name}@{dist_version or '?'}")
+        if dist_source:
+            print(f"Installed from: {dist_source}")
 
     items = [
         "All config, API keys, memories, sessions, skills, cron jobs",

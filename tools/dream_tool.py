@@ -73,35 +73,21 @@ def _handle_dream(args: Dict[str, Any]) -> str:
             }, indent=2)
 
         if action == "history":
-            dream_log = hermes_home / "dreams.json"
-            if dream_log.exists():
-                with open(dream_log, "r") as f:
-                    history = json.load(f)
-                return json.dumps({"status": "ok", "dreams": history[-10:]}, indent=2)
-            return json.dumps({"status": "ok", "dreams": [], "message": "No dreams yet."})
+            engine = DreamEngine()
+            history = engine.get_history(limit=10)
+            return json.dumps({"status": "ok", "dreams": history}, indent=2)
 
         if action == "run":
             # Initialize components
             db_path = hermes_home / "state.db"
-            session_db = SessionDB(str(db_path))
-            engine = DreamEngine(session_db, hermes_home)
+            session_db = SessionDB(db_path)
+            engine = DreamEngine(session_db)
 
-            # Gather sessions
-            sessions = engine.gather_sessions(hours=hours, limit=limit)
-            if not sessions:
-                return json.dumps({
-                    "status": "ok",
-                    "message": f"No sessions found in the last {hours} hours."
-                })
-
-            # Build and return the dream prompt (the agent will execute it)
-            prompt = engine.extract_insights(sessions)
+            # Run the full dream cycle (gather, analyze, consolidate)
+            result = engine.run_dream(hours=hours, limit=limit)
             return json.dumps({
-                "status": "ok",
-                "session_count": len(sessions),
-                "prompt_preview": prompt[:500] + "..." if len(prompt) > 500 else prompt,
-                "message": f"Found {len(sessions)} sessions to review. "
-                           "Dream consolidation would run here.",
+                "status": "ok" if result.get("success") else "error",
+                **result,
             }, indent=2)
 
         return json.dumps({"status": "error", "message": f"Unknown action: {action}"})

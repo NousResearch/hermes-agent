@@ -100,35 +100,71 @@ class OutcomeEngine:
         ]
 
     def grade(self, rubric: Rubric, output: str, context: str = "") -> Outcome:
-        """Grade output against rubric criteria using LLM-as-judge.
+        """Grade output against rubric criteria using heuristic scoring.
 
-        This builds a grading prompt. In actual use, an AIAgent would execute it.
-        For tool usage, we return a structured grading request.
+        In production, this can be overridden to use an LLM-as-judge.
+        The built-in heuristic scores based on keyword relevance and output quality.
         """
-        criteria_text = "\n".join(
-            f"- {c.criterion} (weight: {c.weight}): {c.description}"
-            for c in rubric.criteria
+        if not output or not output.strip():
+            return Outcome(
+                rubric_name=rubric.name,
+                scores={c.criterion: 0.0 for c in rubric.criteria},
+                total_score=0.0,
+                passed=False,
+                feedback="Output is empty — nothing to grade.",
+            )
+
+        output_lower = output.lower()
+        output_words = set(output_lower.split())
+        scores: Dict[str, float] = {}
+
+        for criterion in rubric.criteria:
+            # Extract keywords from criterion name and description
+            desc_words = set(criterion.description.lower().split())
+            criterion_words = set(criterion.criterion.lower().replace("_", " ").replace("-", " ").split())
+            keywords = {w for w in (desc_words | criterion_words) if len(w) > 3}
+
+            # Keyword overlap score
+            if keywords:
+                overlap = len(keywords & output_words)
+                keyword_score = min(overlap / max(len(keywords) * 0.5, 1), 1.0)
+            else:
+                keyword_score = 0.5  # no keywords → neutral
+
+            # Thoroughness: log-scaled output length (diminishing returns)
+            import math
+            length_score = min(math.log2(max(len(output), 1)) / 12.0, 1.0)  # 4096 chars → 1.0
+
+            # Combined: 60% relevance, 40% thoroughness
+            score = round(0.6 * keyword_score + 0.4 * length_score, 3)
+            scores[criterion.criterion] = score
+
+        # Weighted total
+        total_weight = sum(c.weight for c in rubric.criteria) or 1.0
+        total_score = round(
+            sum(scores[c.criterion] * c.weight for c in rubric.criteria) / total_weight,
+            3,
         )
 
-        grading_prompt = (
-            f"Grade the following output against the rubric \"{rubric.name}\".\n\n"
-            f"**Rubric Criteria:**\n{criteria_text}\n\n"
-            f"**Pass Threshold:** {rubric.pass_threshold}\n\n"
-            f"**Context:** {context}\n\n"
-            f"**Output to Grade:**\n{output}\n\n"
-            f"Respond with a JSON object:\n"
-            f'{{"scores": {{"criterion_name": 0.0-1.0, ...}}, '
-            f'"total_score": 0.0-1.0, "feedback": "detailed feedback"}}'
-        )
+        passed = total_score >= rubric.pass_threshold
 
-        # For now, return the prompt for an agent to execute
-        # In a full implementation, this would spawn a grading agent
+        # Build feedback
+        feedback_parts = []
+        for c in rubric.criteria:
+            s = scores[c.criterion]
+            if s < 0.3:
+                feedback_parts.append(f"- {c.criterion}: very low ({s:.2f}). Needs significant improvement.")
+            elif s < rubric.pass_threshold:
+                feedback_parts.append(f"- {c.criterion}: below threshold ({s:.2f}).")
+            else:
+                feedback_parts.append(f"- {c.criterion}: acceptable ({s:.2f}).")
+
         return Outcome(
             rubric_name=rubric.name,
-            scores={c.criterion: 0.0 for c in rubric.criteria},
-            total_score=0.0,
-            passed=False,
-            feedback="Grading requires LLM execution. Use the outcomes tool.",
+            scores=scores,
+            total_score=total_score,
+            passed=passed,
+            feedback="\n".join(feedback_parts) if feedback_parts else "No criteria evaluated.",
         )
 
     def review_loop(self, rubric: Rubric, task_fn, max_retries: int = 2,

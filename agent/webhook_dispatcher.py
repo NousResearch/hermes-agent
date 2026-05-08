@@ -121,8 +121,14 @@ class WebhookDispatcher:
         return False
 
     def list_webhooks(self) -> List[Dict[str, Any]]:
-        """List all registered webhooks."""
-        return [w.to_dict() for w in self._webhooks.values()]
+        """List all registered webhooks (secret is redacted)."""
+        results = []
+        for w in self._webhooks.values():
+            d = w.to_dict()
+            if d.get("secret"):
+                d["secret"] = "***"
+            results.append(d)
+        return results
 
     def get_webhook(self, webhook_id: str) -> Optional[WebhookConfig]:
         """Get a specific webhook config."""

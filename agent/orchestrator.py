@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
@@ -80,7 +81,7 @@ class Orchestrator:
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
         self._tasks: Dict[str, OrchestrationTask] = {}
         self._futures: Dict[str, Future] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._webhook_dispatcher = webhook_dispatcher
         self._callbacks: List[Callable] = []
 
@@ -102,11 +103,11 @@ class Orchestrator:
         with self._lock:
             self._tasks[task_id] = task
 
-        # If no dependencies, submit immediately
-        if not depends_on:
-            self._submit_to_executor(task)
-        else:
-            log.info("Task %s waiting for dependencies: %s", task_id, depends_on)
+            # If no dependencies, submit immediately
+            if not depends_on:
+                self._submit_to_executor(task)
+            else:
+                log.info("Task %s waiting for dependencies: %s", task_id, depends_on)
 
         return task_id
 
@@ -130,7 +131,7 @@ class Orchestrator:
         try:
             result = future.result(timeout=timeout)
             return result
-        except TimeoutError:
+        except (TimeoutError, FuturesTimeoutError):
             return {"status": "timeout", "task_id": task_id}
         except Exception as e:
             return {"status": "error", "task_id": task_id, "error": str(e)}
@@ -180,7 +181,6 @@ class Orchestrator:
             )
             result = agent.run_conversation(
                 user_message=task.goal + ("\n\nContext: " + task.context if task.context else ""),
-                max_turns=10,
             )
             return result if isinstance(result, dict) else {"response": str(result)}
         except Exception as e:
@@ -230,8 +230,16 @@ class Orchestrator:
                 if not task.depends_on:
                     continue
 
+                # Check for unknown dependencies — fail the task immediately
+                unknown_deps = [dep for dep in task.depends_on if dep not in self._tasks]
+                if unknown_deps:
+                    task.status = TaskStatus.FAILED
+                    task.error = f"Unknown dependencies: {', '.join(unknown_deps)}"
+                    task.completed_at = time.time()
+                    continue
+
                 all_done = all(
-                    self._tasks.get(dep, OrchestrationTask(task_id="", goal="")).status
+                    self._tasks[dep].status
                     in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
                     for dep in task.depends_on
                 )

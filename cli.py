@@ -2414,6 +2414,11 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        # Tracks whether the turn that just finished was interrupted via
+        # Ctrl+C. Consumed by _maybe_continue_goal_after_turn so /goal loops
+        # don't auto-queue another continuation on top of a user-cancelled
+        # turn (which would make Ctrl+C feel like it did nothing).
+        self._last_turn_interrupted = False
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
@@ -7523,6 +7528,15 @@ class HermesCLI:
         priority and we'll re-judge after that turn). If judge says done,
         mark it done and tell the user. If judge says continue and we're
         under budget, push the continuation prompt onto the queue.
+
+        Interrupt handling: if the turn was user-cancelled (Ctrl+C), we
+        AUTO-PAUSE the goal instead of judging + re-queuing. Otherwise
+        Ctrl+C feels like it did nothing — the judge runs on whatever
+        partial output landed, almost always says "continue", and the
+        loop keeps going. Auto-pause keeps the goal recoverable via
+        ``/goal resume`` once the user has sorted out what they want.
+        The empty-response skip mirrors the gateway guard at
+        ``_handle_message`` in ``gateway/run.py``.
         """
         mgr = self._get_goal_manager()
         if mgr is None or not mgr.is_active():
@@ -7536,6 +7550,22 @@ class HermesCLI:
                 return
         except Exception:
             pass
+
+        # If the turn was user-interrupted (Ctrl+C), auto-pause the goal
+        # and bail. The judge call would almost always return "continue"
+        # on the partial output and immediately re-queue another turn,
+        # which is exactly what the user cancelled. Pausing (rather than
+        # silently skipping) is the observable, recoverable behavior.
+        if getattr(self, "_last_turn_interrupted", False):
+            try:
+                mgr.pause(reason="user-interrupted (Ctrl+C)")
+            except Exception as exc:
+                logging.debug("goal pause-on-interrupt failed: %s", exc)
+            _cprint(
+                f"  {_DIM}⏸ Goal paused — turn was interrupted. "
+                f"Use /goal resume to continue, or /goal clear to stop.{_RST}"
+            )
+            return
 
         # Extract the agent's final response for this turn.
         last_response = ""
@@ -7557,6 +7587,13 @@ class HermesCLI:
                     break
         except Exception:
             last_response = ""
+
+        # Skip judging on empty/whitespace-only responses. These are almost
+        # always transient failures (API error, empty stream) where the
+        # judge would say "continue" and trip the consecutive-parse-failures
+        # backstop unnecessarily. Mirrors the gateway guard.
+        if not last_response.strip():
+            return
 
         decision = mgr.evaluate_after_turn(last_response, user_initiated=True)
         msg = decision.get("message") or ""
@@ -9432,6 +9469,12 @@ class HermesCLI:
         # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
 
+        # Reset the per-turn interrupt flag. Any subsequent path that
+        # discovers an interrupt (below, after run_conversation) will flip
+        # this to True. Early returns (credential refresh failure, etc.)
+        # leave it False, which is correct — those aren't user interrupts.
+        self._last_turn_interrupted = False
+
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
             return None
@@ -9855,7 +9898,11 @@ class HermesCLI:
 
             # Handle interrupt - check if we were interrupted
             pending_message = None
-            if result and result.get("interrupted"):
+            _interrupted_this_turn = bool(result and result.get("interrupted"))
+            # Expose the flag for post-turn hooks (e.g. goal continuation)
+            # so they can skip themselves when the turn was user-cancelled.
+            self._last_turn_interrupted = _interrupted_this_turn
+            if _interrupted_this_turn:
                 pending_message = result.get("interrupt_message") or interrupt_msg
                 # Add indicator that we were interrupted
                 if response and pending_message:
@@ -10335,6 +10382,9 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()     # For normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
+        # See constructor note. Mirrored here for the run() path that skips
+        # the earlier __init__ branch.
+        self._last_turn_interrupted = False
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
 

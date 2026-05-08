@@ -131,8 +131,25 @@ def _get_service_pids() -> set:
 
 
 def _get_parent_pid(pid: int) -> int | None:
-    """Return the parent PID for ``pid``, or ``None`` when unavailable."""
+    """Return the parent PID for ``pid``, or ``None`` when unavailable.
+
+    Uses psutil (core dependency) which works on every platform.  The
+    older implementation shelled out to ``ps -o ppid= -p <pid>``, which
+    silently fails on Windows (no ``ps``) so the ancestor walk terminated
+    at self — the caller's dedup / exclude logic then couldn't distinguish
+    "hermes CLI that invoked this scan" from "real gateway process".
+    """
     if pid <= 1:
+        return None
+    try:
+        import psutil  # type: ignore
+        return psutil.Process(pid).ppid() or None
+    except ImportError:
+        pass
+    except Exception:
+        return None
+    # Fallback: shell out to ps (POSIX only — bare ``ps`` doesn't exist on Windows).
+    if not shutil.which("ps"):
         return None
     try:
         result = subprocess.run(
@@ -416,7 +433,51 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
     except (OSError, subprocess.TimeoutExpired):
         return []
 
+    # Windows-specific: collapse venv launcher stubs.  A venv-built
+    # ``pythonw.exe`` in ``<venv>/Scripts/`` is a ~100 KB launcher exe
+    # that spawns the base Python (e.g. ``C:\Program Files\Python311\
+    # pythonw.exe``) with the same command line, preserving the venv's
+    # ``pyvenv.cfg`` context.  This is standard Windows CPython venv
+    # behaviour — BUT it means every gateway run produces two pythonw
+    # PIDs with identical command lines (one launcher stub, one actual
+    # interpreter) which is confusing in ``gateway status`` output.
+    # Filter the stub: if a PID in our result is the PARENT of another
+    # PID in our result, and both are pythonw.exe, the parent is the
+    # launcher stub — drop it, keep the child.
+    if is_windows() and len(pids) > 1:
+        pids = _filter_venv_launcher_stubs(pids)
+
     return pids
+
+
+def _filter_venv_launcher_stubs(pids: list[int]) -> list[int]:
+    """Drop venv-launcher ``pythonw.exe`` stubs that are parents of the real
+    interpreter process.  See comment at the tail of ``_scan_gateway_pids``.
+
+    Uses ``psutil`` (core dependency).  Safe on any platform; only invoked
+    on Windows by the caller because the stub pattern is Windows-specific.
+    """
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return pids
+
+    pid_set = set(pids)
+    # Collect each PID's parent so we can flag "child of another matched PID".
+    parent_of: dict[int, int | None] = {}
+    for pid in pids:
+        try:
+            parent_of[pid] = psutil.Process(pid).ppid()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            parent_of[pid] = None
+
+    # For each child whose parent is also in our set, drop the parent.
+    drop: set[int] = set()
+    for pid, ppid in parent_of.items():
+        if ppid is not None and ppid in pid_set:
+            drop.add(ppid)
+
+    return [p for p in pids if p not in drop]
 
 
 def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = False) -> list:

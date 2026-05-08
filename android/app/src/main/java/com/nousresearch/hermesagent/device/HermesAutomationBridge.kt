@@ -36,6 +36,7 @@ object HermesAutomationBridge {
             "create_sunrise_sunset_task", "create_sun_task", "create_solar_task" -> createSunriseSunsetTaskJson(context, arguments)
             "create_notification_task", "create_notify_task", "create_notify", "notify_task" -> createNotificationTaskJson(context, arguments)
             "create_variable_action_task", "create_variable_task", "create_variable_set_task", "create_variable_clear_task" -> createVariableActionTaskJson(context, arguments)
+            "create_wait_task", "create_wait", "wait_task", "delay_task" -> createWaitTaskJson(context, arguments)
             "create_launcher_shortcut", "create_shortcut", "create_home_screen_shortcut", "pin_automation_shortcut" -> HermesLauncherShortcutBridge.createShortcutJson(context, arguments)
             "list_launcher_shortcuts", "list_shortcuts", "launcher_shortcuts" -> HermesLauncherShortcutBridge.listShortcutsJson(context)
             "remove_launcher_shortcut", "delete_launcher_shortcut", "remove_shortcut", "delete_shortcut" -> HermesLauncherShortcutBridge.removeShortcutJson(context, arguments)
@@ -619,6 +620,22 @@ object HermesAutomationBridge {
             actionType = ACTION_TYPE_VARIABLE_ACTION,
             payload = payload.toString(),
             defaultLabel = "Hermes variable automation",
+        )
+    }
+
+    fun createWaitTaskJson(context: Context, arguments: JSONObject): String {
+        val durationMs = runCatching { waitDurationMsFromArguments(arguments) }.getOrElse { error ->
+            return errorJson(error.message ?: "create_wait_task duration is invalid")
+        }
+        val payload = JSONObject()
+            .put("duration_ms", durationMs)
+            .toString()
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_WAIT,
+            payload = payload,
+            defaultLabel = "Hermes wait automation",
         )
     }
 
@@ -1251,6 +1268,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_SUNRISE_SUNSET -> runSunriseSunsetRecord(store, record, variables)
             ACTION_TYPE_NOTIFICATION_ACTION -> runNotificationActionRecord(context, record, variables)
             ACTION_TYPE_VARIABLE_ACTION -> runVariableActionRecord(store, record, variables)
+            ACTION_TYPE_WAIT -> runWaitRecord(record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
         }
         val exitCode = rawResult.optInt("exit_code", if (rawResult.optBoolean("success", false)) 0 else -1)
@@ -1428,6 +1446,26 @@ object HermesAutomationBridge {
                     .put("message", "Cleared Android automation variable %$normalized")
             }
             else -> JSONObject(errorJson("Unsupported saved variable action: $variableAction"))
+        }
+    }
+
+    private fun runWaitRecord(record: HermesAutomationRecord, variables: JSONObject): JSONObject {
+        val durationMs = runCatching {
+            val payload = JSONObject(record.command)
+            waitDurationMsFromPayload(payload, variables)
+        }.getOrElse { error ->
+            return JSONObject(errorJson(error.message ?: "Saved wait automation payload is invalid"))
+        }
+        return try {
+            Thread.sleep(durationMs)
+            JSONObject()
+                .put("success", true)
+                .put("exit_code", 0)
+                .put("duration_ms", durationMs)
+                .put("message", "Waited ${durationMs} ms")
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            JSONObject(errorJson("Saved wait automation was interrupted"))
         }
     }
 
@@ -2572,6 +2610,65 @@ object HermesAutomationBridge {
         return expanded
     }
 
+    private fun waitDurationMsFromPayload(payload: JSONObject, variables: JSONObject): Long {
+        val expanded = JSONObject()
+        payload.keys().forEach { key ->
+            when (val value = payload.opt(key)) {
+                is String -> expanded.put(key, expandVariables(value, variables))
+                else -> expanded.put(key, value)
+            }
+        }
+        return waitDurationMsFromArguments(expanded)
+    }
+
+    private fun waitDurationMsFromArguments(arguments: JSONObject): Long {
+        optionalNonNegativeLongArgument(arguments, "duration_ms", "wait_ms", "milliseconds", "ms")?.let { durationMs ->
+            return boundedWaitDurationMs(durationMs)
+        }
+        optionalNonNegativeLongArgument(arguments, "duration_seconds", "wait_seconds")?.let { seconds ->
+            return boundedWaitDurationMs(scaleWaitComponent(seconds, 1_000L, "seconds"))
+        }
+        val milliseconds = optionalNonNegativeLongArgument(arguments, "millisecond_component", "milliseconds_component") ?: 0L
+        val seconds = optionalNonNegativeLongArgument(arguments, "seconds", "second", "second_component", "seconds_component") ?: 0L
+        val minutes = optionalNonNegativeLongArgument(arguments, "minutes", "minute", "wait_minutes") ?: 0L
+        val hours = optionalNonNegativeLongArgument(arguments, "hours", "hour", "wait_hours") ?: 0L
+        val days = optionalNonNegativeLongArgument(arguments, "days", "day", "wait_days") ?: 0L
+        val total = listOf(
+            scaleWaitComponent(milliseconds, 1L, "milliseconds"),
+            scaleWaitComponent(seconds, 1_000L, "seconds"),
+            scaleWaitComponent(minutes, 60_000L, "minutes"),
+            scaleWaitComponent(hours, 3_600_000L, "hours"),
+            scaleWaitComponent(days, 86_400_000L, "days"),
+        ).sum()
+        return boundedWaitDurationMs(total)
+    }
+
+    private fun optionalNonNegativeLongArgument(arguments: JSONObject, vararg keys: String): Long? {
+        keys.forEach { key ->
+            if (!arguments.has(key) || arguments.isNull(key)) {
+                return@forEach
+            }
+            val value = when (val raw = arguments.opt(key)) {
+                is Number -> raw.toLong()
+                else -> raw?.toString()?.trim()?.toLongOrNull()
+            } ?: throw IllegalArgumentException("$key must be an integer")
+            require(value >= 0L) { "$key must be 0 or greater" }
+            return value
+        }
+        return null
+    }
+
+    private fun scaleWaitComponent(value: Long, factor: Long, label: String): Long {
+        require(value <= MAX_WAIT_DURATION_MS / factor) { "$label exceeds the maximum wait duration of ${MAX_WAIT_DURATION_MS} ms" }
+        return value * factor
+    }
+
+    private fun boundedWaitDurationMs(durationMs: Long): Long {
+        require(durationMs > 0L) { "wait duration must be greater than 0 ms" }
+        require(durationMs <= MAX_WAIT_DURATION_MS) { "wait duration cannot exceed ${MAX_WAIT_DURATION_MS} ms" }
+        return durationMs
+    }
+
     private fun recordsToJson(records: List<HermesAutomationRecord>): JSONArray {
         return JSONArray().apply {
             records.forEach { record -> put(record.toJson()) }
@@ -3383,6 +3480,7 @@ object HermesAutomationBridge {
         "create_sunrise_sunset_task",
         "create_notification_task",
         "create_variable_action_task",
+        "create_wait_task",
         "create_launcher_shortcut",
         "list_launcher_shortcuts",
         "remove_launcher_shortcut",
@@ -3433,6 +3531,7 @@ object HermesAutomationBridge {
         ACTION_TYPE_SUNRISE_SUNSET,
         ACTION_TYPE_NOTIFICATION_ACTION,
         ACTION_TYPE_VARIABLE_ACTION,
+        ACTION_TYPE_WAIT,
     )
     private val ACTION_TYPE_SYNONYMS = mapOf(
         "shizuku" to ACTION_TYPE_SHIZUKU_ACTION,
@@ -3450,6 +3549,8 @@ object HermesAutomationBridge {
         "variable_action" to ACTION_TYPE_VARIABLE_ACTION,
         "variable_set" to ACTION_TYPE_VARIABLE_ACTION,
         "variable_clear" to ACTION_TYPE_VARIABLE_ACTION,
+        "delay" to ACTION_TYPE_WAIT,
+        "sleep" to ACTION_TYPE_WAIT,
         "android_intent" to ACTION_TYPE_INTENT,
         "start_activity" to ACTION_TYPE_INTENT,
         "open_uri" to ACTION_TYPE_INTENT,
@@ -3702,6 +3803,7 @@ object HermesAutomationBridge {
     private const val VARIABLE_ACTION_SET = "set"
     private const val VARIABLE_ACTION_CLEAR = "clear"
     private const val AUTOMATION_TIMEOUT_SECONDS = 30
+    private const val MAX_WAIT_DURATION_MS = 60_000L
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
     private const val MAX_RESULT_CHARS = 2_000
     private const val MAX_EVENT_VALUE_CHARS = 500

@@ -10,4 +10,5 @@ automation.
   records by default.
 - Adds emulator instrumentation coverage for direct wait tasks and Tasker XML
   Wait import.
-- Updates the Android Tasker/Shizuku capability map using Tasker terminology.
+- Updates the Android Tasker/Shizuku capability map without adding mistaken
+  Tinker automation wording.

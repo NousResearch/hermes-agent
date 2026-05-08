@@ -120,6 +120,16 @@ object HermesTaskerImportBridge {
             .put("trigger_type", TRIGGER_MANUAL)
             .put("enabled", false)
         return when (code) {
+            TASKER_WAIT -> {
+                val durationMs = waitDurationMsFromTaskerAction(action) ?: return null
+                base.put("action_type", ACTION_TYPE_WAIT)
+                    .put(
+                        "command",
+                        JSONObject()
+                            .put("duration_ms", durationMs)
+                            .toString(),
+                    )
+            }
             TASKER_RUN_SHELL -> {
                 val command = argText(action, 0).trim()
                 if (command.isBlank() || command.indexOf('\u0000') >= 0) return null
@@ -252,6 +262,26 @@ object HermesTaskerImportBridge {
         }
     }
 
+    private fun waitDurationMsFromTaskerAction(action: Element): Long? {
+        val total = listOf(
+            taskerWaitComponentMs(action, 0, 1L) ?: return null,
+            taskerWaitComponentMs(action, 1, 1_000L) ?: return null,
+            taskerWaitComponentMs(action, 2, 60_000L) ?: return null,
+            taskerWaitComponentMs(action, 3, 3_600_000L) ?: return null,
+            taskerWaitComponentMs(action, 4, 86_400_000L) ?: return null,
+        ).sum()
+        return total.takeIf { it in 1L..MAX_WAIT_DURATION_MS }
+    }
+
+    private fun taskerWaitComponentMs(action: Element, index: Int, factor: Long): Long? {
+        val raw = argText(action, index).trim()
+        val value = if (raw.isBlank()) 0L else raw.toLongOrNull() ?: return null
+        if (value < 0L || value > MAX_WAIT_DURATION_MS / factor) {
+            return null
+        }
+        return value * factor
+    }
+
     private fun directText(parent: Element, tagName: String): String {
         return directChildren(parent, tagName).firstOrNull()?.textContent.orEmpty()
     }
@@ -334,6 +364,7 @@ object HermesTaskerImportBridge {
     }
 
     private const val TASKER_LAUNCH_APP = 20
+    private const val TASKER_WAIT = 30
     private const val TASKER_BROWSE_URL = 104
     private const val TASKER_RUN_SHELL = 123
     private const val TASKER_DELETE_FILE = 406
@@ -344,6 +375,7 @@ object HermesTaskerImportBridge {
     private const val MAX_TASKER_XML_CHARS = 512_000
     private const val MAX_LABEL_CHARS = 80
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
+    private const val MAX_WAIT_DURATION_MS = 60_000L
     private const val MAX_NOTIFICATION_FIELD_CHARS = 120
     private const val MAX_NOTIFICATION_TEXT_CHARS = 2_000
     private val ANDROID_PACKAGE_REGEX = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
@@ -351,6 +383,7 @@ object HermesTaskerImportBridge {
     private val ENTITY_REGEX = Regex("<!\\s*ENTITY", RegexOption.IGNORE_CASE)
     private val TASKER_ACTION_LABELS = mapOf(
         TASKER_LAUNCH_APP to "Launch App",
+        TASKER_WAIT to "Wait",
         TASKER_BROWSE_URL to "Browse URL",
         TASKER_RUN_SHELL to "Run Shell",
         TASKER_DELETE_FILE to "Delete File",

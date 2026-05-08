@@ -1730,6 +1730,81 @@ class HermesAutomationInstrumentedTest {
         assertFalse(HermesAutomationStore(app).listVariables().has("TASKER_DYNAMIC"))
     }
 
+    @Test
+    fun waitAutomationRunsBoundedDelay() {
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_wait_task",
+                JSONObject()
+                    .put("id", "auto-wait")
+                    .put("label", "Wait smoke")
+                    .put("duration_ms", 5)
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals("wait", created.getJSONObject("automation").getString("action_type"))
+
+        val run = JSONObject(HermesAutomationBridge.performActionJson(app, "run", JSONObject().put("id", "auto-wait")))
+        assertTrue(run.toString(), run.getBoolean("success"))
+        assertEquals(5L, run.getJSONObject("result").getLong("duration_ms"))
+
+        val rejected = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_wait_task",
+                JSONObject()
+                    .put("id", "auto-wait-too-long")
+                    .put("label", "Wait too long")
+                    .put("duration_ms", 60_001),
+            ),
+        )
+        assertFalse(rejected.toString(), rejected.getBoolean("success"))
+        assertTrue(rejected.getString("error").contains("cannot exceed"))
+    }
+
+    @Test
+    fun taskerXmlImportCreatesWaitAction() {
+        HermesAutomationStore(app).clear()
+        val taskerXml = """
+            <TaskerData sr="" dvi="1" tv="6.6.18">
+              <Task sr="task1">
+                <nme>Hermes Tasker Wait</nme>
+                <Action sr="act0" ve="7">
+                  <code>30</code>
+                  <Int sr="arg0" val="5"/>
+                  <Int sr="arg1" val="0"/>
+                  <Int sr="arg2" val="0"/>
+                  <Int sr="arg3" val="0"/>
+                  <Int sr="arg4" val="0"/>
+                </Action>
+              </Task>
+            </TaskerData>
+        """.trimIndent()
+
+        val imported = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "import_tasker_xml",
+                JSONObject()
+                    .put("tasker_xml", taskerXml)
+                    .put("replace", true),
+            ),
+        )
+        assertTrue(imported.toString(), imported.getBoolean("success"))
+        assertEquals(1, imported.getInt("tasker_imported_action_count"))
+        assertEquals(0, imported.getJSONArray("tasker_skipped_actions").length())
+
+        val record = HermesAutomationStore(app).list().single()
+        assertFalse(record.enabled)
+        assertEquals("wait", record.actionType)
+
+        val run = JSONObject(HermesAutomationBridge.performActionJson(app, "run", JSONObject().put("id", record.id)))
+        assertTrue(run.toString(), run.getBoolean("success"))
+        assertEquals(5L, run.getJSONObject("result").getLong("duration_ms"))
+    }
+
     private fun eventually(timeoutMs: Long = 5_000L, condition: () -> Boolean): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {

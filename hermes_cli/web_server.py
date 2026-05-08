@@ -3066,7 +3066,7 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
     if not host or not port:
         return None
-
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
     qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
 

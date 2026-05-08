@@ -5814,7 +5814,23 @@ class HermesCLI:
         print("  Available: list, add, edit, pause, resume, run, remove")
     
     def _handle_skills_command(self, cmd: str):
-        """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
+        """Handle /skills slash command."""
+        parts = cmd.strip().split()
+        if len(parts) >= 3 and parts[0].lower() == "/skills" and parts[1].lower() == "nudge":
+            subcommand = parts[2].lower()
+            if subcommand == "off":
+                if getattr(self, "agent", None) is not None:
+                    self.agent._nudge_disabled = True
+                print("Skill creation nudges silenced for this session.")
+                return
+            if subcommand == "on":
+                if getattr(self, "agent", None) is not None:
+                    self.agent._nudge_disabled = False
+                print("Skill creation nudges re-enabled for this session.")
+                return
+            print("Usage: /skills nudge [off|on]")
+            return
+
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
 

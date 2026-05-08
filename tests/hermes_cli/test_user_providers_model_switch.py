@@ -180,6 +180,60 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
     assert user_prov["total_models"] == 2
 
 
+def test_only_configured_limits_picker_to_configured_user_provider_models(monkeypatch):
+    """providers.only_configured makes /model use only configured models.
+
+    Even when API keys are present for built-ins and the custom endpoint's
+    /models would return additional IDs, CLI/gateway pickers should only show
+    the providers and models explicitly called out in config.yaml.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "dummy-openrouter-key")
+    monkeypatch.setenv("CRS_TEST_KEY", "sk-test")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "openrouter": {
+                "env": ["OPENROUTER_API_KEY"],
+                "models": {"openai/gpt-live": {}},
+            }
+        },
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["configured-model", "unconfigured-live-model"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    user_providers = {
+        "only_configured": True,
+        "crs-henkee": {
+            "name": "CRS Henkee",
+            "base_url": "http://127.0.0.1:3000/api/v1",
+            "key_env": "CRS_TEST_KEY",
+            "default_model": "configured-model",
+            "models": {
+                "configured-model": {"context_length": 200000},
+            },
+        },
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="crs-henkee",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    assert calls == []
+    assert [p["slug"] for p in providers] == ["crs-henkee"]
+    assert providers[0]["models"] == ["configured-model"]
+    assert providers[0]["total_models"] == 1
+
+
 def test_list_authenticated_providers_dict_models_without_default_model(monkeypatch):
     """Dict-format ``models:`` without a ``default_model`` must still expose
     every dict key, not collapse to an empty list."""
@@ -256,7 +310,7 @@ def test_openai_native_curated_catalog_is_non_empty():
 
 def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch):
     """Built-in openai row must not report total_models=0 when creds exist."""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-openai-key")
     monkeypatch.setattr(
         "agent.models_dev.fetch_models_dev",
         lambda: {"openai": {"env": ["OPENAI_API_KEY"]}},

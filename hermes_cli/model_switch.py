@@ -1085,6 +1085,27 @@ def list_authenticated_providers(
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
+    # ``providers.only_configured`` means picker surfaces must stop expanding
+    # the menu from detected credentials or live /models catalogs and only show
+    # provider/model IDs explicitly called out in config.yaml. WebUI, CLI, and
+    # gateway pickers all flow through this function, so apply the policy here.
+    def _truthy_config(value) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    only_configured = False
+    if isinstance(user_providers, dict):
+        only_configured = _truthy_config(user_providers.get("only_configured", False))
+    else:
+        try:
+            from hermes_cli.config import load_config
+            _cfg_providers = load_config().get("providers", {})
+            if isinstance(_cfg_providers, dict):
+                only_configured = _truthy_config(_cfg_providers.get("only_configured", False))
+        except Exception:
+            only_configured = False
+
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
     # Section 4 uses this to hide ``custom_providers`` entries that point at the
     # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
@@ -1199,6 +1220,8 @@ def list_authenticated_providers(
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
+        if only_configured:
+            break
         # Skip aliases that map to the same models.dev provider (e.g.
         # kimi-coding and kimi-coding-cn both → kimi-for-coding).
         # The first one with valid credentials wins (#10526).
@@ -1273,6 +1296,8 @@ def list_authenticated_providers(
     _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
 
     for pid, overlay in HERMES_OVERLAYS.items():
+        if only_configured:
+            break
         if pid.lower() in seen_slugs:
             continue
 
@@ -1386,6 +1411,8 @@ def list_authenticated_providers(
         _canon_provs = []
 
     for _cp in _canon_provs:
+        if only_configured:
+            break
         if _cp.slug.lower() in seen_slugs:
             continue
 
@@ -1478,8 +1505,12 @@ def list_authenticated_providers(
             # custom_providers entries use, so accept either.
             default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
 
-            # Build models list from both default_model and full models array
+            # Build models list from both default_model and full models array.
+            # Keep per-model display labels separate so the picker can show a
+            # friendly name while switch_model still receives the provider's
+            # exact model id.
             models_list = []
+            model_labels = {}
             if default_model:
                 models_list.append(default_model)
             # Also include the full models list from config.
@@ -1488,9 +1519,13 @@ def list_authenticated_providers(
             # configs or hand-edited files may still use a list.
             cfg_models = ep_cfg.get("models", [])
             if isinstance(cfg_models, dict):
-                for m in cfg_models:
+                for m, meta in cfg_models.items():
                     if m and m not in models_list:
                         models_list.append(m)
+                    if isinstance(meta, dict):
+                        label = meta.get("display_name") or meta.get("label") or meta.get("name")
+                        if isinstance(label, str) and label.strip():
+                            model_labels[m] = label.strip()
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
                     if m and m not in models_list:
@@ -1513,7 +1548,7 @@ def list_authenticated_providers(
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
-            discover = ep_cfg.get("discover_models", True)
+            discover = False if only_configured else ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in ("false", "no", "0")
             if api_url and api_key and discover:
@@ -1531,6 +1566,7 @@ def list_authenticated_providers(
                 "is_current": ep_name == current_provider,
                 "is_user_defined": True,
                 "models": models_list,
+                "model_labels": model_labels,
                 "total_models": len(models_list) if models_list else 0,
                 "source": "user-config",
                 "api_url": api_url,
@@ -1615,6 +1651,7 @@ def list_authenticated_providers(
                     "name": display_name,
                     "api_url": api_url,
                     "models": [],
+                    "discover_models": entry.get("discover_models", True),
                 }
 
             # The singular ``model:`` field only holds the currently
@@ -1625,12 +1662,17 @@ def list_authenticated_providers(
             default_model = (entry.get("model") or "").strip()
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
+            groups[group_key].setdefault("model_labels", {})
 
             cfg_models = entry.get("models", {})
             if isinstance(cfg_models, dict):
-                for m in cfg_models:
+                for m, meta in cfg_models.items():
                     if m and m not in groups[group_key]["models"]:
                         groups[group_key]["models"].append(m)
+                    if isinstance(meta, dict):
+                        label = meta.get("display_name") or meta.get("label") or meta.get("name")
+                        if isinstance(label, str) and label.strip():
+                            groups[group_key]["model_labels"][m] = label.strip()
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
                     if m and m not in groups[group_key]["models"]:
@@ -1677,8 +1719,13 @@ def list_authenticated_providers(
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
             # Live model discovery from custom provider endpoints (matches
-            # Section 3 behavior for user ``providers:`` entries).
-            if api_url and api_key:
+            # Section 3 behavior for user ``providers:`` entries). Disabled
+            # when ``providers.only_configured`` is set so every picker only
+            # shows explicitly configured model IDs.
+            discover = False if only_configured else grp.get("discover_models", True)
+            if isinstance(discover, str):
+                discover = discover.strip().lower() not in ("false", "no", "0")
+            if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
 
@@ -1694,6 +1741,7 @@ def list_authenticated_providers(
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
                 "models": grp["models"],
+                "model_labels": grp.get("model_labels", {}),
                 "total_models": len(grp["models"]),
                 "source": "user-config",
                 "api_url": grp["api_url"],
@@ -1748,7 +1796,7 @@ def list_picker_providers(
     filtered: List[dict] = []
     for p in providers:
         slug = str(p.get("slug", "")).lower()
-        if slug == "openrouter":
+        if slug == "openrouter" and not p.get("is_user_defined"):
             try:
                 live = fetch_openrouter_models()
                 live_ids = [mid for mid, _ in live]

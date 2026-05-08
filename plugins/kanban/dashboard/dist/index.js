@@ -385,7 +385,7 @@
 
     // --- load config once ---------------------------------------------------
     useEffect(function () {
-      SDK.fetchJSON(`${API}/config`)
+      SDK.fetchJSON(withBoard(`${API}/config`, board))
         .then(function (c) {
           setConfig(c);
           if (!configApplied) {
@@ -418,7 +418,7 @@
 
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
-      return SDK.fetchJSON(`${API}/boards`)
+      return SDK.fetchJSON(withBoard(`${API}/boards`, board))
         .then(function (data) {
           const boards = (data && data.boards) || [];
           setBoardList(boards);
@@ -640,7 +640,7 @@
         if (slug && payload.switch) switchBoard(slug);
         return res;
       });
-    }, [loadBoardList, switchBoard]);
+    }, [loadBoardList, switchBoard, board]);
 
     const deleteBoard = useCallback(function (slug) {
       if (!slug || slug === "default") return Promise.resolve();

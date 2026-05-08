@@ -205,3 +205,25 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+def test_acp_client_allows_provider_specific_label_and_default_model(tmp_path):
+    client = CopilotACPClient(
+        api_key="gemini-cli-acp",
+        base_url="acp://gemini-cli",
+        command="gemini",
+        args=["--acp"],
+        acp_cwd=str(tmp_path),
+        provider_label="Gemini CLI ACP",
+        default_model="gemini-cli-acp",
+        install_hint="Install Gemini CLI.",
+    )
+
+    with _patch.object(client, "_run_prompt", return_value=("hello", "")):
+        response = client.chat.completions.create(messages=[{"role": "user", "content": "hi"}])
+
+    assert response.model == "gemini-cli-acp"
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=FileNotFoundError("missing")):
+        with pytest.raises(RuntimeError, match="Could not start Gemini CLI ACP command"):
+            client._run_prompt("hello", timeout_seconds=1)

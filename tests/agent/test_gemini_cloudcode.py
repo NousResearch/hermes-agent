@@ -875,6 +875,7 @@ class TestTranslateStreamEvent:
         indices = [c.choices[0].delta.tool_calls[0].index for c in chunks]
         assert indices == [0, 1, 2]
         assert counter[0] == 3
+        assert chunks[0].choices[0].delta.content is None
 
     def test_counter_persists_across_events(self):
         """Index assignment must continue across SSE events in the same stream."""

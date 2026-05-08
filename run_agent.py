@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 import os
 import random
 import re
+import shutil
 import ssl
 import sys
 import tempfile
@@ -5543,6 +5544,16 @@ class AIAgent:
         return False
 
     @staticmethod
+    def _is_acp_client(client: Any) -> bool:
+        """Return True for local ACP subprocess clients.
+
+        ACP clients expose an OpenAI-compatible chat surface, but they return
+        concrete response objects rather than SSE iterators.
+        """
+        base_url = str(getattr(client, "base_url", "") or "").lower()
+        return base_url.startswith("acp://") or base_url.startswith("acp+tcp://")
+
+    @staticmethod
     def _build_keepalive_http_client(base_url: str = "") -> Any:
         try:
             import httpx as _httpx
@@ -5592,6 +5603,48 @@ class AIAgent:
             )
             return client
         if self.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
+            _use_gemini_acp = str(os.getenv("HERMES_GEMINI_CLI_ACP", "0")).strip().lower()
+            _default_gemini_cmd = os.path.expanduser("~/.bun/bin/gemini")
+            _default_gemini_cmd = (
+                _default_gemini_cmd
+                if os.path.isfile(_default_gemini_cmd) and os.access(_default_gemini_cmd, os.X_OK)
+                else ""
+            )
+            _gemini_cmd = (
+                os.getenv("HERMES_GEMINI_CLI_COMMAND", "").strip()
+                or _default_gemini_cmd
+                or shutil.which("gemini")
+                or ""
+            )
+            if _use_gemini_acp in {"1", "true", "yes", "on"} and _gemini_cmd:
+                from agent.copilot_acp_client import CopilotACPClient
+
+                _gemini_args = ["--acp"]
+                _gemini_model = str(self.model or "").strip()
+                if _gemini_model:
+                    _gemini_args.extend(["-m", _gemini_model])
+                client = CopilotACPClient(
+                    api_key=client_kwargs.get("api_key") or "gemini-cli-acp",
+                    base_url="acp://gemini-cli",
+                    command=_gemini_cmd,
+                    args=_gemini_args,
+                    acp_cwd=os.getenv("TERMINAL_CWD") or os.getcwd(),
+                    default_headers=client_kwargs.get("default_headers"),
+                    provider_label="Gemini CLI ACP",
+                    default_model="gemini-cli-acp",
+                    install_hint=(
+                        "Install Gemini CLI or set HERMES_GEMINI_CLI_COMMAND to an executable path."
+                    ),
+                )
+                logger.info(
+                    "Gemini CLI ACP client created (%s, shared=%s, command=%s) %s",
+                    reason,
+                    shared,
+                    _gemini_cmd,
+                    self._client_log_context(),
+                )
+                return client
+
             from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
 
             # Strip OpenAI-specific kwargs the Gemini client doesn't accept
@@ -11376,14 +11429,13 @@ class AIAgent:
                     # session instead of re-failing every retry.
                     if getattr(self, "_disable_streaming", False):
                         _use_streaming = False
-                    # CopilotACPClient communicates via subprocess stdio and
-                    # returns a plain SimpleNamespace — not an iterable
-                    # stream.  Mirror the ACP exclusion used for Responses
-                    # API upgrade (lines ~1083-1085).
+                    # ACP clients communicate via subprocess stdio and return
+                    # a plain SimpleNamespace — not an iterable stream.
                     elif (
                         self.provider == "copilot-acp"
                         or str(self.base_url or "").lower().startswith("acp://copilot")
                         or str(self.base_url or "").lower().startswith("acp+tcp://")
+                        or self._is_acp_client(getattr(self, "client", None))
                     ):
                         _use_streaming = False
                     elif not self._has_stream_consumers():

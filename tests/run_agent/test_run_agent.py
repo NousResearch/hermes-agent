@@ -4124,6 +4124,164 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
 
 
+def test_google_gemini_cli_prefers_local_gemini_acp(monkeypatch):
+    monkeypatch.setenv("HERMES_GEMINI_CLI_ACP", "1")
+    monkeypatch.setenv("TERMINAL_CWD", "/tmp")
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("run_agent.os.path.isfile", return_value=False),
+        patch("run_agent.os.access", return_value=False),
+        patch("run_agent.shutil.which", return_value="/usr/local/bin/gemini"),
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+        patch("agent.gemini_cloudcode_adapter.GeminiCloudCodeClient") as mock_cloudcode,
+    ):
+        acp_client = MagicMock()
+        mock_acp_client.return_value = acp_client
+
+        agent = AIAgent(
+            api_key="google-oauth",
+            base_url="cloudcode-pa://google",
+            provider="google-gemini-cli",
+            model="gemini-3-flash-preview",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is acp_client
+    mock_openai.assert_not_called()
+    mock_cloudcode.assert_not_called()
+    mock_acp_client.assert_called_once()
+    assert mock_acp_client.call_args.kwargs["base_url"] == "acp://gemini-cli"
+    assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/gemini"
+    assert mock_acp_client.call_args.kwargs["args"] == [
+        "--acp",
+        "-m",
+        "gemini-3-flash-preview",
+    ]
+    assert mock_acp_client.call_args.kwargs["acp_cwd"] == "/tmp"
+    assert mock_acp_client.call_args.kwargs["provider_label"] == "Gemini CLI ACP"
+    assert mock_acp_client.call_args.kwargs["default_model"] == "gemini-cli-acp"
+
+
+def test_google_gemini_cli_uses_cloudcode_by_default(monkeypatch):
+    monkeypatch.delenv("HERMES_GEMINI_CLI_ACP", raising=False)
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("run_agent.os.path.isfile", return_value=False),
+        patch("run_agent.os.access", return_value=False),
+        patch("run_agent.shutil.which", return_value="/usr/local/bin/gemini"),
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+        patch("agent.gemini_cloudcode_adapter.GeminiCloudCodeClient") as mock_cloudcode,
+    ):
+        cloud_client = MagicMock()
+        mock_cloudcode.return_value = cloud_client
+
+        agent = AIAgent(
+            api_key="google-oauth",
+            base_url="cloudcode-pa://google",
+            provider="google-gemini-cli",
+            model="gemini-3-flash-preview",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is cloud_client
+    mock_openai.assert_not_called()
+    mock_acp_client.assert_not_called()
+    mock_cloudcode.assert_called_once()
+
+
+def test_google_gemini_cli_can_disable_local_acp(monkeypatch):
+    monkeypatch.setenv("HERMES_GEMINI_CLI_ACP", "0")
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("run_agent.os.path.isfile", return_value=False),
+        patch("run_agent.os.access", return_value=False),
+        patch("run_agent.shutil.which", return_value="/usr/local/bin/gemini"),
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+        patch("agent.gemini_cloudcode_adapter.GeminiCloudCodeClient") as mock_cloudcode,
+    ):
+        cloud_client = MagicMock()
+        mock_cloudcode.return_value = cloud_client
+
+        agent = AIAgent(
+            api_key="google-oauth",
+            base_url="cloudcode-pa://google",
+            provider="google-gemini-cli",
+            model="gemini-3-flash-preview",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is cloud_client
+    mock_openai.assert_not_called()
+    mock_acp_client.assert_not_called()
+    mock_cloudcode.assert_called_once()
+
+
+def test_google_gemini_cli_prefers_bun_gemini_path(monkeypatch):
+    monkeypatch.setenv("HERMES_GEMINI_CLI_ACP", "1")
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("run_agent.os.path.isfile", return_value=True),
+        patch("run_agent.os.access", return_value=True),
+        patch("run_agent.shutil.which", return_value="/usr/local/bin/gemini"),
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+    ):
+        AIAgent(
+            api_key="google-oauth",
+            base_url="cloudcode-pa://google",
+            provider="google-gemini-cli",
+            model="gemini-3-flash-preview",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert mock_acp_client.call_args.kwargs["command"].endswith("/.bun/bin/gemini")
+
+
+def test_google_gemini_cli_falls_back_to_path_for_npm_install(monkeypatch):
+    monkeypatch.setenv("HERMES_GEMINI_CLI_ACP", "1")
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("run_agent.os.path.isfile", return_value=True),
+        patch("run_agent.os.access", return_value=False),
+        patch("run_agent.shutil.which", return_value="/usr/local/bin/gemini"),
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+    ):
+        AIAgent(
+            api_key="google-oauth",
+            base_url="cloudcode-pa://google",
+            provider="google-gemini-cli",
+            model="gemini-3-flash-preview",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/gemini"
+
+
+def test_acp_client_detection_covers_gemini_cli():
+    assert AIAgent._is_acp_client(SimpleNamespace(base_url="acp://gemini-cli")) is True
+    assert AIAgent._is_acp_client(SimpleNamespace(base_url="acp+tcp://127.0.0.1:1234")) is True
+    assert AIAgent._is_acp_client(SimpleNamespace(base_url="cloudcode-pa://google")) is False
+
+
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
     agent._print_fn = lambda *_a, **_kw: None
     with patch.object(run_agent.sys.stdout, "isatty", return_value=False):

@@ -111,6 +111,21 @@ hermes model
 
 This uses browser PKCE login and the Cloud Code Assist backend. It can be useful for users who want Gemini CLI-style OAuth, but Hermes shows an explicit warning because Google may treat use of the Gemini CLI OAuth client from third-party software as a policy violation. For production or lowest-risk usage, prefer the API-key provider above.
 
+By default, `google-gemini-cli` talks to Cloud Code Assist directly. If you want Hermes to spawn a local Gemini CLI ACP subprocess instead, install Gemini CLI and opt in explicitly. The official Gemini CLI install path is npm:
+
+```bash
+npm install -g @google/gemini-cli
+```
+
+```bash
+HERMES_GEMINI_CLI_ACP=1 hermes chat \
+  --provider google-gemini-cli \
+  --model gemini-3.1-pro-preview \
+  -q "Hello from Gemini ACP"
+```
+
+Hermes resolves Gemini CLI in this order: `HERMES_GEMINI_CLI_COMMAND`, executable `~/.bun/bin/gemini` for Bun installs, then `gemini` on `PATH` for npm and other installs.
+
 ## Available Models
 
 The `hermes model` picker shows Gemini models maintained in Hermes' provider registry. Common choices include:

@@ -61,6 +61,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `HERMES_GEMINI_CLIENT_ID` | OAuth client ID for `google-gemini-cli` PKCE login (optional; defaults to Google's public gemini-cli client) |
 | `HERMES_GEMINI_CLIENT_SECRET` | OAuth client secret for `google-gemini-cli` (optional) |
 | `HERMES_GEMINI_PROJECT_ID` | GCP project ID for paid Gemini tiers (free tier auto-provisions) |
+| `HERMES_GEMINI_CLI_ACP` | Set to `1`, `true`, `yes`, or `on` to make `google-gemini-cli` spawn local Gemini CLI in ACP mode instead of using Cloud Code Assist directly |
+| `HERMES_GEMINI_CLI_COMMAND` | Executable path for Gemini CLI ACP mode; if unset, Hermes tries executable `~/.bun/bin/gemini` for Bun installs, then `gemini` on `PATH` for npm and other installs |
 | `ANTHROPIC_API_KEY` | Anthropic Console API key ([console.anthropic.com](https://console.anthropic.com/)) |
 | `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override |
 | `DASHSCOPE_API_KEY` | Alibaba Cloud DashScope API key for Qwen models ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |

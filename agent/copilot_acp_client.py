@@ -310,7 +310,7 @@ class _ACPChatNamespace:
 
 
 class CopilotACPClient:
-    """Minimal OpenAI-client-compatible facade for Copilot ACP."""
+    """Minimal OpenAI-client-compatible facade for ACP subprocesses."""
 
     def __init__(
         self,
@@ -323,10 +323,19 @@ class CopilotACPClient:
         acp_cwd: str | None = None,
         command: str | None = None,
         args: list[str] | None = None,
+        provider_label: str | None = None,
+        default_model: str | None = None,
+        install_hint: str | None = None,
         **_: Any,
     ):
         self.api_key = api_key or "copilot-acp"
         self.base_url = base_url or ACP_MARKER_BASE_URL
+        self._provider_label = provider_label or "Copilot ACP"
+        self._default_model = default_model or "copilot-acp"
+        self._install_hint = (
+            install_hint
+            or "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+        )
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
         self._acp_args = list(acp_args or args or _resolve_args())
@@ -410,7 +419,7 @@ class CopilotACPClient:
         return SimpleNamespace(
             choices=[choice],
             usage=usage,
-            model=model or "copilot-acp",
+            model=model or self._default_model,
         )
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
@@ -425,15 +434,15 @@ class CopilotACPClient:
                 cwd=self._acp_cwd,
                 env=_build_subprocess_env(),
             )
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, PermissionError, OSError) as exc:
             raise RuntimeError(
-                f"Could not start Copilot ACP command '{self._acp_command}'. "
-                "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+                f"Could not start {self._provider_label} command '{self._acp_command}'. "
+                f"{self._install_hint}"
             ) from exc
 
         if proc.stdin is None or proc.stdout is None:
             proc.kill()
-            raise RuntimeError("Copilot ACP process did not expose stdin/stdout pipes.")
+            raise RuntimeError(f"{self._provider_label} process did not expose stdin/stdout pipes.")
 
         self.is_closed = False
         with self._active_process_lock:
@@ -500,14 +509,14 @@ class CopilotACPClient:
                 if "error" in msg:
                     err = msg.get("error") or {}
                     raise RuntimeError(
-                        f"Copilot ACP {method} failed: {err.get('message') or err}"
+                        f"{self._provider_label} {method} failed: {err.get('message') or err}"
                     )
                 return msg.get("result")
 
             stderr_text = "\n".join(stderr_tail).strip()
             if proc.poll() is not None and stderr_text:
-                raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
-            raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
+                raise RuntimeError(f"{self._provider_label} process exited early: {stderr_text}")
+            raise TimeoutError(f"Timed out waiting for {self._provider_label} response to {method}.")
 
         try:
             _request(
@@ -536,7 +545,7 @@ class CopilotACPClient:
             ) or {}
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
-                raise RuntimeError("Copilot ACP did not return a sessionId.")
+                raise RuntimeError(f"{self._provider_label} did not return a sessionId.")
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []

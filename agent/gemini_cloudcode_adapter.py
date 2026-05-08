@@ -146,12 +146,22 @@ def _build_gemini_contents(
             system_text_parts.append(_coerce_content_to_text(msg.get("content")))
             continue
 
-        # Tool result message — emit a user-role turn with functionResponse
+        # Tool result message — Gemini requires all tool responses for a single
+        # assistant turn to be grouped into one 'user' role turn.
         if role == "tool" or role == "function":
-            contents.append({
-                "role": "user",
-                "parts": [_translate_tool_result_to_gemini(msg)],
-            })
+            part = _translate_tool_result_to_gemini(msg)
+            last_turn_is_tool_response = (
+                contents
+                and contents[-1]["role"] == "user"
+                and any("functionResponse" in p for p in contents[-1]["parts"])
+            )
+            if last_turn_is_tool_response:
+                contents[-1]["parts"].append(part)
+            else:
+                contents.append({
+                    "role": "user",
+                    "parts": [part],
+                })
             continue
 
         gemini_role = _ROLE_MAP_OPENAI_TO_GEMINI.get(role, "user")
@@ -450,9 +460,11 @@ def _make_stream_chunk(
     finish_reason: Optional[str] = None,
     reasoning: str = "",
 ) -> _GeminiStreamChunk:
-    delta_kwargs: Dict[str, Any] = {"role": "assistant"}
-    if content:
-        delta_kwargs["content"] = content
+    delta_kwargs: Dict[str, Any] = {
+        "role": "assistant",
+        "content": content or None,
+        "tool_calls": None,
+    }
     if tool_call_delta is not None:
         delta_kwargs["tool_calls"] = [SimpleNamespace(
             index=tool_call_delta.get("index", 0),

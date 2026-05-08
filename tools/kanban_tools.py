@@ -422,6 +422,13 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
+            except kb.VerificationEvidenceError as verify_err:
+                return tool_error(
+                    "kanban_complete blocked: verification evidence required. "
+                    f"{verify_err.reason}. Include metadata.verification.checks "
+                    "with at least one passed concrete check, or use kanban_block "
+                    "if the task cannot be verified yet."
+                )
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"
@@ -753,10 +760,13 @@ KANBAN_COMPLETE_SCHEMA = {
     "description": (
         "Mark your current task done with a structured handoff for "
         "downstream workers and humans. Prefer ``summary`` for a "
-        "human-readable 1-3 sentence description of what you did; put "
-        "machine-readable facts in ``metadata`` (changed_files, "
-        "tests_run, decisions, findings, etc). At least one of "
-        "``summary`` or ``result`` is required. If you created new "
+        "human-readable 1-3 sentence description of what you did. "
+        "Autonomous worker completion is verifier-gated: metadata must "
+        "include {\"verification\": {\"checks\": [{\"name\": \"pytest ...\", "
+        "\"status\": \"passed\"}]}} with at least one concrete passed "
+        "check. Put other machine-readable facts in ``metadata`` "
+        "(changed_files, tests_run, decisions, findings, etc). At least "
+        "one of ``summary`` or ``result`` is required. If you created new "
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
         "references are caught before they leak into downstream "
@@ -780,10 +790,13 @@ KANBAN_COMPLETE_SCHEMA = {
             "metadata": {
                 "type": "object",
                 "description": (
-                    "Free-form dict of structured facts about this "
-                    "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
-                    "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "Structured facts about this attempt. For verifier-gated "
+                    "worker completion, include verification.checks as a "
+                    "non-empty list of passed concrete checks, e.g. "
+                    "{\"verification\": {\"checks\": [{\"name\": \"pytest tests/...\", "
+                    "\"status\": \"passed\"}]}, \"changed_files\": [...], "
+                    "\"findings\": [...]}. Surfaced to downstream workers "
+                    "alongside ``summary``."
                 ),
             },
             "result": {

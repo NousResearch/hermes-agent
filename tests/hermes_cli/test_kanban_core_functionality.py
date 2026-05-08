@@ -1476,6 +1476,11 @@ def test_stale_run_cannot_complete_new_attempt(kanban_home, monkeypatch):
             conn,
             tid,
             summary="current completion",
+            metadata={
+                "verification": {
+                    "checks": [{"name": "retry verifier", "status": "passed"}]
+                }
+            },
             expected_run_id=run2.id,
         )
         runs = kb.list_runs(conn, tid)

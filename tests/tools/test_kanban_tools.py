@@ -137,11 +137,18 @@ def worker_env(monkeypatch, tmp_path):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
-        kb.claim_task(conn, tid)
+        claimed = kb.claim_task(conn, tid)
+        run_id = claimed.current_run_id if claimed else None
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    if run_id is not None:
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return tid
+
+
+def verifier_metadata(name: str = "pytest tests/tools/test_kanban_tools.py") -> dict:
+    return {"verification": {"checks": [{"name": name, "status": "passed"}]}}
 
 
 def test_show_defaults_to_env_task_id(worker_env):
@@ -265,9 +272,11 @@ def test_list_rejects_bad_include_archived(monkeypatch, worker_env):
 
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
+    metadata = verifier_metadata()
+    metadata["files"] = 2
     out = kt._handle_complete({
         "summary": "got the thing done",
-        "metadata": {"files": 2},
+        "metadata": metadata,
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -279,7 +288,7 @@ def test_complete_happy_path(worker_env):
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
         assert run.summary == "got the thing done"
-        assert run.metadata == {"files": 2}
+        assert run.metadata == metadata
     finally:
         conn.close()
 
@@ -290,7 +299,11 @@ def test_complete_metadata_round_trips_through_show(worker_env):
 
     handoff = {
         "changed_files": ["hermes_cli/kanban.py"],
-        "verification": ["pytest tests/tools/test_kanban_tools.py -q"],
+        "verification": {
+            "checks": [
+                {"name": "pytest tests/tools/test_kanban_tools.py -q", "status": "passed"}
+            ]
+        },
         "dependencies": [],
         "blocked_reason": None,
         "retry_notes": "none",
@@ -313,7 +326,10 @@ def test_complete_metadata_round_trips_through_show(worker_env):
 def test_complete_with_result_only(worker_env):
     """`result` alone (without summary) is accepted for legacy compat."""
     from tools import kanban_tools as kt
-    out = kt._handle_complete({"result": "legacy result"})
+    out = kt._handle_complete({
+        "result": "legacy result",
+        "metadata": verifier_metadata("legacy verifier"),
+    })
     d = json.loads(out)
     assert d["ok"] is True
 
@@ -813,9 +829,11 @@ def test_worker_lifecycle_through_tools(worker_env):
     assert child_out["ok"]
 
     # 5. complete with structured handoff
+    metadata = verifier_metadata("lifecycle verifier")
+    metadata["child_task"] = child_out["task_id"]
     comp = json.loads(kt._handle_complete({
         "summary": "implemented + spawned QA follow-up",
-        "metadata": {"child_task": child_out["task_id"]},
+        "metadata": metadata,
     }))
     assert comp["ok"]
 
@@ -828,7 +846,7 @@ def test_worker_lifecycle_through_tools(worker_env):
         assert parent.current_run_id is None
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
-        assert run.metadata == {"child_task": child_out["task_id"]}
+        assert run.metadata == metadata
         # Child is todo (parent just finished, but recompute_ready may
         # have promoted it — complete_task runs recompute internally).
         child = kb.get_task(conn, child_out["task_id"])
@@ -1071,9 +1089,23 @@ def test_worker_complete_own_task_still_works(worker_env):
     """The ownership check doesn't break the normal own-task happy path."""
     from tools import kanban_tools as kt
     # Both implicit (no task_id arg) and explicit (matching env) must work.
-    out = kt._handle_complete({"task_id": worker_env, "summary": "explicit own"})
+    out = kt._handle_complete({
+        "task_id": worker_env,
+        "summary": "explicit own",
+        "metadata": verifier_metadata(),
+    })
     d = json.loads(out)
     assert d.get("ok") is True and d.get("task_id") == worker_env
+
+
+def test_worker_complete_without_verification_returns_tool_error(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({"task_id": worker_env, "summary": "trust me"})
+    d = json.loads(out)
+
+    assert d.get("ok") is not True
+    assert "verification evidence required" in d.get("error", "")
 
 
 def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
@@ -1109,7 +1141,10 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
         conn.close()
 
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run2.id))
-    out = kt._handle_complete({"summary": "current completion"})
+    out = kt._handle_complete({
+        "summary": "current completion",
+        "metadata": verifier_metadata("rerun verifier"),
+    })
     d = json.loads(out)
     assert d.get("ok") is True
 

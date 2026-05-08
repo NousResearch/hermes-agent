@@ -81,7 +81,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, cast
 
 from toolsets import get_toolset_names
 
@@ -2419,6 +2419,72 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class VerificationEvidenceError(ValueError):
+    """Raised when an autonomous worker closes a task without hard proof."""
+
+    def __init__(self, task_id: str, reason: str):
+        self.task_id = task_id
+        self.reason = reason
+        super().__init__(
+            "completion blocked: verification evidence required for "
+            f"autonomous worker task {task_id}: {reason}. "
+            "Pass metadata={\"verification\": {\"checks\": "
+            "[{\"name\": \"pytest ...\", \"status\": \"passed\"}]}} "
+            "or keep the task open/blocked until it can be verified."
+        )
+
+
+def _verification_evidence_error(metadata: Optional[dict]) -> Optional[str]:
+    """Return a rejection reason when ``metadata.verification`` is weak.
+
+    Minimal accepted schema:
+    ``metadata["verification"]["checks"]`` is a non-empty list of dicts,
+    every dict has a name/command plus a passed-ish status (or
+    ``passed: true``). This is deliberately small: the gate verifies that
+    a worker performed at least one concrete check and says it passed;
+    richer evidence can ride alongside in the same metadata object.
+    """
+    if not isinstance(metadata, dict):
+        return "metadata must be an object with verification.checks"
+    verification = metadata.get("verification")
+    if not isinstance(verification, dict):
+        return "metadata.verification must be an object"
+    checks = verification.get("checks")
+    if not isinstance(checks, list) or not checks:
+        return "metadata.verification.checks must be a non-empty list"
+
+    pass_values = {"pass", "passed", "success", "succeeded", "ok", "green"}
+    for idx, check in enumerate(checks, start=1):
+        if not isinstance(check, dict):
+            return f"verification check {idx} must be an object"
+        check_dict = cast(dict[str, Any], check)
+        label = str(check_dict.get("name") or check_dict.get("command") or "").strip()
+        if not label:
+            return f"verification check {idx} needs name or command"
+        status = str(check_dict.get("status") or "").strip().lower()
+        passed = check_dict.get("passed") is True or status in pass_values
+        if not passed:
+            return f"verification check {idx} is not marked passed"
+    return None
+
+
+def _completion_needs_verification(
+    conn: sqlite3.Connection,
+    task_id: str,
+    expected_run_id: Optional[int],
+) -> bool:
+    row = conn.execute(
+        "SELECT body, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    # If the caller has a stale/incorrect run token, let the normal CAS update
+    # return False. Do not mask stale-run protection behind evidence errors.
+    if expected_run_id is not None and row["current_run_id"] != expected_run_id:
+        return False
+    return task_is_dispatchable(row["body"], row["assignee"])
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2458,6 +2524,41 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+
+    # Gate: autonomous dispatcher-owned worker completions need concrete
+    # verifier evidence before they can advance downstream dependencies.
+    # Manual/operator closes (no expected_run_id) remain possible so humans
+    # can override after reviewing context; workers can block instead of close
+    # when proof is impossible.
+    if expected_run_id is not None and _completion_needs_verification(
+        conn, task_id, expected_run_id
+    ):
+        evidence_error = _verification_evidence_error(metadata)
+        if evidence_error:
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "completion_blocked_weak_verification",
+                    {
+                        "reason": evidence_error,
+                        "required_schema": {
+                            "metadata": {
+                                "verification": {
+                                    "checks": [
+                                        {"name": "pytest ...", "status": "passed"}
+                                    ]
+                                }
+                            }
+                        },
+                        "summary_preview": (
+                            (summary or result or "").strip().splitlines()[0][:200]
+                            if (summary or result)
+                            else None
+                        ),
+                    },
+                )
+            raise VerificationEvidenceError(task_id, evidence_error)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a

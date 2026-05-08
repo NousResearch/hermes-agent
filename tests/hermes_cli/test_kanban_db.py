@@ -417,6 +417,62 @@ def test_complete_records_result(kanban_home):
     assert task.completed_at is not None
 
 
+def test_worker_completion_requires_verification_evidence(kanban_home):
+    body = "Approval: execute-safe\nExecution: worker\n\nRun safe checks."
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="needs proof", body=body, assignee="ops")
+        claimed = kb.claim_task(conn, tid, claimer="host:ops")
+        assert claimed is not None and claimed.current_run_id is not None
+
+        with pytest.raises(kb.VerificationEvidenceError, match="verification evidence"):
+            kb.complete_task(
+                conn,
+                tid,
+                summary="Done, trust me.",
+                expected_run_id=claimed.current_run_id,
+            )
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        events = kb.list_events(conn, tid)
+        assert events[-1].kind == "completion_blocked_weak_verification"
+
+
+def test_worker_completion_accepts_passed_verification_check(kanban_home):
+    body = "Approval: execute-safe\nExecution: assigned:ops\n\nRun safe checks."
+    metadata = {
+        "verification": {
+            "checks": [
+                {"name": "pytest tests/hermes_cli/test_kanban_db.py", "status": "passed"}
+            ]
+        }
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="proved", body=body, assignee="ops")
+        claimed = kb.claim_task(conn, tid, claimer="host:ops")
+        assert claimed is not None and claimed.current_run_id is not None
+
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="Done with verifier evidence.",
+            metadata=metadata,
+            expected_run_id=claimed.current_run_id,
+        )
+
+        task = kb.get_task(conn, tid)
+    assert task.status == "done"
+    assert task.completed_at is not None
+
+
+def test_manual_completion_can_record_weak_result_without_worker_gate(kanban_home):
+    body = "Approval: execute-safe\nExecution: worker\n\nOperator will close manually."
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="manual", body=body, assignee="ops")
+        assert kb.complete_task(conn, tid, summary="Manual operator close.")
+        assert kb.get_task(conn, tid).status == "done"
+
+
 def test_block_then_unblock(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")

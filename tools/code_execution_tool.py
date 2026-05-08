@@ -1175,6 +1175,25 @@ def execute_code(
         child_env = _scrub_child_env(os.environ)
         child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        # Force UTF-8 for the child's stdio and default file encoding.
+        #
+        # Without this, on Windows sys.stdout is bound to the console code
+        # page (cp1252 on US-locale installs), and any script that does
+        # ``print("café")`` or ``print("→")`` crashes with:
+        #
+        #   UnicodeEncodeError: 'charmap' codec can't encode character
+        #   '\u2192' in position N: character maps to <undefined>
+        #
+        # PYTHONIOENCODING fixes sys.stdin/stdout/stderr.
+        # PYTHONUTF8=1 enables "UTF-8 mode" (PEP 540) which additionally
+        # makes ``open()``'s default encoding UTF-8, so user scripts that
+        # write files without specifying encoding= also work correctly.
+        #
+        # On POSIX both values usually match the locale default already,
+        # so setting them is harmless belt-and-suspenders for environments
+        # with a C/POSIX locale (containers, minimal base images).
+        child_env["PYTHONIOENCODING"] = "utf-8"
+        child_env["PYTHONUTF8"] = "1"
         # Ensure the hermes-agent root is importable in the sandbox so
         # repo-root modules are available to child scripts.  We also prepend
         # the staging tmpdir so ``from hermes_tools import ...`` resolves even

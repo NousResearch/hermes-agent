@@ -563,3 +563,136 @@ class TestSandboxWritesUtf8:
                     pass
         finally:
             os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# UTF-8 stdio regression test
+# ---------------------------------------------------------------------------
+#
+# The third Windows-specific sandbox bug: after the UTF-8 file-write fix
+# let the child import hermes_tools, a user script that printed non-ASCII
+# to stdout still crashed with:
+#
+#     UnicodeEncodeError: 'charmap' codec can't encode character '\u2192'
+#                         in position N: character maps to <undefined>
+#
+# Python's sys.stdout on Windows is bound to the console code page
+# (cp1252 on US-locale installs) when the process is attached to a pipe
+# without PYTHONIOENCODING set.  LLM-generated scripts routinely print
+# em-dashes, arrows, accented chars, emoji — all of which break.
+#
+# Fix: spawn the child with PYTHONIOENCODING=utf-8 and PYTHONUTF8=1.
+# The latter also makes open()'s default encoding UTF-8 (PEP 540),
+# belt-and-suspenders for user scripts that do their own file I/O.
+
+
+class TestChildStdioIsUtf8:
+    """Verify the sandbox child is spawned with UTF-8 stdio encoding,
+    so LLM scripts can print non-ASCII without crashing on Windows."""
+
+    def test_popen_env_sets_pythonioencoding_utf8(self):
+        """Source-level check: the Popen call site must set
+        PYTHONIOENCODING=utf-8 in child_env."""
+        import tools.code_execution_tool as cet
+        src = open(cet.__file__, encoding="utf-8").read()
+        assert 'child_env["PYTHONIOENCODING"] = "utf-8"' in src, (
+            "PYTHONIOENCODING=utf-8 missing from child env — Windows "
+            "scripts that print non-ASCII will crash with "
+            "UnicodeEncodeError."
+        )
+
+    def test_popen_env_sets_pythonutf8_mode(self):
+        """Source-level check: PYTHONUTF8=1 must be set too — it makes
+        open()'s default encoding UTF-8 in user-written file I/O."""
+        import tools.code_execution_tool as cet
+        src = open(cet.__file__, encoding="utf-8").read()
+        assert 'child_env["PYTHONUTF8"] = "1"' in src, (
+            "PYTHONUTF8=1 missing from child env — user scripts that "
+            "call open(path, 'w') without encoding= will produce "
+            "locale-encoded files on Windows."
+        )
+
+    def test_live_child_can_print_non_ascii(self):
+        """Live regression: spawn a Python child with the same env
+        treatment the sandbox uses (PYTHONIOENCODING=utf-8 + PYTHONUTF8=1)
+        and verify it can print em-dashes, arrows, and emoji to stdout
+        without crashing.  This is the exact scenario that broke in live
+        usage.
+
+        Runs on every OS — on POSIX the fix is belt-and-suspenders but
+        still load-bearing for C.ASCII locale environments.
+        """
+        script = textwrap.dedent("""
+            import sys
+            # Mix of chars that cp1252 can't encode: arrow, emoji.
+            print("em-dash \\u2014 arrow \\u2192 emoji \\U0001f680")
+            sys.exit(0)
+        """).strip()
+
+        # Build a scrubbed env the same way the sandbox does, then apply
+        # the stdio overrides.
+        scrubbed = _scrub_child_env(os.environ, is_passthrough=_no_passthrough)
+        scrubbed["PYTHONIOENCODING"] = "utf-8"
+        scrubbed["PYTHONUTF8"] = "1"
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=scrubbed,
+            capture_output=True,
+            timeout=15,
+            # Don't decode at the subprocess boundary — we want to check
+            # the raw bytes match UTF-8, same as what the sandbox does.
+        )
+        assert result.returncode == 0, (
+            f"Child crashed printing non-ASCII:\n"
+            f"  stdout (raw): {result.stdout!r}\n"
+            f"  stderr (raw): {result.stderr!r}"
+        )
+        decoded = result.stdout.decode("utf-8")
+        assert "\u2014" in decoded, f"em-dash missing from output: {decoded!r}"
+        assert "\u2192" in decoded, f"arrow missing from output: {decoded!r}"
+        assert "\U0001f680" in decoded, f"emoji missing from output: {decoded!r}"
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="cp1252 stdout default is Windows-specific",
+    )
+    def test_windows_child_without_utf8_env_would_fail(self):
+        """Negative control: spawn a Python child *without* our env
+        overrides and prove that on Windows, printing non-ASCII fails.
+        If this ever starts passing, Python has changed its default
+        stdio encoding on Windows and the fix may be obsolete — but
+        keep the env vars anyway for belt-and-suspenders."""
+        script = textwrap.dedent("""
+            import sys
+            print("em-dash \\u2014 arrow \\u2192")
+            sys.exit(0)
+        """).strip()
+
+        # Scrubbed env WITHOUT the PYTHONIOENCODING / PYTHONUTF8 overrides.
+        # Also scrub PYTHONUTF8 and PYTHONIOENCODING from the inherited
+        # env so we reproduce the buggy state even if the parent test
+        # runner has them set.
+        scrubbed = _scrub_child_env(os.environ, is_passthrough=_no_passthrough)
+        for k in ("PYTHONIOENCODING", "PYTHONUTF8", "PYTHONLEGACYWINDOWSSTDIO"):
+            scrubbed.pop(k, None)
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=scrubbed,
+            capture_output=True,
+            text=False,
+            timeout=15,
+        )
+        # Either the child crashed (expected), or modern Python handled
+        # it anyway — in which case the fix is still defensive but no
+        # longer strictly required.  Skip with a note if so.
+        if result.returncode == 0 and b"\xe2\x80\x94" in result.stdout:
+            pytest.skip(
+                "This Python/Windows build handles non-ASCII stdout even "
+                "without PYTHONIOENCODING/PYTHONUTF8 — fix is defensive "
+                "but no longer strictly load-bearing.  Keep the env vars "
+                "for older Python builds and C.ASCII-locale containers."
+            )
+        # Otherwise: crash OR garbled output — both count as proving the
+        # bug is real on this system.

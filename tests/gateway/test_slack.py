@@ -1742,8 +1742,9 @@ class TestReactions:
         }
         await adapter._handle_slack_message(event)
 
-        # _handle_slack_message should register the message for reactions
+        # _handle_slack_message should register the message and target
         assert "1234567890.000001" in adapter._reacting_message_ids
+        assert adapter._reaction_targets["1234567890.000001"] == ("C123", "1234567890.000001")
 
         # Simulate the base class calling on_processing_start
         from gateway.platforms.base import MessageEvent, MessageType, SessionSource
@@ -1764,7 +1765,7 @@ class TestReactions:
 
         add_calls = adapter._app.client.reactions_add.call_args_list
         assert len(add_calls) == 1
-        assert add_calls[0].kwargs["name"] == "eyes"
+        assert add_calls[0].kwargs["name"] == "arrows_counterclockwise"
 
         # Simulate the base class calling on_processing_complete
         from gateway.platforms.base import ProcessingOutcome
@@ -1775,10 +1776,11 @@ class TestReactions:
         assert len(add_calls) == 2
         assert add_calls[1].kwargs["name"] == "white_check_mark"
         assert len(remove_calls) == 1
-        assert remove_calls[0].kwargs["name"] == "eyes"
+        assert remove_calls[0].kwargs["name"] == "arrows_counterclockwise"
 
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids
+        assert "1234567890.000001" not in adapter._reaction_targets
 
     @pytest.mark.asyncio
     async def test_reactions_failure_outcome(self, adapter):
@@ -1795,6 +1797,8 @@ class TestReactions:
             user_id="U_USER",
         )
         adapter._reacting_message_ids.add("1234567890.000002")
+        adapter._reaction_targets["1234567890.000002"] = ("C123", "1234567890.000002")
+        adapter._status_reaction_by_target[("C123", "1234567890.000002")] = "arrows_counterclockwise"
         msg_event = MessageEvent(
             text="hello",
             message_type=MessageType.TEXT,
@@ -1806,13 +1810,14 @@ class TestReactions:
         add_calls = adapter._app.client.reactions_add.call_args_list
         remove_calls = adapter._app.client.reactions_remove.call_args_list
         assert len(add_calls) == 1
-        assert add_calls[0].kwargs["name"] == "x"
+        assert add_calls[0].kwargs["name"] == "warning"
         assert len(remove_calls) == 1
-        assert remove_calls[0].kwargs["name"] == "eyes"
+        assert remove_calls[0].kwargs["name"] == "arrows_counterclockwise"
 
     @pytest.mark.asyncio
-    async def test_reactions_skipped_for_non_dm_non_mention(self, adapter):
-        """Non-DM, non-mention messages should not get reactions."""
+    async def test_reactions_apply_to_channel_messages_without_mentions(self, adapter, monkeypatch):
+        """Handled channel messages should still get status reactions."""
+        monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
         adapter._app.client.users_info = AsyncMock(return_value={
@@ -1828,10 +1833,33 @@ class TestReactions:
         }
         await adapter._handle_slack_message(event)
 
-        # Should NOT register for reactions when not mentioned in a channel
-        assert "1234567890.000003" not in adapter._reacting_message_ids
-        adapter._app.client.reactions_add.assert_not_called()
-        adapter._app.client.reactions_remove.assert_not_called()
+        # Should register reactions even when not explicitly mentioned
+        assert "1234567890.000003" in adapter._reacting_message_ids
+        assert adapter._reaction_targets["1234567890.000003"] == ("C123", "1234567890.000003")
+
+    @pytest.mark.asyncio
+    async def test_reactions_target_thread_parent_main_post(self, adapter, monkeypatch):
+        """Thread replies should update status emoji on the thread parent/main post."""
+        monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+
+        event = {
+            "text": "hello in thread",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+            "ts": "1234567890.000010",
+            "thread_ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+
+        assert adapter._reaction_targets["1234567890.000010"] == ("C123", "1234567890.000001")
 
     @pytest.mark.asyncio
     async def test_reactions_disabled_via_env(self, adapter, monkeypatch):

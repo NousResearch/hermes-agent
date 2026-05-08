@@ -362,8 +362,14 @@ class SlackAdapter(BasePlatformAdapter):
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
-        # Track message IDs that should get reaction lifecycle (DMs / @mentions).
+        # Track message IDs that should get reaction lifecycle.
         self._reacting_message_ids: set = set()
+        # Map incoming message ts -> reaction target (channel_id, message_ts).
+        # In threads this points to the thread parent/main post; for top-level
+        # messages it points to the message itself.
+        self._reaction_targets: Dict[str, Tuple[str, str]] = {}
+        # Keep exactly one Hermes status emoji on each target message.
+        self._status_reaction_by_target: Dict[Tuple[str, str], str] = {}
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
@@ -1312,33 +1318,47 @@ class SlackAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("SLACK_REACTIONS", "true").lower() not in ("false", "0", "no")
 
+    async def _set_status_reaction(self, channel_id: str, timestamp: str, emoji: str) -> None:
+        """Ensure exactly one Hermes status emoji exists on the target message."""
+        target = (channel_id, timestamp)
+        prev = self._status_reaction_by_target.get(target)
+        if prev and prev != emoji:
+            await self._remove_reaction(channel_id, timestamp, prev)
+        if prev != emoji:
+            ok = await self._add_reaction(channel_id, timestamp, emoji)
+            if ok:
+                self._status_reaction_by_target[target] = emoji
+
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Add working status reaction when message processing begins."""
         if not self._reactions_enabled():
             return
         ts = getattr(event, "message_id", None)
         if not ts or ts not in self._reacting_message_ids:
             return
-        channel_id = getattr(event.source, "chat_id", None)
-        if channel_id:
-            await self._add_reaction(channel_id, ts, "eyes")
+        target = self._reaction_targets.get(ts)
+        if target:
+            channel_id, target_ts = target
+            await self._set_status_reaction(channel_id, target_ts, "arrows_counterclockwise")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
+        """Set final status reaction on the main post target."""
         if not self._reactions_enabled():
             return
         ts = getattr(event, "message_id", None)
         if not ts or ts not in self._reacting_message_ids:
             return
         self._reacting_message_ids.discard(ts)
-        channel_id = getattr(event.source, "chat_id", None)
-        if not channel_id:
+        target = self._reaction_targets.pop(ts, None)
+        if not target:
             return
-        await self._remove_reaction(channel_id, ts, "eyes")
+        channel_id, target_ts = target
         if outcome == ProcessingOutcome.SUCCESS:
-            await self._add_reaction(channel_id, ts, "white_check_mark")
+            await self._set_status_reaction(channel_id, target_ts, "white_check_mark")
         elif outcome == ProcessingOutcome.FAILURE:
-            await self._add_reaction(channel_id, ts, "x")
+            await self._set_status_reaction(channel_id, target_ts, "warning")
+        elif outcome == ProcessingOutcome.CANCELLED:
+            await self._set_status_reaction(channel_id, target_ts, "question")
 
     # ----- User identity resolution -----
 
@@ -2204,12 +2224,13 @@ class SlackAdapter(BasePlatformAdapter):
             auto_skill=_auto_skill,
         )
 
-        # Only react when bot is directly addressed (DM or @mention).
-        # In listen-all channels (require_mention=false), reacting to every
-        # casual message would be noisy.
-        _should_react = (is_dm or is_mentioned) and self._reactions_enabled()
-        if _should_react:
+        # Apply reaction lifecycle to all handled Slack messages. For thread
+        # replies, target the thread parent/main post; for top-level messages,
+        # target the original message.
+        if self._reactions_enabled() and ts and channel_id:
             self._reacting_message_ids.add(ts)
+            target_ts = event_thread_ts or ts
+            self._reaction_targets[ts] = (channel_id, target_ts)
 
         await self.handle_message(msg_event)
 

@@ -331,7 +331,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
-    Disabled by default — enable via security.redact_secrets: true in config.yaml.
+    Enabled by default. Disable via security.redact_secrets: false in config.yaml.
     Set force=True for safety boundaries that must never return raw secrets
     regardless of the user's global logging redaction preference.
 

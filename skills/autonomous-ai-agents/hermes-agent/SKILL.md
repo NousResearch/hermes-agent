@@ -4,6 +4,7 @@ description: "Configure, extend, or contribute to Hermes Agent."
 version: 2.1.0
 author: Hermes Agent + Teknium
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [hermes, setup, configuration, multi-agent, spawning, cli, gateway, development]

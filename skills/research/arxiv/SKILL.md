@@ -4,6 +4,7 @@ description: "Search arXiv papers by keyword, author, category, or ID."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Research, Arxiv, Papers, Academic, Science, API]

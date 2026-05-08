@@ -4,6 +4,7 @@ description: "Himalaya CLI: IMAP/SMTP email from terminal."
 version: 1.1.0
 author: community
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Email, IMAP, SMTP, CLI, Communication]

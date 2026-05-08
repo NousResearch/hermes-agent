@@ -5,6 +5,7 @@ version: 1.0.0
 author: Hermes Agent + Teknium (design systems sourced from VoltAgent/awesome-design-md)
 license: MIT
 tags: [design, css, html, ui, web-development, design-systems, templates]
+platforms: [linux, macos, windows]
 triggers:
   - build a page that looks like
   - make it look like stripe

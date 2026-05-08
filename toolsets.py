@@ -65,6 +65,8 @@ _HERMES_CORE_TOOLS = [
     # zero schema footprint. Gated via check_fn in tools/kanban_tools.py.
     "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
+    # Google Places location search (gated on GOOGLE_PLACES_API_KEY via check_fn)
+    "places_search", "places_nearby", "place_details",
 ]
 
 
@@ -210,6 +212,12 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "google_places": {
+        "description": "Google Places API (New) — text search, nearby search, and place details",
+        "tools": ["places_search", "places_nearby", "place_details"],
         "includes": []
     },
 

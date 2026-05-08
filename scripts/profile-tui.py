@@ -457,7 +457,7 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
                     break
                 time.sleep(0.1)
             else:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only script (imports pty at top)
                 os.waitpid(pid, 0)
         except (ProcessLookupError, ChildProcessError):
             pass

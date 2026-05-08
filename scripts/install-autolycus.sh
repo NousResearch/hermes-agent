@@ -279,12 +279,15 @@ install_deps
 # ============================================================================
 
 setup_path() {
-    echo -e "${CYAN}→${NC} Setting up hermes command..."
+    echo -e "${CYAN}→${NC} Setting up hermes and lycus commands..."
 
     HERMES_BIN="$REPO_DIR/venv/bin/hermes"
+    LYCUS_BIN="$REPO_DIR/venv/bin/lycus"
     mkdir -p "$HOME/.local/bin"
     ln -sf "$HERMES_BIN" "$HOME/.local/bin/hermes"
     echo -e "${GREEN}✓${NC} Symlinked hermes → ~/.local/bin/hermes"
+    ln -sf "$LYCUS_BIN" "$HOME/.local/bin/lycus"
+    echo -e "${GREEN}✓${NC} Symlinked lycus → ~/.local/bin/lycus"
 
     # Add ~/.local/bin to shell config if needed
     if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then

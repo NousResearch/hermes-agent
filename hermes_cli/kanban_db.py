@@ -1250,20 +1250,24 @@ def create_task(
             cleaned.append(name)
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
-    if idempotency_key:
+    def _existing_idempotent_task_id() -> Optional[str]:
+        if not idempotency_key:
+            return None
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
             "ORDER BY created_at DESC LIMIT 1",
             (idempotency_key,),
         ).fetchone()
-        if row:
-            return row["id"]
+        return row["id"] if row else None
+
+    # Idempotency check — return the existing task instead of creating a
+    # duplicate. Keep the fast path outside the write transaction, then
+    # repeat it after BEGIN IMMEDIATE below so concurrent creators with the
+    # same key serialize to one row instead of racing two inserts.
+    existing_id = _existing_idempotent_task_id()
+    if existing_id:
+        return existing_id
 
     now = int(time.time())
 
@@ -1272,6 +1276,10 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                existing_id = _existing_idempotent_task_id()
+                if existing_id:
+                    return existing_id
+
                 # Determine initial status from parent status, unless the
                 # caller is parking this task in triage for a specifier.
                 if triage:

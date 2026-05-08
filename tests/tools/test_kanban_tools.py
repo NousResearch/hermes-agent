@@ -332,6 +332,55 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+
+def test_create_release_manager_auto_dedupes_by_branch(worker_env):
+    """Duplicate release cards for the same implementation branch collapse."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    args = {
+        "title": "Release issue #68 admin course content persistence fix",
+        "assignee": "release-manager",
+        "body": "Source issue: #68\nImplementation branch/worktree: agent/issue-68-course-content-save at /tmp/wt\nMerge when gates pass.",
+    }
+    first = json.loads(kt._handle_create(args))
+    second = json.loads(kt._handle_create({
+        "title": "Release PR for issue #68 admin course edit-save-reload persistence",
+        "assignee": "release-manager",
+        "body": "QA passed. Branch: agent/issue-68-course-content-save\nCommit: abc123",
+    }))
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first["task_id"] == second["task_id"]
+    assert first["idempotency_key"] == "auto:release-branch-agent/issue-68-course-content-save"
+    assert second["idempotency_key"] == first["idempotency_key"]
+
+    with kb.connect() as conn:
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ?",
+            ("auto:release-branch-agent/issue-68-course-content-save",),
+        ).fetchall()
+    assert len(rows) == 1
+
+
+def test_create_non_release_cards_do_not_auto_dedupe(worker_env):
+    from tools import kanban_tools as kt
+
+    args = {
+        "title": "QA issue #68 admin course edit-save-reload persistence",
+        "assignee": "qa-eng",
+        "body": "Branch: agent/issue-68-course-content-save",
+    }
+    first = json.loads(kt._handle_create(args))
+    second = json.loads(kt._handle_create(args))
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first["task_id"] != second["task_id"]
+    assert first["idempotency_key"] is None
+    assert second["idempotency_key"] is None
+
 def test_create_rejects_no_title(worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_create({"assignee": "x"})).get("error")

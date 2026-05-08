@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
 from tools.registry import registry, tool_error
@@ -330,10 +331,7 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
-            payload = {"task_id": tid, "run_id": run.id if run else None}
-            if validation_warnings:
-                payload["validation_warnings"] = validation_warnings
-            return _ok(**payload)
+            return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
             conn.close()
     except Exception as e:
@@ -413,6 +411,37 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _release_dedupe_key_from_create_args(args: dict) -> Optional[str]:
+    """Infer a conservative release-card idempotency key.
+
+    Multi-agent Kanban workers often create release-manager cards from both
+    implementation and final QA/review gates. If neither supplies an explicit
+    idempotency_key, the board can fan out duplicate release workers that race
+    to open/merge the same PR/branch. Keep this guard narrow: release-manager
+    only, and only when the body/title exposes a PR number, branch, or issue.
+    """
+    assignee = str(args.get("assignee") or "").strip()
+    if assignee != "release-manager":
+        return None
+    text = "\n".join(str(args.get(k) or "") for k in ("title", "body"))
+    # Prefer PR number when the release card is explicitly PR-scoped.
+    m = re.search(r"(?:PR|pull request)\s*#?(\d+)", text, re.IGNORECASE)
+    if m:
+        return f"auto:release-pr-{m.group(1)}"
+    # Git branches are the next-best unique release artifact.
+    m = re.search(r"(?:Branch|Implementation branch/worktree)\s*:\s*([^\s`]+)", text, re.IGNORECASE)
+    if m:
+        branch = m.group(1).strip().strip("`.,;)")
+        if branch:
+            return f"auto:release-branch-{branch}"
+    # Fall back to issue number only for cards that are clearly release cards.
+    if re.search(r"release|merge|squash|close keyword", text, re.IGNORECASE):
+        m = re.search(r"(?:issue|fix(?:e[sd])?|close[sd]?)\s*#(\d+)", text, re.IGNORECASE)
+        if m:
+            return f"auto:release-issue-{m.group(1)}"
+    return None
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
@@ -436,6 +465,8 @@ def _handle_create(args: dict, **kw) -> str:
     workspace_path = args.get("workspace_path")
     triage = bool(args.get("triage"))
     idempotency_key = args.get("idempotency_key")
+    if not idempotency_key:
+        idempotency_key = _release_dedupe_key_from_create_args(args)
     max_runtime_seconds = args.get("max_runtime_seconds")
     skills = args.get("skills")
     if isinstance(skills, str):
@@ -477,6 +508,7 @@ def _handle_create(args: dict, **kw) -> str:
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                idempotency_key=idempotency_key,
             )
         finally:
             conn.close()

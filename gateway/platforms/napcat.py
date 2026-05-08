@@ -71,7 +71,6 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8646
 DEFAULT_PATH = "/napcat/ws"
 DEFAULT_SEND_TIMEOUT = 20.0
-DEFAULT_REPLY_FETCH_TIMEOUT = 5.0
 DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 2000
 MAX_MESSAGE_LENGTH = 4500  # OneBot has no strict cap; keep generous & chunk safely
@@ -320,7 +319,7 @@ class NapCatAdapter(BasePlatformAdapter):
 
     def _dispatch_message_event(self, event: MessageEvent) -> None:
         """Process inbound messages without blocking the websocket read loop."""
-        task = asyncio.create_task(self._handle_message_event(event))
+        task = asyncio.create_task(self.handle_message(event))
         try:
             self._background_tasks.add(task)
         except TypeError:
@@ -328,51 +327,6 @@ class NapCatAdapter(BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
-
-    async def _handle_message_event(self, event: MessageEvent) -> None:
-        await self._populate_reply_context(event)
-        await self.handle_message(event)
-
-    async def _build_message_event_with_reply_context(
-        self, payload: Dict[str, Any],
-    ) -> Optional[MessageEvent]:
-        """Build a message event and populate quoted-message text when present.
-
-        This helper is primarily for tests.  The live websocket path must not
-        await it inline from the reader loop: ``get_msg`` replies arrive on the
-        same websocket, so awaiting before returning to the loop would deadlock.
-        """
-        event = self._build_message_event(payload)
-        await self._populate_reply_context(event)
-        return event
-
-    async def _populate_reply_context(self, event: Optional[MessageEvent]) -> None:
-        """Fetch and render NapCat/OneBot quoted message content for Hermes."""
-        if event is None or not event.reply_to_message_id or event.reply_to_text:
-            return
-        try:
-            response = await self.call_action(
-                "get_msg",
-                {"message_id": self._coerce_int(event.reply_to_message_id)},
-                timeout=DEFAULT_REPLY_FETCH_TIMEOUT,
-            )
-        except Exception as exc:
-            logger.debug(
-                "[%s] failed to fetch quoted message %s: %s",
-                self.name, event.reply_to_message_id, exc,
-            )
-            return
-
-        if response.get("status") != "ok" or response.get("retcode", 0) != 0:
-            logger.debug(
-                "[%s] get_msg for quoted message %s failed: %s",
-                self.name,
-                event.reply_to_message_id,
-                response.get("message") or response.get("wording") or response,
-            )
-            return
-        data = response.get("data") if isinstance(response.get("data"), dict) else {}
-        event.reply_to_text = self._render_quoted_message(data)
 
     def _handle_meta_event(self, payload: Dict[str, Any]) -> None:
         self_id = payload.get("self_id")
@@ -537,34 +491,6 @@ class NapCatAdapter(BasePlatformAdapter):
             if marker:
                 text_parts.append(marker)
         return reply_to, " ".join(part.strip() for part in text_parts if part.strip()).strip()
-
-    @classmethod
-    def _render_quoted_message(cls, message_data: Dict[str, Any]) -> Optional[str]:
-        """Render a OneBot ``get_msg`` payload as compact quote context."""
-        if not isinstance(message_data, dict):
-            return None
-
-        raw_message = message_data.get("message")
-        if raw_message is None:
-            raw_message = message_data.get("raw_message")
-        segments = cls._normalize_segments(raw_message)
-        _, text = cls._extract_reply_and_text(segments)
-        if not text:
-            return None
-
-        sender = (
-            message_data.get("sender")
-            if isinstance(message_data.get("sender"), dict)
-            else {}
-        )
-        sender_name = (
-            str(sender.get("card") or "").strip()
-            or str(sender.get("nickname") or "").strip()
-            or str(sender.get("user_id") or message_data.get("user_id") or "").strip()
-        )
-        if sender_name:
-            return f"[{sender_name}] {text}"
-        return text
 
     def _strip_self_mention(self, segments: List[Dict[str, Any]]):
         """Return (mentioned, cleaned_text) with the @self_id segment removed.

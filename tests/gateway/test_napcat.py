@@ -245,51 +245,6 @@ class TestExtractReplyAndText:
         assert "@12345" in text
         assert "ping" in text
 
-    def test_build_message_event_populates_reply_to_text_from_get_msg(self):
-        adapter = _make_adapter()
-        adapter._mark_connected()
-        adapter._self_id = "3574568714"
-
-        async def fake_call_action(action, params, *, timeout=None):
-            assert action == "get_msg"
-            assert params == {"message_id": 12345}
-            return {
-                "status": "ok",
-                "retcode": 0,
-                "data": {
-                    "message_id": 12345,
-                    "sender": {"card": "迷茫喵", "nickname": "cat"},
-                    "message": [
-                        {"type": "text", "data": {"text": "看这张"}},
-                        {"type": "image", "data": {"file": "quoted_img_abc"}},
-                    ],
-                },
-            }
-
-        adapter.call_action = fake_call_action
-        event = _run(
-            adapter._build_message_event_with_reply_context(
-                {
-                    "post_type": "message",
-                    "message_type": "group",
-                    "message_id": 67890,
-                    "group_id": 977185513,
-                    "user_id": 508075486,
-                    "sender": {"card": "霖"},
-                    "message": [
-                        {"type": "reply", "data": {"id": "12345"}},
-                        {"type": "at", "data": {"qq": "3574568714"}},
-                        {"type": "text", "data": {"text": "识别一下这张图片"}},
-                    ],
-                }
-            )
-        )
-
-        assert event is not None
-        assert event.text == "识别一下这张图片"
-        assert event.reply_to_message_id == "12345"
-        assert event.reply_to_text == "[迷茫喵] 看这张 [图片:quoted_img_abc]"
-
 
 # ---------------------------------------------------------------------------
 # _strip_self_mention — group chat gating

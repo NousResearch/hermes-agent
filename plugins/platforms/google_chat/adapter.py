@@ -1010,13 +1010,25 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 + (sender_email or "unknown").replace("@", "_at_").replace(".", "_")
             )
             text = envelope.get("text", "") or ""
+            # Honor the relay's declared sender_type when present so the
+            # downstream BOT self-filter (sender_type == "BOT") fires for
+            # bot-originated messages forwarded by the relay. Hardcoding
+            # "HUMAN" here meant the bot would re-process its own replies
+            # if the relay forwarded them, and allowed a relay envelope to
+            # impersonate any allowlisted user without ever being marked
+            # as a bot. Default to "HUMAN" for backward compatibility when
+            # the relay does not provide the field.
+            sender_type_raw = (envelope.get("sender_type") or "HUMAN")
+            sender_type = str(sender_type_raw).strip().upper() or "HUMAN"
+            if sender_type not in {"HUMAN", "BOT"}:
+                sender_type = "HUMAN"
             msg: Dict[str, Any] = {
                 "name": envelope.get("message_name", "") or "",
                 "sender": {
                     "name": sender_name_surrogate,
                     "email": sender_email,
                     "displayName": sender_display,
-                    "type": "HUMAN",
+                    "type": sender_type,
                 },
                 "text": text,
                 "argumentText": text,

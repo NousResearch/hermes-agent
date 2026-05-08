@@ -1848,9 +1848,20 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 
 
 def _bind_prompt_submit_keys(kb, handler) -> None:
-    """Bind both CR and LF terminal Enter forms to the submit handler."""
-    for key in ("enter", "c-j"):
-        kb.add(key)(handler)
+    """Bind terminal Enter forms to the submit handler.
+
+    Enter is always submit. On POSIX we also bind c-j (LF) to submit because
+    some thin PTYs (docker exec, certain SSH flavors) deliver Enter as LF
+    instead of CR — without this, Enter appears dead on those terminals.
+
+    On Windows, Windows Terminal delivers Ctrl+Enter as a distinct c-j key
+    while plain Enter is c-m, so we leave c-j unbound here — it becomes the
+    multi-line newline keystroke, giving Windows users an Enter-involving
+    newline without any terminal settings changes.
+    """
+    kb.add("enter")(handler)
+    if sys.platform != "win32":
+        kb.add("c-j")(handler)
 
 
 def _disable_prompt_toolkit_cpr_warning(app) -> None:
@@ -10727,8 +10738,29 @@ class HermesCLI:
         
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
-            """Alt+Enter inserts a newline for multi-line input."""
+            """Alt+Enter inserts a newline for multi-line input.
+
+            Works on mac/Linux/WSL. On Windows Terminal this keystroke is
+            intercepted at the terminal layer (toggles fullscreen) and never
+            reaches here — Windows users get newline via Ctrl+Enter instead
+            (bound below as c-j, since WT delivers Ctrl+Enter as LF).
+            """
             event.current_buffer.insert_text('\n')
+
+        if sys.platform == "win32":
+            @kb.add('c-j')
+            def handle_ctrl_enter_newline_windows(event):
+                """Ctrl+Enter inserts a newline on Windows.
+
+                Windows Terminal delivers Ctrl+Enter as LF (c-j), distinct
+                from plain Enter (c-m). This binding makes Ctrl+Enter the
+                Windows equivalent of Alt+Enter, giving an Enter-involving
+                newline keystroke without requiring terminal settings changes.
+                Ctrl+J (the raw LF keystroke) also triggers this by virtue
+                of being the same key code — a harmless side effect since
+                Ctrl+J has no conflicting Hermes binding.
+                """
+                event.current_buffer.insert_text('\n')
 
         # VSCode/Cursor bind Ctrl+G to "Find Next" at the editor level, so
         # the keystroke never reaches the embedded terminal. Alt+G is unbound

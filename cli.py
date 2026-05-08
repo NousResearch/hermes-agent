@@ -9,9 +9,12 @@ Usage:
     python cli.py                          # Start interactive mode with all tools
     python cli.py --toolsets web,terminal  # Start with specific toolsets
     python cli.py --skills hermes-agent-dev,github-auth
-    python cli.py -q "your question"       # Single query mode
     python cli.py --list-tools             # List available tools and exit
 """
+
+# IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
+# on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
+import hermes_bootstrap  # noqa: F401
 
 import logging
 import os

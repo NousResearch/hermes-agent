@@ -20,6 +20,10 @@ Usage:
     response = agent.run_conversation("Tell me about the latest Python updates")
 """
 
+# IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
+# on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
+import hermes_bootstrap  # noqa: F401
+
 import asyncio
 import base64
 import concurrent.futures

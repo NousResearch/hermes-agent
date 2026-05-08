@@ -43,6 +43,11 @@ Usage:
     hermes claw migrate --dry-run  # Preview migration without changes
 """
 
+# IMPORTANT: hermes_bootstrap must be the very first import — it sets up
+# UTF-8 stdio on Windows so print()/subprocess children don't hit
+# UnicodeEncodeError with non-ASCII characters.  No-op on POSIX.
+import hermes_bootstrap  # noqa: F401
+
 import argparse
 import json
 import os

@@ -19,5 +19,16 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // React Hooks 7 enables React Compiler readiness rules in its recommended
+      // config. The dashboard is not compiler-gated yet, and legacy pages use
+      // common runtime-safe patterns that those rules flag as migration work.
+      // Keep them visible as warnings without blocking ordinary lint cleanup.
+      'react-hooks/refs': 'warn',
+      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/preserve-manual-memoization': 'warn',
+      'react-hooks/static-components': 'warn',
+      'react-refresh/only-export-components': 'warn',
+    },
   },
 ])

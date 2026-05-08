@@ -810,7 +810,6 @@ export default function EnvPage() {
 /* ------------------------------------------------------------------ */
 
 function CollapsibleUnset({
-  category: _category,
   unsetEntries,
   edits,
   setEdits,

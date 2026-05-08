@@ -1,0 +1,32 @@
+name: clickhouse
+description: >
+  Multi-tenant memory provider backed by ClickHouse. Stores conversational
+  memory with PARTITION BY user_id for full data isolation. LLM annotates
+  at write time (topic, importance, frequency). Replaces the storage
+  zoo (hipporag, chromadb, embeddings) with a single columnar database.
+  Supports prefetch by importance*frequency, full-text search via
+  tokenbf_v1, TTL-based forgetting, and importance decay cron.
+
+version: 1.0.0
+author: Hermes Agent
+requirements:
+  - clickhouse-connect>=0.8.0
+config:
+  host:
+    description: ClickHouse server hostname
+    default: localhost
+  port:
+    description: ClickHouse HTTP port
+    default: 8123
+  user:
+    description: ClickHouse username
+    default: default
+  database:
+    description: ClickHouse database name
+    default: hermes_memory
+  ttl_days:
+    description: Days to keep memory before auto-deletion
+    default: 30
+  max_prefetch:
+    description: Max records returned by prefetch
+    default: 50

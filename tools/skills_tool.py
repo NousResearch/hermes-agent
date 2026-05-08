@@ -996,10 +996,20 @@ def skill_view(
                 elif categorized_path.with_suffix(".md").exists():
                     _record(None, categorized_path.with_suffix(".md"))
 
-            # Strategy 2: recursive by directory name (catches nested skills
-            # like "foundations/runtime/explore-codebase" called by bare name).
+            # Strategy 2: recursive by directory name OR frontmatter name
+            # (catches nested skills like "foundations/runtime/explore-codebase"
+            # called by bare name, and skills whose directory slug differs from
+            # the YAML `name:` exposed by skills_list()).
             for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                 if found_skill_md.parent.name == name:
+                    _record(found_skill_md.parent, found_skill_md)
+                    continue
+                try:
+                    fm_content = found_skill_md.read_text(encoding="utf-8")[:4000]
+                    fm, _ = _parse_frontmatter(fm_content)
+                except Exception:
+                    fm = {}
+                if str(fm.get("name", ""))[:MAX_NAME_LENGTH] == name:
                     _record(found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.

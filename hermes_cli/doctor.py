@@ -1528,6 +1528,36 @@ def run_doctor(args):
             check_warn(f"{_active_memory_provider} check failed", str(_e))
 
     # =========================================================================
+    # Memory Store (built-in HRR holographic store)
+    # =========================================================================
+    print()
+    print(color("◆ Memory Store", Colors.CYAN, Colors.BOLD))
+    try:
+        from plugins.memory.holographic.doctor import check_memory_health
+        _mem_db = HERMES_HOME / "memory_store.db"
+        if not _mem_db.exists():
+            check_info("memory_store.db not yet created (built up on first fact)")
+        else:
+            _report = check_memory_health(db_path=str(_mem_db))
+            for _c in _report["checks"]:
+                _name = _c["name"]
+                _status = _c["status"]
+                _detail = _c.get("detail", "")
+                if _status == "ok":
+                    check_ok(_name, _detail)
+                elif _status == "warn":
+                    check_warn(_name, _detail)
+                    issues.append(f"memory_store {_name}: {_detail}")
+                else:
+                    check_fail(_name, _detail)
+                    issues.append(f"memory_store {_name}: {_detail}")
+            check_info(f"checks ran in {_report['elapsed_ms']}ms")
+    except ImportError as _e:
+        check_warn("Memory store doctor unavailable", str(_e))
+    except Exception as _e:
+        check_warn("Memory store check failed", str(_e))
+
+    # =========================================================================
     # Profiles
     # =========================================================================
     try:

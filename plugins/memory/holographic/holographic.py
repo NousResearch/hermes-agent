@@ -142,8 +142,18 @@ def encode_fact(content: str, entities: list[str], dim: int = 1024) -> "np.ndarr
     2. For each entity: bind(encode_atom(entity.lower(), dim), encode_atom("__hrr_role_entity__", dim))
     3. bundle all components together
 
-    This enables algebraic extraction:
-        unbind(fact, bind(entity, ROLE_ENTITY)) ≈ content_vector
+    Retrieval algebra (the only pattern that composes with phase-only bundle):
+        residual = unbind(fact, ROLE_ENTITY)        # recover entity slot
+        sim      = similarity(residual, entity_atom) # is entity present?
+
+    Unbinding by a role atom recovers the value bound to that role plus
+    bundle-capacity noise from the other components. Cosine similarity
+    against the candidate entity's atom measures structural presence.
+
+    Do NOT use ``unbind(fact, bind(entity, ROLE_ENTITY))`` to "recover the
+    content side" — phase-only ``bundle`` is non-linear (angle of complex
+    sum), so subtracting one summand does not recover the others. That
+    pattern returns noise, not signal.
     """
     _require_numpy()
 

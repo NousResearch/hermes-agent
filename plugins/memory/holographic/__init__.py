@@ -17,6 +17,7 @@ Config in $HERMES_HOME/config.yaml (profile-scoped):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -29,6 +30,133 @@ from .retrieval import FactRetriever
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Entity allowlist canonicalization
+# ---------------------------------------------------------------------------
+
+def _build_canonicalizer(allowlist: list):
+    """Compile a callable str -> str that rewrites alias spans to canonical
+    names. Hyphens and spaces are interchangeable in matching; matching is
+    case-insensitive. Returns (callable | None, list[str] of canonical names).
+
+    Longer aliases are matched first (so "L-Charge" wins over "Charge").
+    """
+    if not allowlist:
+        return None, []
+
+    pairs: list[tuple[str, str]] = []  # (alias_pattern, canonical)
+    canonicals: list[str] = []
+
+    for entry in allowlist:
+        canonical = (entry.get("canonical") or "").strip()
+        if not canonical:
+            continue
+        canonicals.append(canonical)
+        terms = list({canonical, *(entry.get("aliases") or [])})
+        for term in terms:
+            term = term.strip()
+            if not term:
+                continue
+            # Make hyphen and whitespace interchangeable inside the pattern.
+            # First escape, then replace escaped hyphens / spaces / underscores.
+            escaped = re.escape(term)
+            flexible = re.sub(r"(\\-|\\\s|\s|_)+", r"[-\\s_]*", escaped)
+            pairs.append((flexible, canonical))
+
+    if not pairs:
+        return None, canonicals
+
+    # Sort by length of the original term, longest first, so "L-Charge" beats "Charge".
+    pairs.sort(key=lambda p: len(p[0]), reverse=True)
+    big_pattern = "(?<!\\w)(?:" + "|".join(p[0] for p in pairs) + ")(?!\\w)"
+    pat = re.compile(big_pattern, re.IGNORECASE)
+
+    # Build a per-pair lookup: lower(normalized) -> canonical
+    lookup: dict[str, str] = {}
+    for entry in allowlist:
+        canonical = (entry.get("canonical") or "").strip()
+        if not canonical:
+            continue
+        for term in [canonical, *(entry.get("aliases") or [])]:
+            t = term.strip()
+            if not t:
+                continue
+            key = re.sub(r"[-\s_]+", "", t.lower())
+            lookup[key] = canonical
+
+    def canonicalize(text: str) -> str:
+        if not text:
+            return text
+        def _sub(m: re.Match) -> str:
+            hit = m.group(0)
+            key = re.sub(r"[-\s_]+", "", hit.lower())
+            return lookup.get(key, hit)
+        return pat.sub(_sub, text)
+
+    return canonicalize, canonicals
+
+
+# ---------------------------------------------------------------------------
+# Sentence-level signal extraction (mirrors scripts/extract_from_state_db.py)
+# ---------------------------------------------------------------------------
+# Replaces the original 5-pattern whole-message extractor with the same
+# entity-anchored sentence logic the bulk extractor used to produce the
+# initial 504-fact corpus. Keeps fact quality consistent across ingest paths.
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"\'\$\d])")
+_SIGNAL_PATTERNS = [
+    re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?"),
+    re.compile(r"\b\d+(?:\.\d+)?\s?%"),
+    re.compile(r"\b(?:Q[1-4]|FY|20\d{2}|'?2[0-9])\b"),
+    re.compile(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d", re.IGNORECASE),
+]
+_VERB_PATTERNS = [
+    re.compile(r"\b(?:is|are|was|were|owns|owned|runs|operates|uses|needs|requires|provides|"
+               r"signed|drafted|closed|owes|holds|controls|tracks|manages|builds?|builds?\s+up|"
+               r"reported|disclosed|filed|paid|received|issued|wrote\s+off|reclassif(?:ied|ies))\b",
+               re.IGNORECASE),
+]
+_USER_PREF_PATTERNS = [
+    re.compile(r"\bI\s+(?:prefer|like|want|need|use|always|never|usually|don't)\b", re.IGNORECASE),
+    re.compile(r"\b(?:my|our)\s+(?:favorite|preferred|default|policy|rule)\b", re.IGNORECASE),
+    re.compile(r"\bwe\s+(?:decided|agreed|chose|use|prefer|need|don't|won't)\b", re.IGNORECASE),
+]
+
+
+def _split_sentences(text: str) -> list[str]:
+    text = text.replace("\n", " ").strip()
+    if not text:
+        return []
+    return [p.strip() for p in _SENTENCE_SPLIT.split(text) if p.strip()]
+
+
+def _classify_sentence(sentence: str, known_entities_re) -> tuple[bool, str]:
+    """(keep, category). Mirrors is_signal_sentence in extract_from_state_db.py."""
+    s = sentence.strip()
+    if len(s) < 25 or len(s) > 500:
+        return False, ""
+    has_entity = bool(known_entities_re and known_entities_re.search(s))
+    has_signal = any(p.search(s) for p in _SIGNAL_PATTERNS)
+    has_verb = any(p.search(s) for p in _VERB_PATTERNS)
+    if any(p.search(s) for p in _USER_PREF_PATTERNS):
+        return True, "user_pref"
+    if has_entity and (has_verb or has_signal):
+        return True, "general"
+    if has_signal and has_verb and ("Apollo" in s or "ATI" in s):
+        return True, "general"
+    return False, ""
+
+
+def _build_known_entities_re(known_entities: list[str]):
+    if not known_entities:
+        return None
+    sorted_names = sorted(set(known_entities), key=len, reverse=True)
+    return re.compile(
+        r"(?<!\w)(" + "|".join(re.escape(n) for n in sorted_names) + r")(?!\w)",
+        re.IGNORECASE,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -170,15 +298,73 @@ class HolographicMemoryProvider(MemoryProvider):
         hrr_dim = int(self._config.get("hrr_dim", 1024))
         hrr_weight = float(self._config.get("hrr_weight", 0.3))
         temporal_decay = int(self._config.get("temporal_decay_half_life", 0))
+        decay_by_category = self._config.get("decay_half_life_by_category") or {}
+        reinforce_on_retrieval = bool(self._config.get("reinforce_on_retrieval", True))
 
-        self._store = MemoryStore(db_path=db_path, default_trust=default_trust, hrr_dim=hrr_dim)
+        # Entity allowlist canonicalization (config-driven).
+        allowlist = self._config.get("entity_allowlist") or []
+        canonicalizer, known_entities = _build_canonicalizer(allowlist)
+        self._known_entities_re = _build_known_entities_re(known_entities)
+
+        self._store = MemoryStore(
+            db_path=db_path,
+            default_trust=default_trust,
+            hrr_dim=hrr_dim,
+            canonicalizer=canonicalizer,
+            known_entities=known_entities,
+        )
         self._retriever = FactRetriever(
             store=self._store,
             temporal_decay_half_life=temporal_decay,
+            decay_half_life_by_category=decay_by_category,
+            reinforce_on_retrieval=reinforce_on_retrieval,
             hrr_weight=hrr_weight,
             hrr_dim=hrr_dim,
         )
         self._session_id = session_id
+
+        # Seed canonical entity rows + aliases so probes by alias resolve correctly.
+        if allowlist:
+            try:
+                self._store.seed_canonical_entities(allowlist)
+            except Exception as e:
+                logger.warning("seed_canonical_entities failed: %s", e)
+
+        # One-time re-extraction over existing facts (idempotent via hash marker).
+        if self._config.get("re_extract_on_startup") and canonicalizer is not None:
+            try:
+                self._maybe_re_extract(allowlist, canonicalizer)
+            except Exception as e:
+                logger.warning("re_extract_on_startup failed: %s", e)
+
+    def _maybe_re_extract(self, allowlist: list, canonicalizer) -> None:
+        """If the allowlist hash differs from what we last processed, run a
+        canonicalization pass over every existing fact. No-op otherwise.
+
+        When `review_window_days` is set in config, the pass is scoped to facts
+        updated within that window — keeps startup cheap once the corpus
+        stabilizes. Trade: older facts won't retroactively pick up new aliases.
+        """
+        if self._store is None:
+            return
+        digest = hashlib.sha256(
+            json.dumps(allowlist, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        last = self._store.get_state("canonicalization_hash")
+        if last == digest:
+            logger.info("Holographic: canonicalization already current (hash %s...)", digest[:8])
+            return
+        review_days = int(self._config.get("review_window_days", 0) or 0)
+        summary = self._store.canonicalize_existing_facts(
+            canonicalizer, since_days=review_days if review_days > 0 else None
+        )
+        self._store.set_state("canonicalization_hash", digest)
+        scope = f"last {review_days}d" if review_days > 0 else "all facts"
+        logger.info(
+            "Holographic: re-extracted facts under new allowlist (%s) — "
+            "changed=%d merged=%d skipped=%d (new hash %s...)",
+            scope, summary["changed"], summary["merged"], summary["skipped"], digest[:8],
+        )
 
     def system_prompt_block(self) -> str:
         if not self._store:
@@ -357,44 +543,39 @@ class HolographicMemoryProvider(MemoryProvider):
     # -- Auto-extraction (on_session_end) ------------------------------------
 
     def _auto_extract_facts(self, messages: list) -> None:
-        _PREF_PATTERNS = [
-            re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
-            re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
-            re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
-        ]
-        _DECISION_PATTERNS = [
-            re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
-            re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
-        ]
+        """Extract entity-anchored, signal-bearing sentences from user messages.
 
+        Quality bar matches scripts/extract_from_state_db.py: per-sentence (not
+        per-message) extraction with $/% / date / verb / user-pref filters and
+        an entity-anchor requirement for non-pref sentences. Truncated to 400.
+        """
+        if self._store is None:
+            return
         extracted = 0
+        seen_in_session: set[str] = set()
         for msg in messages:
             if msg.get("role") != "user":
                 continue
             content = msg.get("content", "")
-            if not isinstance(content, str) or len(content) < 10:
+            if not isinstance(content, str) or len(content) < 25:
                 continue
-
-            for pattern in _PREF_PATTERNS:
-                if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="user_pref")
-                        extracted += 1
-                    except Exception:
-                        pass
-                    break
-
-            for pattern in _DECISION_PATTERNS:
-                if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="project")
-                        extracted += 1
-                    except Exception:
-                        pass
-                    break
-
+            for sentence in _split_sentences(content):
+                keep, category = _classify_sentence(sentence, self._known_entities_re)
+                if not keep:
+                    continue
+                fact_text = sentence[:400].strip()
+                if fact_text in seen_in_session:
+                    continue
+                seen_in_session.add(fact_text)
+                try:
+                    self._store.add_fact(fact_text, category=category, tags="auto_extract")
+                    extracted += 1
+                except Exception:
+                    # add_fact raises on UNIQUE collisions with prior facts;
+                    # that's the deduplication working as intended.
+                    pass
         if extracted:
-            logger.info("Auto-extracted %d facts from conversation", extracted)
+            logger.info("Auto-extracted %d signal sentences from conversation", extracted)
 
 
 # ---------------------------------------------------------------------------

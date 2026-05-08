@@ -6,9 +6,12 @@ Jaccard similarity reranking and trust-weighted scoring.
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .store import MemoryStore
@@ -25,7 +28,9 @@ class FactRetriever:
     def __init__(
         self,
         store: MemoryStore,
-        temporal_decay_half_life: int = 0,  # days, 0 = disabled
+        temporal_decay_half_life: int = 0,  # days, 0 = disabled — fallback for unknown categories
+        decay_half_life_by_category: "dict[str, int] | None" = None,
+        reinforce_on_retrieval: bool = True,
         fts_weight: float = 0.4,
         jaccard_weight: float = 0.3,
         hrr_weight: float = 0.3,
@@ -33,6 +38,8 @@ class FactRetriever:
     ):
         self.store = store
         self.half_life = temporal_decay_half_life
+        self.half_life_by_category = dict(decay_half_life_by_category or {})
+        self.reinforce_on_retrieval = reinforce_on_retrieval
         self.hrr_dim = hrr_dim
 
         # Auto-redistribute weights if numpy unavailable
@@ -80,13 +87,17 @@ class FactRetriever:
             jaccard = self._jaccard_similarity(query_tokens, all_tokens)
             fts_score = fact.get("fts_rank", 0.0)
 
-            # HRR similarity
+            # HRR similarity. The fact's vector binds content tokens to
+            # role_content; unbind that role to recover the bare token bundle,
+            # then compare against the query bundle. Bare-vs-bare similarity.
             if self.hrr_weight > 0 and fact.get("hrr_vector"):
                 fact_vec = hrr.bytes_to_phases(fact["hrr_vector"])
                 query_vec = hrr.encode_text(query, self.hrr_dim)
-                hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0  # shift to [0,1]
+                role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
+                content_residual = hrr.unbind(fact_vec, role_content)
+                hrr_sim = max(hrr.similarity(query_vec, content_residual), 0.0)
             else:
-                hrr_sim = 0.5  # neutral
+                hrr_sim = 0.0
 
             # Combine FTS5 + Jaccard + HRR
             relevance = (self.fts_weight * fts_score
@@ -94,11 +105,14 @@ class FactRetriever:
                         + self.hrr_weight * hrr_sim)
 
             # Trust weighting
-            score = relevance * fact["trust_score"]
+            score = relevance * self._reinforced_trust(fact)
 
-            # Optional temporal decay
-            if self.half_life > 0:
-                score *= self._temporal_decay(fact.get("updated_at") or fact.get("created_at"))
+            # Optional temporal decay (per-category half-life if configured)
+            if self.half_life > 0 or self.half_life_by_category:
+                score *= self._temporal_decay(
+                    fact.get("updated_at") or fact.get("created_at"),
+                    fact.get("category"),
+                )
 
             fact["score"] = score
             scored.append(fact)
@@ -109,6 +123,7 @@ class FactRetriever:
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
+        self._reinforce_facts([f["fact_id"] for f in results])
         return results
 
     def probe(
@@ -119,39 +134,24 @@ class FactRetriever:
     ) -> list[dict]:
         """Compositional entity query using HRR algebra.
 
-        Unbinds entity from memory bank to extract associated content.
-        This is NOT keyword search — it uses algebraic structure to find facts
-        where the entity plays a structural role.
+        encode_fact bundles each linked entity as ``bind(entity_atom, role_entity)``.
+        To recover entity presence: unbind the fact vector by ``role_entity``
+        alone, which yields ``entity_atom + bundle_noise``. Cosine similarity
+        against the queried entity's atom measures structural presence.
 
         Falls back to FTS5 search if numpy unavailable.
         """
+        # Resolve aliases (e.g. "Charge" → "L-Charge") before any encoding
+        # so probes by alias hash to the same vector as the canonical.
+        canonical = self.store.resolve_alias_to_canonical(entity)
+
         if not hrr._HAS_NUMPY:
-            # Fallback to keyword search on entity name
-            return self.search(entity, category=category, limit=limit)
+            return self.search(canonical, category=category, limit=limit)
 
         conn = self.store._conn
-
-        # Encode entity as role-bound vector
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
-        entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
-        probe_key = hrr.bind(entity_vec, role_entity)
+        target_atom = hrr.encode_atom(canonical.lower(), self.hrr_dim)
 
-        # Try category-specific bank first, then all facts
-        if category:
-            bank_name = f"cat:{category}"
-            bank_row = conn.execute(
-                "SELECT vector FROM memory_banks WHERE bank_name = ?",
-                (bank_name,),
-            ).fetchone()
-            if bank_row:
-                bank_vec = hrr.bytes_to_phases(bank_row["vector"])
-                extracted = hrr.unbind(bank_vec, probe_key)
-                # Use extracted signal to score individual facts
-                return self._score_facts_by_vector(
-                    extracted, category=category, limit=limit
-                )
-
-        # Score against individual fact vectors directly
         where = "WHERE hrr_vector IS NOT NULL"
         params: list = []
         if category:
@@ -161,7 +161,7 @@ class FactRetriever:
         rows = conn.execute(
             f"""
             SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at,
+                   helpful_count, created_at, updated_at,
                    hrr_vector
             FROM facts
             {where}
@@ -170,24 +170,21 @@ class FactRetriever:
         ).fetchall()
 
         if not rows:
-            # Final fallback: keyword search
             return self.search(entity, category=category, limit=limit)
 
         scored = []
         for row in rows:
             fact = dict(row)
             fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
-            # Unbind probe key from fact to see if entity is structurally present
-            residual = hrr.unbind(fact_vec, probe_key)
-            # Compare residual against content signal
-            role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
-            content_vec = hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)
-            sim = hrr.similarity(residual, content_vec)
-            fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
+            residual = hrr.unbind(fact_vec, role_entity)
+            sim = hrr.similarity(residual, target_atom)
+            fact["score"] = max(sim, 0.0) * self._reinforced_trust(fact)
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._reinforce_facts([f["fact_id"] for f in results])
+        return results
 
     def related(
         self,
@@ -195,23 +192,25 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Discover facts that share structural connections with an entity.
+        """Find facts where the entity appears in the entity slot OR content slot.
 
-        Unlike probe (which finds facts *about* an entity), related finds
-        facts that are connected through shared context — e.g., other entities
-        mentioned alongside this one, or content that overlaps structurally.
+        Unlike ``probe`` which only checks the role_entity slot, ``related``
+        also recovers the role_content slot and checks whether the queried
+        entity's atom appears in the bundled content tokens — i.e., entities
+        mentioned in content but not extracted as structural entities.
 
         Falls back to FTS5 search if numpy unavailable.
         """
+        canonical = self.store.resolve_alias_to_canonical(entity)
+
         if not hrr._HAS_NUMPY:
-            return self.search(entity, category=category, limit=limit)
+            return self.search(canonical, category=category, limit=limit)
 
         conn = self.store._conn
+        role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
+        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
+        target_atom = hrr.encode_atom(canonical.lower(), self.hrr_dim)
 
-        # Encode entity as a bare atom (not role-bound — we want ANY structural match)
-        entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
-
-        # Get all facts with vectors
         where = "WHERE hrr_vector IS NOT NULL"
         params: list = []
         if category:
@@ -221,7 +220,7 @@ class FactRetriever:
         rows = conn.execute(
             f"""
             SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at,
+                   helpful_count, created_at, updated_at,
                    hrr_vector
             FROM facts
             {where}
@@ -232,30 +231,23 @@ class FactRetriever:
         if not rows:
             return self.search(entity, category=category, limit=limit)
 
-        # Score each fact by how much the entity's atom appears in its vector
-        # This catches both role-bound entity matches AND content word matches
         scored = []
         for row in rows:
             fact = dict(row)
             fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
-
-            # Check structural similarity: unbind entity from fact
-            residual = hrr.unbind(fact_vec, entity_vec)
-            # A high-similarity residual to ANY known role vector means this entity
-            # plays a structural role in the fact
-            role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
-            role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
-
-            entity_role_sim = hrr.similarity(residual, role_entity)
-            content_role_sim = hrr.similarity(residual, role_content)
-            # Take the max — entity could appear in either role
-            best_sim = max(entity_role_sim, content_role_sim)
-
-            fact["score"] = (best_sim + 1.0) / 2.0 * fact["trust_score"]
+            residual_entity = hrr.unbind(fact_vec, role_entity)
+            residual_content = hrr.unbind(fact_vec, role_content)
+            sim = max(
+                hrr.similarity(residual_entity, target_atom),
+                hrr.similarity(residual_content, target_atom),
+            )
+            fact["score"] = max(sim, 0.0) * self._reinforced_trust(fact)
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._reinforce_facts([f["fact_id"] for f in results])
+        return results
 
     def reason(
         self,
@@ -263,34 +255,30 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Multi-entity compositional query — vector-space JOIN.
+        """Multi-entity compositional query — vector-space JOIN with AND-semantics.
 
-        Given multiple entities, algebraically intersects their structural
-        connections to find facts related to ALL of them simultaneously.
-        This is compositional reasoning that no embedding DB can do.
+        Returns facts where all queried entities appear in the role_entity slot.
+        Per-entity similarity uses the same Strategy A as ``probe`` (unbind by
+        ``role_entity``, sim against the entity atom). The fact's score is
+        ``min(per_entity_sims)`` so a fact only ranks high if every queried
+        entity is structurally present.
 
-        Example: reason(["peppi", "backend"]) finds facts where peppi AND
-        backend both play structural roles — without keyword matching.
+        Tradeoff: at high bundle-N (many entities per fact), even a present
+        entity's sim can be depressed by capacity noise. ``min`` is harsh but
+        principled. If practice shows false negatives, swap for a soft-AND
+        (e.g. mean − k·std) without changing the underlying recovery.
 
         Falls back to FTS5 search if numpy unavailable.
         """
-        if not hrr._HAS_NUMPY or not entities:
-            # Fallback: search with all entities as keywords
-            query = " ".join(entities)
-            return self.search(query, category=category, limit=limit)
+        canonicals = [self.store.resolve_alias_to_canonical(e) for e in entities]
+
+        if not hrr._HAS_NUMPY or not canonicals:
+            return self.search(" ".join(canonicals), category=category, limit=limit)
 
         conn = self.store._conn
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
+        target_atoms = [hrr.encode_atom(c.lower(), self.hrr_dim) for c in canonicals]
 
-        # For each entity, compute what the bank "remembers" about it
-        # by unbinding entity+role from each fact vector
-        entity_residuals = []
-        for entity in entities:
-            entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
-            probe_key = hrr.bind(entity_vec, role_entity)
-            entity_residuals.append(probe_key)
-
-        # Get all facts with vectors
         where = "WHERE hrr_vector IS NOT NULL"
         params: list = []
         if category:
@@ -300,7 +288,7 @@ class FactRetriever:
         rows = conn.execute(
             f"""
             SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at,
+                   helpful_count, created_at, updated_at,
                    hrr_vector
             FROM facts
             {where}
@@ -309,31 +297,21 @@ class FactRetriever:
         ).fetchall()
 
         if not rows:
-            query = " ".join(entities)
-            return self.search(query, category=category, limit=limit)
-
-        # Score each fact by how much EACH entity is structurally present.
-        # A fact scores high only if ALL entities have structural presence
-        # (AND semantics via min, vs OR which would use mean/max).
-        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
+            return self.search(" ".join(canonicals), category=category, limit=limit)
 
         scored = []
         for row in rows:
             fact = dict(row)
             fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
-
-            entity_scores = []
-            for probe_key in entity_residuals:
-                residual = hrr.unbind(fact_vec, probe_key)
-                sim = hrr.similarity(residual, role_content)
-                entity_scores.append(sim)
-
-            min_sim = min(entity_scores)
-            fact["score"] = (min_sim + 1.0) / 2.0 * fact["trust_score"]
+            residual = hrr.unbind(fact_vec, role_entity)
+            sim = min(hrr.similarity(residual, atom) for atom in target_atoms)
+            fact["score"] = max(sim, 0.0) * self._reinforced_trust(fact)
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._reinforce_facts([f["fact_id"] for f in results])
+        return results
 
     def contradict(
         self,
@@ -441,43 +419,6 @@ class FactRetriever:
         contradictions.sort(key=lambda x: x["contradiction_score"], reverse=True)
         return contradictions[:limit]
 
-    def _score_facts_by_vector(
-        self,
-        target_vec: "np.ndarray",
-        category: str | None = None,
-        limit: int = 10,
-    ) -> list[dict]:
-        """Score facts by similarity to a target vector."""
-        conn = self.store._conn
-
-        where = "WHERE hrr_vector IS NOT NULL"
-        params: list = []
-        if category:
-            where += " AND category = ?"
-            params.append(category)
-
-        rows = conn.execute(
-            f"""
-            SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at,
-                   hrr_vector
-            FROM facts
-            {where}
-            """,
-            params,
-        ).fetchall()
-
-        scored = []
-        for row in rows:
-            fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
-            sim = hrr.similarity(target_vec, fact_vec)
-            fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
-            scored.append(fact)
-
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
-
     def _fts_candidates(
         self,
         query: str,
@@ -566,12 +507,47 @@ class FactRetriever:
         union = len(set_a | set_b)
         return intersection / union if union > 0 else 0.0
 
-    def _temporal_decay(self, timestamp_str: str | None) -> float:
-        """Exponential decay: 0.5^(age_days / half_life_days).
+    @staticmethod
+    def _reinforced_trust(fact: dict) -> float:
+        """trust_score * (1 + 0.1 * min(helpful_count, 20)).
+        Cap at 20 keeps the multiplier in [1.0, 3.0] so a single hot fact
+        cannot dominate retrieval forever."""
+        base = float(fact.get("trust_score", 0) or 0)
+        hc = int(fact.get("helpful_count", 0) or 0)
+        return base * (1.0 + 0.1 * min(hc, 20))
 
-        Returns 1.0 if decay is disabled or timestamp is missing.
+    def _reinforce_facts(self, fact_ids: "list[int]") -> None:
+        """Reserved hook for retrieval-time signals. Currently a no-op.
+
+        ADR-001 (2026-05-07) closed the helpful_count write that used to
+        live here: passive retrieval was inflating the ranking multiplier
+        the same way explicit thumbs-up does, laundering retrieval
+        frequency into the trust signal. ``record_feedback`` is now the
+        sole writer of ``helpful_count``.
+
+        The function and its ``reinforce_on_retrieval`` flag are kept in
+        place because the four retrieval paths (search/probe/related/reason)
+        already invoke this hook on their result IDs — a future signal
+        like recency or per-retrieval timestamp would land here without
+        needing to thread a new call site through the codebase.
         """
-        if not self.half_life or not timestamp_str:
+        return
+
+    def _half_life_for(self, category: "str | None") -> int:
+        """Return the configured half-life (days) for a category, falling back
+        to the global temporal_decay_half_life. 0 = decay disabled for this
+        category."""
+        if category and category in self.half_life_by_category:
+            return int(self.half_life_by_category[category])
+        return int(self.half_life)
+
+    def _temporal_decay(self, timestamp_str: str | None, category: "str | None" = None) -> float:
+        """Exponential decay: 0.5^(age_days / half_life_for(category)).
+
+        Returns 1.0 if decay is disabled (half-life 0) or timestamp is missing.
+        """
+        half_life = self._half_life_for(category)
+        if not half_life or not timestamp_str:
             return 1.0
 
         try:
@@ -588,6 +564,6 @@ class FactRetriever:
             if age_days < 0:
                 return 1.0
 
-            return math.pow(0.5, age_days / self.half_life)
+            return math.pow(0.5, age_days / half_life)
         except (ValueError, TypeError):
             return 1.0

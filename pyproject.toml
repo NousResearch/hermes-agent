@@ -193,7 +193,25 @@ exclude = ["tinker-atropos"]
 
 [tool.ruff]
 exclude = ["tinker-atropos"]
-select = [] # disable all lints for now, until we've wrangled typechecks a bit more :3
+preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
+
+[tool.ruff.lint]
+# All other lints are intentionally disabled (see comment history on this
+# file) while we wrangle typechecks — but PLW1514 is too load-bearing to
+# keep off.  Bare open()/read_text()/write_text() in text mode defaults to
+# the system locale encoding on Windows (cp1252 on US-locale installs),
+# which silently corrupts any non-ASCII file content.  We had three
+# separate Windows sandbox regressions in one debug session before
+# adding the explicit encoding.  This rule keeps new code honest.
+select = ["PLW1514"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests can intentionally exercise locale-encoding edge cases.
+"tests/**" = ["PLW1514"]
+# Skills and plugins are partially user-authored — their own conventions.
+"skills/**" = ["PLW1514"]
+"optional-skills/**" = ["PLW1514"]
+"plugins/**" = ["PLW1514"]
 
 [tool.uv]
 exclude-newer = "7 days"

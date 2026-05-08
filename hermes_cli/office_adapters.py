@@ -16,6 +16,7 @@ from hermes_constants import get_hermes_home
 _KANBAN_STATUSES = ("triage", "todo", "ready", "running", "blocked", "done", "archived")
 _ACTIVE_STATUSES = {"triage", "todo", "ready", "running"}
 _NEEDS_ATTENTION_STATUSES = {"blocked"}
+_MAX_KANBAN_WORK_ITEMS = 200
 _MAX_EVENTS_PER_BOARD = 50
 _MAX_CRON_JOBS = 100
 _MAX_SESSIONS = 50
@@ -233,6 +234,10 @@ def collect_kanban_office_state() -> OfficeAdapterResult:
                     }
                 )
                 for task in tasks:
+                    if len(work_items) >= _MAX_KANBAN_WORK_ITEMS:
+                        if "work_items_truncated" not in warnings:
+                            warnings.append("work_items_truncated")
+                        continue
                     work_items.append(
                         _kanban_work_item(
                             board_slug=slug,
@@ -332,13 +337,31 @@ def _output_artifact_count(output_dir: Path, job_id: str) -> int:
     return sum(1 for child in job_dir.iterdir() if child.is_file() and not child.name.startswith("."))
 
 
+def _cron_display_name(job_id: str) -> str:
+    """Return a prompt-safe cron display label.
+
+    Cron ``name`` can be auto-derived from prompt/script content at creation
+    time, so the Office DTO must not expose it as browser metadata. Keep a
+    stable generic label while preserving the real id separately as source_id.
+    """
+
+    return f"Cron job {job_id[:8]}" if job_id else "Cron job"
+
+
+def _cron_error_marker(value: object, marker: str) -> str | None:
+    """Return a structured error marker without raw cron/agent output."""
+
+    if value:
+        return marker
+    return None
+
+
 def _cron_automation(job: dict[str, Any], output_dir: Path, report: RedactionReport) -> dict[str, object]:
     job_id = str(job.get("id") or "unknown")
-    name = _safe_display(job.get("name") or job_id, report)
     last_error = job.get("last_error")
     last_delivery_error = job.get("last_delivery_error")
-    safe_last_error = _safe_display(last_error, report) if last_error else None
-    safe_delivery_error = _safe_display(last_delivery_error, report) if last_delivery_error else None
+    safe_last_error = _cron_error_marker(last_error, "last_error_recorded")
+    safe_delivery_error = _cron_error_marker(last_delivery_error, "last_delivery_error_recorded")
     badges: list[str] = []
     if not job.get("enabled", True):
         badges.append("disabled")
@@ -349,7 +372,7 @@ def _cron_automation(job: dict[str, Any], output_dir: Path, report: RedactionRep
         "kind": "cron_job",
         "source": "cron",
         "source_id": job_id,
-        "name": name,
+        "name": _cron_display_name(job_id),
         "enabled": bool(job.get("enabled", True)),
         "state": str(job.get("state") or "unknown"),
         "schedule": _schedule_projection(job),

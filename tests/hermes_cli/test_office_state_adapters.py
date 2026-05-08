@@ -202,9 +202,8 @@ def test_cron_adapter_projects_safe_automation_fields(isolated_kanban_home):
     assert automation["delivery_targets"] == [
         {"kind": "explicit", "platform": "telegram", "has_chat": True, "has_thread": True}
     ]
-    assert "sk-cronSECRET" not in automation["name"]
-    assert "sk-errorSECRET" not in automation["last_error_summary"]
-    assert "/home/alice" not in automation["last_error_summary"]
+    assert automation["name"] == "Cron job job_secr"
+    assert automation["last_error_summary"] == "last_error_recorded"
 
     forbidden = ["prompt must not leak", "script", "context_from", "private.py", "raw output must not leak", "-1003775710032"]
     for needle in forbidden:

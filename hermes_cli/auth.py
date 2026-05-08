@@ -3117,10 +3117,10 @@ def _refresh_access_token(
 ) -> Dict[str, Any]:
     response = client.post(
         f"{portal_base_url}/api/oauth/token",
+        headers={"x-nous-refresh-token": refresh_token},
         data={
             "grant_type": "refresh_token",
             "client_id": client_id,
-            "refresh_token": refresh_token,
         },
     )
 

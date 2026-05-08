@@ -2715,6 +2715,14 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     return dest
 
 
+def _remove_existing_skill_install_path(path: Path) -> None:
+    """Remove a prior skill install without following directory symlinks."""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
 def install_from_quarantine(
     quarantine_path: Path,
     skill_name: str,
@@ -2735,8 +2743,7 @@ def install_from_quarantine(
     else:
         install_dir = SKILLS_DIR / safe_skill_name
 
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
+    _remove_existing_skill_install_path(install_dir)
 
     # Warn (but don't block) if SKILL.md is very large
     skill_md = quarantine_path / "SKILL.md"

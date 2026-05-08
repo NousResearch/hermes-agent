@@ -26,6 +26,7 @@ from tools.skills_hub import (
     append_audit_log,
     _skill_meta_to_dict,
     quarantine_bundle,
+    install_from_quarantine,
 )
 
 
@@ -1491,6 +1492,53 @@ class TestQuarantineBundleBinaryAssets:
                 quarantine_bundle(bundle)
 
         assert not absolute_target.exists()
+
+
+class TestInstallFromQuarantine:
+    def test_replaces_existing_symlink_install_destination(self, tmp_path):
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        target_dir = tmp_path / "linked-skill"
+        target_dir.mkdir()
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="demo",
+                files={"SKILL.md": "---\nname: demo\n---\n"},
+                source="github",
+                identifier="owner/repo/demo",
+                trust_level="community",
+            )
+            q_path = quarantine_bundle(bundle)
+            install_link = tmp_path / "skills" / "demo"
+            install_link.symlink_to(target_dir, target_is_directory=True)
+
+            install_dir = install_from_quarantine(
+                q_path,
+                "demo",
+                "",
+                bundle,
+                ScanResult(
+                    skill_name="demo",
+                    source="github",
+                    trust_level="community",
+                    verdict="safe",
+                ),
+            )
+
+        assert install_dir == tmp_path / "skills" / "demo"
+        assert install_dir.is_dir()
+        assert not install_dir.is_symlink()
+        assert (install_dir / "SKILL.md").exists()
+        assert target_dir.exists()
+        assert not any(target_dir.iterdir())
 
 
 # ---------------------------------------------------------------------------

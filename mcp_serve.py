@@ -192,7 +192,13 @@ class EventBridge:
 
     def __init__(self):
         self._queue: List[QueueEvent] = []
-        self._cursor = 0
+        # Use nanosecond timestamps as cursors so they survive subprocess
+        # restarts.  Old in-process cursors were ephemeral counters (1, 2, 3 …)
+        # that reset to 0 on every new MCP stdio spawn, breaking incremental
+        # polls across reconnects.  Timestamps are monotonically increasing and
+        # globally meaningful — a client's stored cursor remains valid even
+        # after the MCP subprocess exits and a new one starts.  See #22000.
+        self._cursor = int(time.time_ns())
         self._lock = threading.Lock()
         self._new_event = threading.Event()
         self._running = False

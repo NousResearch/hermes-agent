@@ -306,10 +306,11 @@ class TestAttachmentExtraction:
 # ---------------------------------------------------------------------------
 
 class TestEventBridge:
-    def test_create(self):
+    def test_init_state(self):
         from mcp_serve import EventBridge
         b = EventBridge()
-        assert b._cursor == 0
+        # Cursor is initialized to a nanosecond timestamp, not 0 (see #22000)
+        assert b._cursor > 0
         assert b._queue == []
 
     def test_enqueue_and_poll(self):
@@ -320,14 +321,26 @@ class TestEventBridge:
         r = b.poll_events(after_cursor=0)
         assert len(r["events"]) == 1
         assert r["events"][0]["type"] == "message"
-        assert r["next_cursor"] == 1
+        # Cursor is a nanosecond timestamp, not sequential int
+        assert r["next_cursor"] > 0
 
     def test_cursor_filter(self):
         from mcp_serve import EventBridge, QueueEvent
         b = EventBridge()
-        for i in range(5):
+        # Enqueue first batch
+        for i in range(3):
             b._enqueue(QueueEvent(cursor=0, type="message", session_key=f"s{i}"))
-        r = b.poll_events(after_cursor=3)
+        # Record cursor after first batch
+        first_batch = b.poll_events(after_cursor=0)
+        cursor_after_first = first_batch["next_cursor"]
+        assert len(first_batch["events"]) == 3
+
+        # Enqueue second batch
+        for i in range(3, 5):
+            b._enqueue(QueueEvent(cursor=0, type="message", session_key=f"s{i}"))
+
+        # Poll with cursor from first batch should only return second batch
+        r = b.poll_events(after_cursor=cursor_after_first)
         assert len(r["events"]) == 2
         assert r["events"][0]["session_key"] == "s3"
 
@@ -339,6 +352,39 @@ class TestEventBridge:
         b._enqueue(QueueEvent(cursor=0, type="message", session_key="a"))
         r = b.poll_events(after_cursor=0, session_key="a")
         assert len(r["events"]) == 2
+
+    def test_cursor_survives_restart(self):
+        """Cursors must remain valid after an EventBridge is recreated.
+
+        MCP stdio spawns a new subprocess per client connection.  A client
+        that stores a cursor from session 1 must still receive events from
+        session 2 when it passes that cursor.  See issue #22000.
+        """
+        from mcp_serve import EventBridge, QueueEvent
+        import time
+
+        # --- Session 1 (first subprocess) ---
+        bridge1 = EventBridge()
+        bridge1._enqueue(QueueEvent(cursor=0, type="message", session_key="k",
+                                    data={"content": "event-1"}))
+        bridge1._enqueue(QueueEvent(cursor=0, type="message", session_key="k",
+                                    data={"content": "event-2"}))
+        result1 = bridge1.poll_events(after_cursor=0)
+        client_cursor = result1["next_cursor"]
+        assert len(result1["events"]) == 2
+
+        # Small gap so the new bridge's initial timestamp is strictly greater
+        time.sleep(0.01)
+
+        # --- Session 2 (new subprocess, simulating restart) ---
+        bridge2 = EventBridge()
+        assert bridge2._cursor > client_cursor  # new cursor is ahead
+
+        bridge2._enqueue(QueueEvent(cursor=0, type="message", session_key="k",
+                                    data={"content": "event-3"}))
+        result2 = bridge2.poll_events(after_cursor=client_cursor)
+        assert len(result2["events"]) == 1
+        assert result2["events"][0]["content"] == "event-3"
 
     def test_poll_empty(self):
         from mcp_serve import EventBridge
@@ -413,7 +459,8 @@ class TestEventBridge:
             t.join()
         assert not errors
         assert len(b._queue) == 500
-        assert b._cursor == 500
+        # Cursor is a nanosecond timestamp; just verify it advanced past init
+        assert b._cursor > 0
 
     def test_approvals_lifecycle(self):
         from mcp_serve import EventBridge
@@ -633,7 +680,9 @@ class TestE2EEventsPoll:
         assert len(result["events"]) == 2
         assert result["events"][0]["content"] == "Hello"
         assert result["events"][1]["content"] == "Hi"
-        assert result["next_cursor"] == 2
+        # Cursors are nanosecond timestamps (see #22000), not sequential ints
+        assert result["next_cursor"] > 0
+        assert result["events"][1]["cursor"] == result["next_cursor"]
 
     def test_poll_cursor_pagination(self, mcp_server_e2e, _event_loop):
         from mcp_serve import QueueEvent
@@ -644,12 +693,12 @@ class TestE2EEventsPoll:
 
         page1 = _run_tool(server, "events_poll", {"limit": 2})
         assert len(page1["events"]) == 2
-        assert page1["next_cursor"] == 2
+        cursor1 = page1["next_cursor"]
 
         page2 = _run_tool(server, "events_poll",
-                         {"after_cursor": page1["next_cursor"], "limit": 2})
+                         {"after_cursor": cursor1, "limit": 2})
         assert len(page2["events"]) == 2
-        assert page2["next_cursor"] == 4
+        assert page2["next_cursor"] > cursor1
 
     def test_poll_session_filter(self, mcp_server_e2e, _event_loop):
         from mcp_serve import QueueEvent

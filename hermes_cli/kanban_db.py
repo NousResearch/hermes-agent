@@ -2835,7 +2835,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
     # where we have a cheap, deterministic process-state probe.
     if sys.platform == "linux":
         try:
-            with open(f"/proc/{int(pid)}/status", "r") as f:
+            with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("State:"):
                         # "State:\tZ (zombie)" → dead

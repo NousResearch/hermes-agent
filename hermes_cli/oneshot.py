@@ -174,7 +174,7 @@ def run_oneshot(
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout
-    devnull = open(os.devnull, "w")
+    devnull = open(os.devnull, "w", encoding="utf-8")
 
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):

@@ -1257,7 +1257,7 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
         sys.stdout.write(payload)
     else:
         out = Path(output_path)
-        out.write_text(payload)
+        out.write_text(payload, encoding="utf-8")
         c.print(f"[bold green]Snapshot exported:[/] {out}")
         c.print(f"[dim]{len(installed)} skill(s), {len(tap_list)} tap(s)[/]\n")
 
@@ -1274,7 +1274,7 @@ def do_snapshot_import(input_path: str, force: bool = False,
         return
 
     try:
-        snapshot = json.loads(inp.read_text())
+        snapshot = json.loads(inp.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         c.print(f"[bold red]Error:[/] Invalid JSON in {inp}\n")
         return

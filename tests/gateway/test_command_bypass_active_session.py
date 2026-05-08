@@ -293,6 +293,7 @@ class TestAllResolvableCommandsBypassGuard:
             ("/voice on", "voice"),
             ("/insights 7", "insights"),
             ("/title my session", "title"),
+            ("/sessions", "sessions"),
             ("/resume yesterday", "resume"),
             ("/retry", "retry"),
             ("/undo", "undo"),

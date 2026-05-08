@@ -91,6 +91,24 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_sessions_lists_named_sessions_when_no_arg(self, tmp_path):
+        """/sessions should reuse the gateway session browser semantics."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_001", "telegram")
+        db.create_session("sess_002", "telegram")
+        db.set_session_title("sess_001", "Research")
+        db.set_session_title("sess_002", "Coding")
+
+        event = _make_event(text="/sessions")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+        assert "Research" in result
+        assert "Coding" in result
+        assert "Named Sessions" in result
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_list_shows_usage_when_no_titled(self, tmp_path):
         """With no arg and no titled sessions, shows instructions."""
         from hermes_state import SessionDB
@@ -122,6 +140,29 @@ class TestHandleResumeCommand:
         assert "My Project" in result
         # Verify switch_session was called with the old session ID
         runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "old_session_abc"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_resumes_by_name(self, tmp_path):
+        """/sessions <name> should resume the named session on gateway platforms."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session_abc", "telegram")
+        db.set_session_title("old_session_abc", "My Project")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/sessions My Project")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        assert "My Project" in result
         call_args = runner.session_store.switch_session.call_args
         assert call_args[0][1] == "old_session_abc"
         db.close()

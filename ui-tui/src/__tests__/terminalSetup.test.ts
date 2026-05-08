@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   configureDetectedTerminalKeybindings,
@@ -8,6 +8,16 @@ import {
   shouldPromptForTerminalSetup,
   stripJsonComments
 } from '../lib/terminalSetup.js'
+
+beforeEach(() => {
+  vi.stubEnv('SSH_CLIENT', '')
+  vi.stubEnv('SSH_CONNECTION', '')
+  vi.stubEnv('SSH_TTY', '')
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
 
 describe('terminalSetup helpers', () => {
   it('detects VS Code family terminals from environment', () => {

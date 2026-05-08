@@ -62,9 +62,10 @@ if (process.env.HERMES_HEAPDUMP_ON_START === '1') {
 
 process.on('beforeExit', () => stopMemoryMonitor())
 
-const [ink, { App }, { logFrameEvent }, { trackFrame }] = await Promise.all([
+const [ink, { App }, { TerminalProbeBoot }, { logFrameEvent }, { trackFrame }] = await Promise.all([
   import('@hermes/ink'),
   import('./app.js'),
+  import('./components/terminalProbeBoot.js'),
   import('./lib/perfPane.js'),
   import('./lib/fpsStore.js')
 ])
@@ -79,4 +80,10 @@ const onFrame =
       }
     : undefined
 
-ink.render(<App gw={gw} />, { exitOnCtrlC: false, onFrame })
+ink.render(
+  <>
+    <TerminalProbeBoot />
+    <App gw={gw} />
+  </>,
+  { exitOnCtrlC: false, onFrame }
+)

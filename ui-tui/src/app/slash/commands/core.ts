@@ -2,8 +2,8 @@ import { forceRedraw } from '@hermes/ink'
 
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
-import { HOTKEYS } from '../../../content/hotkeys.js'
-import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
+import { buildHelpHintHotkeys } from '../../../content/hotkeys.js'
+import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -15,10 +15,12 @@ import type {
 } from '../../../gatewayTypes.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
+import { formatTerminalDoctor } from '../../../lib/terminalDoctor.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
+import { $terminalEnvironment } from '../../terminalEnvironmentStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
@@ -74,15 +76,22 @@ export const coreCommands: SlashCommand[] = [
               '/details <section> [hidden|collapsed|expanded|reset]',
               'override one section (thinking/tools/subagents/activity)'
             ],
+            ['/doctor', 'show detected terminal, SSH, tmux, keyboard, and clipboard diagnostics'],
             ['/fortune [random|daily]', 'show a random or daily local fortune']
           ],
           title: 'TUI'
         },
-        { rows: HOTKEYS, title: 'Hotkeys' }
+        { rows: buildHelpHintHotkeys($terminalEnvironment.get()), title: 'Hotkeys' }
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)
     }
+  },
+
+  {
+    help: 'show terminal, SSH, tmux, keyboard, and clipboard diagnostics',
+    name: 'doctor',
+    run: (_arg, ctx) => ctx.transcript.page(formatTerminalDoctor($terminalEnvironment.get()), 'Terminal Doctor')
   },
 
   {

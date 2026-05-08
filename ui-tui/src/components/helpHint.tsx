@@ -1,6 +1,8 @@
 import { Box, Text } from '@hermes/ink'
+import { useStore } from '@nanostores/react'
 
-import { HOTKEYS } from '../content/hotkeys.js'
+import { $terminalEnvironment } from '../app/terminalEnvironmentStore.js'
+import { buildHelpHintHotkeys } from '../content/hotkeys.js'
 import type { Theme } from '../theme.js'
 
 const COMMON_COMMANDS: [string, string][] = [
@@ -12,12 +14,13 @@ const COMMON_COMMANDS: [string, string][] = [
   ['/quit', 'exit hermes']
 ]
 
-const HOTKEY_PREVIEW = HOTKEYS.slice(0, 8)
-
 export function HelpHint({ t }: { t: Theme }) {
+  const terminalEnvironment = useStore($terminalEnvironment)
+  const hotkeyPreview = buildHelpHintHotkeys(terminalEnvironment).slice(0, 8)
+
   const labelW = Math.max(
     ...COMMON_COMMANDS.map(([k]) => k.length),
-    ...HOTKEY_PREVIEW.map(([k]) => k.length)
+    ...hotkeyPreview.map(([k]) => k.length)
   )
 
   const pad = (s: string) => s + ' '.repeat(Math.max(0, labelW - s.length + 2))
@@ -61,7 +64,7 @@ export function HelpHint({ t }: { t: Theme }) {
           </Text>
         </Box>
 
-        {HOTKEY_PREVIEW.map(([k, v]) => (
+        {hotkeyPreview.map(([k, v]) => (
           <Text key={k}>
             <Text color={t.color.label}>{pad(k)}</Text>
             <Text color={t.color.muted}>{v}</Text>

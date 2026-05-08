@@ -1,4 +1,6 @@
 import { isMac, isRemoteShell } from '../lib/platform.js'
+import type { TerminalCapabilities } from '../lib/terminalCapabilities.js'
+import type { TerminalSignals } from '../lib/terminalSignals.js'
 
 const action = isMac ? 'Cmd' : 'Ctrl'
 const paste = isMac ? 'Cmd' : 'Alt'
@@ -35,3 +37,40 @@ export const HOTKEYS: [string, string][] = [
   ['!<cmd>', 'run a shell command (e.g. !ls, !git status)'],
   ['{!<cmd>}', 'interpolate shell output inline (e.g. "branch is {!git branch --show-current}")']
 ]
+
+export function buildHelpHintHotkeys(env: {
+  capabilities: TerminalCapabilities
+  signals: TerminalSignals
+}): [string, string][] {
+  const { capabilities, signals } = env
+  const rows: [string, string][] = []
+  const isDarwin = signals.platform === 'darwin'
+
+  if (isDarwin) {
+    rows.push(['Cmd+V', 'paste text; /paste attaches clipboard image'])
+  } else if (capabilities.keyboard.pasteShortcutShapes.includes('ctrl+shift+v')) {
+    rows.push(['Ctrl+Shift+V', 'paste text; /paste attaches clipboard image'])
+  } else {
+    rows.push(['Alt+V', 'paste text; /paste attaches clipboard image'])
+  }
+
+  if (isDarwin || capabilities.keyboard.copyShortcutShapes.includes('super+c')) {
+    rows.push(['Cmd+C', 'copy selection when forwarded by the terminal'])
+  }
+
+  if (capabilities.keyboard.copyShortcutShapes.includes('ctrl+shift+c')) {
+    rows.push(['Ctrl+Shift+C', 'copy selection'])
+  }
+
+  rows.push(['Ctrl+C', 'interrupt / clear draft / exit'])
+
+  if (capabilities.mouse.shiftDragHint) {
+    rows.push(['Shift-drag', 'terminal-native selection (when mouse tracking is on)'])
+  }
+
+  if (capabilities.transport === 'tmux' || capabilities.layers.includes('tmux')) {
+    rows.push(['tmux', `copy uses tmux-buffer (write: ${capabilities.copy.writePath})`])
+  }
+
+  return rows
+}

@@ -1,48 +1,64 @@
+import { detectShellSignals, type ShellSignals } from './shellSignals.js'
+
 export type TerminalSignalInput = {
   env: NodeJS.ProcessEnv
-  platform: NodeJS.Platform
   isStdinTty?: boolean
   isStdoutTty?: boolean
+  platform: NodeJS.Platform
+  shellArgv0?: string
+  shellExecutable?: string
 }
 
 export type TerminalSignals = {
-  platform: NodeJS.Platform
-  isStdinTty: boolean
-  isStdoutTty: boolean
-  ssh: {
-    hasSshConnection: boolean
-    hasSshClient: boolean
-    hasSshTty: boolean
-  }
-  multiplexer: {
-    tmux: boolean
-    screen: boolean
-    zellij: boolean
-    cy: boolean
-  }
   env: {
+    COLORTERM?: string
+    GHOSTTY_RESOURCES_DIR?: string
+    ITERM_SESSION_ID?: string
+    KITTY_WINDOW_ID?: string
+    KONSOLE_VERSION?: string
+    LC_TERMINAL?: string
     TERM?: string
     TERM_PROGRAM?: string
     TERM_PROGRAM_VERSION?: string
-    KITTY_WINDOW_ID?: string
-    WEZTERM_PANE?: string
-    GHOSTTY_RESOURCES_DIR?: string
-    ITERM_SESSION_ID?: string
-    LC_TERMINAL?: string
     TERM_SESSION_ID?: string
+    VTE_VERSION?: string
+    WEZTERM_PANE?: string
+    WT_SESSION?: string
+  }
+  isStdinTty: boolean
+  isStdoutTty: boolean
+  multiplexer: {
+    cy: boolean
+    screen: boolean
+    tmux: boolean
+    zellij: boolean
+  }
+  platform: NodeJS.Platform
+  shell: ShellSignals
+  ssh: {
+    client?: string
+    connection?: string
+    hasSshClient: boolean
+    hasSshConnection: boolean
+    hasSshTty: boolean
+    tty?: string
   }
 }
 
 const terminalEnvKeys = [
+  'COLORTERM',
+  'GHOSTTY_RESOURCES_DIR',
+  'ITERM_SESSION_ID',
+  'KITTY_WINDOW_ID',
+  'KONSOLE_VERSION',
+  'LC_TERMINAL',
   'TERM',
   'TERM_PROGRAM',
   'TERM_PROGRAM_VERSION',
-  'KITTY_WINDOW_ID',
+  'TERM_SESSION_ID',
+  'VTE_VERSION',
   'WEZTERM_PANE',
-  'GHOSTTY_RESOURCES_DIR',
-  'ITERM_SESSION_ID',
-  'LC_TERMINAL',
-  'TERM_SESSION_ID'
+  'WT_SESSION'
 ] as const
 
 type TerminalEnvKey = (typeof terminalEnvKeys)[number]
@@ -67,24 +83,46 @@ const collectEnvSignals = (env: NodeJS.ProcessEnv): TerminalSignals['env'] => {
   return signals as TerminalSignals['env']
 }
 
+const inferShellInteractive = (input: TerminalSignalInput): boolean | undefined => {
+  if (input.isStdinTty === undefined && input.isStdoutTty === undefined) {
+    return undefined
+  }
+
+  return input.isStdinTty === true || input.isStdoutTty === true
+}
+
 export function collectTerminalSignals(input: TerminalSignalInput): TerminalSignals {
   const env = input.env
+  const sshClient = pick(env, 'SSH_CLIENT')
+  const sshConnection = pick(env, 'SSH_CONNECTION')
+  const sshTty = pick(env, 'SSH_TTY')
+
+  const shell = detectShellSignals({
+    argv0: input.shellArgv0,
+    env,
+    executable: input.shellExecutable,
+    interactive: inferShellInteractive(input)
+  })
 
   return {
-    platform: input.platform,
+    env: collectEnvSignals(env),
     isStdinTty: input.isStdinTty === true,
     isStdoutTty: input.isStdoutTty === true,
-    ssh: {
-      hasSshConnection: pick(env, 'SSH_CONNECTION') !== undefined,
-      hasSshClient: pick(env, 'SSH_CLIENT') !== undefined,
-      hasSshTty: pick(env, 'SSH_TTY') !== undefined
-    },
     multiplexer: {
-      tmux: pick(env, 'TMUX') !== undefined,
+      cy: pick(env, 'CY') !== undefined,
       screen: pick(env, 'STY') !== undefined,
-      zellij: pick(env, 'ZELLIJ') !== undefined,
-      cy: pick(env, 'CY') !== undefined
+      tmux: pick(env, 'TMUX') !== undefined,
+      zellij: pick(env, 'ZELLIJ') !== undefined
     },
-    env: collectEnvSignals(env)
+    platform: input.platform,
+    shell,
+    ssh: {
+      hasSshClient: sshClient !== undefined,
+      hasSshConnection: sshConnection !== undefined,
+      hasSshTty: sshTty !== undefined,
+      ...(sshClient !== undefined ? { client: sshClient } : {}),
+      ...(sshConnection !== undefined ? { connection: sshConnection } : {}),
+      ...(sshTty !== undefined ? { tty: sshTty } : {})
+    }
   }
 }

@@ -12,6 +12,37 @@ def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     output = capsys.readouterr().out
     assert "Tavily" in output
     assert "tvly...cdef" in output
+    assert "tvly-1234567890abcdef" not in output
+
+
+def test_show_status_all_redacts_tavily_key(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-1234567890abcdef")
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Tavily" in output
+    assert "tvly...cdef" in output
+    assert "tvly-1234567890abcdef" not in output
+
+
+def test_show_status_all_keeps_api_keys_redacted(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    raw_openai = "sk-test-raw-secret-1234567890"
+    raw_anthropic = "sk-ant-test-raw-secret-abcdefghij"
+    monkeypatch.setenv("OPENAI_API_KEY", raw_openai)
+
+    import hermes_cli.auth as auth_mod
+    monkeypatch.setattr(auth_mod, "get_anthropic_key", lambda: raw_anthropic, raising=False)
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert raw_openai not in output
+    assert raw_anthropic not in output
+    assert "sk-t...7890" in output
+    assert "sk-a...ghij" in output
 
 
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):

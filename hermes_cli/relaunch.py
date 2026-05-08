@@ -84,18 +84,34 @@ def resolve_hermes_bin() -> Optional[str]:
       1. ``sys.argv[0]`` if it resolves to a real executable.
       2. ``shutil.which("hermes")`` on PATH.
       3. ``None`` → caller should fall back to ``python -m hermes_cli.main``.
+
+    Windows note: ``os.access(path, os.X_OK)`` returns True for ``.py`` and
+    ``.pyc`` files on Windows (the OS treats anything listed in PATHEXT as
+    executable, and Python files are often registered there).  But
+    ``subprocess.run([script.py, ...])`` can't actually execute a .py
+    directly — CreateProcessW needs a real .exe, not a script associated
+    with the Python launcher.  On Windows we therefore skip the argv[0]
+    fast-path when it points at a .py file and fall through to either
+    ``hermes.exe`` on PATH or the ``sys.executable -m hermes_cli.main``
+    fallback.
     """
     argv0 = sys.argv[0]
+    _is_windows = sys.platform == "win32"
+
+    def _is_python_script(p: str) -> bool:
+        return p.lower().endswith((".py", ".pyc"))
 
     # Absolute path to an executable (covers nix store, venv wrappers, etc.)
     if os.path.isabs(argv0) and os.path.isfile(argv0) and os.access(argv0, os.X_OK):
-        return argv0
+        if not (_is_windows and _is_python_script(argv0)):
+            return argv0
 
     # Relative path — resolve against CWD
     if not argv0.startswith("-") and os.path.isfile(argv0):
         abs_path = os.path.abspath(argv0)
         if os.access(abs_path, os.X_OK):
-            return abs_path
+            if not (_is_windows and _is_python_script(abs_path)):
+                return abs_path
 
     # PATH lookup
     path_bin = shutil.which("hermes")

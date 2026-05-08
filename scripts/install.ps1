@@ -963,9 +963,17 @@ function Install-NodeDeps {
         return
     }
 
-    # Resolve npm.cmd to an absolute path so PATHEXT doesn't bite us when
-    # the installer runs in a session that hasn't refreshed PATH since the
-    # Node.js install.  Get-Command respects PATHEXT.
+    # Resolve npm explicitly to npm.cmd, NOT npm.ps1.  Node.js on Windows
+    # ships BOTH npm.cmd (a batch shim) and npm.ps1 (a PowerShell shim).
+    # Get-Command's default ordering picks whichever comes first in PATHEXT,
+    # and on many systems that's .ps1 — but .ps1 requires scripts to be
+    # enabled in PowerShell's execution policy, which most Windows users
+    # don't have (the Restricted / RemoteSigned default blocks unsigned
+    # .ps1 files).  .cmd has no such restriction and works on every box.
+    #
+    # Strategy: look next to the npm shim we found and prefer npm.cmd if
+    # it exists in the same directory.  Fall back to whatever Get-Command
+    # returned if we can't find a .cmd sibling.
     $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
     if (-not $npmCmd) {
         Write-Warn "npm not found on PATH — skipping Node.js dependencies."
@@ -973,6 +981,16 @@ function Install-NodeDeps {
         return
     }
     $npmExe = $npmCmd.Source
+    if ($npmExe -like "*.ps1") {
+        $npmCmdSibling = Join-Path (Split-Path $npmExe -Parent) "npm.cmd"
+        if (Test-Path $npmCmdSibling) {
+            Write-Info "Using npm.cmd (PowerShell execution policy blocks npm.ps1)"
+            $npmExe = $npmCmdSibling
+        } else {
+            Write-Warn "Only npm.ps1 available — install may fail if script execution is disabled."
+            Write-Info "  If it fails, either enable PS script execution or install Node via winget."
+        }
+    }
 
     # Helper: run "npm install" in a given directory and surface the real
     # error when it fails.  Returns $true on success.

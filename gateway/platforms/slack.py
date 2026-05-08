@@ -370,6 +370,9 @@ class SlackAdapter(BasePlatformAdapter):
         self._reaction_targets: Dict[str, Tuple[str, str]] = {}
         # Keep exactly one Hermes status emoji on each target message.
         self._status_reaction_by_target: Dict[Tuple[str, str], str] = {}
+        # Pending explicit-acceptance state keyed by reaction target.
+        # Value includes lightweight metadata for routing follow-up pings/replies.
+        self._pending_acceptance_targets: Dict[Tuple[str, str], Dict[str, str]] = {}
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
@@ -1341,6 +1344,20 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id, target_ts = target
             await self._set_status_reaction(channel_id, target_ts, "arrows_counterclockwise")
 
+    async def _post_status_reply(self, channel_id: str, thread_ts: str, text: str) -> None:
+        """Post a small status note in the thread linked to the main post."""
+        if not self._app or not text:
+            return
+        try:
+            await self._get_client(channel_id).chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                text=text,
+                mrkdwn=True,
+            )
+        except Exception as e:
+            logger.debug("[Slack] status reply failed: %s", e)
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Set final status reaction on the main post target."""
         if not self._reactions_enabled():
@@ -1354,11 +1371,39 @@ class SlackAdapter(BasePlatformAdapter):
             return
         channel_id, target_ts = target
         if outcome == ProcessingOutcome.SUCCESS:
-            await self._set_status_reaction(channel_id, target_ts, "white_check_mark")
-        elif outcome == ProcessingOutcome.FAILURE:
-            await self._set_status_reaction(channel_id, target_ts, "warning")
-        elif outcome == ProcessingOutcome.CANCELLED:
+            # Explicit acceptance required: successful work transitions to
+            # question/waiting state until a user confirms.
             await self._set_status_reaction(channel_id, target_ts, "question")
+            self._pending_acceptance_targets[target] = {
+                "channel_id": channel_id,
+                "target_ts": target_ts,
+                "trigger_message_ts": ts,
+            }
+            await self._post_status_reply(
+                channel_id,
+                target_ts,
+                "Marked ❓ action needed — please confirm with a clear yes/ok/done to mark this done.",
+            )
+        elif outcome == ProcessingOutcome.FAILURE:
+            self._pending_acceptance_targets.pop(target, None)
+            await self._set_status_reaction(channel_id, target_ts, "warning")
+            await self._post_status_reply(
+                channel_id,
+                target_ts,
+                "Marked ⚠️ blocked/failed.",
+            )
+        elif outcome == ProcessingOutcome.CANCELLED:
+            self._pending_acceptance_targets[target] = {
+                "channel_id": channel_id,
+                "target_ts": target_ts,
+                "trigger_message_ts": ts,
+            }
+            await self._set_status_reaction(channel_id, target_ts, "question")
+            await self._post_status_reply(
+                channel_id,
+                target_ts,
+                "Marked ❓ action needed — waiting for user follow-up.",
+            )
 
     # ----- User identity resolution -----
 
@@ -2227,10 +2272,29 @@ class SlackAdapter(BasePlatformAdapter):
         # Apply reaction lifecycle to all handled Slack messages. For thread
         # replies, target the thread parent/main post; for top-level messages,
         # target the original message.
+        target_ts = event_thread_ts or ts
+        target = (channel_id, target_ts) if channel_id and target_ts else None
         if self._reactions_enabled() and ts and channel_id:
+            # If this message is a clear acceptance on a pending target, mark
+            # done immediately and skip full agent processing.
+            normalized_text = re.sub(r"[^a-z0-9+ ]+", " ", (text or "").strip().lower())
+            acceptance_tokens = {
+                "yes", "y", "yep", "yeah", "ok", "okay", "looks good", "lgtm", "done", "+1", "agree",
+            }
+            is_acceptance = (
+                normalized_text in acceptance_tokens
+                or normalized_text.startswith("yes ")
+                or normalized_text.startswith("ok ")
+                or normalized_text.startswith("done ")
+            )
+            if target and target in self._pending_acceptance_targets and is_acceptance:
+                await self._set_status_reaction(channel_id, target_ts, "white_check_mark")
+                self._pending_acceptance_targets.pop(target, None)
+                await self._post_status_reply(channel_id, target_ts, "Marked ✅ done.")
+                return
+
             self._reacting_message_ids.add(ts)
-            target_ts = event_thread_ts or ts
-            self._reaction_targets[ts] = (channel_id, target_ts)
+            self._reaction_targets[ts] = target
 
         await self.handle_message(msg_event)
 

@@ -1773,14 +1773,16 @@ class TestReactions:
 
         add_calls = adapter._app.client.reactions_add.call_args_list
         remove_calls = adapter._app.client.reactions_remove.call_args_list
+        # success now transitions to explicit-acceptance pending state (question)
         assert len(add_calls) == 2
-        assert add_calls[1].kwargs["name"] == "white_check_mark"
+        assert add_calls[1].kwargs["name"] == "question"
         assert len(remove_calls) == 1
         assert remove_calls[0].kwargs["name"] == "arrows_counterclockwise"
 
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids
         assert "1234567890.000001" not in adapter._reaction_targets
+        assert ("C123", "1234567890.000001") in adapter._pending_acceptance_targets
 
     @pytest.mark.asyncio
     async def test_reactions_failure_outcome(self, adapter):
@@ -1860,6 +1862,43 @@ class TestReactions:
         await adapter._handle_slack_message(event)
 
         assert adapter._reaction_targets["1234567890.000010"] == ("C123", "1234567890.000001")
+
+    @pytest.mark.asyncio
+    async def test_acceptance_message_marks_pending_target_done(self, adapter, monkeypatch):
+        """A clear yes/ok/done reply should flip pending question status to done."""
+        monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        target = ("C123", "1234567890.000020")
+        adapter._pending_acceptance_targets[target] = {
+            "channel_id": "C123",
+            "target_ts": "1234567890.000020",
+            "trigger_message_ts": "1234567890.000019",
+        }
+        adapter._status_reaction_by_target[target] = "question"
+
+        event = {
+            "text": "yes",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000021",
+            "thread_ts": "1234567890.000020",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Should not dispatch to agent for acceptance-only confirmation
+        adapter.handle_message.assert_not_awaited()
+
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        remove_calls = adapter._app.client.reactions_remove.call_args_list
+        assert add_calls[-1].kwargs["name"] == "white_check_mark"
+        assert remove_calls[-1].kwargs["name"] == "question"
+        assert target not in adapter._pending_acceptance_targets
 
     @pytest.mark.asyncio
     async def test_reactions_disabled_via_env(self, adapter, monkeypatch):

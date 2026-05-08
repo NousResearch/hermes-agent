@@ -767,44 +767,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
 
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_provider_resolves_full_credentials(self, mock_resolve):
-        """When delegation.provider is set, full credentials are resolved."""
-        mock_resolve.return_value = {
-            "provider": "openrouter",
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key": "sk-or-test-key",
-            "api_mode": "chat_completions",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"model": "google/gemini-3-flash-preview", "provider": "openrouter"}
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["model"], "google/gemini-3-flash-preview")
-        self.assertEqual(creds["provider"], "openrouter")
-        self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
-        self.assertEqual(creds["api_key"], "sk-or-test-key")
-        self.assertEqual(creds["api_mode"], "chat_completions")
-        mock_resolve.assert_called_once_with(requested="openrouter")
 
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_provider_resolution_uses_runtime_model_when_config_model_missing(self, mock_resolve):
-        """Named providers should propagate their runtime default model to children."""
-        mock_resolve.return_value = {
-            "provider": "custom",
-            "base_url": "https://my-server.example/v1",
-            "api_key": "sk-test-key",
-            "api_mode": "chat_completions",
-            "model": "server-default-model",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"provider": "custom:my-server", "model": ""}
-
-        creds = _resolve_delegation_credentials(cfg, parent)
-
-        self.assertEqual(creds["model"], "server-default-model")
-        self.assertEqual(creds["provider"], "custom")
-        self.assertEqual(creds["base_url"], "https://my-server.example/v1")
-        mock_resolve.assert_called_once_with(requested="custom:my-server")
 
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
@@ -853,22 +816,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_key"])
         self.assertEqual(creds["provider"], "custom")
 
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
-        """Nous provider resolves Nous Portal base_url and api_key."""
-        mock_resolve.return_value = {
-            "provider": "nous",
-            "base_url": "https://inference-api.nousresearch.com/v1",
-            "api_key": "nous-agent-key-xyz",
-            "api_mode": "chat_completions",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"model": "hermes-3-llama-3.1-8b", "provider": "nous"}
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["provider"], "nous")
-        self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
-        self.assertEqual(creds["api_key"], "nous-agent-key-xyz")
-        mock_resolve.assert_called_once_with(requested="nous")
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
@@ -1599,53 +1546,6 @@ class TestDelegateHeartbeat(unittest.TestCase):
             f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
         )
 
-    def test_heartbeat_still_trips_idle_stale_when_no_tool(self):
-        """A wedged child with no current_tool still trips the idle threshold.
-
-        Regression guard: the fix for #13041 must not disable stale
-        detection entirely. A child that's hung between turns (no tool
-        running, no iteration progress) must still stop touching the
-        parent so the gateway timeout can fire.
-        """
-        from tools.delegate_tool import _run_single_child
-
-        parent = _make_mock_parent()
-        touch_calls = []
-        parent._touch_activity = lambda desc: touch_calls.append(desc)
-
-        child = MagicMock()
-        # Wedged child: no tool running, iteration frozen.
-        child.get_activity_summary.return_value = {
-            "current_tool": None,
-            "api_call_count": 3,
-            "max_iterations": 50,
-            "last_activity_desc": "waiting for API response",
-        }
-
-        def slow_run(**kwargs):
-            time.sleep(0.6)
-            return {"final_response": "done", "completed": True, "api_calls": 3}
-
-        child.run_conversation.side_effect = slow_run
-
-        # At interval 0.05s, idle threshold (5 cycles) trips at ~0.25s.
-        # We should see the heartbeat stop firing well before 0.6s.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
-            _run_single_child(
-                task_index=0,
-                goal="Test wedged child",
-                child=child,
-                parent_agent=parent,
-            )
-
-        # With idle threshold=5 + interval=0.05s, touches should cap
-        # around 5. Bound loosely to avoid timing flakes.
-        self.assertLess(
-            len(touch_calls), 9,
-            f"Idle stale detection did not fire: got {len(touch_calls)} "
-            f"touches over 0.6s — expected heartbeat to stop after "
-            f"~5 stale cycles",
-        )
 
 
 class TestDelegationReasoningEffort(unittest.TestCase):

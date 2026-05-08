@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createUIResource, type UIResource } from "@mcp-ui/server";
 
 export function escapeHtml(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -31,7 +32,12 @@ export function renderTemplate(template: string, data: Ctx): string {
     const value = data[name];
     let replacement = "";
     if (kind === "?") {
-      if (value) replacement = renderTemplate(body, data);
+      if (value) {
+        replacement =
+          value && typeof value === "object"
+            ? renderTemplate(body, value as Ctx)
+            : renderTemplate(body, data);
+      }
     } else {
       if (Array.isArray(value)) {
         replacement = value
@@ -56,24 +62,14 @@ export function renderTemplate(template: string, data: Ctx): string {
   return out;
 }
 
-export interface UIResource {
-  type: "resource";
-  resource: {
-    uri: string;
-    mimeType: "text/html";
-    text: string;
-  };
-}
+export type { UIResource };
 
 export function buildResource(view: string, id: string, html: string): UIResource {
-  return {
-    type: "resource",
-    resource: {
-      uri: `ui://aviation/${view}/${id}`,
-      mimeType: "text/html",
-      text: html,
-    },
-  };
+  return createUIResource({
+    uri: `ui://aviation/${view}/${id}`,
+    content: { type: "rawHtml", htmlString: html },
+    encoding: "text",
+  });
 }
 
 const __filename = fileURLToPath(import.meta.url);

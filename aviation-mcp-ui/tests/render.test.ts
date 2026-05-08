@@ -51,6 +51,13 @@ describe("renderTemplate", () => {
     expect(renderTemplate("{{?on}}YES{{/on}}", {})).toBe("");
   });
 
+  it("renders conditional object bodies against the object context", () => {
+    const out = renderTemplate("{{?alert}}{{headline}} {{distance}}{{/alert}}", {
+      alert: { headline: "Hantavirus", distance: 10 },
+    });
+    expect(out).toBe("Hantavirus 10");
+  });
+
   it("treats missing fields as empty", () => {
     expect(renderTemplate("a={{a}} b={{b}}", { a: "x" })).toBe("a=x b=");
   });
@@ -61,7 +68,7 @@ describe("buildResource", () => {
     const r = buildResource("airport", "LSZH", "<!DOCTYPE html><html></html>");
     expect(r.type).toBe("resource");
     expect(r.resource.uri).toBe("ui://aviation/airport/LSZH");
-    expect(r.resource.mimeType).toBe("text/html");
+    expect(r.resource.mimeType).toMatch(/^text\/html/);
     expect(r.resource.text).toContain("<!DOCTYPE html>");
   });
 });

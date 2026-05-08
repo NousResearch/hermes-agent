@@ -82,3 +82,33 @@ html, body {
   50%      { box-shadow: 0 0 12px rgba(217,77,61,0.9); }
 }
 .pulse-red { animation: pulse-red 1.6s ease-in-out infinite; }
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes glow-scan {
+  0% { transform: translateX(-120%); opacity: 0; }
+  35% { opacity: .75; }
+  100% { transform: translateX(120%); opacity: 0; }
+}
+.live-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border: 1px solid rgba(61,219,217,.25);
+  border-radius: 999px;
+  color: var(--text);
+  background: rgba(61,219,217,.08);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+.live-chip::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 10px var(--success);
+}

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Fleet Status</title>
+<style>{{{theme_css}}}
+.fleet-frame { padding:24px; background:radial-gradient(circle at top right, rgba(61,219,217,.10), transparent 36%), var(--bg); animation:fade-up .42s ease both; }
+.fleet-head { display:flex; justify-content:space-between; gap:24px; align-items:flex-end; margin-bottom:22px; }
+.fleet-title { font-size:28px; color:#fff; font-weight:700; letter-spacing:1px; }
+.fleet-stats { display:flex; gap:12px; }
+.fleet-stat { border:1px solid var(--border); background:var(--panel); padding:10px 14px; min-width:92px; border-radius:8px; }
+.fleet-num { font-size:22px; color:#fff; }
+.fleet-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
+.fleet-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+.filter-chip { border:1px solid var(--border); border-radius:999px; padding:7px 10px; color:var(--text-muted); background:#0d171d; font-size:10px; letter-spacing:1.5px; text-transform:uppercase; }
+.filter-chip.active { color:#061116; background:var(--accent); border-color:var(--accent); font-weight:900; }
+.aircraft { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:16px; min-height:178px; transition:transform .18s ease, border-color .18s ease; animation:fade-up .48s ease both; }
+.aircraft:hover { transform:translateY(-3px); border-color:rgba(61,219,217,.45); }
+.aircraft.issue { border-color:rgba(217,77,61,.8); background:linear-gradient(180deg, rgba(217,77,61,.12), var(--panel)); }
+.tail { font-size:22px; color:#fff; font-weight:700; }
+.type { color:var(--text-muted); letter-spacing:1px; margin-top:2px; }
+.status { margin:14px 0; text-transform:uppercase; letter-spacing:1px; font-size:11px; }
+.route { color:var(--accent); margin-bottom:8px; }
+.issue-box { margin-top:12px; border-left:3px solid var(--danger); padding-left:10px; color:#fff; }
+.issue-detail { color:var(--text-muted); margin-top:5px; line-height:1.4; }
+@media (max-width: 820px) {
+  .fleet-frame { padding:16px; }
+  .fleet-head { display:block; }
+  .fleet-stats { margin-top:14px; display:grid; grid-template-columns:repeat(3,1fr); }
+  .fleet-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 520px) {
+  .fleet-stats { grid-template-columns:1fr; }
+  .fleet-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .aircraft { padding:12px; min-height:150px; }
+  .tail { font-size:18px; }
+  .issue-detail { display:none; }
+}
+</style></head>
+<body>
+<div class="fleet-frame">
+  <div class="fleet-head">
+    <div><div class="live-chip">LIVE OPERATIONAL VIEW</div><div class="fleet-title">Fleet Status</div></div>
+    <div class="fleet-stats">
+      <div class="fleet-stat"><div class="label">TOTAL</div><div class="fleet-num">{{total}}</div></div>
+      <div class="fleet-stat"><div class="label">IN FLIGHT</div><div class="fleet-num">{{in_flight_count}}</div></div>
+      <div class="fleet-stat"><div class="label">ATTENTION</div><div class="fleet-num sev-warning">{{issue_count}}</div></div>
+    </div>
+  </div>
+  <div class="fleet-toolbar">
+    <div class="filter-chip active">All aircraft</div>
+    <div class="filter-chip">Needs attention</div>
+    <div class="filter-chip">In flight</div>
+    <div class="filter-chip">Ground ops</div>
+  </div>
+  <div class="fleet-grid">
+    {{#cards}}
+    <div class="aircraft {{card_class}}">
+      <div class="tail">{{tail_number}}</div>
+      <div class="type">{{type}} · {{callsign}}</div>
+      <div class="status"><span class="dot {{status_class}}"></span>{{status}}</div>
+      <div class="route">{{route}}</div>
+      <div class="muted">LOCATION {{location}}</div>
+      {{?has_issue}}
+      <div class="issue-box">
+        <div>{{issue_headline}}</div>
+        <div class="issue-detail">{{issue_detail}}</div>
+      </div>
+      {{/has_issue}}
+    </div>
+    {{/cards}}
+  </div>
+</div>
+</body></html>

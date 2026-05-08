@@ -1,0 +1,24 @@
+# Hermes statiese-boodskapkatalogus -- Afrikaans
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  GEVAARLIKE OPDRAG: {description}"
+  choose_long:     "      [o] een keer  |  [s] sessie  |  [a] altyd  |  [d] weier"
+  choose_short:    "      [o] een keer  |  [s] sessie  |  [d] weier"
+  prompt_long:     "      Keuse [o/s/a/D]: "
+  prompt_short:    "      Keuse [o/s/D]: "
+  timeout:         "      ⏱ Tyd verstreke - opdrag geweier"
+  allowed_once:    "      ✓ Een keer toegelaat"
+  allowed_session: "      ✓ Vir hierdie sessie toegelaat"
+  allowed_always:  "      ✓ By permanente toelaatlys gevoeg"
+  denied:          "      ✗ Geweier"
+  cancelled:       "      ✗ Gekanselleer"
+  blocklist_message: "Hierdie opdrag is op die onvoorwaardelike bloklys en kan nie goedgekeur word nie."
+
+gateway:
+  approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."
+  draining:         "⏳ Dreineer {count} aktiewe agent(e) voor herbegin..."
+  goal_cleared:     "✓ Doelwit skoongemaak."
+  no_active_goal:   "Geen aktiewe doelwit nie."
+  config_read_failed: "⚠️ Kon config.yaml nie lees nie: {error}"
+  config_save_failed: "⚠️ Kon konfigurasie nie stoor nie: {error}"

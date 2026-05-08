@@ -50,6 +50,17 @@ cli-config.yaml
 skills/.hub/
 ignored/
 .worktrees/
+
+# Local agent and Compound Engineering working artifacts
+tasks/
+docs/ideation/
+docs/brainstorms/
+docs/plans/
+.compound/
+.ce/
+PROGRESS.md
+TASK.md
+BRIEF.md
 environments/benchmarks/evals/
 
 # Web UI build output

@@ -3488,7 +3488,7 @@ def _build_compact_banner() -> str:
         return f"\n[{title_color}]{tiny_line}[/] [dim {dim_color}]- Nous Research[/]\n"
 
     inner = w - 2  # inside the box border
-    bar = "═" * w
+    bar = "═" * inner
     content_width = inner - 2
 
     # Truncate and pad to fit
@@ -6151,10 +6151,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
         
-        # Auto-compact for narrow terminals — the full banner with caduceus
-        # + tool list needs ~80 columns minimum to render without wrapping.
+        # Auto-compact for narrow terminals or skin preference — the full
+        # banner with caduceus + tool list needs ~80 columns minimum.
         term_width = shutil.get_terminal_size().columns
-        use_compact = self.compact or term_width < 80
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _skin_compact = get_active_skin().compact
+        except Exception:
+            _skin_compact = False
+        use_compact = self.compact or _skin_compact or term_width < 80
         
         if use_compact:
             self._console_print(_build_compact_banner())
@@ -8495,7 +8500,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if self._app:
                 cc = ChatConsole()
                 term_w = shutil.get_terminal_size().columns
-                if self.compact or term_w < 80:
+                try:
+                    from hermes_cli.skin_engine import get_active_skin
+                    _sc = get_active_skin().compact
+                except Exception:
+                    _sc = False
+                if self.compact or _sc or term_w < 80:
                     cc.print(_build_compact_banner())
                 else:
                     tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)

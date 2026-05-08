@@ -37,6 +37,8 @@ def test_native_create_run_slash_json_smoke(monkeypatch, tmp_path):
     assert data["public_id"] == "HL-001"
     assert data["task"]["assignee"] is None
     assert data["side_effects"]["executor_spawned"] is False
+    assert data["authority"]["routing_verdict"]["verdict"] == "Hermes direct"
+    assert data["authority"]["admission_snapshot"]["executor_dispatch"] == "forbidden_during_admission"
 
 
 def test_native_admission_dry_run_is_linear_free_and_no_write(monkeypatch, tmp_path):
@@ -84,7 +86,13 @@ def test_native_admission_creates_triage_task_with_separate_public_id(monkeypatc
     assert payload["public_id"] == "HL-009"
     assert payload["admission"]["linear_required"] is False
     assert payload["admission"]["executor_dispatch"] == "forbidden_during_admission"
+    assert payload["routing"]["verdict"] == "hermes-direct"
+    assert payload["routing"]["approval_boundary"] == "human_approval_required"
     assert payload["closeout"]["worker_done_review_ready_closed_are_distinct"] is True
+    assert task.routing_verdict["verdict"] == "Hermes direct"
+    assert task.routing_verdict["reason"]
+    assert task.admission_snapshot["linear_required"] is False
+    assert task.closeout_evidence["evidence_status"] == "not_started"
 
 
 def test_native_admission_reuses_existing_public_id(monkeypatch, tmp_path):

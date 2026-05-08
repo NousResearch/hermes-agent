@@ -94,6 +94,10 @@ VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "arch
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+VALID_REVIEW_PHASES = {"worker_done", "review_ready", "closed"}
+VALID_ROUTING_VERDICTS = {"Hermes direct", "omx exec", "omx ralph", "omx team", "blocked"}
+VALID_NAMESPACE_STATUSES = {"active", "reserved_legacy", "retired"}
+VALID_LINK_KINDS = {"parent_child", "dependency", "continuation"}
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -593,6 +597,11 @@ class Task:
     max_runtime_seconds: Optional[int] = None
     last_heartbeat_at: Optional[int] = None
     current_run_id: Optional[int] = None
+    review_phase: Optional[str] = None
+    routing_verdict: Optional[dict] = None
+    admission_snapshot: Optional[dict] = None
+    closeout_evidence: Optional[dict] = None
+    continuation_of: Optional[str] = None
     workflow_template_id: Optional[str] = None
     current_step_key: Optional[str] = None
     # Force-loaded skills for the worker on this task (appended to the
@@ -663,6 +672,11 @@ class Task:
             current_run_id=(
                 row["current_run_id"] if "current_run_id" in keys else None
             ),
+            review_phase=row["review_phase"] if "review_phase" in keys else None,
+            routing_verdict=_json_loads_maybe(row["routing_verdict"]) if "routing_verdict" in keys else None,
+            admission_snapshot=_json_loads_maybe(row["admission_snapshot"]) if "admission_snapshot" in keys else None,
+            closeout_evidence=_json_loads_maybe(row["closeout_evidence"]) if "closeout_evidence" in keys else None,
+            continuation_of=row["continuation_of"] if "continuation_of" in keys else None,
             workflow_template_id=(
                 row["workflow_template_id"] if "workflow_template_id" in keys else None
             ),
@@ -749,6 +763,42 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass
+class Namespace:
+    prefix: str
+    name: str
+    status: str
+    allocation_authority: str
+    created_at: int
+    notes: Optional[str] = None
+
+
+@dataclass
+class Alias:
+    task_id: str
+    alias: str
+    kind: str
+    created_at: int
+
+
+def _json_loads_maybe(value: Any) -> Optional[dict]:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _json_dumps_dict(value: Optional[dict], field: str) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be a JSON object")
+    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -786,6 +836,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
     current_run_id       INTEGER,
+    -- Governance layer above raw worker status. NULL means not yet at review.
+    review_phase         TEXT,
+    -- Explicit executor routing verdict and live preflight/closeout evidence.
+    routing_verdict      TEXT,
+    admission_snapshot   TEXT,
+    closeout_evidence    TEXT,
+    continuation_of      TEXT,
     -- Forward-compat for v2 workflow routing. In v1 the kernel writes
     -- these when the task is opted into a template but otherwise ignores
     -- them; the dispatcher doesn't consult them for routing yet.
@@ -807,6 +864,32 @@ CREATE TABLE IF NOT EXISTS task_links (
     parent_id  TEXT NOT NULL,
     child_id   TEXT NOT NULL,
     PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE TABLE IF NOT EXISTS task_authority_links (
+    source_task_id TEXT NOT NULL,
+    target_task_id TEXT NOT NULL,
+    kind           TEXT NOT NULL,
+    created_at     INTEGER NOT NULL,
+    payload        TEXT,
+    PRIMARY KEY (source_task_id, target_task_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS task_aliases (
+    task_id    TEXT NOT NULL,
+    alias      TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (alias, kind)
+);
+
+CREATE TABLE IF NOT EXISTS kanban_namespaces (
+    prefix               TEXT PRIMARY KEY,
+    name                 TEXT NOT NULL,
+    status               TEXT NOT NULL,
+    allocation_authority TEXT NOT NULL,
+    created_at           INTEGER NOT NULL,
+    notes                TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_comments (
@@ -878,6 +961,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_public_id       ON tasks(public_id) 
 CREATE INDEX IF NOT EXISTS idx_tasks_idempotency     ON tasks(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
+CREATE INDEX IF NOT EXISTS idx_authority_links_target ON task_authority_links(target_task_id, kind);
+CREATE INDEX IF NOT EXISTS idx_aliases_task          ON task_aliases(task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_review_phase    ON tasks(review_phase);
+CREATE INDEX IF NOT EXISTS idx_tasks_continuation    ON tasks(continuation_of);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_run            ON task_events(run_id, id);
@@ -1065,6 +1152,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "current_run_id", "current_run_id INTEGER"
         )
+    if "review_phase" not in cols:
+        _add_column_if_missing(conn, "tasks", "review_phase", "review_phase TEXT")
+    if "routing_verdict" not in cols:
+        _add_column_if_missing(conn, "tasks", "routing_verdict", "routing_verdict TEXT")
+    if "admission_snapshot" not in cols:
+        _add_column_if_missing(conn, "tasks", "admission_snapshot", "admission_snapshot TEXT")
+    if "closeout_evidence" not in cols:
+        _add_column_if_missing(conn, "tasks", "closeout_evidence", "closeout_evidence TEXT")
+    if "continuation_of" not in cols:
+        _add_column_if_missing(conn, "tasks", "continuation_of", "continuation_of TEXT")
     if "workflow_template_id" not in cols:
         _add_column_if_missing(
             conn, "tasks", "workflow_template_id", "workflow_template_id TEXT"
@@ -1086,6 +1183,37 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # which is the correct default (they keep the global behaviour
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
+
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS task_authority_links (
+        source_task_id TEXT NOT NULL,
+        target_task_id TEXT NOT NULL,
+        kind           TEXT NOT NULL,
+        created_at     INTEGER NOT NULL,
+        payload        TEXT,
+        PRIMARY KEY (source_task_id, target_task_id, kind)
+    );
+    CREATE TABLE IF NOT EXISTS task_aliases (
+        task_id    TEXT NOT NULL,
+        alias      TEXT NOT NULL,
+        kind       TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (alias, kind)
+    );
+    CREATE TABLE IF NOT EXISTS kanban_namespaces (
+        prefix               TEXT PRIMARY KEY,
+        name                 TEXT NOT NULL,
+        status               TEXT NOT NULL,
+        allocation_authority TEXT NOT NULL,
+        created_at           INTEGER NOT NULL,
+        notes                TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_authority_links_target ON task_authority_links(target_task_id, kind);
+    CREATE INDEX IF NOT EXISTS idx_aliases_task          ON task_aliases(task_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_review_phase    ON tasks(review_phase);
+    CREATE INDEX IF NOT EXISTS idx_tasks_continuation    ON tasks(continuation_of);
+    """)
+    _seed_default_namespaces(conn)
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -1180,6 +1308,40 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         )
 
 
+def _seed_default_namespaces(conn: sqlite3.Connection) -> None:
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO kanban_namespaces
+            (prefix, name, status, allocation_authority, created_at, notes)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "HL",
+            "Hermes Ledger / Kanban Work Ledger",
+            "active",
+            "Hermes Work Ledger allocator",
+            now,
+            "Initial native namespace for Hermes Work Ledger control-plane work.",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO kanban_namespaces
+            (prefix, name, status, allocation_authority, created_at, notes)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "CH",
+            "Chris/Linear issue namespace",
+            "reserved_legacy",
+            "Linear only",
+            now,
+            "Compatibility/projection refs only; never allocate for native Kanban work.",
+        ),
+    )
+
+
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
     """Context manager for an IMMEDIATE write transaction.
@@ -1256,6 +1418,11 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    review_phase: Optional[str] = None,
+    routing_verdict: Optional[dict] = None,
+    admission_snapshot: Optional[dict] = None,
+    closeout_evidence: Optional[dict] = None,
+    continuation_of: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1290,6 +1457,18 @@ def create_task(
             f"got {workspace_kind!r}"
         )
     parents = tuple(p for p in parents if p)
+    if review_phase is not None and review_phase not in VALID_REVIEW_PHASES:
+        raise ValueError(f"review_phase must be one of {sorted(VALID_REVIEW_PHASES)}")
+    if routing_verdict is not None:
+        verdict = routing_verdict.get("verdict") or routing_verdict.get("routing_verdict")
+        if verdict not in VALID_ROUTING_VERDICTS:
+            raise ValueError(f"routing_verdict.verdict must be one of {sorted(VALID_ROUTING_VERDICTS)}")
+        if not str(routing_verdict.get("reason") or "").strip():
+            raise ValueError("routing_verdict.reason is required")
+    if continuation_of:
+        row = conn.execute("SELECT id FROM tasks WHERE id = ?", (continuation_of,)).fetchone()
+        if not row:
+            raise ValueError(f"unknown continuation_of task: {continuation_of}")
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -1398,8 +1577,9 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         tenant, public_id, idempotency_key, max_runtime_seconds, skills,
-                        max_retries
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        max_retries, review_phase, routing_verdict, admission_snapshot,
+                        closeout_evidence, continuation_of
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1418,6 +1598,11 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        review_phase,
+                        _json_dumps_dict(routing_verdict, "routing_verdict"),
+                        _json_dumps_dict(admission_snapshot, "admission_snapshot"),
+                        _json_dumps_dict(closeout_evidence, "closeout_evidence"),
+                        continuation_of,
                     ),
                 )
                 for pid in parents:
@@ -1436,8 +1621,20 @@ def create_task(
                         "tenant": tenant,
                         "public_id": public_id,
                         "skills": list(skills_list) if skills_list else None,
+                        "review_phase": review_phase,
+                        "routing_verdict": routing_verdict,
+                        "continuation_of": continuation_of,
                     },
                 )
+                if continuation_of:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO task_authority_links
+                            (source_task_id, target_task_id, kind, created_at, payload)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (continuation_of, task_id, "continuation", now, None),
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -1463,6 +1660,167 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Task.from_row(row) if row else None
+
+
+def register_namespace(
+    conn: sqlite3.Connection,
+    prefix: str,
+    *,
+    name: str,
+    status: str = "active",
+    allocation_authority: str,
+    notes: Optional[str] = None,
+) -> None:
+    prefix = (prefix or "").strip().upper()
+    if len(prefix) != 2 or not prefix.isalpha() or not prefix.isascii():
+        raise ValueError("namespace prefix must be exactly two ASCII letters")
+    if status not in VALID_NAMESPACE_STATUSES:
+        raise ValueError(f"status must be one of {sorted(VALID_NAMESPACE_STATUSES)}")
+    if prefix == "CH" and status != "reserved_legacy":
+        raise ValueError("CH is reserved legacy and cannot be active native authority")
+    if not str(name or "").strip():
+        raise ValueError("namespace name is required")
+    if not str(allocation_authority or "").strip():
+        raise ValueError("allocation_authority is required")
+    conn.execute(
+        """
+        INSERT INTO kanban_namespaces
+            (prefix, name, status, allocation_authority, created_at, notes)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(prefix) DO UPDATE SET
+            name=excluded.name,
+            status=excluded.status,
+            allocation_authority=excluded.allocation_authority,
+            notes=excluded.notes
+        """,
+        (prefix, name.strip(), status, allocation_authority.strip(), int(time.time()), notes),
+    )
+
+
+def list_namespaces(conn: sqlite3.Connection) -> list[Namespace]:
+    rows = conn.execute(
+        "SELECT prefix, name, status, allocation_authority, created_at, notes "
+        "FROM kanban_namespaces ORDER BY prefix"
+    ).fetchall()
+    return [Namespace(**dict(row)) for row in rows]
+
+
+def add_task_alias(conn: sqlite3.Connection, task_id: str, alias: str, *, kind: str = "legacy_ref") -> None:
+    alias = (alias or "").strip()
+    kind = (kind or "").strip()
+    if not alias:
+        raise ValueError("alias is required")
+    if not kind:
+        raise ValueError("alias kind is required")
+    if get_task(conn, task_id) is None:
+        raise ValueError(f"unknown task: {task_id}")
+    conn.execute(
+        "INSERT INTO task_aliases (task_id, alias, kind, created_at) VALUES (?, ?, ?, ?)",
+        (task_id, alias, kind, int(time.time())),
+    )
+
+
+def resolve_task_alias(conn: sqlite3.Connection, alias: str, *, kind: Optional[str] = None) -> Optional[str]:
+    alias = (alias or "").strip()
+    if not alias:
+        return None
+    if kind is None:
+        rows = conn.execute(
+            "SELECT task_id FROM task_aliases WHERE alias = ?",
+            (alias,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT task_id FROM task_aliases WHERE alias = ? AND kind = ?",
+            (alias, kind),
+        ).fetchall()
+    task_ids = {row["task_id"] for row in rows}
+    if not task_ids:
+        return None
+    if len(task_ids) > 1:
+        raise RuntimeError(f"ambiguous task alias: {alias}")
+    return next(iter(task_ids))
+
+
+def add_authority_link(
+    conn: sqlite3.Connection,
+    source_task_id: str,
+    target_task_id: str,
+    *,
+    kind: str,
+    payload: Optional[dict] = None,
+) -> None:
+    if kind not in VALID_LINK_KINDS:
+        raise ValueError(f"kind must be one of {sorted(VALID_LINK_KINDS)}")
+    missing = _find_missing_parents(conn, [source_task_id, target_task_id])
+    if missing:
+        raise ValueError(f"unknown task(s): {', '.join(missing)}")
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO task_authority_links
+            (source_task_id, target_task_id, kind, created_at, payload)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (source_task_id, target_task_id, kind, int(time.time()), _json_dumps_dict(payload, "payload")),
+    )
+
+
+def set_task_authority(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    review_phase: Optional[str] = None,
+    routing_verdict: Optional[dict] = None,
+    admission_snapshot: Optional[dict] = None,
+    closeout_evidence: Optional[dict] = None,
+    continuation_of: Optional[str] = None,
+) -> bool:
+    if review_phase is not None and review_phase not in VALID_REVIEW_PHASES:
+        raise ValueError(f"review_phase must be one of {sorted(VALID_REVIEW_PHASES)}")
+    if routing_verdict is not None:
+        verdict = routing_verdict.get("verdict") or routing_verdict.get("routing_verdict")
+        if verdict not in VALID_ROUTING_VERDICTS:
+            raise ValueError(f"routing_verdict.verdict must be one of {sorted(VALID_ROUTING_VERDICTS)}")
+        if not str(routing_verdict.get("reason") or "").strip():
+            raise ValueError("routing_verdict.reason is required")
+    if get_task(conn, task_id) is None:
+        return False
+    if continuation_of and get_task(conn, continuation_of) is None:
+        raise ValueError(f"unknown continuation_of task: {continuation_of}")
+    conn.execute(
+        """
+        UPDATE tasks SET
+            review_phase = COALESCE(?, review_phase),
+            routing_verdict = COALESCE(?, routing_verdict),
+            admission_snapshot = COALESCE(?, admission_snapshot),
+            closeout_evidence = COALESCE(?, closeout_evidence),
+            continuation_of = COALESCE(?, continuation_of)
+        WHERE id = ?
+        """,
+        (
+            review_phase,
+            _json_dumps_dict(routing_verdict, "routing_verdict"),
+            _json_dumps_dict(admission_snapshot, "admission_snapshot"),
+            _json_dumps_dict(closeout_evidence, "closeout_evidence"),
+            continuation_of,
+            task_id,
+        ),
+    )
+    _append_event(
+        conn,
+        task_id,
+        "authority_updated",
+        {
+            "review_phase": review_phase,
+            "routing_verdict": routing_verdict,
+            "has_admission_snapshot": admission_snapshot is not None,
+            "has_closeout_evidence": closeout_evidence is not None,
+            "continuation_of": continuation_of,
+        },
+    )
+    if continuation_of:
+        add_authority_link(conn, continuation_of, task_id, kind="continuation")
+    return True
 
 
 def list_tasks(

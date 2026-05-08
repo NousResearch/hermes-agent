@@ -44,7 +44,22 @@ def test_init_creates_expected_tables(kanban_home):
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         ).fetchall()
     names = {r["name"] for r in rows}
-    assert {"tasks", "task_links", "task_comments", "task_events"} <= names
+    assert {
+        "tasks",
+        "task_links",
+        "task_comments",
+        "task_events",
+        "task_authority_links",
+        "task_aliases",
+        "kanban_namespaces",
+    } <= names
+
+
+def test_init_seeds_native_and_legacy_namespaces(kanban_home):
+    with kb.connect() as conn:
+        namespaces = {ns.prefix: ns for ns in kb.list_namespaces(conn)}
+    assert namespaces["HL"].status == "active"
+    assert namespaces["CH"].status == "reserved_legacy"
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +158,74 @@ def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
         assert kb.get_task(conn, c).status == "todo"
         kb.complete_task(conn, b)
         assert kb.get_task(conn, c).status == "ready"
+
+
+def test_register_namespace_validates_governance_rules(kanban_home):
+    with kb.connect() as conn:
+        kb.register_namespace(
+            conn,
+            "zz",
+            name="Experimental Zone",
+            status="active",
+            allocation_authority="test allocator",
+        )
+        namespaces = {ns.prefix: ns for ns in kb.list_namespaces(conn)}
+        assert namespaces["ZZ"].allocation_authority == "test allocator"
+
+        with pytest.raises(ValueError, match="exactly two ASCII letters"):
+            kb.register_namespace(conn, "H1", name="bad", allocation_authority="x")
+        with pytest.raises(ValueError, match="exactly two ASCII letters"):
+            kb.register_namespace(conn, "가나", name="bad", allocation_authority="x")
+        with pytest.raises(ValueError, match="status"):
+            kb.register_namespace(conn, "YY", name="bad", status="unknown", allocation_authority="x")
+        with pytest.raises(ValueError, match="reserved legacy"):
+            kb.register_namespace(conn, "CH", name="Legacy", status="active", allocation_authority="x")
+        with pytest.raises(ValueError, match="namespace name"):
+            kb.register_namespace(conn, "YY", name="", allocation_authority="x")
+        with pytest.raises(ValueError, match="allocation_authority"):
+            kb.register_namespace(conn, "YY", name="bad", allocation_authority="")
+
+
+def test_task_authority_round_trips_and_links_continuation(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(
+            conn,
+            title="child",
+            review_phase="worker_done",
+            routing_verdict={"verdict": "Hermes direct", "reason": "local schema slice"},
+            admission_snapshot={"preflight": "live"},
+            closeout_evidence={"tests": "pending"},
+            continuation_of=parent,
+        )
+        task = kb.get_task(conn, child)
+        assert task.review_phase == "worker_done"
+        assert task.routing_verdict == {"verdict": "Hermes direct", "reason": "local schema slice"}
+        assert task.admission_snapshot == {"preflight": "live"}
+        assert task.closeout_evidence == {"tests": "pending"}
+        assert task.continuation_of == parent
+        row = conn.execute(
+            "SELECT kind FROM task_authority_links WHERE source_task_id = ? AND target_task_id = ?",
+            (parent, child),
+        ).fetchone()
+        assert row["kind"] == "continuation"
+
+
+def test_task_authority_validation_fail_closed(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x")
+        with pytest.raises(ValueError, match="review_phase"):
+            kb.set_task_authority(conn, t, review_phase="done-ish")
+        with pytest.raises(ValueError, match="routing_verdict.verdict"):
+            kb.set_task_authority(conn, t, routing_verdict={"verdict": "Executor TBD", "reason": "no"})
+        with pytest.raises(ValueError, match="reason"):
+            kb.set_task_authority(conn, t, routing_verdict={"verdict": "blocked"})
+        with pytest.raises(ValueError, match="must be a JSON object"):
+            kb.set_task_authority(conn, t, admission_snapshot=["not", "object"])
+        with pytest.raises(ValueError, match="unknown continuation_of"):
+            kb.set_task_authority(conn, t, continuation_of="missing")
+        with pytest.raises(ValueError, match="kind"):
+            kb.add_authority_link(conn, t, t, kind="soft")
 
 
 # ---------------------------------------------------------------------------

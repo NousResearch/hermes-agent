@@ -1784,10 +1784,11 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
-    
-    Uses a file lock so only one tick runs at a time, even if the gateway's
-    in-process ticker and a standalone daemon or manual tick overlap.
-    
+
+    Uses a file lock for the scheduling phase (get_due_jobs + advance_next_run)
+    only — job execution runs without holding the lock, so subsequent ticks
+    are not blocked by long-running jobs.
+
     Args:
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
@@ -1799,7 +1800,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     lock_dir, lock_file = _get_lock_paths()
     lock_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- Scheduling phase: lock → fetch due jobs → advance → unlock ---
+    # The file lock is only held during scheduling (get_due_jobs + advance_next_run),
+    # not during job execution.  This avoids blocking subsequent ticks while a
+    # long-running job is in progress.
+    #
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
+    due_jobs: List[Dict] = []
     lock_fd = None
     try:
         lock_fd = open(lock_file, "w", encoding="utf-8")
@@ -1818,9 +1825,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
-            return 0
-
-        if verbose:
+        elif verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
         # Advance next_run_at for all recurring jobs FIRST, under the file lock,
@@ -1828,138 +1833,116 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         for job in due_jobs:
             advance_next_run(job["id"])
 
-        # Resolve max parallel workers: env var > config.yaml > unbounded.
-        # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
-        _max_workers: Optional[int] = None
-        try:
-            _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
-            if _env_par:
-                _max_workers = int(_env_par) or None
-        except (ValueError, TypeError):
-            logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
-        if _max_workers is None:
-            try:
-                _ucfg = load_config() or {}
-                _cfg_par = (
-                    _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
-                ).get("max_parallel_jobs")
-                if _cfg_par is not None:
-                    _max_workers = int(_cfg_par) or None
-            except Exception:
-                pass
-
-        if verbose:
-            logger.info(
-                "Running %d job(s) in parallel (max_workers=%s)",
-                len(due_jobs),
-                _max_workers if _max_workers else "unbounded",
-            )
-
-        def _process_job(job: dict) -> bool:
-            """Run one due job end-to-end: execute, save, deliver, mark."""
-            try:
-                success, output, final_response, error = run_job(job)
-
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
-
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                # Treat whitespace-only final responses the same as empty
-                # responses: do not deliver a blank message, and let the
-                # empty-response guard below mark the run as a soft failure.
-                should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
-
-                delivery_error = None
-                if should_deliver:
-                    try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                    except Exception as de:
-                        delivery_error = str(de)
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                # Treat empty final_response as a soft failure so last_status
-                # is not "ok" — the agent ran but produced nothing useful.
-                # (issue #8585)
-                if success and not final_response.strip():
-                    success = False
-                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-                return True
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
-                return False
-
-        # Partition due jobs: jobs with a per-job workdir and/or profile touch
-        # process-global runtime state inside run_job. Workdir jobs temporarily
-        # set os.environ["TERMINAL_CWD"]; profile jobs use a context-local
-        # Hermes home override, scheduler _hermes_home hook, and temporary
-        # profile .env load into os.environ with snapshot/restore. They MUST run
-        # sequentially to avoid corrupting each other. Jobs without either field
-        # stay parallel-safe.
-        sequential_jobs = [
-            j for j in due_jobs
-            if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
-        ]
-        parallel_jobs = [
-            j for j in due_jobs
-            if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
-        ]
-
-        _results: list = []
-
-        # Sequential pass for env/context-mutating jobs.
-        for job in sequential_jobs:
-            _ctx = contextvars.copy_context()
-            _results.append(_ctx.run(_process_job, job))
-
-        # Parallel pass for the rest — same behaviour as before.
-        if parallel_jobs:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
-                _futures = []
-                for job in parallel_jobs:
-                    _ctx = contextvars.copy_context()
-                    _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
-                for f in concurrent.futures.as_completed(_futures, timeout=600):
-                    try:
-                        _results.append(f.result())
-                    except Exception as exc:
-                        logger.error("Parallel cron job future failed: %s", exc)
-                        _results.append(False)
-
-        # Best-effort sweep of MCP stdio subprocesses that survived their
-        # session teardown during this tick.  Runs AFTER every job has
-        # finished so active sessions (including live user chats) are
-        # never touched — only PIDs explicitly detected as orphans in
-        # tools.mcp_tool._run_stdio's finally block are reaped.
-        try:
-            from tools.mcp_tool import _kill_orphaned_mcp_children
-            _kill_orphaned_mcp_children()
-        except Exception as _e:
-            logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
-
-        return sum(_results)
     finally:
-        if fcntl:
-            try:
+        if lock_fd is not None:
+            if fcntl:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
+            elif msvcrt:
+                try:
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
+            lock_fd.close()
+
+    if not due_jobs:
+        return 0
+
+    # --- Execution phase: run jobs without the lock ---
+    # Resolve max parallel workers: env var > config.yaml > unbounded.
+    _max_workers: Optional[int] = None
+    try:
+        _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
+        if _env_par:
+            _max_workers = int(_env_par) or None
+    except (ValueError, TypeError):
+        logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
+    if _max_workers is None:
+        try:
+            _ucfg = load_config() or {}
+            _cfg_par = (
+                _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
+            ).get("max_parallel_jobs")
+            if _cfg_par is not None:
+                _max_workers = int(_cfg_par) or None
+        except Exception:
+            pass
+
+    if verbose:
+        logger.info(
+            "Running %d job(s) in parallel (max_workers=%s)",
+            len(due_jobs),
+            _max_workers if _max_workers else "unbounded",
+        )
+
+    def _process_job(job: dict) -> bool:
+        """Run one due job end-to-end: execute, save, deliver, mark."""
+        try:
+            success, output, final_response, error = run_job(job)
+
+            output_file = save_job_output(job["id"], output)
+            if verbose:
+                logger.info("Output saved to: %s", output_file)
+
+            deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+            should_deliver = bool(deliver_content.strip())
+            if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                should_deliver = False
+
+            delivery_error = None
+            if should_deliver:
+                try:
+                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                except Exception as de:
+                    delivery_error = str(de)
+                    logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+            if success and not final_response.strip():
+                success = False
+                error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            return True
+
+        except Exception as e:
+            logger.error("Error processing job %s: %s", job['id'], e)
+            mark_job_run(job["id"], False, str(e))
+            return False
+
+    # Partition due jobs: workdir/profile jobs must run sequentially;
+    # the rest are parallel-safe and run fire-and-forget.
+    sequential_jobs = [
+        j for j in due_jobs
+        if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
+    ]
+    parallel_jobs = [
+        j for j in due_jobs
+        if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
+    ]
+
+    _results: list = []
+
+    # Sequential pass for env/context-mutating jobs.
+    for job in sequential_jobs:
+        _ctx = contextvars.copy_context()
+        _results.append(_ctx.run(_process_job, job))
+
+    # Parallel pass — fire-and-forget so tick() returns immediately.
+    if parallel_jobs:
+        _tick_pool = concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers)
+        for job in parallel_jobs:
+            _ctx = contextvars.copy_context()
+            _tick_pool.submit(_ctx.run, _process_job, job)
+        _tick_pool.shutdown(wait=False)
+
+    # MCP orphan sweep — safe to run while jobs are still in background threads.
+    try:
+        from tools.mcp_tool import _kill_orphaned_mcp_children
+        _kill_orphaned_mcp_children()
+    except Exception as _e:
+        logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+
+    return sum(_results)
 
 
 if __name__ == "__main__":

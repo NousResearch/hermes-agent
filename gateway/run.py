@@ -17659,13 +17659,28 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
+    HEARTBEAT_EVERY = 5    # ticks — log alive signal every 5 minutes (matches watchdog interval)
+    HEARTBEAT_FILE = os.path.expanduser("~/.hermes/cron/.ticker_heartbeat")
+
     while not stop_event.is_set():
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop)
-        except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+        except BaseException as e:
+            logger.error("Cron tick error: %s", e, exc_info=True)
 
         tick_count += 1
+
+        # Heartbeat: write timestamp every HEARTBEAT_EVERY ticks so a
+        # dead ticker can be detected externally, and log an INFO-level
+        # pulse so agent.log always shows ticker is alive when checked.
+        if tick_count % HEARTBEAT_EVERY == 0:
+            try:
+                os.makedirs(os.path.dirname(HEARTBEAT_FILE), exist_ok=True)
+                with open(HEARTBEAT_FILE, "w") as _hf:
+                    _hf.write(datetime.now().isoformat())
+            except Exception:
+                pass
+            logger.info("Cron ticker heartbeat — %d ticks so far", tick_count)
 
         if tick_count % CHANNEL_DIR_EVERY == 0 and adapters:
             try:
@@ -17682,22 +17697,22 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                     )
                     if fut is not None:
                         fut.result(timeout=30)
-            except Exception as e:
-                logger.debug("Channel directory refresh error: %s", e)
+            except BaseException as e:
+                logger.error("Channel directory refresh error: %s", e, exc_info=True)
 
         if tick_count % IMAGE_CACHE_EVERY == 0:
             try:
                 removed = cleanup_image_cache(max_age_hours=24)
                 if removed:
                     logger.info("Image cache cleanup: removed %d stale file(s)", removed)
-            except Exception as e:
-                logger.debug("Image cache cleanup error: %s", e)
+            except BaseException as e:
+                logger.error("Image cache cleanup error: %s", e, exc_info=True)
             try:
                 removed = cleanup_document_cache(max_age_hours=24)
                 if removed:
                     logger.info("Document cache cleanup: removed %d stale file(s)", removed)
-            except Exception as e:
-                logger.debug("Document cache cleanup error: %s", e)
+            except BaseException as e:
+                logger.error("Document cache cleanup error: %s", e, exc_info=True)
 
         if tick_count % PASTE_SWEEP_EVERY == 0:
             try:
@@ -17707,8 +17722,8 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                         "Paste sweep: deleted %d expired paste(s), %d pending",
                         deleted, remaining,
                     )
-            except Exception as e:
-                logger.debug("Paste sweep error: %s", e)
+            except BaseException as e:
+                logger.error("Paste sweep error: %s", e, exc_info=True)
 
         # Curator — piggy-back on the existing cron ticker so long-running
         # gateways get weekly skill maintenance without needing restarts.
@@ -17722,10 +17737,11 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                     idle_for_seconds=float("inf"),
                     on_summary=lambda msg: logger.info("curator: %s", msg),
                 )
-            except Exception as e:
-                logger.debug("Curator tick error: %s", e)
+            except BaseException as e:
+                logger.error("Curator tick error: %s", e, exc_info=True)
 
         stop_event.wait(timeout=interval)
+
     logger.info("Cron ticker stopped")
 
 

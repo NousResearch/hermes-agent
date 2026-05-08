@@ -762,6 +762,102 @@ credential_pool_strategies:
 
 Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/docs/user-guide/features/credential-pools) for full documentation.
 
+## Key Pool (Single-Provider Key Rotation)
+
+When you have multiple API keys for the **same** provider, configure `key_pool` in `hermes.toml` to enable automatic rotation. Exhausted keys (429/402) enter a configurable cooldown and the next available key is used.
+
+```toml
+[key_pool]
+base_url = "https://api.longcat.chat/openai"
+strategy = "fill_first"          # fill_first | round_robin | least_used
+cooldown_429 = 3600              # seconds to wait after rate-limit
+cooldown_default = 3600          # seconds to wait after other errors
+
+[[key_pool.keys]]
+api_key = "ak_xxx"
+label = "primary"
+priority = 0                     # lower = picked first
+
+[[key_pool.keys]]
+api_key = "ak_yyy"
+label = "backup"
+priority = 1
+```
+
+| Strategy | Behavior |
+|----------|----------|
+| `fill_first` (default) | Use the first available key until exhausted, then fall through |
+| `round_robin` | Cycle through keys evenly |
+| `least_used` | Pick the key with the fewest total uses |
+
+State is persisted to `~/.hermes/state/key_pool.json` and survives restarts. The module also provides `call_with_failover()` for programmatic retry with automatic key rotation.
+
+## Provider Pool (Multi-Provider Routing)
+
+For **failover across different API providers**, configure `provider_pool` in `hermes.toml`. Each provider has its own `base_url`, optional key pool, and priority. Requests are tried in priority order; if a provider fails too many times within a rolling time window, it enters cooldown and traffic shifts to the next provider.
+
+```toml
+[provider_pool]
+fail_threshold = 3               # failures before cooldown kicks in
+window_seconds = 3600            # rolling window size (1 hour)
+strategy = "priority"            # priority | round_robin
+
+[[provider_pool.providers]]
+name = "longcat"
+base_url = "https://api.longcat.chat/openai"
+priority = 0                     # lower = tried first
+
+[[provider_pool.providers.keys]]
+api_key = "ak_xxx"
+label = "longcat-primary"
+
+[[provider_pool.providers]]
+name = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+priority = 1
+model_map = {"default": "anthropic/claude-sonnet-4"}
+
+[[provider_pool.providers.keys]]
+api_key = "sk-or-xxx"
+label = "openrouter-primary"
+```
+
+### How it works
+
+1. **Priority routing**: The provider with the lowest `priority` number is tried first.
+2. **Failure tracking**: Each failure is recorded with a timestamp. Old failures outside the `window_seconds` window are pruned automatically.
+3. **Cooldown**: When a provider reaches `fail_threshold` failures within the window, it enters cooldown for the remainder of that window (all subsequent requests skip it).
+4. **Auto-recovery**: After the window resets, the provider is automatically retried.
+5. **Key-level failover**: Each provider can have its own `[[provider_pool.providers.keys]]` section for key rotation within that provider (uses the same KeyPool mechanism).
+
+### Example flow
+
+```
+Request → Longcat (priority 0)     ❌ failure 1/3
+Request → Longcat (priority 0)     ❌ failure 2/3
+Request → Longcat (priority 0)     ❌ failure 3/3 → COOLDOWN 1h
+Request → OpenRouter (priority 1)  ✅ success
+... all requests → OpenRouter for 1 hour ...
+(1 hour later — window resets)
+Request → Longcat (priority 0)     ✅ recovered!
+```
+
+### Per-provider overrides
+
+Each provider can override the global `fail_threshold` and `window_seconds`:
+
+```toml
+[[provider_pool.providers]]
+name = "cheap-api"
+base_url = "https://cheap-api.example.com/v1"
+priority = 0
+fail_threshold = 5               # more tolerant — 5 failures before cooldown
+window_seconds = 7200            # 2-hour window
+```
+
+State is persisted to `~/.hermes/state/provider_pool.json` and survives restarts.
+
+
 ## Auxiliary Models
 
 Hermes uses "auxiliary" models for side tasks like image analysis, web page summarization, browser screenshot analysis, session-title generation, and context compression. By default (`auxiliary.*.provider: "auto"`), Hermes routes every auxiliary task to your **main chat model** — the same provider/model you picked in `hermes model`. You don't need to configure anything to get started, but be aware that on expensive reasoning models (Opus, MiniMax M2.7, etc.) auxiliary tasks add meaningful cost. If you want cheap-and-fast side tasks regardless of your main model, set `auxiliary.<task>.provider` and `auxiliary.<task>.model` explicitly (for example, Gemini Flash on OpenRouter for vision and web extraction).

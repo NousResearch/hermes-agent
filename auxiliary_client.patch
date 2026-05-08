@@ -1,0 +1,119 @@
+diff --git a/agent/auxiliary_client.py b/agent/auxiliary_client.py
+index b86f78f..9df4a64 100644
+--- a/agent/auxiliary_client.py
++++ b/agent/auxiliary_client.py
+@@ -100,6 +100,7 @@ class _OpenAIProxy:
+ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
+ 
+ from agent.credential_pool import load_pool
++from agent.key_router import get_router as _get_key_router
+ from hermes_cli.config import get_hermes_home
+ from hermes_constants import OPENROUTER_BASE_URL
+ from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
+@@ -3606,6 +3607,37 @@ def call_llm(
+         # ── Connection error fallback ────────────────────────────────
+         # When a provider endpoint is unreachable (DNS failure, connection
+         # refused, timeout), try alternative providers.  This handles stale
++        # ── Key pool rotation (same-provider multi-key failover) ──────
++        _kr = _get_key_router()
++        if _kr and _is_payment_error(first_err):
++            _kr_base = _kr.base_url.rstrip("/")
++            _call_base = str(getattr(client, "base_url", "") or "").rstrip("/")
++            if _kr_base in _call_base or _call_base in _kr_base:
++                _current_key = str(getattr(client, "api_key", "") or "")
++                _kr.mark_exhausted(
++                    _current_key,
++                    error_code=getattr(first_err, "status_code", 0),
++                    error_message=str(first_err),
++                )
++                logger.info("Auxiliary %s: key %s exhausted, trying key pool rotation",
++                            task or "call", _current_key[:8] + "…")
++                try:
++                    _rc, _rm = _kr.get_client(model=final_model)
++                    _rk = dict(kwargs); _rk["model"] = _rm or final_model
++                    return _validate_llm_response(
++                        _rc.chat.completions.create(**_rk), task)
++                except Exception as _re:
++                    if _is_payment_error(_re) or _is_connection_error(_re):
++                        _kr.mark_exhausted(
++                            str(getattr(_rc, "api_key", "")),
++                            error_code=getattr(_re, "status_code", 0),
++                            error_message=str(_re),
++                        )
++                        logger.warning("Auxiliary %s: rotated key also failed (%s), falling through",
++                                       task or "call", _re)
++                    else:
++                        raise
++
+         # Codex/OAuth tokens that authenticate but whose endpoint is down,
+         # and providers the user never configured that got picked up by
+         # the auto-detection chain.
+@@ -3887,6 +3919,68 @@ async def async_call_llm(
+                     return _validate_llm_response(
+                         await retry_client.chat.completions.create(**retry_kwargs), task)
+ 
++        # ── Key pool rotation (same-provider multi-key failover) ──────
++        _kr = _get_key_router()
++        if _kr and _is_payment_error(first_err):
++            _kr_base = _kr.base_url.rstrip("/")
++            _call_base = str(getattr(client, "base_url", "") or "").rstrip("/")
++            if _kr_base in _call_base or _call_base in _kr_base:
++                _current_key = str(getattr(client, "api_key", "") or "")
++                _kr.mark_exhausted(
++                    _current_key,
++                    error_code=getattr(first_err, "status_code", 0),
++                    error_message=str(first_err),
++                )
++                logger.info("Auxiliary %s (async): key %s exhausted, trying key pool rotation",
++                            task or "call", _current_key[:8] + "…")
++                try:
++                    _rc, _rm = _kr.get_async_client(model=final_model)
++                    _rk = dict(kwargs); _rk["model"] = _rm or final_model
++                    return _validate_llm_response(
++                        await _rc.chat.completions.create(**_rk), task)
++                except Exception as _re:
++                    if _is_payment_error(_re) or _is_connection_error(_re):
++                        _kr.mark_exhausted(
++                            str(getattr(_rc, "api_key", "")),
++                            error_code=getattr(_re, "status_code", 0),
++                            error_message=str(_re),
++                        )
++                        logger.warning("Auxiliary %s (async): rotated key also failed (%s), falling through",
++                                       task or "call", _re)
++                    else:
++                        raise
++
++        # ── Key pool rotation (same-provider multi-key failover) ──────
++        _kr = _get_key_router()
++        if _kr and _is_payment_error(first_err):
++            _kr_base = _kr.base_url.rstrip("/")
++            _call_base = str(getattr(client, "base_url", "") or "").rstrip("/")
++            if _kr_base in _call_base or _call_base in _kr_base:
++                _current_key = str(getattr(client, "api_key", "") or "")
++                _kr.mark_exhausted(
++                    _current_key,
++                    error_code=getattr(first_err, "status_code", 0),
++                    error_message=str(first_err),
++                )
++                logger.info("Auxiliary %s (async): key %s exhausted, trying key pool rotation",
++                            task or "call", _current_key[:8] + "…")
++                try:
++                    _rc, _rm = _kr.get_async_client(model=final_model)
++                    _rk = dict(kwargs); _rk["model"] = _rm or final_model
++                    return _validate_llm_response(
++                        await _rc.chat.completions.create(**_rk), task)
++                except Exception as _re:
++                    if _is_payment_error(_re) or _is_connection_error(_re):
++                        _kr.mark_exhausted(
++                            str(getattr(_rc, "api_key", "")),
++                            error_code=getattr(_re, "status_code", 0),
++                            error_message=str(_re),
++                        )
++                        logger.warning("Auxiliary %s (async): rotated key also failed (%s), falling through",
++                                       task or "call", _re)
++                    else:
++                        raise
++
+         # ── Payment / connection fallback (mirrors sync call_llm) ─────
+         should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+         is_auto = resolved_provider in ("auto", "", None)

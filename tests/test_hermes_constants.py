@@ -10,10 +10,14 @@ import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     display_hermes_home,
+    get_config_path,
     get_default_hermes_root,
+    get_env_path,
     get_hermes_dir,
     get_optional_skills_dir,
+    get_skills_dir,
     is_container,
+    is_termux,
     parse_reasoning_effort,
 )
 
@@ -284,3 +288,85 @@ class TestDisplayHermesHome:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(non_default))
         assert display_hermes_home() == "~/myhermes-data"
+
+
+class TestIsTermux:
+    """Tests for is_termux() — Android/Termux runtime detection."""
+
+    def test_detects_via_termux_version(self, monkeypatch):
+        """TERMUX_VERSION env var is the canonical Termux marker."""
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.0")
+        monkeypatch.delenv("PREFIX", raising=False)
+        assert is_termux() is True
+
+    def test_detects_via_prefix_path(self, monkeypatch):
+        """The Termux-specific PREFIX path also triggers detection."""
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        assert is_termux() is True
+
+    def test_negative_when_neither_marker_present(self, monkeypatch):
+        """Regular Linux: no env signals → False."""
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.delenv("PREFIX", raising=False)
+        assert is_termux() is False
+
+    def test_negative_for_unrelated_prefix(self, monkeypatch):
+        """A non-Termux PREFIX must not trigger a false positive."""
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.setenv("PREFIX", "/usr/local")
+        assert is_termux() is False
+
+    def test_empty_termux_version_falls_back_to_prefix(self, monkeypatch):
+        """Empty TERMUX_VERSION is falsy — PREFIX still gets a chance."""
+        monkeypatch.setenv("TERMUX_VERSION", "")
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        assert is_termux() is True
+
+    def test_empty_termux_version_and_unrelated_prefix_is_false(
+        self, monkeypatch
+    ):
+        """Both empty/unrelated → False, not crash."""
+        monkeypatch.setenv("TERMUX_VERSION", "")
+        monkeypatch.setenv("PREFIX", "/usr")
+        assert is_termux() is False
+
+
+class TestWellKnownPaths:
+    """Tests for the get_*_path / get_*_dir helpers under HERMES_HOME."""
+
+    @pytest.mark.parametrize(
+        "func, suffix",
+        [
+            (get_config_path, "config.yaml"),
+            (get_skills_dir, "skills"),
+            (get_env_path, ".env"),
+        ],
+        ids=["config_path", "skills_dir", "env_path"],
+    )
+    def test_resolves_under_hermes_home(
+        self, tmp_path, monkeypatch, func, suffix
+    ):
+        """Each helper appends its own suffix to the current HERMES_HOME."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert func() == tmp_path / suffix
+
+    @pytest.mark.parametrize(
+        "func", [get_config_path, get_skills_dir, get_env_path]
+    )
+    def test_falls_back_to_default_home(self, tmp_path, monkeypatch, func):
+        """With HERMES_HOME unset, helpers anchor at ~/.hermes."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        assert func().parent == tmp_path / ".hermes"
+
+    def test_helpers_track_hermes_home_changes(self, tmp_path, monkeypatch):
+        """Changing HERMES_HOME shifts every helper to the new root."""
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        monkeypatch.setenv("HERMES_HOME", str(first))
+        assert get_config_path() == first / "config.yaml"
+        monkeypatch.setenv("HERMES_HOME", str(second))
+        assert get_config_path() == second / "config.yaml"
+        assert get_skills_dir() == second / "skills"
+        assert get_env_path() == second / ".env"

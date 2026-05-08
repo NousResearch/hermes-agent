@@ -21,7 +21,8 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write # needed to post/update PR comments
+  pull-requests: write # needed to post/update PR comments on same-repo PRs
+  issues: write # needed because PR comments use the Issues comments API
 
 concurrency:
   group: lint-${{ github.ref }}
@@ -119,7 +120,7 @@ jobs:
           retention-days: 14
 
       - name: Post / update PR comment
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |

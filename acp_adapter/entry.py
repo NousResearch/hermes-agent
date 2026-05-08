@@ -265,6 +265,11 @@ def main(argv: list[str] | None = None) -> None:
     except Exception:
         logger.exception("ACP agent crashed")
         sys.exit(1)
+    finally:
+        try:
+            agent.shutdown()
+        except Exception:
+            logger.debug("ACP agent shutdown failed", exc_info=True)
 
 
 if __name__ == "__main__":

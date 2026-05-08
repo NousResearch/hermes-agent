@@ -385,6 +385,33 @@ class SessionManager:
         if state is not None:
             self._persist(state)
 
+    def shutdown_sessions(self) -> None:
+        """Gracefully shut down every in-memory session's agent.
+
+        The ACP server can be a short-lived process (for example one-shot
+        stdio runners).  In that mode the process may exit immediately after
+        returning the final PromptResponse, while memory providers still have
+        best-effort background work queued for the completed turn.  Calling
+        AIAgent.shutdown_memory_provider() gives providers a chance to flush
+        that work and close clients before interpreter teardown.
+        """
+        with self._lock:
+            states = list(self._sessions.values())
+
+        for state in states:
+            agent = state.agent
+            shutdown = getattr(agent, "shutdown_memory_provider", None)
+            if not callable(shutdown):
+                continue
+            try:
+                shutdown(state.history)
+            except Exception:
+                logger.debug(
+                    "Failed to shut down ACP session %s memory provider",
+                    state.session_id,
+                    exc_info=True,
+                )
+
     # ---- persistence via SessionDB ------------------------------------------
 
     def _get_db(self):

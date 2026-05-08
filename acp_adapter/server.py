@@ -569,6 +569,10 @@ class HermesACPAgent(acp.Agent):
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
         return policy, state.cwd
 
+    def shutdown(self) -> None:
+        """Flush per-session resources before the ACP process exits."""
+        self.session_manager.shutdown_sessions()
+
     @staticmethod
     def _encode_model_choice(provider: str | None, model: str | None) -> str:
         """Encode a model selection so ACP clients can keep provider context."""

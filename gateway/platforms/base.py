@@ -952,6 +952,15 @@ _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE),
 )
 
+_PLAINTEXT_CONTEXT_COMMANDS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^(?:현재\s*)?맥락\s*보여줘[.!?\s]*$"), "/context status"),
+    (re.compile(r"^지금\s*무슨\s*배치야[?!.\s]*$"), "/context status"),
+    (re.compile(r"^이거\s*새\s*배치로\s*열어[.!?\s]*$"), "/context new"),
+    (re.compile(r"^이\s*배치\s*잠깐\s*멈춰[.!?\s]*$"), "/context pause"),
+    (re.compile(r"^이\s*배치\s*닫고\s*다음\s*작업으로\s*넘어가[.!?\s]*$"), "/context done"),
+    (re.compile(r"^(?:스파크|spark)(?:에게)?\s*(?:구현\s*)?넘길\s*수\s*있게\s*정리해[.!?\s]*$", re.IGNORECASE), "/context handoff Spark"),
+)
+
 
 def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
     """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
@@ -976,6 +985,10 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS:
             if pattern.match(text):
                 event.text = "/restart"
+                return
+        for pattern, command in _PLAINTEXT_CONTEXT_COMMANDS:
+            if pattern.match(text):
+                event.text = command
                 return
     except Exception:
         return

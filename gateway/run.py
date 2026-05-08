@@ -5613,6 +5613,9 @@ class GatewayRunner:
         if canonical == "status":
             return await self._handle_status_command(event)
 
+        if canonical == "context":
+            return await self._handle_context_command(event)
+
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
@@ -7517,6 +7520,36 @@ class GatewayRunner:
         if len(output) > 3800:
             output = output[:3800] + "\n… (truncated; use `hermes kanban …` in your terminal for full output)"
         return output or "(no output)"
+
+    async def _handle_context_command(self, event: MessageEvent) -> str:
+        """Handle /context command for Project/Batch Context Cards."""
+        try:
+            from pathlib import Path
+            import os
+
+            from hermes_constants import get_hermes_home
+            from hermes_context_cards import ContextCardStore, context_namespace, handle_context_command
+
+            source = event.source
+            session_entry = self.session_store.get_or_create_session(source)
+            platform = getattr(source, "platform", None)
+            platform_name = platform.value if hasattr(platform, "value") else str(platform or "gateway")
+            chat_id = getattr(source, "chat_id", "") or ""
+            thread_id = getattr(source, "thread_id", "") or ""
+            source_surface = ":".join(str(p) for p in (platform_name, chat_id, thread_id) if p)
+            base_root = Path(os.getenv("HERMES_CONTEXT_CARDS_DIR") or (get_hermes_home() / "context-cards"))
+            store = ContextCardStore(base_root / "gateway" / context_namespace(session_entry.session_key))
+            return handle_context_command(
+                event.get_command_args(),
+                store=store,
+                session_id=session_entry.session_id,
+                source_surface=source_surface,
+            )
+        except ValueError as exc:
+            return f"Usage: /context [status|new|switch|pause|done|handoff] [args]\n\n{exc}"
+        except Exception as exc:
+            logger.exception("context command failed")
+            return f"Context command failed: {exc}"
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

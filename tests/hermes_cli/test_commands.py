@@ -108,12 +108,21 @@ class TestResolveCommand:
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
         assert resolve_command("tasks").name == "agents"
+        assert resolve_command("ctx").name == "context"
 
     def test_topic_is_gateway_command(self):
         topic = resolve_command("topic")
         assert topic is not None
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
+
+    def test_context_command_is_available_to_gateway(self):
+        context = resolve_command("context")
+        assert context is not None
+        assert context.name == "context"
+        assert context.subcommands == ("status", "new", "switch", "pause", "done", "handoff")
+        assert "context" in GATEWAY_KNOWN_COMMANDS
+        assert "ctx" in GATEWAY_KNOWN_COMMANDS
 
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"

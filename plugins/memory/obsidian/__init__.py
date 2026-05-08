@@ -25,6 +25,12 @@ from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 
+try:
+    from hermes_cli.config import cfg_get, load_config
+except Exception:  # pragma: no cover - Hermes imports can vary in tests
+    cfg_get = None
+    load_config = None
+
 logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────────
@@ -54,6 +60,47 @@ def _env_value(name: str, default: str = "") -> str:
     return default
 
 
+def _cfg_value(*paths: str, default: str = "") -> str:
+    """Return the first non-empty Hermes config value from candidate paths."""
+    if not load_config or not cfg_get:
+        return default
+    try:
+        config = load_config()
+    except Exception:
+        return default
+    for path in paths:
+        parts = tuple(part for part in path.split(".") if part)
+        if not parts:
+            continue
+        try:
+            value = cfg_get(config, *parts)
+        except Exception:
+            value = None
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
+
+
+def _vault_path_value() -> str:
+    """Resolve the Obsidian vault path from env or Hermes config.
+
+    Chris's live config stores this under plugins.obsidian.vault_path; older
+    drafts used root obsidian.vault_path. Support both so the plugin survives
+    config migration and profile-specific HERMES_HOME usage.
+    """
+    return _env_value(
+        "OBSIDIAN_VAULT_PATH",
+        _cfg_value("obsidian.vault_path", "plugins.obsidian.vault_path"),
+    )
+
+
+def _memory_folder_value() -> str:
+    return _env_value(
+        "OBSIDIAN_MEMORY_FOLDER",
+        _cfg_value("obsidian.memory_folder", "plugins.obsidian.memory_folder", default="Memory"),
+    )
+
+
 class ObsidianMemoryProvider(MemoryProvider):
     """Mirrors Hermes memory to an Obsidian vault with continuous offload."""
 
@@ -71,6 +118,7 @@ class ObsidianMemoryProvider(MemoryProvider):
         self._raw_checkpoint_path: Optional[Path] = None
         # In-memory buffer for current session
         self._message_buffer: List[Dict[str, Any]] = []
+        self._last_user_content: str = ""
 
     # ------------------------------------------------------------------
     # Core lifecycle
@@ -81,7 +129,7 @@ class ObsidianMemoryProvider(MemoryProvider):
         return "obsidian"
 
     def is_available(self) -> bool:
-        vault = _env_value("OBSIDIAN_VAULT_PATH")
+        vault = _vault_path_value()
         if not vault:
             logger.debug("OBSIDIAN_VAULT_PATH not set")
             return False
@@ -95,9 +143,10 @@ class ObsidianMemoryProvider(MemoryProvider):
         return True
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        vault = _env_value("OBSIDIAN_VAULT_PATH")
+        vault = _vault_path_value()
+        memory_folder = _memory_folder_value() or "Memory"
         self._vault_path = Path(vault)
-        self._memory_dir = self._vault_path / "Memory"
+        self._memory_dir = self._vault_path / memory_folder
         self._daily_dir = self._memory_dir / "daily"
         self._sessions_dir = self._memory_dir / "sessions"
         self._agents_dir = self._memory_dir / "agents"
@@ -107,13 +156,13 @@ class ObsidianMemoryProvider(MemoryProvider):
 
         # Ensure dirs exist
         for d in (self._memory_dir, self._daily_dir, self._sessions_dir, self._agents_dir):
-            d.mkdir(exist_ok=True)
+            d.mkdir(parents=True, exist_ok=True)
 
         # Ensure mirror files exist
         for name in ("MEMORY.md", "USER.md"):
             vault_file = self._memory_dir / name
             if not vault_file.exists():
-                vault_file.write_text("")
+                vault_file.write_text("", encoding="utf-8")
 
         logger.info(
             "Obsidian memory initialized — vault: %s, session: %s",
@@ -135,19 +184,62 @@ class ObsidianMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        """Count turns, buffer messages, and write raw checkpoints periodically."""
+        """Count turns and buffer the user message for the current turn."""
         self._turn_count = turn_number
+        if message:
+            self._buffer_message("user", message)
+            self._last_user_content = message
 
-        # Buffer the user message for checkpointing
-        if message and len(message) > 0:
-            self._message_buffer.append({"role": "user", "content": message[:500]})
-            if len(self._message_buffer) > 20:
-                self._message_buffer = self._message_buffer[-20:]
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+        """Persist a completed turn to the raw checkpoint buffer.
 
-        # Every N turns, write a raw checkpoint
-        if turn_number - self._last_checkpoint_turn >= RAW_CHECKPOINT_EVERY_TURNS:
-            self._write_raw_checkpoint()
-            self._last_checkpoint_turn = turn_number
+        MemoryManager calls this after the assistant response, so this is the
+        reliable point to include both sides of the turn and checkpoint every
+        fifth completed user turn.
+        """
+        if session_id and session_id != self._session_id:
+            self.on_session_switch(session_id)
+
+        if user_content and user_content != self._last_user_content:
+            self._buffer_message("user", user_content)
+            self._last_user_content = user_content
+        if assistant_content:
+            self._buffer_message("assistant", assistant_content)
+
+        if self._turn_count - self._last_checkpoint_turn >= RAW_CHECKPOINT_EVERY_TURNS:
+            if self._write_raw_checkpoint():
+                self._last_checkpoint_turn = self._turn_count
+                self.summarize_session()
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Start writing checkpoints under the new Hermes session id."""
+        if not new_session_id or new_session_id == self._session_id:
+            return
+        if self._message_buffer:
+            self._write_raw_checkpoint(force=True)
+        self._session_id = new_session_id
+        self._session_start = datetime.now(timezone.utc)
+        self._turn_count = 0
+        self._last_checkpoint_turn = 0
+        self._last_user_content = ""
+        self._message_buffer = []
+        if self._sessions_dir:
+            self._raw_checkpoint_path = self._sessions_dir / f"{new_session_id}-raw.md"
+
+    def _buffer_message(self, role: str, content: str) -> None:
+        text = (content or "").strip()
+        if not text:
+            return
+        self._message_buffer.append({"role": role, "content": text[:2000]})
+        if len(self._message_buffer) > 40:
+            self._message_buffer = self._message_buffer[-40:]
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Summarize raw checkpoint before context compression."""
@@ -196,10 +288,10 @@ class ObsidianMemoryProvider(MemoryProvider):
     # Raw checkpoint writer
     # ------------------------------------------------------------------
 
-    def _write_raw_checkpoint(self, force: bool = False) -> None:
+    def _write_raw_checkpoint(self, force: bool = False) -> bool:
         """Append buffered messages to the raw checkpoint file."""
         if not self._raw_checkpoint_path or not self._message_buffer:
-            return
+            return False
 
         lines = [f"\n--- Checkpoint @ turn {self._turn_count} ---\n"]
         for m in self._message_buffer:
@@ -215,11 +307,14 @@ class ObsidianMemoryProvider(MemoryProvider):
                 lines.append(f"[{role}] <tool results>\n")
 
         try:
-            with open(self._raw_checkpoint_path, "a") as f:
+            with open(self._raw_checkpoint_path, "a", encoding="utf-8") as f:
                 f.write("".join(lines))
-            logger.debug("Raw checkpoint written: %s", self._raw_checkpoint_path.name)
+            self._message_buffer = []
+            logger.info("Raw checkpoint written: %s", self._raw_checkpoint_path.name)
+            return True
         except OSError as e:
             logger.debug("Raw checkpoint failed: %s", e)
+            return False
 
     # ------------------------------------------------------------------
     # Summarize command (triggered by user or schedule)
@@ -231,7 +326,7 @@ class ObsidianMemoryProvider(MemoryProvider):
             return None
 
         try:
-            raw_content = self._raw_checkpoint_path.read_text()
+            raw_content = self._raw_checkpoint_path.read_text(encoding="utf-8")
             if not raw_content.strip():
                 self._raw_checkpoint_path.unlink(missing_ok=True)
                 return None
@@ -242,7 +337,12 @@ class ObsidianMemoryProvider(MemoryProvider):
                 return None
 
             summary_path = self._sessions_dir / f"{self._session_id}.md"
-            summary_path.write_text(summary)
+            if summary_path.exists():
+                existing = summary_path.read_text(encoding="utf-8")
+                combined = existing.rstrip() + "\n\n---\n\n" + summary
+                summary_path.write_text(combined, encoding="utf-8")
+            else:
+                summary_path.write_text(summary, encoding="utf-8")
 
             # Delete raw after successful summary
             self._raw_checkpoint_path.unlink(missing_ok=True)
@@ -433,7 +533,7 @@ class ObsidianMemoryProvider(MemoryProvider):
             )
             if summaries:
                 latest = summaries[0]
-                content = latest.read_text().strip()
+                content = latest.read_text(encoding="utf-8").strip()
                 if content:
                     result_parts.append(f"## Recalled Memory: Latest Clean Session Summary")
                     result_parts.append(f"Source: {latest}")
@@ -449,7 +549,7 @@ class ObsidianMemoryProvider(MemoryProvider):
             daily = self._daily_dir / f"{today}.md"
             if daily.exists():
                 try:
-                    content = daily.read_text()
+                    content = daily.read_text(encoding="utf-8")
                     # Find the last # Daily Summary section
                     summary_marker = "# Daily Summary"
                     last_idx = content.rfind(summary_marker)
@@ -488,23 +588,23 @@ class ObsidianMemoryProvider(MemoryProvider):
 
         try:
             if action == "add":
-                current = vault_file.read_text() if vault_file.exists() else ""
+                current = vault_file.read_text(encoding="utf-8") if vault_file.exists() else ""
                 entry = f"{content}\n"
-                vault_file.write_text((current + entry).strip() + "\n")
+                vault_file.write_text((current + entry).strip() + "\n", encoding="utf-8")
 
             elif action == "replace":
                 old_text = (metadata or {}).get("old_text", "")
-                current = vault_file.read_text() if vault_file.exists() else ""
+                current = vault_file.read_text(encoding="utf-8") if vault_file.exists() else ""
                 if old_text and old_text in current:
-                    vault_file.write_text(current.replace(old_text, content))
+                    vault_file.write_text(current.replace(old_text, content), encoding="utf-8")
                 else:
-                    vault_file.write_text((current + f"\n{content}").strip() + "\n")
+                    vault_file.write_text((current + f"\n{content}").strip() + "\n", encoding="utf-8")
 
             elif action == "remove":
                 old_text = (metadata or {}).get("old_text", "")
-                current = vault_file.read_text() if vault_file.exists() else ""
+                current = vault_file.read_text(encoding="utf-8") if vault_file.exists() else ""
                 if old_text and old_text in current:
-                    vault_file.write_text(current.replace(old_text, "").strip() + "\n")
+                    vault_file.write_text(current.replace(old_text, "").strip() + "\n", encoding="utf-8")
 
         except OSError as e:
             logger.debug("Obsidian mirror write failed for %s: %s", filename, e)
@@ -527,7 +627,7 @@ class ObsidianMemoryProvider(MemoryProvider):
         # If summarize_session produced a clean summary, use that
         if summary_path and summary_path.exists():
             try:
-                clean_summary = summary_path.read_text().strip()
+                clean_summary = summary_path.read_text(encoding="utf-8").strip()
                 if clean_summary:
                     # Extract just the key sections from the clean summary
                     entry_parts = [f"\n## Session {self._session_id[:8]} @ {datetime.now(timezone.utc).strftime('%H:%M')}"]
@@ -570,7 +670,7 @@ class ObsidianMemoryProvider(MemoryProvider):
                     
                     if len(entry_parts) > 1:  # More than just the header
                         entry = "\n".join(entry_parts) + "\n"
-                        with open(daily, "a") as f:
+                        with open(daily, "a", encoding="utf-8") as f:
                             f.write(entry)
                         return  # Done — clean summary written
             except OSError:
@@ -590,7 +690,7 @@ class ObsidianMemoryProvider(MemoryProvider):
             time_str = now.strftime("%H:%M")
             entry = f"\n## Session {self._session_id[:8]} @ {time_str}\n\n**Requests:**\n- [{time_str}] {last_user_msg}\n"
             try:
-                with open(daily, "a") as f:
+                with open(daily, "a", encoding="utf-8") as f:
                     f.write(entry)
             except OSError as e:
                 logger.debug("Failed to write session-end daily note: %s", e)
@@ -626,7 +726,7 @@ class ObsidianMemoryProvider(MemoryProvider):
             # Build condensed daily entry
             lines = [f"\n# Daily Summary — {today}\n"]
             for s in sorted(summaries, key=lambda f: f.stat().st_mtime):
-                content = s.read_text().strip()
+                content = s.read_text(encoding="utf-8").strip()
                 if content:
                     # Extract key lines with timestamps
                     for line in content.splitlines():
@@ -639,7 +739,7 @@ class ObsidianMemoryProvider(MemoryProvider):
                     lines.append("")
 
             # Append to daily note
-            with open(daily, "a") as f:
+            with open(daily, "a", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
 
             # Optionally: archive old summaries (keep last 7 days)
@@ -658,36 +758,46 @@ class ObsidianMemoryProvider(MemoryProvider):
             return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
         return ""
 
-    def on_delegation(self, task: str, result: str, *,
-                      child_session_id: str = "", **kwargs) -> None:
-        """Log subagent work to Memory/agents/{date}/{agent_name}.md"""
+    def write_agent_memory(self, agent_name: str, task: str, result: str, *,
+                           child_session_id: str = "") -> Optional[Path]:
+        """Write subagent completion memory under Memory/agents/{date}."""
         if not self._agents_dir:
-            return
+            return None
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         agent_dir = self._agents_dir / today
-        agent_dir.mkdir(exist_ok=True)
+        agent_dir.mkdir(parents=True, exist_ok=True)
 
-        # Extract agent name from kwargs or use default
-        agent_name = kwargs.get("agent_name", "unknown")
-        log_file = agent_dir / f"{agent_name}.md"
+        safe_agent = re.sub(r"[^A-Za-z0-9_.-]+", "-", agent_name or "unknown").strip("-") or "unknown"
+        log_file = agent_dir / f"{safe_agent}.md"
         timestamp = datetime.now(timezone.utc).isoformat()
+        session_line = f"**Child session:** {child_session_id}\n" if child_session_id else ""
 
         entry = f"""
 ## {timestamp}
-**Task:** {task[:200]}
-**Result:** {result[:500]}
+**Task:** {(task or '')[:200]}
+{session_line}**Result:** {(result or '')[:1000]}
 ---
 """
         try:
-            with open(log_file, "a") as f:
+            with open(log_file, "a", encoding="utf-8") as f:
                 f.write(entry)
             logger.debug("Agent log written: %s", log_file.name)
+            return log_file
         except OSError as e:
             logger.debug("Agent log failed: %s", e)
+            return None
 
-    # Alias for backwards compatibility
-    on_agent_complete = on_delegation
+    def on_delegation(self, task: str, result: str, *,
+                      child_session_id: str = "", **kwargs) -> None:
+        """Log subagent work to Memory/agents/{date}/{agent_name}.md"""
+        agent_name = kwargs.get("agent_name", "unknown")
+        self.write_agent_memory(agent_name, task, result, child_session_id=child_session_id)
+
+    def on_agent_complete(self, task: str, result: str, *,
+                          child_session_id: str = "", **kwargs) -> None:
+        """Compatibility hook for agent completion events."""
+        self.on_delegation(task, result, child_session_id=child_session_id, **kwargs)
 
     def search_agent_memory(self, query: str, limit: int = 5) -> str:
         """Semantic search across all agent logs, sessions, and daily notes.
@@ -711,7 +821,7 @@ class ObsidianMemoryProvider(MemoryProvider):
                 if f.name.endswith("-raw.md"):
                     continue
                 try:
-                    content = f.read_text().lower()
+                    content = f.read_text(encoding="utf-8").lower()
                     score = sum(1 for term in query_terms if term in content)
                     if score > 0:
                         # Recency boost

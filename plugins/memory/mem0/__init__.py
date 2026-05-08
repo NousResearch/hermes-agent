@@ -482,9 +482,16 @@ class Mem0MemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
-        # Prefer gateway-provided user_id for per-user memory scoping;
-        # fall back to config/env default for CLI (single-user) sessions.
-        self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
+        host = self._config.get("host", "")
+        # Self-hosted: force config user_id (e.g. "global") to keep all memories
+        # in one pool. Cloud: per-user scoping via gateway-provided user_id.
+        if host and self._is_self_hosted(host):
+            self._user_id = self._config.get("user_id", "global")
+            logger.info("Self-hosted mem0 detected: using config user_id=%s (ignoring gateway %s)",
+                        self._user_id, kwargs.get("user_id"))
+        else:
+            # Cloud: per-user memory scoping from gateway
+            self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
         self._agent_id = self._config.get("agent_id", "hermes")
         self._rerank = self._config.get("rerank", True)
 

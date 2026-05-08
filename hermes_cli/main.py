@@ -910,12 +910,61 @@ def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
     return None
 
 
+def _tui_get_source_hash(tui_dir: Path) -> str:
+    """Return a hash of the TUI source tree for staleness detection.
+
+    Uses git HEAD commit hash when available (immune to git pull mtime
+    changes). Falls back to mtime-based hash for non-git installs.
+    """
+    import hashlib
+    import subprocess as _sp
+
+    # Try git commit hash first — immune to mtime changes from git pull
+    try:
+        result = _sp.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(tui_dir),
+            capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()[:16]
+    except Exception:
+        pass
+
+    # Fallback: hash of relevant file mtimes
+    h = hashlib.md5()
+    skip = frozenset({"node_modules", "dist"})
+    for dirpath, dirnames, filenames in sorted(os.walk(tui_dir, topdown=True)):
+        dirnames[:] = sorted(d for d in dirnames if d not in skip)
+        for fn in sorted(filenames):
+            if fn.endswith((".ts", ".tsx", ".json")):
+                try:
+                    h.update(str(os.path.getmtime(os.path.join(dirpath, fn))).encode())
+                except OSError:
+                    pass
+    return h.hexdigest()[:16]
+
+
 def _tui_build_needed(tui_dir: Path) -> bool:
     if _hermes_ink_bundle_stale(tui_dir):
         return True
     entry = tui_dir / "dist" / "entry.js"
     if not entry.exists():
         return True
+
+    # Compare source hash against stamped build hash.
+    # This is immune to git pull updating file mtimes (issue #21801).
+    stamp_file = tui_dir / "dist" / ".build-stamp"
+    current_hash = _tui_get_source_hash(tui_dir)
+    if stamp_file.exists():
+        try:
+            stamped_hash = stamp_file.read_text().strip()
+            if stamped_hash == current_hash:
+                return False  # Build is up to date
+        except OSError:
+            pass
+
+    # Fall back to mtime comparison for installs without stamp file
     dist_m = entry.stat().st_mtime
     skip = frozenset({"node_modules", "dist"})
     for dirpath, dirnames, filenames in os.walk(tui_dir, topdown=True):
@@ -1087,11 +1136,6 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
-            # If a pre-existing dist/entry.js exists (e.g. after git pull
-            # updated source mtimes but the build environment is unavailable
-            # in a WebSocket/PTY context), fall back to the stale build
-            # rather than calling sys.exit(1) which silently kills the PTY
-            # session with [session ended] (issue #21801).
             if entry_exists:
                 import warnings
                 warnings.warn(
@@ -1104,6 +1148,13 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 if preview:
                     print(preview)
                 sys.exit(1)
+        else:
+            # Write build stamp so subsequent runs skip unnecessary rebuilds
+            try:
+                stamp_file = tui_dir / "dist" / ".build-stamp"
+                stamp_file.write_text(_tui_get_source_hash(tui_dir))
+            except OSError:
+                pass
 
     root = _find_bundled_tui(tui_dir)
     if not root:

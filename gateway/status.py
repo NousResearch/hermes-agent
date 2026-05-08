@@ -313,10 +313,20 @@ def _pid_exists(pid: int) -> bool:
     killing that process (and often unrelated processes in the same
     console group). Long-standing Python quirk; see bpo-14484.
 
-    Fix: use the Win32 ``OpenProcess`` / ``WaitForSingleObject`` pair on
-    Windows to check existence without any signal path; use the POSIX
-    ``os.kill(pid, 0)`` idiom on POSIX where it actually is a no-op.
+    Implementation: prefer :mod:`psutil` (hard dependency — the canonical
+    cross-platform answer, maintained by Giampaolo Rodolà, uses
+    ``OpenProcess + GetExitCodeProcess`` on Windows internally). Fall back
+    to a hand-rolled ctypes ``OpenProcess`` / ``WaitForSingleObject`` pair
+    on Windows + ``os.kill(pid, 0)`` on POSIX if psutil is somehow
+    unavailable — e.g. stripped-down install or import error during the
+    scaffold phase before ``psutil`` is pip-installed.
     """
+    try:
+        import psutil  # type: ignore
+        return bool(psutil.pid_exists(int(pid)))
+    except ImportError:
+        pass  # Fall through to stdlib fallback.
+
     if _IS_WINDOWS:
         try:
             import ctypes
@@ -352,7 +362,7 @@ def _pid_exists(pid: int) -> bool:
             return False
     else:
         try:
-            os.kill(int(pid), 0)
+            os.kill(int(pid), 0)  # windows-footgun: ok — POSIX-only branch (the whole point of _pid_exists)
             return True
         except ProcessLookupError:
             return False

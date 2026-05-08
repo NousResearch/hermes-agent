@@ -190,4 +190,18 @@ describe('Md wrapping', () => {
     expect(lines).toContain('me')
     expect(lines).not.toContain(' me')
   })
+
+  it('keeps nested list and quote indentation out of trim-sensitive text', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { flexDirection: 'column', width: 24 },
+        React.createElement(Md, { t: DEFAULT_THEME, text: '  - nested bullet' }),
+        React.createElement(Md, { t: DEFAULT_THEME, text: '>> nested quote' })
+      )
+    )
+
+    expect(lines).toContain('  • nested bullet')
+    expect(lines).toContain('  │ nested quote')
+  })
 })

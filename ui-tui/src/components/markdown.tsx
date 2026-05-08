@@ -689,14 +689,12 @@ function MdImpl({ compact, t, text }: MdProps) {
         const marker = task ? (task[1]!.toLowerCase() === 'x' ? '☑' : '☐') : '•'
 
         nodes.push(
-          <Text key={key} wrap="wrap-trim">
-            <Text color={t.color.muted}>
-              {' '.repeat(indentDepth(bullet[1]!) * 2)}
-              {marker}{' '}
+          <Box key={key} paddingLeft={indentDepth(bullet[1]!) * 2}>
+            <Text wrap="wrap-trim">
+              <Text color={t.color.muted}>{marker} </Text>
+              <MdInline t={t} text={task ? task[2]! : bullet[2]!} />
             </Text>
-
-            <MdInline t={t} text={task ? task[2]! : bullet[2]!} />
-          </Text>
+          </Box>
         )
         i++
 
@@ -708,14 +706,12 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (numbered) {
         start('list')
         nodes.push(
-          <Text key={key} wrap="wrap-trim">
-            <Text color={t.color.muted}>
-              {' '.repeat(indentDepth(numbered[1]!) * 2)}
-              {numbered[2]}.{' '}
+          <Box key={key} paddingLeft={indentDepth(numbered[1]!) * 2}>
+            <Text wrap="wrap-trim">
+              <Text color={t.color.muted}>{numbered[2]}. </Text>
+              <MdInline t={t} text={numbered[3]!} />
             </Text>
-
-            <MdInline t={t} text={numbered[3]!} />
-          </Text>
+          </Box>
         )
         i++
 
@@ -737,11 +733,11 @@ function MdImpl({ compact, t, text }: MdProps) {
         nodes.push(
           <Box flexDirection="column" key={key}>
             {quoteLines.map((ql, qi) => (
-              <Text color={t.color.muted} key={qi} wrap="wrap-trim">
-                {' '.repeat(Math.max(0, ql.depth - 1) * 2)}
-                {'│ '}
-                <MdInline t={t} text={ql.text} />
-              </Text>
+              <Box key={qi} paddingLeft={Math.max(0, ql.depth - 1) * 2}>
+                <Text color={t.color.muted} wrap="wrap-trim">
+                  │ <MdInline t={t} text={ql.text} />
+                </Text>
+              </Box>
             ))}
           </Box>
         )

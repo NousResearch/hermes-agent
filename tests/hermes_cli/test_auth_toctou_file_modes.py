@@ -116,8 +116,12 @@ def test_shared_nous_store_writes_0o600_with_0o700_parent(tmp_path, monkeypatch)
     """The Nous shared-credential store must land at 0o600 / parent 0o700."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # _nous_shared_store_path() refuses to touch the real shared store during
-    # pytest runs; redirect it into tmp_path explicitly.
-    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
+    # pytest runs; redirect it into tmp_path explicitly. Use a distinct
+    # subdirectory name (``shared_override``) so the guard's "real user
+    # home" reference — which currently tracks HERMES_HOME via
+    # get_default_hermes_root() — can't collide with our override and
+    # falsely claim we're writing to the real user's shared store.
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared_override"))
     old_umask = os.umask(0o022)
     try:
         from hermes_cli import auth as auth_mod

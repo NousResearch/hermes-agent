@@ -2821,6 +2821,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+
+        # Load conversation history from SessionDB when a session_id is provided
+        # but no history was supplied via conversation_history or previous_response_id.
+        if not conversation_history and body.get("session_id"):
+            try:
+                db = self._ensure_session_db()
+                if db is not None:
+                    loaded = db.get_messages_as_conversation(session_id)
+                    if loaded:
+                        conversation_history = loaded
+            except Exception as e:
+                logger.warning("Failed to load session history for run %s: %s", session_id, e)
+
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()

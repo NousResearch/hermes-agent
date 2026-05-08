@@ -556,3 +556,29 @@ class TestProfileInfoDistribution:
         rows = {p.name: p for p in list_profiles()}
         assert rows["brokenmeta"].distribution_name is None
 
+
+# ===========================================================================
+# Error surfaces: validation failures should propagate as DistributionError
+# or ValueError (both caught and rendered cleanly by the CLI handler)
+# ===========================================================================
+
+
+class TestErrorSurfaces:
+
+    def test_bad_profile_name_raises_valueerror_not_traceback(self, profile_env, tmp_path):
+        """A manifest whose 'name' can't be used as a profile identifier
+        should raise ValueError from validate_profile_name — the CLI handler
+        catches both DistributionError and ValueError so users see a clean
+        'Error: ...' line instead of a Python traceback.
+        """
+        mf = DistributionManifest(name="Invalid Name With Spaces", version="0.1.0")
+        staged = _make_staging_dir(profile_env, "bad", manifest=mf)
+        with pytest.raises((ValueError, DistributionError)):
+            plan_install(str(staged), tmp_path / "work")
+
+    def test_path_traversal_name_rejected(self, profile_env, tmp_path):
+        mf = DistributionManifest(name="../../etc/passwd", version="0.1.0")
+        staged = _make_staging_dir(profile_env, "bad", manifest=mf)
+        with pytest.raises((ValueError, DistributionError)):
+            plan_install(str(staged), tmp_path / "work")
+

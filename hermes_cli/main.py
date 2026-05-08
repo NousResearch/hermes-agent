@@ -8403,7 +8403,7 @@ def cmd_profile(args):
                     f"  Review them with:  hermes -p {plan.manifest.name} cron list"
                 )
             print(f"\n  Use with:      hermes -p {plan.manifest.name} chat")
-        except DistributionError as e:
+        except (DistributionError, ValueError) as e:
             print(f"Error: {e}")
             sys.exit(1)
 
@@ -8450,7 +8450,7 @@ def cmd_profile(args):
                     "  Cron files were refreshed.  Review with:  "
                     f"hermes -p {plan.manifest.name} cron list"
                 )
-        except DistributionError as e:
+        except (DistributionError, ValueError) as e:
             print(f"Error: {e}")
             sys.exit(1)
 
@@ -8459,7 +8459,7 @@ def cmd_profile(args):
 
         try:
             data = describe_distribution(args.profile_name)
-        except DistributionError as e:
+        except (DistributionError, ValueError) as e:
             print(f"Error: {e}")
             sys.exit(1)
         if not data:
@@ -8498,6 +8498,7 @@ def cmd_profile(args):
 
 def _render_distribution_plan(plan) -> None:
     """Print a human-readable summary of a pending distribution install."""
+    from hermes_cli.profile_distribution import MANIFEST_FILENAME
     mf = plan.manifest
     print(f"\nDistribution: {mf.name} v{mf.version}")
     if mf.description:
@@ -8509,7 +8510,21 @@ def _render_distribution_plan(plan) -> None:
     print(f"  Source:   {plan.provenance}")
     print(f"  Target:   {plan.target_dir}")
     if plan.existing:
-        print("  (profile exists — will overwrite distribution-owned files only)")
+        # Distinguish "updating an existing distribution" (well-understood
+        # semantics — dist-owned overwritten, config preserved, user data
+        # untouched) from "overwriting a hand-built plain profile" (same
+        # mechanics but the user didn't sign up for this when they created
+        # the profile manually).
+        existing_is_distribution = (plan.target_dir / MANIFEST_FILENAME).is_file()
+        if existing_is_distribution:
+            print("  (profile exists — will overwrite distribution-owned files only)")
+        else:
+            print(
+                "  ⚠ Profile exists but is NOT a distribution.  Installing here will\n"
+                "    overwrite its SOUL.md, skills/, cron/, and mcp.json.\n"
+                "    Your memories, sessions, auth.json, and .env will be preserved,\n"
+                "    but any hand-edits to distribution-owned files will be lost."
+            )
     if mf.env_requires:
         print("\n  Env vars:")
         for er in mf.env_requires:

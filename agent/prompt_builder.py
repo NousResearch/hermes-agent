@@ -574,7 +574,7 @@ PLATFORM_HINTS = {
         "controls), video, PDFs, HTML, CSV, diffs/patches, and Excalidraw files "
         "render as rich previews. Do not use Markdown image syntax like "
         "![alt](/path) for local files; local paths are not served that way. "
-        "Use MEDIA:/path instead."
+        "Use MEDIA:/absolute/path instead."
     ),
 }
 

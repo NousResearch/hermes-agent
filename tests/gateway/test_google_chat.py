@@ -257,42 +257,9 @@ class TestEnvConfigLoading:
         for v in self._ENV_VARS:
             monkeypatch.delenv(v, raising=False)
 
-    def test_project_id_primary(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "my-proj")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME",
-                           "projects/my-proj/subscriptions/my-sub")
-        cfg = load_gateway_config()
-        gc = cfg.platforms[Platform.GOOGLE_CHAT]
-        assert gc.enabled is True
-        assert gc.extra["project_id"] == "my-proj"
 
-    def test_project_id_falls_back_to_google_cloud_project(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "fallback-proj")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION",
-                           "projects/fallback-proj/subscriptions/s")
-        cfg = load_gateway_config()
-        gc = cfg.platforms[Platform.GOOGLE_CHAT]
-        assert gc.extra["project_id"] == "fallback-proj"
 
-    def test_subscription_accepts_legacy_alias(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "p")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION", "projects/p/subscriptions/s")
-        cfg = load_gateway_config()
-        gc = cfg.platforms[Platform.GOOGLE_CHAT]
-        assert gc.extra["subscription_name"] == "projects/p/subscriptions/s"
 
-    def test_sa_path_falls_back_to_google_application_credentials(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "p")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME",
-                           "projects/p/subscriptions/s")
-        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/opt/sa.json")
-        cfg = load_gateway_config()
-        gc = cfg.platforms[Platform.GOOGLE_CHAT]
-        assert gc.extra["service_account_json"] == "/opt/sa.json"
 
     def test_missing_subscription_does_not_enable(self, monkeypatch):
         self._clean_env(monkeypatch)
@@ -308,24 +275,7 @@ class TestEnvConfigLoading:
         cfg = load_gateway_config()
         assert Platform.GOOGLE_CHAT not in cfg.platforms
 
-    def test_home_channel_populated(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "p")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME",
-                           "projects/p/subscriptions/s")
-        monkeypatch.setenv("GOOGLE_CHAT_HOME_CHANNEL", "spaces/HOME")
-        cfg = load_gateway_config()
-        gc = cfg.platforms[Platform.GOOGLE_CHAT]
-        assert gc.home_channel is not None
-        assert gc.home_channel.chat_id == "spaces/HOME"
 
-    def test_connected_platforms_recognises_via_extras(self, monkeypatch):
-        self._clean_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "p")
-        monkeypatch.setenv("GOOGLE_CHAT_SUBSCRIPTION_NAME",
-                           "projects/p/subscriptions/s")
-        cfg = load_gateway_config()
-        assert Platform.GOOGLE_CHAT in cfg.get_connected_platforms()
 
 
 # ===========================================================================

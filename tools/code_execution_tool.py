@@ -73,6 +73,85 @@ DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 
+# Environment variable scrubbing rules (shared between the local + remote
+# backends).  Secret-substring block is applied first; anything left must
+# match either a safe prefix or, on Windows, an OS-essential name.
+_SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
+                      "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
+                      "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
+                      "HERMES_")
+_SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
+                      "PASSWD", "AUTH")
+
+# Windows-only: a handful of variables are required by the OS/CRT itself.
+# Without them, even stdlib calls like ``socket.socket()`` fail with
+# WinError 10106 (Winsock can't locate mswsock.dll) and ``subprocess``
+# can't resolve cmd.exe.  These are well-known OS paths, not secrets, so
+# we allow them through by exact name.  The _SECRET_SUBSTRINGS block
+# still runs as a safety net (none of these names match those substrings).
+_WINDOWS_ESSENTIAL_ENV_VARS = frozenset({
+    "SYSTEMROOT",       # %SYSTEMROOT%\System32 — Winsock needs this
+    "SYSTEMDRIVE",      # C: (or wherever Windows lives)
+    "WINDIR",           # usually same as SYSTEMROOT
+    "COMSPEC",          # cmd.exe path — subprocess shell=True needs it
+    "PATHEXT",          # .COM;.EXE;.BAT;... — shell lookup
+    "OS",               # "Windows_NT" — some tools gate on this
+    "PROCESSOR_ARCHITECTURE",
+    "NUMBER_OF_PROCESSORS",
+    "PUBLIC",           # C:\Users\Public
+    "ALLUSERSPROFILE",  # C:\ProgramData — some stdlib paths use it
+    "PROGRAMDATA",      # C:\ProgramData
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "APPDATA",          # %USERPROFILE%\AppData\Roaming — Python uses it
+    "LOCALAPPDATA",     # %USERPROFILE%\AppData\Local
+    "USERPROFILE",      # C:\Users\<name> — Python's expanduser uses it
+    "USERDOMAIN",
+    "USERNAME",
+    "HOMEDRIVE",        # C:
+    "HOMEPATH",         # \Users\<name>
+    "COMPUTERNAME",
+})
+
+
+def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
+    """Produce the scrubbed child-process env for execute_code.
+
+    Rules (order matters):
+      1. Passthrough vars (skill- or config-declared) always pass.
+      2. Secret-substring names (KEY/TOKEN/etc.) are blocked.
+      3. Names matching a safe prefix pass.
+      4. On Windows, a small OS-essential allowlist passes by exact name
+         — without these the child can't even create a socket or spawn a
+         subprocess.
+
+    Extracted into a helper so tests can exercise the logic without
+    spawning a subprocess.
+    """
+    if is_passthrough is None:
+        try:
+            from tools.env_passthrough import is_env_passthrough as _ep
+        except Exception:
+            _ep = lambda _: False  # noqa: E731
+        is_passthrough = _ep
+    if is_windows is None:
+        is_windows = _IS_WINDOWS
+
+    scrubbed = {}
+    for k, v in source_env.items():
+        if is_passthrough(k):
+            scrubbed[k] = v
+            continue
+        if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
+            continue
+        if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
+            scrubbed[k] = v
+            continue
+        if is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS:
+            scrubbed[k] = v
+    return scrubbed
+
 
 def check_sandbox_requirements() -> bool:
     """Code execution sandbox requires a POSIX OS for Unix domain sockets."""
@@ -1079,29 +1158,11 @@ def execute_code(
         # generated scripts. The child accesses tools via RPC, not direct API.
         # Exception: env vars declared by loaded skills (via env_passthrough
         # registry) or explicitly allowed by the user in config.yaml
-        # (terminal.env_passthrough) are passed through.
-        _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
-                              "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
-                              "HERMES_")
-        _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                              "PASSWD", "AUTH")
-        try:
-            from tools.env_passthrough import is_env_passthrough as _is_passthrough
-        except Exception:
-            _is_passthrough = lambda _: False  # noqa: E731
-        child_env = {}
-        for k, v in os.environ.items():
-            # Passthrough vars (skill-declared or user-configured) always pass.
-            if _is_passthrough(k):
-                child_env[k] = v
-                continue
-            # Block vars with secret-like names.
-            if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
-                continue
-            # Allow vars with known safe prefixes.
-            if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
-                child_env[k] = v
+        # (terminal.env_passthrough) are passed through.  On Windows, a small
+        # OS-essential allowlist (SYSTEMROOT, WINDIR, COMSPEC, ...) is also
+        # passed through — without those, the child can't create a socket
+        # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
+        child_env = _scrub_child_env(os.environ)
         child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Ensure the hermes-agent root is importable in the sandbox so

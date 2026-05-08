@@ -95,10 +95,21 @@ echo "▶ running pytest with $WORKERS workers, hermetic env, in $REPO_ROOT"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; all credential env vars unset)"
 
 # -o "addopts=" clears pyproject.toml's `-n auto` so our -n wins.
-exec "$PYTHON" -m pytest \
-  -o "addopts=" \
-  -n "$WORKERS" \
-  --ignore=tests/integration \
-  --ignore=tests/e2e \
-  -m "not integration" \
-  "${ARGS[@]}"
+# Use conditional expansion to avoid "unbound variable" on macOS Bash 3.2
+# when no arguments are passed ($@ is empty under set -u).
+if [ "${#ARGS[@]}" -gt 0 ]; then
+  exec "$PYTHON" -m pytest \
+    -o "addopts=" \
+    -n "$WORKERS" \
+    --ignore=tests/integration \
+    --ignore=tests/e2e \
+    -m "not integration" \
+    "${ARGS[@]}"
+else
+  exec "$PYTHON" -m pytest \
+    -o "addopts=" \
+    -n "$WORKERS" \
+    --ignore=tests/integration \
+    --ignore=tests/e2e \
+    -m "not integration"
+fi

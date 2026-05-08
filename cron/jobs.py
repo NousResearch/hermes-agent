@@ -8,6 +8,7 @@ Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 import copy
 import json
 import logging
+import shutil
 import tempfile
 import threading
 import os
@@ -696,6 +697,10 @@ def remove_job(job_id: str) -> bool:
     jobs = [j for j in jobs if j["id"] != job_id]
     if len(jobs) < original_len:
         save_jobs(jobs)
+        # Clean up output directory to prevent orphaned dirs accumulating
+        job_output_dir = OUTPUT_DIR / job_id
+        if job_output_dir.exists():
+            shutil.rmtree(job_output_dir)
         return True
     return False
 

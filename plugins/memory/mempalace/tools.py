@@ -46,6 +46,11 @@ class MemPalaceToolsMixin:
             )
 
     def _dispatch(self, tool_name: str, args: dict) -> Any:
+        if tool_name != "mempalace_status" and self._collection is None:
+            raise MemPalaceBackendError(
+                "MemPalace is not initialized", {"tool_name": tool_name}
+            )
+
         if tool_name == "mempalace_memorize":
             return self._do_memorize(args)
         if tool_name == "mempalace_search":
@@ -256,7 +261,7 @@ class MemPalaceToolsMixin:
     def _prepare_results(
         self, results_list: list[dict[str, Any]], limit: int | None = None
     ) -> list[dict[str, Any]]:
-        """Deduplicate near-identical hits and suppress low-signal conversation noise."""
+        """Deduplicate near-identical hits and suppress noisy conversation records."""
         if not results_list:
             return []
 

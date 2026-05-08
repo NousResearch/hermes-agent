@@ -68,8 +68,105 @@ def test_plugin_loads_via_importlib(plugin_module):
 
 def test_register_works_when_loaded_like_hermes(plugin_module):
     ctx = MagicMock()
-    plugin_module.register(ctx)
+    provider_cls = plugin_module.MemPalaceMemoryProvider
+    original = provider_cls.is_available
+    provider_cls.is_available = lambda self: True
+    try:
+        plugin_module.register(ctx)
+    finally:
+        provider_cls.is_available = original
     ctx.register_memory_provider.assert_called_once()
+
+
+def test_register_skips_when_optional_package_missing(plugin_module):
+    ctx = MagicMock()
+    provider_cls = plugin_module.MemPalaceMemoryProvider
+    original = provider_cls.is_available
+    provider_cls.is_available = lambda self: False
+    try:
+        plugin_module.register(ctx)
+    finally:
+        provider_cls.is_available = original
+    ctx.register_memory_provider.assert_not_called()
+
+
+def test_tool_call_returns_structured_error_when_not_initialized(plugin_module):
+    provider = plugin_module.MemPalaceMemoryProvider()
+    result = json.loads(provider.handle_tool_call("mempalace_search", {"query": "x"}))
+
+    assert result["success"] is False
+    assert result["error"]["message"] == "MemPalace is not initialized"
+    assert result["error"]["details"]["tool_name"] == "mempalace_search"
+
+
+def test_status_tool_still_works_before_initialize(plugin_module):
+    provider = plugin_module.MemPalaceMemoryProvider()
+    result = json.loads(provider.handle_tool_call("mempalace_status", {}))
+
+    assert result["collection_name"] == ""
+
+
+def test_write_queue_drops_after_retry_limit(plugin_module, caplog):
+    from plugins.memory.mempalace import writer
+
+    calls = []
+    original_upsert = writer.upsert_memory_item
+    writer.upsert_memory_item = lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("wedged")
+    )
+
+    class InlineThread:
+        def __init__(self, *, target, name, daemon):
+            self._target = target
+
+        def start(self):
+            calls.append("start")
+
+        def join(self, timeout=None):
+            calls.append(("join", timeout))
+
+    try:
+        q = writer.WriteQueue(
+            collection=object(),
+            agent_id="hermes",
+            thread_factory=InlineThread,
+            max_retries=1,
+            retry_delay=0,
+        )
+        q.enqueue([{"id": "m1"}])
+        payload = q._q.get_nowait()
+        q._flush(*payload)
+        retry_payload = q._q.get_nowait()
+        q._flush(*retry_payload)
+    finally:
+        writer.upsert_memory_item = original_upsert
+
+    assert "MemPalace dropped batch after 1 retries" in caplog.text
+
+
+def test_write_queue_drops_when_full(plugin_module, caplog):
+    from plugins.memory.mempalace import writer
+
+    class InlineThread:
+        def __init__(self, *, target, name, daemon):
+            pass
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    q = writer.WriteQueue(
+        collection=object(),
+        agent_id="hermes",
+        thread_factory=InlineThread,
+        max_queue_size=1,
+    )
+    q.enqueue([{"id": "m1"}])
+    q.enqueue([{"id": "m2"}])
+
+    assert "MemPalace write queue full; dropping enqueue batch" in caplog.text
 
 
 @_requires_mempalace

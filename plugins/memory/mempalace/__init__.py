@@ -7,11 +7,19 @@ knowledge graph.
 
 from __future__ import annotations
 
+import logging
+
 from .provider import MemPalaceMemoryProvider
 
 __all__ = ["MemPalaceMemoryProvider", "register"]
 
+logger = logging.getLogger(__name__)
+
 
 def register(ctx) -> None:
     """Register MemPalace as a memory provider plugin."""
-    ctx.register_memory_provider(MemPalaceMemoryProvider())
+    provider = MemPalaceMemoryProvider()
+    if not provider.is_available():
+        logger.warning("MemPalace plugin skipped: mempalace package is not installed")
+        return
+    ctx.register_memory_provider(provider)

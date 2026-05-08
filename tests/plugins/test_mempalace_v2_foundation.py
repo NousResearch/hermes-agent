@@ -7,6 +7,7 @@ These tests cover the first extraction wave only:
 - metadata schema builder
 - plugin package export / register hook
 """
+# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -309,5 +310,10 @@ class TestPackageExports:
 
     def test_register_registers_provider(self):
         ctx = MagicMock()
-        register(ctx)
+        original = MemPalaceMemoryProvider.is_available
+        MemPalaceMemoryProvider.is_available = lambda self: True
+        try:
+            register(ctx)
+        finally:
+            MemPalaceMemoryProvider.is_available = original
         ctx.register_memory_provider.assert_called_once()

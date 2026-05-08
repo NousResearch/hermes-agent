@@ -413,10 +413,10 @@ class Mem0MemoryProvider(MemoryProvider):
                 from mem0 import MemoryClient
                 # SDK 2.0.2+ self-hosted compat: patch Project validation
                 try:
-                    from mem0.client.selfhost_patch import patch as patch_selfhost
+                    from .selfhost_patch import patch as patch_selfhost
                     patch_selfhost()
-                except ImportError:
-                    pass  # SDK < 2.0.2, no patch needed
+                except (ImportError, Exception):
+                    pass  # SDK < 2.0.2 or patch failed, proceed anyway
                 # Self-hosted detection: if host in config points to
                 # localhost/private IP, pass it to MemoryClient.
                 host = self._config.get("host", "")

@@ -1095,6 +1095,13 @@ def _normalize_empty_agent_response(
             p in error_str
             for p in ("context", "token", "too large", "too long", "exceed", "payload")
         ) or ("400" in error_str and history_len > 50)
+        is_glm_1213 = "1213" in error_str
+        if is_glm_1213:
+            return (
+                "⚠️ GLM returned error 1213 (prompt not received normally). "
+                "This usually means the message was empty or malformed. "
+                "Please try sending your message again."
+            )
         if is_context_failure:
             return (
                 "⚠️ Session too large for the model's context window.\n"

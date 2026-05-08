@@ -386,6 +386,25 @@ class TestGatewaySurfacesNullResponse:
         assert "context window" in response
         assert "/compact" in response
 
+    def test_failed_glm_1213_error(self):
+        """GLM/Zhipu error 1213 gets a specific retry message."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 0,
+            "failed": True,
+            "error": "APIStatusError: {'code': '1213', 'message': 'prompt parameter was not received normally'}",
+        }
+
+        response = agent_result.get("final_response") or ""
+        response = _normalize_empty_agent_response(
+            agent_result, response, history_len=5,
+        )
+
+        assert "GLM returned error 1213" in response
+        assert "try sending your message again" in response.lower()
+
     def test_failed_generic_error(self):
         """Agent failed with non-context error → generic error message."""
         from gateway.run import _normalize_empty_agent_response

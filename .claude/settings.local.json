@@ -20,7 +20,10 @@
       "Read(//home/renyh/.hermes/hermes-agent/.venv/bin/**)",
       "Read(//home/renyh/.hermes/hermes-agent/.venv/**)",
       "Bash(git add *)",
-      "Bash(ls *)"
+      "Bash(ls *)",
+      "Read(///wsl.localhost/Ubuntu/home/renyh/.hermes/hermes-agent/**)",
+      "Read(///wsl.localhost/Ubuntu/home/renyh/.hermes/hermes-agent/gateway/**)",
+      "Read(///wsl.localhost/Ubuntu/home/renyh/.hermes/hermes-agent/tools/**)"
     ]
   }
 }

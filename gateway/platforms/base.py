@@ -1359,7 +1359,14 @@ class BasePlatformAdapter(ABC):
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-            if path:
+            # Reject paths that don't look like valid filesystem paths.
+            # The \S+ fallback in the regex can match regex patterns,
+            # debug placeholders, or bare words — none of which are real files.
+            if path and (
+                path.startswith("/")
+                or path.startswith("~")
+                or (len(path) >= 3 and path[1] == ":" and path[0].isalpha())
+            ):
                 media.append((os.path.expanduser(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)

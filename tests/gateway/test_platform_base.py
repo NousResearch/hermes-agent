@@ -322,6 +322,39 @@ class TestExtractMedia:
         assert "After" in cleaned
 
 
+    def test_media_tag_rejects_regex_pattern_as_path(self):
+        """MEDIA: tag containing a regex pattern should not be treated as a file path."""
+        content = "Here is a MEDIA:(?P<path>test) pattern"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"Regex pattern should not be extracted as media path, got: {media}"
+
+    def test_media_tag_rejects_debug_placeholder(self):
+        """MEDIA: tag containing a debug placeholder should not be treated as a file path."""
+        content = "MEDIA:<path>"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"Debug placeholder should not be extracted as media path, got: {media}"
+
+    def test_media_tag_rejects_bare_word_without_slash(self):
+        """MEDIA: tag with a bare word (no leading / or ~) should not be treated as a path."""
+        content = "MEDIA:filename.ogg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [], f"Bare filename without slash should not be extracted, got: {media}"
+
+    def test_media_tag_accepts_absolute_path(self):
+        """MEDIA: tag with a valid absolute path should still work."""
+        content = "MEDIA:/tmp/audio.ogg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/audio.ogg"
+
+    def test_media_tag_accepts_tilde_path(self):
+        """MEDIA: tag with a tilde path should still work."""
+        content = "MEDIA:~/audio.ogg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0].endswith("audio.ogg")
+
+
 # ---------------------------------------------------------------------------
 # truncate_message
 # ---------------------------------------------------------------------------

@@ -473,8 +473,10 @@ docker restart hermes
 
 ### Checking container health
 
+<!-- ascii-guard-ignore -->
 ```sh
 docker logs --tail 50 hermes          # Recent logs
 docker run -it --rm nousresearch/hermes-agent:latest version     # Verify version
 docker stats hermes                    # Resource usage
 ```
+<!-- ascii-guard-ignore-end -->

@@ -7859,6 +7859,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Skills sync during update failed: %s", e)
 
+        try:
+            from tools.bundled_scripts_sync import sync_bundled_scripts
+
+            print()
+            print("→ Syncing bundled helper scripts...")
+            result = sync_bundled_scripts(quiet=True)
+            if result["linked"]:
+                print(f"  + {len(result['linked'])} linked: {', '.join(result['linked'])}")
+            if result.get("updated"):
+                print(
+                    f"  ↻ {len(result['updated'])} refreshed: {', '.join(result['updated'])}"
+                )
+            if result.get("missing"):
+                print(f"  ! missing bundled sources: {', '.join(result['missing'])}")
+            if not result["linked"] and not result.get("updated") and not result.get("missing"):
+                print("  ✓ Helper scripts are up to date")
+        except Exception as e:
+            logger.debug("Bundled helper script sync during update failed: %s", e)
+
         # Sync bundled skills to all profiles (including the active one).
         # seed_profile_skills() uses subprocess with an explicit HERMES_HOME so
         # it is not affected by sync_skills()'s module-level HERMES_HOME cache,

@@ -1408,6 +1408,20 @@ EOF
     log_success "hermes command ready"
 }
 
+sync_bundled_helper_scripts() {
+    log_info "Syncing bundled helper scripts..."
+
+    if [ "$USE_VENV" = true ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/bundled_scripts_sync.py" >/dev/null 2>&1; then
+            log_success "Bundled helper scripts synced"
+        else
+            log_warn "Bundled helper script sync failed"
+        fi
+    else
+        log_warn "Skipping bundled helper script sync (venv python unavailable)"
+    fi
+}
+
 copy_config_templates() {
     log_info "Setting up configuration files..."
 
@@ -1874,6 +1888,7 @@ main() {
     install_node_deps
     setup_path
     copy_config_templates
+    sync_bundled_helper_scripts
     run_setup_wizard
     maybe_start_gateway
 

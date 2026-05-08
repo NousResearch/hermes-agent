@@ -3,7 +3,8 @@
 Updated: 2026-05-08 20:13 KST
 Source machine: WSL `/home/lidises/hermes-agent`
 Branch: `ai-office-stage6-7-cleanup-20260508`
-Known WSL HEAD at handoff creation: `604698991671`
+Known WSL HEAD before Mac-doc commit: `604698991671`
+Current pushed handoff HEAD: `2943093817cc`
 
 ## Purpose
 

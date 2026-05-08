@@ -3407,7 +3407,18 @@ class AIAgent:
         messages: List[Dict[str, Any]],
     ) -> bool:
         """Detect a planning/ack message that should continue instead of ending the turn."""
-        if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
+        # Only bail if a tool was already called in the *current* user turn
+        # (i.e. since the most recent user message). A tool earlier in the
+        # session does not invalidate detection of a fresh narration-only
+        # turn — common on long Telegram/CLI sessions.
+        _last_user_idx = -1
+        for _i in range(len(messages) - 1, -1, -1):
+            _m = messages[_i]
+            if isinstance(_m, dict) and _m.get("role") == "user":
+                _last_user_idx = _i
+                break
+        _current_turn = messages[_last_user_idx + 1:] if _last_user_idx >= 0 else messages
+        if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in _current_turn):
             return False
 
         assistant_text = self._strip_think_blocks(assistant_content or "").strip().lower()
@@ -3417,7 +3428,14 @@ class AIAgent:
             return False
 
         has_future_ack = bool(
-            re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
+            re.search(
+                r"\b(i['’]ll|i will|let me|i can do that|i can help with that"
+                r"|je vais|on va|je m'en occupe|je corrige|je relance|je fais"
+                r"|je v[ée]rifie|d'accord|je m'y mets|je m'att[èe]le"
+                r"|c'est not[ée]|not[ée]|je regarde|je lance|je teste"
+                r"|je m'occupe|je vais lancer|je vais v[ée]rifier|je m'en charge)\b",
+                assistant_text,
+            )
         )
         if not has_future_ack:
             return False
@@ -3442,6 +3460,23 @@ class AIAgent:
             "walkthrough",
             "report back",
             "summarize",
+            # French equivalents (substring match handles conjugations)
+            "vérifi",
+            "corrig",
+            "relanc",
+            "examin",
+            "cherch",
+            "analys",
+            "exécut",
+            "lanc",
+            "regard",
+            "parcour",
+            "lir",
+            "ouvr",
+            "explor",
+            "résum",
+            "diagnostiqu",
+            "répar",
         )
         workspace_markers = (
             "directory",
@@ -3457,6 +3492,15 @@ class AIAgent:
             "file tree",
             "files",
             "path",
+            # French equivalents
+            "répertoire",
+            "dossier",
+            "arborescence",
+            "base de code",
+            "projet",
+            "fichier",
+            "chemin",
+            "code",
         )
 
         user_text = (user_message or "").strip().lower()

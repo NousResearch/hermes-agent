@@ -5187,3 +5187,106 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+class TestLooksLikeCodexIntermediateAck:
+    """Cover the codex/xAI intermediate-ack heuristic, including the FR i18n extension
+    and the relaxed prior-tool bail (only the current turn counts)."""
+
+    def test_english_ack_with_workspace_action(self, agent):
+        """Regression: classic English 'I will check the directory' triggers detection."""
+        assert agent._looks_like_codex_intermediate_ack(
+            user_message="show me the project structure",
+            assistant_content="I'll check the directory and report back.",
+            messages=[],
+        ) is True
+
+    def test_french_ack_je_vais_verifier_dossier(self, agent):
+        """FR: 'Je vais vérifier le dossier' is the canonical IWE pattern from Telegram."""
+        assert agent._looks_like_codex_intermediate_ack(
+            user_message="vérifie le projet",
+            assistant_content="Je vais vérifier le dossier maintenant.",
+            messages=[],
+        ) is True
+
+    def test_french_je_corrige_le_binding(self, agent):
+        """FR: from real Alfred session #12 — 'Je corrige le binding du dashboard'.
+        Includes 'projet' as the workspace anchor (multi-condition guard)."""
+        assert agent._looks_like_codex_intermediate_ack(
+            user_message="le dashboard du projet ne répond pas, fix le binding",
+            assistant_content="Je corrige le binding du dashboard maintenant.",
+            messages=[],
+        ) is True
+
+    def test_french_je_relance_le_dashboard(self, agent):
+        """FR: 'Je relance le dashboard' with workspace anchor in assistant text."""
+        assert agent._looks_like_codex_intermediate_ack(
+            user_message="relance le dashboard du projet",
+            assistant_content="Je relance le dashboard, action en cours.",
+            messages=[],
+        ) is True
+
+    def test_french_no_action_no_workspace_returns_false(self, agent):
+        """FR negative: opinion-style 'Je vais réfléchir à ça' has no action+workspace combo."""
+        assert agent._looks_like_codex_intermediate_ack(
+            user_message="qu'en penses-tu ?",
+            assistant_content="Je vais réfléchir à ça calmement.",
+            messages=[],
+        ) is False
+
+    def test_french_no_future_ack_returns_false(self, agent):
+        """FR negative: present-tense statement without future-intent verb."""
+        assert agent._looks_like_codex_intermediate_ack(
+            user_message="quoi de neuf",
+            assistant_content="Je trouve ça intéressant comme question.",
+            messages=[],
+        ) is False
+
+    def test_prior_tool_outside_current_turn_does_not_bail(self, agent):
+        """Regression: a tool earlier in the session (before the latest user turn)
+        must not invalidate ack detection for the current narration-only turn.
+        This is the long-Telegram-session case that was previously broken."""
+        messages = [
+            {"role": "user", "content": "lis test.txt"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+            {"role": "tool", "content": "hello world", "tool_call_id": "1"},
+            {"role": "assistant", "content": "lu."},
+            {"role": "user", "content": "vérifie le dossier maintenant"},
+            # current turn starts here, no tool yet
+        ]
+        assert agent._looks_like_codex_intermediate_ack(
+            user_message="vérifie le dossier maintenant",
+            assistant_content="Je vais vérifier le dossier.",
+            messages=messages,
+        ) is True
+
+    def test_tool_in_current_turn_bails(self, agent):
+        """If a tool was already executed in the *current* turn, bail (no nudge)."""
+        messages = [
+            {"role": "user", "content": "vérifie le dossier"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "2"}]},
+            {"role": "tool", "content": "['a', 'b']", "tool_call_id": "2"},
+            # next assistant message would be the ack, current turn already has a tool
+        ]
+        assert agent._looks_like_codex_intermediate_ack(
+            user_message="vérifie le dossier",
+            assistant_content="Je vais vérifier le dossier.",
+            messages=messages,
+        ) is False
+
+    def test_french_action_diagnostiquer_arborescence(self, agent):
+        """FR: 'diagnostiquer l'arborescence' — verb+workspace combo."""
+        assert agent._looks_like_codex_intermediate_ack(
+            user_message="il y a un souci avec mon projet",
+            assistant_content="Je vais diagnostiquer l'arborescence du projet.",
+            messages=[],
+        ) is True
+
+    def test_french_action_examiner_repertoire(self, agent):
+        """FR: 'examiner le répertoire'."""
+        assert agent._looks_like_codex_intermediate_ack(
+            user_message="explore le code",
+            assistant_content="Je vais examiner le répertoire racine.",
+            messages=[],
+        ) is True
+

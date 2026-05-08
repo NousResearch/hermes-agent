@@ -847,6 +847,15 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _teams_pipeline_plugin_enabled() -> bool:
+    """Return True when the standalone Teams pipeline plugin is enabled."""
+    config = _load_gateway_config()
+    enabled = cfg_get(config, "plugins", "enabled", default=[])
+    if not isinstance(enabled, list):
+        return False
+    return "teams_pipeline" in enabled or "teams-pipeline" in enabled
+
+
 def _load_gateway_config() -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error.
 
@@ -1154,6 +1163,9 @@ class GatewayRunner:
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
+        self._teams_pipeline_runtime = None
+        self._teams_pipeline_runtime_error: Optional[str] = None
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -1249,6 +1261,37 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+
+
+    def _wire_teams_pipeline_runtime(self) -> None:
+        """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
+
+        No-op when the msgraph_webhook adapter isn't running or the
+        teams_pipeline plugin isn't enabled — lets the gateway start cleanly
+        whether or not the user has opted into the pipeline.
+        """
+        if Platform.MSGRAPH_WEBHOOK not in self.adapters:
+            return
+        if not _teams_pipeline_plugin_enabled():
+            logger.debug("Teams pipeline plugin is disabled; skipping runtime wiring")
+            return
+        try:
+            from plugins.teams_pipeline.runtime import bind_gateway_runtime
+        except Exception as exc:
+            logger.warning("Teams pipeline runtime import failed: %s", exc)
+            return
+        try:
+            bound = bind_gateway_runtime(self)
+        except Exception as exc:
+            logger.warning("Teams pipeline runtime wiring failed: %s", exc)
+            return
+        if bound:
+            logger.info("Teams pipeline runtime bound to msgraph webhook ingress")
+        elif self._teams_pipeline_runtime_error:
+            logger.warning(
+                "Teams pipeline runtime unavailable: %s",
+                self._teams_pipeline_runtime_error,
+            )
 
 
     def _warn_if_docker_media_delivery_is_risky(self) -> None:
@@ -3304,7 +3347,8 @@ class GatewayRunner:
         
         # Update delivery router with adapters
         self.delivery_router.adapters = self.adapters
-        
+        self._wire_teams_pipeline_runtime()
+
         self._running = True
         self._update_runtime_status("running")
         

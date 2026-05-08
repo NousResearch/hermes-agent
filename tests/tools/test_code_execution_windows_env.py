@@ -241,3 +241,162 @@ class TestWindowsSocketSmokeTest:
             f"  scrubbed keys={sorted(scrubbed.keys())}"
         )
         assert "OK" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# POSIX equivalence guard
+# ---------------------------------------------------------------------------
+
+def _legacy_posix_scrubber(source_env, is_passthrough):
+    """Verbatim copy of the pre-Windows-fix inline scrubbing logic.
+
+    This is the oracle used by TestPosixEquivalence to prove the refactor
+    did not change POSIX behavior.  DO NOT edit this to "match" a future
+    production change — if _scrub_child_env's POSIX behavior legitimately
+    needs to evolve, delete this function and adjust the equivalence test
+    on purpose, so the churn is visible in review.
+    """
+    _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
+                          "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
+                          "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
+                          "HERMES_")
+    _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
+                          "PASSWD", "AUTH")
+    out = {}
+    for k, v in source_env.items():
+        if is_passthrough(k):
+            out[k] = v
+            continue
+        if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
+            continue
+        if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
+            out[k] = v
+    return out
+
+
+class TestPosixEquivalence:
+    """Lock in the invariant that _scrub_child_env(env, is_windows=False)
+    behaves *bit-for-bit identically* to the pre-refactor inline scrubber.
+
+    If this ever fails, it means somebody changed POSIX env-scrubbing
+    behavior — maybe on purpose, maybe not.  Either way it should land
+    as a deliberate, reviewed change (update _legacy_posix_scrubber
+    above in the same PR).
+
+    Rationale: the Windows-essentials patch refactored the scrubber into
+    a helper.  Linux/macOS must not regress.  This class gates that.
+    """
+
+    _POSIX_SYNTHETIC_ENV = {
+        # Safe-prefix matches
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/home/alice",
+        "USER": "alice",
+        "LANG": "en_US.UTF-8",
+        "LC_CTYPE": "en_US.UTF-8",
+        "TERM": "xterm-256color",
+        "SHELL": "/bin/zsh",
+        "LOGNAME": "alice",
+        "TMPDIR": "/tmp",
+        "XDG_RUNTIME_DIR": "/run/user/1000",
+        "XDG_CONFIG_HOME": "/home/alice/.config",
+        "PYTHONPATH": "/opt/lib",
+        "VIRTUAL_ENV": "/home/alice/.venv",
+        "CONDA_PREFIX": "/opt/conda",
+        "HERMES_HOME": "/home/alice/.hermes",
+        "HERMES_INTERACTIVE": "1",
+        # Secret-substring blocks
+        "OPENAI_API_KEY": "sk-xxx",
+        "GITHUB_TOKEN": "ghp_xxx",
+        "AWS_SECRET_ACCESS_KEY": "yyy",
+        "MY_PASSWORD": "hunter2",
+        # Uncategorized — must be dropped
+        "RANDOM_UNKNOWN": "drop-me",
+        "DISPLAY": ":0",
+        "SSH_AUTH_SOCK": "/run/user/1000/ssh-agent",
+        # Passthrough candidate (also matches secret block by default)
+        "TENOR_API_KEY": "tenor-xxx",
+    }
+
+    _WINDOWS_SYNTHETIC_ENV = {
+        # Windows-essential names (must be dropped on POSIX, passed on Win)
+        "SYSTEMROOT": r"C:\Windows",
+        "SystemDrive": "C:",
+        "WINDIR": r"C:\Windows",
+        "ComSpec": r"C:\Windows\System32\cmd.exe",
+        "PATHEXT": ".COM;.EXE;.BAT",
+        "USERPROFILE": r"C:\Users\alice",
+        "APPDATA": r"C:\Users\alice\AppData\Roaming",
+        "LOCALAPPDATA": r"C:\Users\alice\AppData\Local",
+        # Safe-prefix matches (cross-platform)
+        "PATH": r"C:\Python311;C:\Windows\System32",
+        "HOME": r"C:\Users\alice",
+        "TEMP": r"C:\Users\alice\AppData\Local\Temp",
+        # Secret-looking (always blocked)
+        "OPENAI_API_KEY": "sk-xxx",
+        "GITHUB_TOKEN": "ghp_xxx",
+    }
+
+    @pytest.mark.parametrize("env_name,env", [
+        ("posix_synthetic", _POSIX_SYNTHETIC_ENV),
+        ("windows_synthetic_on_posix", _WINDOWS_SYNTHETIC_ENV),
+    ])
+    @pytest.mark.parametrize("pt_name,pt", [
+        ("no_passthrough", lambda _: False),
+        ("tenor_passthrough", lambda k: k == "TENOR_API_KEY"),
+        ("all_passthrough", lambda _: True),
+    ])
+    def test_posix_behavior_unchanged(self, env_name, env, pt_name, pt):
+        """For every combination of (env shape × passthrough rule), the
+        new helper with is_windows=False must produce the exact same dict
+        as the legacy inline scrubber.
+
+        We parametrize over three passthrough rules to cover the full
+        surface: no passthrough, single-var passthrough (the common
+        skill-registered case), and everything-passes (edge case that
+        could expose precedence bugs)."""
+        expected = _legacy_posix_scrubber(env, pt)
+        actual = _scrub_child_env(env, is_passthrough=pt, is_windows=False)
+        assert actual == expected, (
+            f"POSIX behavior regressed for env={env_name}, passthrough={pt_name}\n"
+            f"  only in legacy: {sorted(set(expected) - set(actual))}\n"
+            f"  only in new:    {sorted(set(actual) - set(expected))}\n"
+            f"  value diffs:    {[k for k in expected if k in actual and expected[k] != actual[k]]}"
+        )
+
+    def test_posix_behavior_unchanged_on_real_os_environ(self):
+        """Bonus check against the actual os.environ of the host running
+        the test.  This covers vars we might not have thought to put in
+        the synthetic fixtures."""
+        expected = _legacy_posix_scrubber(os.environ, lambda _: False)
+        actual = _scrub_child_env(os.environ,
+                                  is_passthrough=lambda _: False,
+                                  is_windows=False)
+        assert actual == expected, (
+            "POSIX-mode scrubber diverged from legacy behavior on real "
+            f"os.environ (host platform={sys.platform})"
+        )
+
+    def test_windows_mode_is_strict_superset_of_posix_mode(self):
+        """Correctness check on the NEW behavior: is_windows=True must
+        keep everything POSIX mode keeps, and *may* add Windows
+        essentials.  It must never drop a var that POSIX mode would keep
+        — if it did, we'd have broken same-host reuse of the scrubber."""
+        env = {**self._POSIX_SYNTHETIC_ENV, **self._WINDOWS_SYNTHETIC_ENV}
+        posix_result = _scrub_child_env(env,
+                                        is_passthrough=lambda _: False,
+                                        is_windows=False)
+        windows_result = _scrub_child_env(env,
+                                          is_passthrough=lambda _: False,
+                                          is_windows=True)
+        missing = set(posix_result) - set(windows_result)
+        assert not missing, (
+            f"is_windows=True dropped vars that is_windows=False kept: {missing}"
+        )
+        # And any extras must come from the Windows essentials allowlist.
+        extras = set(windows_result) - set(posix_result)
+        for k in extras:
+            assert k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS, (
+                f"Unexpected extra var in windows-mode output: {k} "
+                f"(not in _WINDOWS_ESSENTIAL_ENV_VARS)"
+            )

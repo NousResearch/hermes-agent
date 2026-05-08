@@ -45,7 +45,10 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from hermes_constants import get_hermes_home
 
 # Availability gate: UDS requires a POSIX OS
 logger = logging.getLogger(__name__)
@@ -1547,9 +1550,10 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     # terminal()'s filesystem/interpreter; strict mode retains the isolated
     # temp-dir staging and hermes-agent's own python.
     if mode == "strict":
+        hermes_env_path = str(get_hermes_home() / ".env")
         cwd_note = (
-            "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
-            "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
+            f"Scripts run in their own temp dir, not the session's CWD — use absolute paths "
+            f"({hermes_env_path}) or terminal()/read_file() for user files."
         )
     else:
         cwd_note = (

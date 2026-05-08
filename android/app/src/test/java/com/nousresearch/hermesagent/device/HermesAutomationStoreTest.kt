@@ -608,6 +608,7 @@ class HermesAutomationStoreTest {
     fun bridgeExposesShizukuGatedLogcatWatcherActions() {
         val context = RuntimeEnvironment.getApplication()
         HermesAutomationStore(context).clear()
+        HermesLogcatWatcherBridge.resetCursor(context)
 
         val parsed = HermesLogcatWatcherBridge.parseThreadtimeLogcatLinesJson(
             """
@@ -646,7 +647,10 @@ class HermesAutomationStoreTest {
         assertTrue(status.getBoolean("durable_foreground_service"))
         assertFalse(status.getBoolean("foreground_service_running"))
         assertFalse(status.getBoolean("watcher_desired"))
+        assertTrue(status.getBoolean("scan_cursor_enabled"))
+        assertEquals(0, status.getInt("recent_event_signature_count"))
         assertEquals(0, status.getInt("enabled_logcat_record_count"))
+        assertTrue(status.isNull("last_event_timestamp"))
 
         val scan = org.json.JSONObject(
             HermesAutomationBridge.performActionJson(
@@ -673,6 +677,50 @@ class HermesAutomationStoreTest {
             org.json.JSONObject(HermesAutomationBridge.performActionJson(context, "logcat_watcher_status"))
                 .getBoolean("watcher_desired"),
         )
+    }
+
+    @Test
+    fun logcatWatcherCursorFiltersRepeatedEvents() {
+        val context = RuntimeEnvironment.getApplication()
+        HermesLogcatWatcherBridge.resetCursor(context)
+
+        val firstBatch = HermesLogcatWatcherBridge.parseThreadtimeLogcatLines(
+            """
+                05-07 12:34:56.789 10123  4242  777 E ActivityManager: ANR in com.example.app
+                05-07 12:34:57.000  1000  1000 I Hermes: watcher ok
+            """.trimIndent(),
+        )
+
+        val firstFresh = HermesLogcatWatcherBridge.filterNewCursorEvents(context, firstBatch, cursorEnabled = true)
+        assertEquals(2, firstFresh.size)
+        assertEquals("05-07 12:34:57.000", HermesLogcatWatcherBridge.persistedLastEventTimestamp(context))
+        assertEquals(2, HermesLogcatWatcherBridge.recentEventSignatureCount(context))
+
+        val repeated = HermesLogcatWatcherBridge.filterNewCursorEvents(context, firstBatch, cursorEnabled = true)
+        assertEquals(0, repeated.size)
+        assertEquals(2, HermesLogcatWatcherBridge.recentEventSignatureCount(context))
+
+        val secondBatch = HermesLogcatWatcherBridge.parseThreadtimeLogcatLines(
+            """
+                05-07 12:34:57.000  1000  1000 I Hermes: watcher ok
+                05-07 12:34:58.111 10123  4243 W ActivityManager: New event
+            """.trimIndent(),
+        )
+        val secondFresh = HermesLogcatWatcherBridge.filterNewCursorEvents(context, secondBatch, cursorEnabled = true)
+        assertEquals(1, secondFresh.size)
+        assertEquals("New event", secondFresh.single().message)
+        assertEquals("05-07 12:34:58.111", HermesLogcatWatcherBridge.persistedLastEventTimestamp(context))
+        assertEquals(3, HermesLogcatWatcherBridge.recentEventSignatureCount(context))
+
+        val reset = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(context, "reset_logcat_watcher_cursor"),
+        )
+        assertTrue(reset.toString(), reset.getBoolean("success"))
+        assertEquals(0, reset.getInt("recent_event_signature_count"))
+        assertTrue(reset.isNull("last_event_timestamp"))
+
+        val freshAfterReset = HermesLogcatWatcherBridge.filterNewCursorEvents(context, firstBatch, cursorEnabled = true)
+        assertEquals(2, freshAfterReset.size)
     }
 
     @Test

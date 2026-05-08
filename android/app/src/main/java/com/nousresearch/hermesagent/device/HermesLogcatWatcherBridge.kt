@@ -43,6 +43,7 @@ object HermesLogcatWatcherBridge {
             "start_logcat_watcher", "start_logcat_watch", "watch_logcat" -> startJson(context, arguments)
             "stop_logcat_watcher", "stop_logcat_watch" -> stopJson(context)
             "scan_logcat_entries", "scan_logcat", "run_logcat_watch_once" -> scanOnceJson(context, arguments)
+            "reset_logcat_watcher_cursor", "reset_logcat_cursor", "clear_logcat_watcher_cursor" -> resetCursorJson(context)
             else -> JSONObject()
                 .put("success", false)
                 .put("error", "Unsupported logcat watcher action: $action")
@@ -64,6 +65,9 @@ object HermesLogcatWatcherBridge {
             .put("scan_interval_seconds", scanIntervalSeconds.get())
             .put("max_lines", maxLines.get())
             .put("enabled_logcat_record_count", enabledLogcatRecordCount(appContext))
+            .put("scan_cursor_enabled", true)
+            .put("last_event_timestamp", persistedLastEventTimestamp(appContext) ?: JSONObject.NULL)
+            .put("recent_event_signature_count", recentEventSignatureCount(appContext))
             .put("requires_shizuku", true)
             .put("shizuku_status", HermesPrivilegedAccessBridge.statusToJson(status))
             .put("available_actions", JSONArray(ACTIONS))
@@ -89,6 +93,9 @@ object HermesLogcatWatcherBridge {
                 .put("shizuku_status", HermesPrivilegedAccessBridge.statusToJson(status))
                 .put("available_actions", JSONArray(ACTIONS))
                 .toString()
+        }
+        if (arguments.optBoolean("reset_cursor", false)) {
+            resetCursor(appContext)
         }
         val intervalSeconds = arguments.optInt("scan_interval_seconds", DEFAULT_SCAN_INTERVAL_SECONDS)
             .coerceIn(MIN_SCAN_INTERVAL_SECONDS, MAX_SCAN_INTERVAL_SECONDS)
@@ -164,6 +171,14 @@ object HermesLogcatWatcherBridge {
             .toString()
     }
 
+    fun resetCursorJson(context: Context): String {
+        resetCursor(context.applicationContext)
+        return JSONObject(statusJson(context))
+            .put("success", true)
+            .put("message", "Reset logcat watcher scan cursor")
+            .toString()
+    }
+
     internal fun stopWorker(): Boolean {
         val wasRunning = running.getAndSet(false)
         workerThread.getAndSet(null)?.interrupt()
@@ -220,6 +235,10 @@ object HermesLogcatWatcherBridge {
                 .toString()
         }
         val lineLimit = arguments.optInt("max_lines", maxLines.get().toInt()).coerceIn(MIN_MAX_LINES, MAX_MAX_LINES)
+        val useCursor = arguments.optBoolean("use_cursor", arguments.optBoolean("watcher_loop", false))
+        if (arguments.optBoolean("reset_cursor", false)) {
+            resetCursor(appContext)
+        }
         val command = "logcat -d -v threadtime,uid -t $lineLimit"
         val shellResult = JSONObject(
             HermesPrivilegedAccessBridge.runShellCommandJson(
@@ -238,10 +257,11 @@ object HermesLogcatWatcherBridge {
                 .toString()
         }
         val events = parseThreadtimeLogcatLines(shellResult.optString("output"))
-        val packagesByUid = resolvePackagesByUid(appContext, events)
+        val cursorFilteredEvents = filterNewCursorEvents(appContext, events, useCursor)
+        val packagesByUid = resolvePackagesByUid(appContext, cursorFilteredEvents)
         val results = JSONArray()
         var matchedCount = 0
-        events.forEach { event ->
+        cursorFilteredEvents.forEach { event ->
             val eventWithPackage = attributePackages(event, packagesByUid[event.uid].orEmpty())
             val dispatched = JSONObject(
                 HermesAutomationBridge.runLogcatEntryTriggerJson(appContext, eventWithPackage.toTriggerArguments()),
@@ -257,6 +277,10 @@ object HermesLogcatWatcherBridge {
             .put("adb_shell_command", command)
             .put("enabled_logcat_record_count", enabledCount)
             .put("parsed_event_count", events.size)
+            .put("cursor_enabled", useCursor)
+            .put("cursor_filtered_event_count", events.size - cursorFilteredEvents.size)
+            .put("last_event_timestamp", persistedLastEventTimestamp(appContext) ?: JSONObject.NULL)
+            .put("recent_event_signature_count", recentEventSignatureCount(appContext))
             .put("uid_package_count", packagesByUid.size)
             .put("matched_count", matchedCount)
             .put("results", results)
@@ -291,6 +315,34 @@ object HermesLogcatWatcherBridge {
             }
             .take(MAX_PARSED_EVENTS)
             .toList()
+    }
+
+    internal fun filterNewCursorEvents(
+        context: Context,
+        events: List<HermesLogcatEvent>,
+        cursorEnabled: Boolean,
+    ): List<HermesLogcatEvent> {
+        if (!cursorEnabled || events.isEmpty()) {
+            return events
+        }
+        val appContext = context.applicationContext
+        val alreadySeen = readRecentEventSignatures(appContext).toSet()
+        val freshEvents = events.filter { event -> eventSignature(event) !in alreadySeen }
+        persistCursor(appContext, events)
+        return freshEvents
+    }
+
+    internal fun eventSignature(event: HermesLogcatEvent): String {
+        return listOf(
+            event.timestamp,
+            event.uid,
+            event.pid,
+            event.level,
+            event.tag,
+            event.message,
+        ).joinToString(SIGNATURE_SEPARATOR) { field ->
+            field.take(MAX_SIGNATURE_FIELD_CHARS)
+        }
     }
 
     internal fun attributePackages(event: HermesLogcatEvent, packages: List<String>): HermesLogcatEvent {
@@ -406,6 +458,53 @@ object HermesLogcatWatcherBridge {
             .apply()
     }
 
+    internal fun resetCursor(context: Context) {
+        context.applicationContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(PREF_LAST_EVENT_TIMESTAMP)
+            .remove(PREF_RECENT_EVENT_SIGNATURES)
+            .apply()
+    }
+
+    internal fun persistedLastEventTimestamp(context: Context): String? {
+        return context.applicationContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(PREF_LAST_EVENT_TIMESTAMP, null)
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    internal fun recentEventSignatureCount(context: Context): Int {
+        return readRecentEventSignatures(context.applicationContext).size
+    }
+
+    private fun persistCursor(context: Context, events: List<HermesLogcatEvent>) {
+        if (events.isEmpty()) {
+            return
+        }
+        val merged = (readRecentEventSignatures(context) + events.map { event -> eventSignature(event) })
+            .distinct()
+            .takeLast(MAX_RECENT_EVENT_SIGNATURES)
+        context.applicationContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_RECENT_EVENT_SIGNATURES, merged.joinToString("\n"))
+            .putString(PREF_LAST_EVENT_TIMESTAMP, events.last().timestamp)
+            .apply()
+    }
+
+    private fun readRecentEventSignatures(context: Context): List<String> {
+        return context.applicationContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(PREF_RECENT_EVENT_SIGNATURES, "")
+            .orEmpty()
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .toList()
+            .takeLast(MAX_RECENT_EVENT_SIGNATURES)
+    }
+
     private val running = AtomicBoolean(false)
     private val workerThread = AtomicReference<Thread?>()
     private val startedAtEpochMs = AtomicLong(0)
@@ -417,6 +516,7 @@ object HermesLogcatWatcherBridge {
         "start_logcat_watcher",
         "stop_logcat_watcher",
         "scan_logcat_entries",
+        "reset_logcat_watcher_cursor",
     )
 
     private val THREADTIME_REGEX =
@@ -434,6 +534,8 @@ object HermesLogcatWatcherBridge {
     private const val MIN_MAX_LINES = 10
     private const val MAX_MAX_LINES = 1000
     private const val MAX_PARSED_EVENTS = 1000
+    private const val MAX_RECENT_EVENT_SIGNATURES = 1000
+    private const val MAX_SIGNATURE_FIELD_CHARS = 512
     private const val LOGCAT_SCAN_TIMEOUT_SECONDS = 15
     private const val UID_PACKAGE_LOOKUP_TIMEOUT_SECONDS = 10
     private const val MAX_UID_PACKAGE_LOOKUPS = 50
@@ -441,4 +543,7 @@ object HermesLogcatWatcherBridge {
     private const val PREF_DESIRED = "desired"
     private const val PREF_SCAN_INTERVAL_SECONDS = "scan_interval_seconds"
     private const val PREF_MAX_LINES = "max_lines"
+    private const val PREF_LAST_EVENT_TIMESTAMP = "last_event_timestamp"
+    private const val PREF_RECENT_EVENT_SIGNATURES = "recent_event_signatures"
+    private const val SIGNATURE_SEPARATOR = "\u001F"
 }

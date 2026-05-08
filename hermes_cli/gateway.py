@@ -445,6 +445,25 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     if old_pid <= 0:
         return False
 
+    # The watcher is a tiny Python subprocess that polls the old PID and
+    # respawns the gateway once it's gone.  Both legs of the chain need
+    # platform-appropriate detach semantics:
+    #
+    # POSIX — ``start_new_session=True`` (os.setsid in the child) detaches
+    # from the parent's process group so Ctrl+C in the CLI doesn't
+    # propagate and the watcher/gateway survive the CLI exiting.
+    #
+    # Windows — ``start_new_session`` is silently accepted but does NOT
+    # detach.  The watcher stays attached to the CLI's console and dies
+    # when the user closes the terminal, leaving ``hermes update`` users
+    # with no running gateway until they re-invoke ``hermes gateway``
+    # manually.  The Win32 equivalent is the ``CREATE_NEW_PROCESS_GROUP |
+    # DETACHED_PROCESS | CREATE_NO_WINDOW`` creationflags bundle.
+    #
+    # ``windows_detach_popen_kwargs()`` returns the right kwargs for the
+    # host platform and is a no-op on POSIX (just ``start_new_session=True``).
+    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+
     watcher = textwrap.dedent(
         """
         import os
@@ -466,21 +485,35 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
                 # Windows: gone PID raises OSError (WinError 87).
                 break
             time.sleep(0.2)
-        subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+
+        # Platform-appropriate detach for the respawned gateway.  On POSIX
+        # start_new_session=True maps to os.setsid; on Windows we need
+        # explicit creationflags because start_new_session is a no-op there.
+        _popen_kwargs = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if sys.platform == "win32":
+            _CREATE_NEW_PROCESS_GROUP = 0x00000200
+            _DETACHED_PROCESS = 0x00000008
+            _CREATE_NO_WINDOW = 0x08000000
+            _popen_kwargs["creationflags"] = (
+                _CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW
+            )
+        else:
+            _popen_kwargs["start_new_session"] = True
+        subprocess.Popen(cmd, **_popen_kwargs)
         """
     ).strip()
 
     try:
+        # Same platform-aware detach for the watcher process itself — so
+        # closing the user's terminal doesn't kill the watcher.
         subprocess.Popen(
             [sys.executable, "-c", watcher, str(old_pid), *_gateway_run_args_for_profile(profile)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            **windows_detach_popen_kwargs(),
         )
     except OSError:
         return False

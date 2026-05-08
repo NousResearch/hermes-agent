@@ -708,7 +708,16 @@ def _run_chrome_fallback_command(
             )
         return {"success": False, "error": hint}
 
-    cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+    # On Windows npx is npx.cmd — use shutil.which so CreateProcessW can
+    # execute the batch shim.  shutil.which honours PATHEXT on Windows and
+    # returns the plain executable on POSIX.  If npx isn't on PATH (Termux,
+    # bare container), fall back to the bare name and let Popen raise with
+    # a readable "FileNotFoundError: 'npx'" rather than WinError 193.
+    if browser_cmd == "npx agent-browser":
+        _npx_bin = shutil.which("npx") or "npx"
+        cmd_prefix = [_npx_bin, "agent-browser"]
+    else:
+        cmd_prefix = [browser_cmd]
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
@@ -1768,7 +1777,12 @@ def _run_browser_command(
 
     # Keep concrete executable paths intact, even when they contain spaces.
     # Only the synthetic npx fallback needs to expand into multiple argv items.
-    cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+    # shutil.which resolves npx → npx.cmd on Windows; bare "npx" stays on POSIX.
+    if browser_cmd == "npx agent-browser":
+        _npx_bin = shutil.which("npx") or "npx"
+        cmd_prefix = [_npx_bin, "agent-browser"]
+    else:
+        cmd_prefix = [browser_cmd]
 
     cmd_parts = cmd_prefix + backend_args + [
         "--json",

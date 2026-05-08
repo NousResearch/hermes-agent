@@ -3519,17 +3519,24 @@ def dispatch_once(
     # cleanly without calling ``kanban_complete`` / ``kanban_block``
     # (protocol violation — auto-block) from a real crash (OOM killer,
     # SIGKILL, non-zero exit — existing counter behavior).
-    try:
-        while True:
-            try:
-                _pid, _status = os.waitpid(-1, os.WNOHANG)
-            except ChildProcessError:
-                break
-            if _pid == 0:
-                break
-            _record_worker_exit(_pid, _status)
-    except Exception:
-        pass
+    #
+    # Windows has no zombies / no os.WNOHANG — subprocess.Popen handles
+    # are freed when the Python object is garbage-collected or .wait() is
+    # called explicitly.  The kanban dispatcher discards the Popen handle
+    # after spawn (``_default_spawn`` → abandon), so on Windows there's
+    # nothing to reap here — skip the whole block.
+    if os.name != "nt":
+        try:
+            while True:
+                try:
+                    _pid, _status = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if _pid == 0:
+                    break
+                _record_worker_exit(_pid, _status)
+        except Exception:
+            pass
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)

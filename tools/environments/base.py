@@ -339,15 +339,24 @@ class BaseEnvironment(ABC):
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
         _quoted_cwd = shlex.quote(self.cwd)
+        # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
+        # ``C:/Users/...``-shaped paths without glob-splitting the colon or
+        # tripping on drive letters.  On POSIX this is a no-op (no colons /
+        # special chars in a /tmp path).  Previously unquoted interpolation
+        # caused ``C:/Users/.../hermes-snap-*.sh: No such file or directory``
+        # errors on Windows, leaking via stderr (merged into stdout on Linux
+        # backends) into every terminal-tool response.
+        _quoted_snap = shlex.quote(self._snapshot_path)
+        _quoted_cwd_file = shlex.quote(self._cwd_file)
         bootstrap = (
-            f"export -p > {self._snapshot_path}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
-            f"alias -p >> {self._snapshot_path}\n"
-            f"echo 'shopt -s expand_aliases' >> {self._snapshot_path}\n"
-            f"echo 'set +e' >> {self._snapshot_path}\n"
-            f"echo 'set +u' >> {self._snapshot_path}\n"
+            f"export -p > {_quoted_snap}\n"
+            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
+            f"alias -p >> {_quoted_snap}\n"
+            f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
+            f"echo 'set +e' >> {_quoted_snap}\n"
+            f"echo 'set +u' >> {_quoted_snap}\n"
             f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
-            f"pwd -P > {self._cwd_file} 2>/dev/null || true\n"
+            f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
         try:
@@ -389,6 +398,13 @@ class BaseEnvironment(ABC):
         re-dumps env vars, and emits CWD markers."""
         escaped = command.replace("'", "'\\''")
 
+        # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
+        # ``C:/Users/...``-shaped paths without glob-splitting the colon or
+        # tripping on drive letters.  POSIX paths are unaffected.  See
+        # :meth:`init_session` for the same fix on the bootstrap block.
+        _quoted_snap = shlex.quote(self._snapshot_path)
+        _quoted_cwd_file = shlex.quote(self._cwd_file)
+
         parts = []
 
         # Source snapshot (env vars from previous commands).
@@ -399,7 +415,7 @@ class BaseEnvironment(ABC):
         # silent here, but the redirect is harmless.
         if self._snapshot_ready:
             parts.append(
-                f"source {self._snapshot_path} >/dev/null 2>&1 || true"
+                f"source {_quoted_snap} >/dev/null 2>&1 || true"
             )
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
@@ -414,10 +430,10 @@ class BaseEnvironment(ABC):
 
         # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
         if self._snapshot_ready:
-            parts.append(f"export -p > {self._snapshot_path} 2>/dev/null || true")
+            parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
-        parts.append(f"pwd -P > {self._cwd_file} 2>/dev/null || true")
+        parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
         # Use a distinct line for the marker. The leading \n ensures
         # the marker starts on its own line even if the command doesn't
         # end with a newline (e.g. printf 'exact'). We'll strip this

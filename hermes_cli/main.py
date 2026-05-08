@@ -1046,6 +1046,54 @@ def _ensure_tui_node() -> None:
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
+_TUI_MIN_NODE_MAJOR = 20
+
+# Common version-manager install layouts. Used to find a Node >=
+# ``_TUI_MIN_NODE_MAJOR`` install when PATH only has an older one — e.g.
+# the macOS default `node` is still 16 for many users while nvm has 22+.
+_NODE_VM_LAYOUTS = [
+    # (root_dir, glob_under_root_for_version_dirs, bin_path_relative_to_version_dir)
+    (Path.home() / ".nvm" / "versions" / "node", "v*", Path("bin") / "node"),
+    (Path.home() / ".fnm" / "node-versions", "v*", Path("installation") / "bin" / "node"),
+    (Path.home() / ".volta" / "tools" / "image" / "node", "*", Path("bin") / "node"),
+    (Path.home() / ".asdf" / "installs" / "nodejs", "*", Path("bin") / "node"),
+]
+
+
+def _node_major(node_bin: str) -> Optional[int]:
+    """Return the major version for ``node_bin``, or None if it can't be probed."""
+    try:
+        out = subprocess.run(
+            [node_bin, "--version"],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+        if out.startswith("v"):
+            return int(out[1:].split(".", 1)[0])
+    except (subprocess.SubprocessError, ValueError, OSError):
+        pass
+    return None
+
+
+def _find_modern_node() -> Optional[str]:
+    """Find the highest installed Node >= ``_TUI_MIN_NODE_MAJOR`` from common
+    version-manager directories. Returns the absolute path or None."""
+    candidates: list[tuple[int, str]] = []
+    for vm_root, glob_pat, bin_relpath in _NODE_VM_LAYOUTS:
+        if not vm_root.is_dir():
+            continue
+        for entry in vm_root.glob(glob_pat):
+            bin_path = entry / bin_relpath
+            if not (bin_path.is_file() and os.access(bin_path, os.X_OK)):
+                continue
+            major = _node_major(str(bin_path))
+            if major and major >= _TUI_MIN_NODE_MAJOR:
+                candidates.append((major, str(bin_path)))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR or ui-tui, build when stale)."""
     _ensure_tui_node()
@@ -1055,6 +1103,31 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             env_node = os.environ.get("HERMES_NODE")
             if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
                 return env_node
+
+            # ui-tui transitively depends on string-width, which uses the /v
+            # regex flag (ECMAScript 2024, Node >= 20 only). Older Node
+            # crashes the PTY child with `SyntaxError: Invalid regular
+            # expression flags` immediately on import. Validate the PATH
+            # node's version, and if it's too old, sniff version-manager
+            # directories for a usable install before erroring out.
+            path = shutil.which("node")
+            if path:
+                major = _node_major(path)
+                if major and major >= _TUI_MIN_NODE_MAJOR:
+                    return path
+                modern = _find_modern_node()
+                if modern:
+                    return modern
+                sys.exit(
+                    f"node {major or '?'} found on PATH but ui-tui requires "
+                    f"Node >= {_TUI_MIN_NODE_MAJOR} (string-width uses the /v "
+                    f"regex flag, ECMAScript 2024).\n"
+                    f"Fix: install Node {_TUI_MIN_NODE_MAJOR}+ via "
+                    f"nvm/fnm/volta/asdf, or set "
+                    f"HERMES_NODE=/path/to/node{_TUI_MIN_NODE_MAJOR}+/bin/node."
+                )
+            # No node on PATH at all — fall through to original "not found" error.
+
         path = shutil.which(bin)
         if not path:
             print(f"{bin} not found — install Node.js to use the TUI.")

@@ -79,7 +79,7 @@ def test_picker_path_uses_provider_aware_context_on_codex(monkeypatch):
     ):
         lines = _run_display(monkeypatch, result)
 
-    ctx_line = next((l for l in lines if "Context:" in l), "")
+    ctx_line = next((l for l in lines if "Context window:" in l), "")
     assert "272,000" in ctx_line, (
         f"picker-path display must show Codex's 272K cap, got: {ctx_line!r}"
     )
@@ -114,7 +114,7 @@ def test_picker_path_shows_vendor_value_when_no_provider_cap(monkeypatch):
     ):
         lines = _run_display(monkeypatch, result)
 
-    ctx_line = next((l for l in lines if "Context:" in l), "")
+    ctx_line = next((l for l in lines if "Context window:" in l), "")
     assert "1,050,000" in ctx_line, (
         f"OpenRouter gpt-5.5 should show 1.05M context, got: {ctx_line!r}"
     )
@@ -146,7 +146,7 @@ def test_picker_path_falls_back_to_model_info_when_resolver_empty(monkeypatch):
     ):
         lines = _run_display(monkeypatch, result)
 
-    ctx_line = next((l for l in lines if "Context:" in l), "")
+    ctx_line = next((l for l in lines if "Context window:" in l), "")
     assert "1,050,000" in ctx_line, (
         f"resolver-empty path should fall back to ModelInfo, got: {ctx_line!r}"
     )

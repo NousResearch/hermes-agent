@@ -96,7 +96,7 @@ class TestFormatSessionInfo:
         with p1, p2, p3:
             info = runner._format_session_info()
         assert "Model" in info
-        assert "Context" in info
+        assert "Context window" in info
 
     def test_runtime_resolution_failure_doesnt_crash(self, runner, tmp_path):
         """If runtime resolution raises, should still produce output."""

@@ -7311,7 +7311,8 @@ class GatewayRunner:
         else:
             ctx_source = "detected"
 
-        # Format context length for display
+        # Format context window for display. This is the model/provider's
+        # available window, not the amount of conversation currently used.
         if context_length >= 1_000_000:
             ctx_display = f"{context_length / 1_000_000:.1f}M"
         elif context_length >= 1_000:
@@ -7322,7 +7323,7 @@ class GatewayRunner:
         lines = [
             f"◆ Model: `{model}`",
             f"◆ Provider: {provider or 'openrouter'}",
-            f"◆ Context: {ctx_display} tokens ({ctx_source})",
+            f"◆ Context window: {ctx_display} tokens ({ctx_source})",
         ]
 
         # Show endpoint for local/custom setups
@@ -8149,7 +8150,7 @@ class GatewayRunner:
                             config_context_length=_sw_config_ctx,
                         )
                         if ctx:
-                            lines.append(f"Context: {ctx:,} tokens")
+                            lines.append(f"Context window: {ctx:,} tokens")
                         if mi:
                             if mi.max_output:
                                 lines.append(f"Max output: {mi.max_output:,} tokens")
@@ -8285,7 +8286,7 @@ class GatewayRunner:
         lines = [f"Model switched to `{result.new_model}`"]
         lines.append(f"Provider: {provider_label}")
 
-        # Context: always resolve via the provider-aware chain so Codex OAuth,
+        # Context window: always resolve via the provider-aware chain so Codex OAuth,
         # Copilot, and Nous-enforced caps win over the raw models.dev entry.
         mi = result.model_info
         from hermes_cli.model_switch import resolve_display_context_length
@@ -8309,7 +8310,7 @@ class GatewayRunner:
             config_context_length=_sw2_config_ctx,
         )
         if ctx:
-            lines.append(f"Context: {ctx:,} tokens")
+            lines.append(f"Context window: {ctx:,} tokens")
         if mi:
             if mi.max_output:
                 lines.append(f"Max output: {mi.max_output:,} tokens")

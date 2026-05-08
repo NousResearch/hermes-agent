@@ -66,6 +66,31 @@ def test_routermint_base_url_applies_user_agent_header(mock_openai):
 
 
 @patch("run_agent.OpenAI")
+def test_gmi_base_url_picks_up_profile_user_agent(mock_openai):
+    """GMI declares User-Agent on its ProviderProfile.default_headers.
+
+    The ``_apply_client_headers_for_base_url`` else-branch looks up the
+    provider profile and applies its default_headers, so no GMI-specific
+    branch is needed in run_agent.
+    """
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://api.gmi-serving.com/v1",
+        model="test/model",
+        provider="gmi",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url("https://api.gmi-serving.com/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["User-Agent"].startswith("HermesAgent/")
+
+
+@patch("run_agent.OpenAI")
 def test_unknown_base_url_clears_default_headers(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(

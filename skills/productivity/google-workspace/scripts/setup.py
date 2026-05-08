@@ -132,9 +132,10 @@ def _ensure_deps():
 
 def check_auth_live():
     """Check auth with a real API call to detect disabled_client/account issues."""
-    if not check_auth():
+    # quiet=True suppresses the "AUTHENTICATED" print from check_auth so the
+    # final status line reflects the live-call outcome (OK or FAILED).
+    if not check_auth(quiet=True):
         return False
-    _ensure_deps()
     try:
         from googleapiclient.discovery import build
         from google.oauth2.credentials import Credentials
@@ -155,7 +156,7 @@ def check_auth_live():
         return False
 
 
-def check_auth():
+def check_auth(quiet: bool = False):
     """Check if stored credentials are valid. Prints status, exits 0 or 1."""
     if not TOKEN_PATH.exists():
         print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
@@ -182,7 +183,8 @@ def check_auth():
             print(f"AUTHENTICATED (partial): Token valid but missing {len(missing_scopes)} scopes:")
             for s in missing_scopes:
                 print(f"  - {s}")
-        print(f"AUTHENTICATED: Token valid at {TOKEN_PATH}")
+        if not quiet:
+            print(f"AUTHENTICATED: Token valid at {TOKEN_PATH}")
         return True
 
     if creds.expired and creds.refresh_token:
@@ -199,7 +201,8 @@ def check_auth():
                 print(f"AUTHENTICATED (partial): Token refreshed but missing {len(missing_scopes)} scopes:")
                 for s in missing_scopes:
                     print(f"  - {s}")
-            print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
+            if not quiet:
+                print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
             return True
         except Exception as e:
             err_str = str(e).lower()

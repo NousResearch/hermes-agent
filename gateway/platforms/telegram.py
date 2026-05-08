@@ -1515,6 +1515,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         try:
+            if not finalize:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    text=content,
+                )
+                return SendResult(success=True, message_id=message_id)
+
             formatted = self.format_message(content)
             try:
                 await self._bot.edit_message_text(

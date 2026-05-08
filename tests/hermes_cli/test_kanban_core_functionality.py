@@ -3293,6 +3293,36 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
     )
 
 
+
+
+def test_gateway_kanban_scoped_board_slugs_default_and_explicit(tmp_path, monkeypatch):
+    from gateway.run import GatewayRunner
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "nagaklas"))
+    monkeypatch.delenv("HERMES_KANBAN_DISPATCH_BOARDS", raising=False)
+    kb._INITIALIZED_PATHS.clear()
+
+    assert GatewayRunner._kanban_scoped_board_slugs(
+        {"default_board": "klasificados"}, "dispatch_boards", kb
+    ) == ["klasificados"]
+    assert GatewayRunner._kanban_scoped_board_slugs(
+        {"dispatch_boards": "alpha,beta"}, "dispatch_boards", kb
+    ) == ["alpha", "beta"]
+
+
+def test_gateway_kanban_scoped_board_slugs_star_lists_all(tmp_path, monkeypatch):
+    from gateway.run import GatewayRunner
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    kb._INITIALIZED_PATHS.clear()
+    kb.create_board("alpha")
+    kb.create_board("beta")
+
+    assert GatewayRunner._kanban_scoped_board_slugs(
+        {"dispatch_boards": ["*"]}, "dispatch_boards", kb
+    ) == ["default", "alpha", "beta"]
+
 # ---------------------------------------------------------------------------
 # Hallucination gate (created_cards verify + prose scan)
 # ---------------------------------------------------------------------------

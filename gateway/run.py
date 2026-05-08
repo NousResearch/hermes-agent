@@ -4119,7 +4119,10 @@ class GatewayRunner:
         if raw is None:
             raw = kanban_cfg.get(key)
         if raw is None:
-            raw = [cls._kanban_profile_default_board(kanban_cfg)]
+            try:
+                raw = [kb_module.get_profile_default_board()]
+            except Exception:
+                raw = [cls._kanban_profile_default_board(kanban_cfg)]
         if isinstance(raw, str):
             parts = [p.strip() for p in raw.split(",") if p.strip()]
         elif isinstance(raw, (list, tuple, set)):
@@ -4127,7 +4130,10 @@ class GatewayRunner:
         else:
             parts = []
         if not parts:
-            parts = [cls._kanban_profile_default_board(kanban_cfg)]
+            try:
+                parts = [kb_module.get_profile_default_board()]
+            except Exception:
+                parts = [cls._kanban_profile_default_board(kanban_cfg)]
         if "*" in parts:
             try:
                 boards = kb_module.list_boards(include_archived=False)

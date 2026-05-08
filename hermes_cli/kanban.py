@@ -624,37 +624,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 # ---------------------------------------------------------------------------
 
 def _profile_default_board() -> str:
-    """Resolve this profile's default kanban board.
-
-    Profile config wins.  Otherwise infer common profile→board mappings
-    and fall back to the profile name.  The root/default profile maps to
-    ``hermes`` rather than the shared ``kanban/current`` ambient state.
-    """
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        explicit = str(kanban_cfg.get("default_board") or "").strip()
-        if explicit:
-            return explicit
-    except Exception:
-        pass
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        profile = (get_active_profile_name() or "default").strip().lower()
-    except Exception:
-        profile = os.environ.get("HERMES_PROFILE", "default").strip().lower()
-    aliases = {
-        "default": "hermes",
-        "nagatha": "hermes",
-        "hermes": "hermes",
-        "klasificados": "klasificados",
-        "nagaklas": "klasificados",
-        "nagovernor": "governor",
-        "governor": "governor",
-        "skippy": "skippy",
-    }
-    return aliases.get(profile, profile or kb.DEFAULT_BOARD)
+    """Resolve this profile's default kanban board."""
+    return kb.get_profile_default_board()
 
 
 def kanban_command(args: argparse.Namespace) -> int:

@@ -192,14 +192,42 @@ def legacy_current_board_path() -> Path:
 
 
 def get_profile_default_board() -> str:
-    """Return this profile's configured default board.
+    """Return this profile's configured/inferred default board.
 
-    Reads ``kanban.default_board`` from the active profile's config. Missing,
-    malformed, or stale values fall back to ``default``. This is deliberately
-    separate from the mutable ``boards switch`` pointer: default board is the
-    profile's home lane; switching is an explicit operator choice.
+    Reads ``kanban.default_board`` from the active profile's config. When it
+    is unset, infer a profile-local board from the active profile name. Root
+    installs still use ``default``; profile homes under ``profiles/<name>``
+    use ``<name>``. This is deliberately separate from the mutable
+    ``boards switch`` pointer: default board is the profile's home lane;
+    switching is an explicit operator choice.
     """
-    return _get_configured_profile_default_board() or DEFAULT_BOARD
+    return _get_configured_profile_default_board() or _infer_profile_default_board()
+
+
+def _infer_profile_default_board() -> str:
+    """Infer a default board from the active profile, or ``default``."""
+    profile = ""
+    try:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+        if home.parent.name == "profiles":
+            profile = home.name
+    except Exception:
+        pass
+    profile = str(profile).strip().lower()
+    aliases = {
+        "nagatha": "hermes",
+        "hermes": "hermes",
+        "klasificados": "klasificados",
+        "nagaklas": "klasificados",
+        "nagovernor": "governor",
+        "governor": "governor",
+        "skippy": "skippy",
+    }
+    try:
+        return _normalize_board_slug(aliases.get(profile, profile)) or DEFAULT_BOARD
+    except ValueError:
+        return DEFAULT_BOARD
 
 
 def _get_configured_profile_default_board() -> Optional[str]:
@@ -209,7 +237,7 @@ def _get_configured_profile_default_board() -> Optional[str]:
         cfg = load_config()
         raw = (cfg.get("kanban", {}) if isinstance(cfg, dict) else {}).get("default_board")
         normed = _normalize_board_slug(raw)
-        if normed and (normed == DEFAULT_BOARD or board_exists(normed)):
+        if normed:
             return normed
     except Exception:
         pass

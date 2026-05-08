@@ -4810,6 +4810,9 @@ class AIAgent:
 
         Called after each streaming API call.  The httpx Response object is
         available on the OpenAI SDK Stream via ``stream.response``.
+
+        Also updates the current credential pool entry with usage metadata
+        for proactive threshold filtering.
         """
         if http_response is None:
             return
@@ -4821,8 +4824,61 @@ class AIAgent:
             state = parse_rate_limit_headers(headers, provider=self.provider)
             if state is not None:
                 self._rate_limit_state = state
+            # Update current pool entry from long-window quota headers when
+            # providers expose them.  Short RPM/TPM windows are deliberately not
+            # used for pool selection because a temporary minute/hour dip should
+            # not suppress an account for long-running tasks.
+            self._update_pool_entry_usage_from_headers(headers)
         except Exception:
             pass  # Never let header parsing break the agent loop
+
+    def _update_pool_entry_usage_from_headers(self, headers: Any) -> None:
+        """Update current pool entry using long-window quota headers.
+
+        Codex/ChatGPT-style accounts can have 5-hour and weekly quota windows.
+        When a provider exposes long-window remaining/limit headers, persist the
+        remaining percentage on the active pool entry so selection can skip
+        near-empty accounts before they trigger fallback.
+        """
+        pool = getattr(self, "credential_pool", None)
+        if pool is None:
+            return
+        current = pool.current()
+        if current is None:
+            return
+
+        lowered = {str(k).lower(): v for k, v in getattr(headers, "items", lambda: [])()}
+
+        def _float(key: str):
+            value = lowered.get(key)
+            if value in (None, ""):
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        def _window_pct(window: str, aliases: list[str]):
+            for alias in aliases:
+                pct = _float(f"x-ratelimit-remaining-pct-{alias}")
+                if pct is not None:
+                    return window, max(0.0, min(100.0, pct))
+                for resource in ("tokens", "requests"):
+                    limit = _float(f"x-ratelimit-limit-{resource}-{alias}")
+                    remaining = _float(f"x-ratelimit-remaining-{resource}-{alias}")
+                    if limit and remaining is not None and limit > 0:
+                        return window, max(0.0, min(100.0, (remaining / limit) * 100.0))
+            return None
+
+        candidates = [
+            _window_pct("weekly", ["weekly", "week", "1w", "7d"]),
+            _window_pct("5h", ["5h", "5hour", "5-hour", "five-hour"]),
+        ]
+        valid = [c for c in candidates if c is not None]
+        if not valid:
+            return
+        window, pct = min(valid, key=lambda item: item[1])
+        pool.update_usage(current.id, remaining_pct=pct, window=window)
 
     def get_rate_limit_state(self):
         """Return the last captured RateLimitState, or None."""

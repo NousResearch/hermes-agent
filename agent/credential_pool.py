@@ -113,6 +113,10 @@ class PooledCredential:
     agent_key: Optional[str] = None
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
+    # Usage tracking for proactive threshold filtering
+    usage_remaining_pct: Optional[float] = None  # 0.0-100.0, generic usage pct
+    usage_window: Optional[str] = None  # e.g. "5h", "weekly", "1h", "min"
+    usage_checked_at: Optional[float] = None  # timestamp of last usage check
     extra: Dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -836,6 +840,48 @@ class CredentialPool:
             return False
         return False
 
+    def _load_threshold_config(self) -> Dict[str, float]:
+        """Load usage threshold config from config.yaml.
+
+        Returns dict with keys like 'default', '5h', 'weekly'.
+        If no config found, returns safe defaults.
+        """
+        cfg = _load_config_safe()
+        thresholds = {}
+        if cfg and isinstance(cfg, dict):
+            pool_cfg = cfg.get("credential_pool", {})
+            if isinstance(pool_cfg, dict):
+                th = pool_cfg.get("usage_thresholds")
+                if isinstance(th, dict):
+                    thresholds = th
+        # Safe defaults requested for Codex-style long windows.
+        # Do not apply minute/hour rate-limit buckets here: those are transient
+        # throttles, not account quota health.
+        defaults = {
+            "default": 10.0,
+            "5h": 10.0,
+            "weekly": 5.0,
+        }
+        defaults.update(thresholds)
+        return defaults
+
+    def _entry_below_usage_threshold(self, entry: PooledCredential) -> bool:
+        """Return True if entry's remaining usage is below configured threshold.
+
+        Only applies when usage_remaining_pct is set and not stale (> 5 min old).
+        """
+        if entry.usage_remaining_pct is None:
+            return False
+        # Stale check: ignore usage data older than 5 minutes
+        if entry.usage_checked_at is not None:
+            age_seconds = time.time() - entry.usage_checked_at
+            if age_seconds > 300:  # 5 minutes
+                return False
+        thresholds = self._load_threshold_config()
+        window = entry.usage_window or "default"
+        threshold = thresholds.get(window, thresholds.get("default", 10.0))
+        return entry.usage_remaining_pct < threshold
+
     def select(self) -> Optional[PooledCredential]:
         with self._lock:
             return self._select_unlocked()
@@ -905,6 +951,16 @@ class CredentialPool:
                 if refreshed is None:
                     continue
                 entry = refreshed
+            # Proactive usage threshold filtering
+            if self._entry_below_usage_threshold(entry):
+                _label = entry.label or entry.id[:8]
+                _pct = entry.usage_remaining_pct
+                _window = entry.usage_window or "unknown"
+                logger.info(
+                    "credential pool: skipping %s (usage %s %.1f%% below threshold)",
+                    _label, _window, _pct,
+                )
+                continue
             available.append(entry)
         if cleared_any:
             self._persist()
@@ -949,6 +1005,31 @@ class CredentialPool:
             return current
         available = self._available_entries()
         return available[0] if available else None
+
+    def update_usage(
+        self,
+        credential_id: str,
+        remaining_pct: float,
+        window: str = "default",
+    ) -> bool:
+        """Update usage metadata for a specific pool entry.
+
+        Called after API responses when rate-limit headers are available.
+        Returns True if the entry was found and updated.
+        """
+        with self._lock:
+            for entry in self._entries:
+                if entry.id == credential_id:
+                    updated = replace(
+                        entry,
+                        usage_remaining_pct=remaining_pct,
+                        usage_window=window,
+                        usage_checked_at=time.time(),
+                    )
+                    self._replace_entry(entry, updated)
+                    self._persist()
+                    return True
+            return False
 
     def mark_exhausted_and_rotate(
         self,

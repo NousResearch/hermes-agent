@@ -38,6 +38,7 @@ object HermesAutomationBridge {
             "create_variable_action_task", "create_variable_task", "create_variable_set_task", "create_variable_clear_task" -> createVariableActionTaskJson(context, arguments)
             "create_wait_task", "create_wait", "wait_task", "delay_task" -> createWaitTaskJson(context, arguments)
             "create_clipboard_task", "create_set_clipboard_task", "set_clipboard_task", "clipboard_task" -> createClipboardTaskJson(context, arguments)
+            "create_vibration_task", "create_vibrate_task", "vibrate_task", "vibration_task" -> createVibrationTaskJson(context, arguments)
             "create_launcher_shortcut", "create_shortcut", "create_home_screen_shortcut", "pin_automation_shortcut" -> HermesLauncherShortcutBridge.createShortcutJson(context, arguments)
             "list_launcher_shortcuts", "list_shortcuts", "launcher_shortcuts" -> HermesLauncherShortcutBridge.listShortcutsJson(context)
             "remove_launcher_shortcut", "delete_launcher_shortcut", "remove_shortcut", "delete_shortcut" -> HermesLauncherShortcutBridge.removeShortcutJson(context, arguments)
@@ -677,6 +678,19 @@ object HermesAutomationBridge {
         )
     }
 
+    fun createVibrationTaskJson(context: Context, arguments: JSONObject): String {
+        val payload = runCatching { vibrationPayloadFromArguments(arguments) }.getOrElse { error ->
+            return errorJson(error.message ?: "create_vibration_task arguments are invalid")
+        }
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_VIBRATION_ACTION,
+            payload = payload.toString(),
+            defaultLabel = "Hermes vibration automation",
+        )
+    }
+
     private fun createRecordJson(
         context: Context,
         arguments: JSONObject,
@@ -1308,6 +1322,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_VARIABLE_ACTION -> runVariableActionRecord(store, record, variables)
             ACTION_TYPE_WAIT -> runWaitRecord(record, variables)
             ACTION_TYPE_CLIPBOARD_ACTION -> runClipboardActionRecord(context, record, variables)
+            ACTION_TYPE_VIBRATION_ACTION -> runVibrationActionRecord(context, record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
         }
         val exitCode = rawResult.optInt("exit_code", if (rawResult.optBoolean("success", false)) 0 else -1)
@@ -1524,6 +1539,17 @@ object HermesAutomationBridge {
         val label = expandVariables(payload.optString("label").ifBlank { "Hermes" }, variables)
             .take(MAX_CLIPBOARD_LABEL_CHARS)
         return HermesClipboardActionBridge.setClipboardJson(context, text, label)
+    }
+
+    private fun runVibrationActionRecord(
+        context: Context,
+        record: HermesAutomationRecord,
+        variables: JSONObject,
+    ): JSONObject {
+        val payload = runCatching { JSONObject(record.command) }.getOrNull()
+            ?: return JSONObject(errorJson("Saved vibration_action automation payload is invalid"))
+        val expanded = expandVibrationPayload(payload, variables)
+        return HermesVibrationActionBridge.vibrateJson(context, expanded)
     }
 
     fun deleteJson(context: Context, id: String): String {
@@ -2678,6 +2704,117 @@ object HermesAutomationBridge {
         return waitDurationMsFromArguments(expanded)
     }
 
+    private fun expandVibrationPayload(payload: JSONObject, variables: JSONObject): JSONObject {
+        val expanded = JSONObject()
+        payload.keys().forEach { key ->
+            when (val value = payload.opt(key)) {
+                is String -> expanded.put(key, expandVariables(value, variables))
+                is JSONArray -> {
+                    val array = JSONArray()
+                    for (index in 0 until value.length()) {
+                        when (val entry = value.opt(index)) {
+                            is String -> array.put(expandVariables(entry, variables))
+                            else -> array.put(entry)
+                        }
+                    }
+                    expanded.put(key, array)
+                }
+                else -> expanded.put(key, value)
+            }
+        }
+        return vibrationPayloadFromArguments(expanded)
+    }
+
+    private fun vibrationPayloadFromArguments(arguments: JSONObject): JSONObject {
+        vibrationPatternMsFromArguments(arguments)?.let { pattern ->
+            return if (pattern.size == 1) {
+                JSONObject()
+                    .put("vibration_action", VIBRATION_ACTION_VIBRATE)
+                    .put("duration_ms", boundedVibrationDurationMs(pattern.first()))
+            } else {
+                JSONObject()
+                    .put("vibration_action", VIBRATION_ACTION_VIBRATE)
+                    .put("duration_ms", pattern.sum())
+                    .put("pattern_ms", JSONArray(pattern))
+            }
+        }
+        val durationMs = optionalNonNegativeLongArgument(
+            arguments,
+            "vibration_duration_ms",
+            "duration_ms",
+            "vibrate_ms",
+            "milliseconds",
+            "ms",
+        ) ?: optionalNonNegativeLongArgument(arguments, "vibration_duration_seconds", "duration_seconds")
+            ?.let { seconds -> scaleVibrationComponent(seconds, 1_000L, "seconds") }
+            ?: throw IllegalArgumentException("create_vibration_task requires vibration_duration_ms or vibration_pattern_ms")
+        return JSONObject()
+            .put("vibration_action", VIBRATION_ACTION_VIBRATE)
+            .put("duration_ms", boundedVibrationDurationMs(durationMs))
+    }
+
+    private fun vibrationPatternMsFromArguments(arguments: JSONObject): List<Long>? {
+        listOf("vibration_pattern_ms", "pattern_ms", "vibration_pattern", "pattern").forEach { key ->
+            if (!arguments.has(key) || arguments.isNull(key)) {
+                return@forEach
+            }
+            val values = when (val raw = arguments.opt(key)) {
+                is JSONArray -> {
+                    val parsed = mutableListOf<Long>()
+                    for (index in 0 until raw.length()) {
+                        val value = when (val item = raw.opt(index)) {
+                            is Number -> item.toLong()
+                            else -> item?.toString()?.trim()?.toLongOrNull()
+                        } ?: throw IllegalArgumentException("$key[$index] must be an integer")
+                        parsed += value
+                    }
+                    parsed
+                }
+                else -> raw?.toString()
+                    ?.split(Regex("[,\\s]+"))
+                    ?.filter { it.isNotBlank() }
+                    ?.mapIndexed { index, entry ->
+                        entry.toLongOrNull() ?: throw IllegalArgumentException("$key[$index] must be an integer")
+                    }
+                    .orEmpty()
+            }
+            return boundedVibrationPatternMs(values, key)
+        }
+        return null
+    }
+
+    private fun scaleVibrationComponent(value: Long, factor: Long, label: String): Long {
+        require(value <= MAX_VIBRATION_TOTAL_MS / factor) { "$label exceeds the maximum vibration duration of ${MAX_VIBRATION_TOTAL_MS} ms" }
+        return value * factor
+    }
+
+    private fun boundedVibrationDurationMs(durationMs: Long): Long {
+        require(durationMs > 0L) { "vibration duration must be greater than 0 ms" }
+        require(durationMs <= MAX_VIBRATION_TOTAL_MS) {
+            "vibration duration cannot exceed ${MAX_VIBRATION_TOTAL_MS} ms"
+        }
+        return durationMs
+    }
+
+    private fun boundedVibrationPatternMs(values: List<Long>, label: String): List<Long> {
+        require(values.isNotEmpty()) { "$label must contain at least one timing value" }
+        require(values.size <= MAX_VIBRATION_PATTERN_ENTRIES) {
+            "$label supports at most $MAX_VIBRATION_PATTERN_ENTRIES timing values"
+        }
+        values.forEachIndexed { index, value ->
+            require(value >= 0L) { "$label[$index] must be 0 or greater" }
+            require(value <= MAX_VIBRATION_TOTAL_MS) {
+                "$label[$index] cannot exceed ${MAX_VIBRATION_TOTAL_MS} ms"
+            }
+        }
+        require(values.any { it > 0L }) { "$label must contain at least one non-zero timing value" }
+        val total = values.sum()
+        require(total <= MAX_VIBRATION_TOTAL_MS) {
+            "$label total duration cannot exceed ${MAX_VIBRATION_TOTAL_MS} ms"
+        }
+        return values
+    }
+
     private fun waitDurationMsFromArguments(arguments: JSONObject): Long {
         optionalNonNegativeLongArgument(arguments, "duration_ms", "wait_ms", "milliseconds", "ms")?.let { durationMs ->
             return boundedWaitDurationMs(durationMs)
@@ -3546,6 +3683,7 @@ object HermesAutomationBridge {
         "create_variable_action_task",
         "create_wait_task",
         "create_clipboard_task",
+        "create_vibration_task",
         "create_launcher_shortcut",
         "list_launcher_shortcuts",
         "remove_launcher_shortcut",
@@ -3598,6 +3736,7 @@ object HermesAutomationBridge {
         ACTION_TYPE_VARIABLE_ACTION,
         ACTION_TYPE_WAIT,
         ACTION_TYPE_CLIPBOARD_ACTION,
+        ACTION_TYPE_VIBRATION_ACTION,
     )
     private val ACTION_TYPE_SYNONYMS = mapOf(
         "shizuku" to ACTION_TYPE_SHIZUKU_ACTION,
@@ -3619,6 +3758,8 @@ object HermesAutomationBridge {
         "sleep" to ACTION_TYPE_WAIT,
         "clipboard" to ACTION_TYPE_CLIPBOARD_ACTION,
         "set_clipboard" to ACTION_TYPE_CLIPBOARD_ACTION,
+        "vibrate" to ACTION_TYPE_VIBRATION_ACTION,
+        "vibration" to ACTION_TYPE_VIBRATION_ACTION,
         "android_intent" to ACTION_TYPE_INTENT,
         "start_activity" to ACTION_TYPE_INTENT,
         "open_uri" to ACTION_TYPE_INTENT,
@@ -3871,8 +4012,11 @@ object HermesAutomationBridge {
     private const val VARIABLE_ACTION_SET = "set"
     private const val VARIABLE_ACTION_CLEAR = "clear"
     private const val CLIPBOARD_ACTION_SET = "set"
+    private const val VIBRATION_ACTION_VIBRATE = "vibrate"
     private const val AUTOMATION_TIMEOUT_SECONDS = 30
     private const val MAX_WAIT_DURATION_MS = 60_000L
+    private const val MAX_VIBRATION_TOTAL_MS = 60_000L
+    private const val MAX_VIBRATION_PATTERN_ENTRIES = 32
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
     private const val MAX_CLIPBOARD_LABEL_CHARS = 80
     private const val MAX_RESULT_CHARS = 2_000

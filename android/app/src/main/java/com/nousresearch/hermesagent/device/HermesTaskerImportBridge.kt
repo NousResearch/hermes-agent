@@ -130,6 +130,30 @@ object HermesTaskerImportBridge {
                             .toString(),
                     )
             }
+            TASKER_VIBRATE -> {
+                val durationMs = vibrationDurationMsFromTaskerAction(action) ?: return null
+                base.put("action_type", ACTION_TYPE_VIBRATION_ACTION)
+                    .put(
+                        "command",
+                        JSONObject()
+                            .put("vibration_action", "vibrate")
+                            .put("duration_ms", durationMs)
+                            .toString(),
+                    )
+            }
+            TASKER_VIBRATE_PATTERN -> {
+                val pattern = vibrationPatternMsFromTaskerAction(action) ?: return null
+                val command = JSONObject()
+                    .put("vibration_action", "vibrate")
+                    .put("duration_ms", pattern.sum())
+                if (pattern.size == 1) {
+                    command.put("duration_ms", pattern.first())
+                } else {
+                    command.put("pattern_ms", JSONArray(pattern))
+                }
+                base.put("action_type", ACTION_TYPE_VIBRATION_ACTION)
+                    .put("command", command.toString())
+            }
             TASKER_RUN_SHELL -> {
                 val command = argText(action, 0).trim()
                 if (command.isBlank() || command.indexOf('\u0000') >= 0) return null
@@ -308,6 +332,30 @@ object HermesTaskerImportBridge {
         return value * factor
     }
 
+    private fun vibrationDurationMsFromTaskerAction(action: Element): Long? {
+        val raw = argText(action, 0).trim().ifBlank { "200" }
+        val durationMs = raw.toLongOrNull() ?: return null
+        return durationMs.takeIf { it in 1L..MAX_VIBRATION_TOTAL_MS }
+    }
+
+    private fun vibrationPatternMsFromTaskerAction(action: Element): List<Long>? {
+        val raw = argText(action, 0).trim()
+        if (raw.isBlank() || raw.indexOf('\u0000') >= 0) {
+            return null
+        }
+        val pattern = raw
+            .split(Regex("[,\\s]+"))
+            .filter { it.isNotBlank() }
+            .map { it.toLongOrNull() ?: return null }
+        if (pattern.isEmpty() || pattern.size > MAX_VIBRATION_PATTERN_ENTRIES) {
+            return null
+        }
+        if (pattern.any { it < 0L || it > MAX_VIBRATION_TOTAL_MS } || pattern.none { it > 0L }) {
+            return null
+        }
+        return pattern.takeIf { it.sum() <= MAX_VIBRATION_TOTAL_MS }
+    }
+
     private fun directText(parent: Element, tagName: String): String {
         return directChildren(parent, tagName).firstOrNull()?.textContent.orEmpty()
     }
@@ -392,6 +440,8 @@ object HermesTaskerImportBridge {
     private const val TASKER_LAUNCH_APP = 20
     private const val TASKER_GO_HOME = 25
     private const val TASKER_WAIT = 30
+    private const val TASKER_VIBRATE = 61
+    private const val TASKER_VIBRATE_PATTERN = 62
     private const val TASKER_BROWSE_URL = 104
     private const val TASKER_SET_CLIPBOARD = 105
     private const val TASKER_RUN_SHELL = 123
@@ -415,6 +465,8 @@ object HermesTaskerImportBridge {
     private const val MAX_LABEL_CHARS = 80
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
     private const val MAX_WAIT_DURATION_MS = 60_000L
+    private const val MAX_VIBRATION_TOTAL_MS = 60_000L
+    private const val MAX_VIBRATION_PATTERN_ENTRIES = 32
     private const val MAX_NOTIFICATION_FIELD_CHARS = 120
     private const val MAX_NOTIFICATION_TEXT_CHARS = 2_000
     private const val MAX_CLIPBOARD_TEXT_CHARS = 8_000
@@ -441,6 +493,8 @@ object HermesTaskerImportBridge {
         TASKER_LAUNCH_APP to "Launch App",
         TASKER_GO_HOME to "Go Home",
         TASKER_WAIT to "Wait",
+        TASKER_VIBRATE to "Vibrate",
+        TASKER_VIBRATE_PATTERN to "Vibrate Pattern",
         TASKER_BROWSE_URL to "Browse URL",
         TASKER_SET_CLIPBOARD to "Set Clipboard",
         TASKER_RUN_SHELL to "Run Shell",

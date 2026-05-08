@@ -1193,4 +1193,63 @@ class HermesAutomationStoreTest {
         assertEquals("tasker_xml", dataUriImported.getString("source"))
         assertFalse(store.list().single().enabled)
     }
+
+    @Test
+    fun bridgeImportsTaskerGlobalUiAndSettingsActions() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val taskerXml = """
+            <TaskerData sr="" dvi="1" tv="6.6.18">
+              <Task sr="task1">
+                <nme>Hermes Controls</nme>
+                <Action><code>25</code></Action>
+                <Action><code>245</code></Action>
+                <Action><code>247</code></Action>
+                <Action><code>219</code></Action>
+                <Action><code>197</code></Action>
+                <Action><code>206</code></Action>
+                <Action><code>236</code></Action>
+                <Action><code>956</code></Action>
+              </Task>
+            </TaskerData>
+        """.trimIndent()
+
+        val imported = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "import_tasker_xml",
+                org.json.JSONObject()
+                    .put("tasker_xml", taskerXml)
+                    .put("replace", true),
+            ),
+        )
+        assertTrue(imported.toString(), imported.getBoolean("success"))
+        assertEquals(8, imported.getInt("tasker_imported_action_count"))
+        assertEquals(0, imported.getJSONArray("tasker_skipped_actions").length())
+        assertEquals(8, imported.getInt("imported_automation_count"))
+
+        val records = store.list()
+        val uiActions = records
+            .filter { it.actionType == ACTION_TYPE_UI_ACTION }
+            .map { org.json.JSONObject(it.command).getString("ui_action") }
+            .toSet()
+        assertEquals(setOf("home", "back", "recents", "quick_settings"), uiActions)
+
+        val systemActions = records
+            .filter { it.actionType == ACTION_TYPE_SYSTEM_ACTION }
+            .map { it.command }
+            .toSet()
+        assertEquals(
+            setOf(
+                "open_developer_options",
+                "open_wifi_panel",
+                "open_accessibility_settings",
+                "open_nfc_settings",
+            ),
+            systemActions,
+        )
+        assertTrue(records.none { it.enabled })
+    }
 }

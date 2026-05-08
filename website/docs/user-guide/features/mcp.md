@@ -13,7 +13,7 @@ If you have ever wanted Hermes to use a tool that already exists somewhere else,
 ## What MCP gives you
 
 - Access to external tool ecosystems without writing a native Hermes tool first
-- Local stdio servers and remote HTTP MCP servers in the same config
+- Local stdio servers and remote HTTP/SSE MCP servers in the same config
 - Automatic tool discovery and registration at startup
 - Utility wrappers for MCP resources and prompts when supported by the server
 - Per-server filtering so you can expose only the MCP tools you actually want Hermes to see
@@ -192,9 +192,10 @@ Use stdio servers when:
 - you want low-latency access to local resources
 - you are following MCP server docs that show `command`, `args`, and `env`
 
-### HTTP servers
+### HTTP and SSE servers
 
-HTTP MCP servers are remote endpoints Hermes connects to directly.
+HTTP MCP servers are remote endpoints Hermes connects to directly. By default,
+Hermes uses MCP's Streamable HTTP transport for `url`-based servers.
 
 ```yaml
 mcp_servers:
@@ -204,12 +205,24 @@ mcp_servers:
       Authorization: "Bearer ***"
 ```
 
-Use HTTP servers when:
+Some older or service-specific MCP servers still expose the SSE transport
+instead. For those, keep the `url` config but add `transport: sse`:
+
+```yaml
+mcp_servers:
+  sse_api:
+    url: "https://mcp.example.com/sse"
+    transport: sse
+    headers:
+      Authorization: "Bearer ***"
+```
+
+Use URL-based servers when:
 - the MCP server is hosted elsewhere
 - your organization exposes internal MCP endpoints
 - you do not want Hermes spawning a local subprocess for that integration
 
-### OAuth-authenticated HTTP servers
+### OAuth-authenticated URL-based servers
 
 Most hosted MCP servers (Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, dynamic client registration, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
 
@@ -291,10 +304,12 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `command` | string | Executable for a stdio MCP server |
 | `args` | list | Arguments for the stdio server |
 | `env` | mapping | Environment variables passed to the stdio server |
-| `url` | string | HTTP MCP endpoint |
-| `headers` | mapping | HTTP headers for remote servers |
+| `url` | string | Remote MCP endpoint |
+| `transport` | string | `sse` for URL-based servers that use the SSE transport instead of Streamable HTTP |
+| `headers` | mapping | HTTP/SSE headers for remote servers |
 | `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |
 | `client_key` | string | Client private-key PEM path (when separate from `client_cert`) |
+| `auth` | string | `oauth` for URL-based servers that require OAuth 2.1 PKCE |
 | `timeout` | number | Tool call timeout |
 | `connect_timeout` | number | Initial connection timeout |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
@@ -771,7 +786,7 @@ The gateway does NOT need to be running for read operations (listing conversatio
 
 ### Current limits
 
-- The embedded `hermes mcp serve` exposes a **stdio-only** MCP server today. If you need an HTTP MCP server, run a separate adapter — or, much more commonly, use the MCP **client** side of Hermes, which already speaks both stdio and HTTP (`url` + `headers` in `mcp_servers.yaml` / `config.yaml`; see [HTTP servers](#http-servers) above).
+- The embedded `hermes mcp serve` exposes a **stdio-only** MCP server today. If you need an HTTP/SSE MCP server, run a separate adapter — or, much more commonly, use the MCP **client** side of Hermes, which already speaks stdio, Streamable HTTP, and SSE (`url`, optional `transport: sse`, and `headers` in `mcp_servers.yaml` / `config.yaml`; see [HTTP and SSE servers](#http-and-sse-servers) above).
 - Event polling at ~200ms intervals via mtime-optimized DB polling (skips work when files are unchanged)
 - No `claude/channel` push notification protocol yet
 - Text-only sends (no media/attachment sending through `messages_send`)

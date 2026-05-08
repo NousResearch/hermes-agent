@@ -105,6 +105,7 @@ class ResponsesApiTransport(ProviderTransport):
 
         if reasoning_enabled and is_xai_responses:
             kwargs["include"] = ["reasoning.encrypted_content"]
+            kwargs["reasoning"] = {"effort": reasoning_effort}
         elif reasoning_enabled:
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")

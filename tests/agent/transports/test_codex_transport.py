@@ -149,6 +149,37 @@ class TestCodexBuildKwargs:
         # "minimal" should be clamped to "low"
         assert kw.get("reasoning", {}).get("effort") == "low"
 
+    def test_xai_reasoning_effort_passed(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "high"},
+        )
+        # xAI Responses must receive both encrypted reasoning content and the effort
+        assert kw.get("reasoning") == {"effort": "high"}
+        assert "reasoning.encrypted_content" in kw.get("include", [])
+
+    def test_xai_reasoning_disabled_no_reasoning_key(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"enabled": False},
+        )
+        # When reasoning is disabled, do not send the reasoning key at all
+        assert "reasoning" not in kw
+
+    def test_xai_minimal_effort_clamped(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "minimal"},
+        )
+        # "minimal" should be clamped to "low" for xAI as well
+        assert kw.get("reasoning", {}).get("effort") == "low"
+
 
 class TestCodexValidateResponse:
 

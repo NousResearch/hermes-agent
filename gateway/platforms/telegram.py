@@ -1910,8 +1910,102 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def _handle_gptprof_callback(
+        self, query, profile: str, model: str
+    ) -> None:
+        """Handle gptprof:profile:model button clicks. Persists model globally in config.yaml."""
+        import os, json
+
+        profile_tokens = {
+            "gptinvest23": "/home/hermes/.hermes/skills/chip/hcp/gptinvest23.json",
+            "markov495":   "/home/hermes/.hermes/skills/chip/hcp/markov495.json",
+            "mintsage":    "/home/hermes/.hermes/skills/chip/hcp/mintsage.json",
+            "omnifocusme": "/home/hermes/.hermes/skills/chip/hcp/omnifocusme.json",
+        }
+        emoji_map = {"gptinvest23": "🤖", "markov495": "⚡", "mintsage": "✨", "omnifocusme": "🎯"}
+        plan_map   = {"gptinvest23": "Pro $200", "markov495": "ProLite $100",
+                      "mintsage": "Plus $20",   "omnifocusme": "Plus $20"}
+
+        emoji = emoji_map.get(profile, "🤖")
+        plan  = plan_map.get(profile, "")
+
+        # 1. Save token to auth.json
+        token_file = profile_tokens.get(profile)
+        if token_file and os.path.exists(token_file):
+            with open(token_file) as f:
+                token_data = json.load(f)
+            auth_path = "/home/hermes/.hermes/auth.json"
+            try:
+                with open(auth_path) as f:
+                    auth = json.load(f)
+            except Exception:
+                auth = {}
+            auth["codex"] = token_data
+            with open(auth_path, "w") as f:
+                json.dump(auth, f, indent=2)
+
+        # 2. Persist global config so gateway restarts do not reset back to previous default.
+        #    Mirrors `/model <model> --provider openai-codex --global`.
+        try:
+            import yaml
+            config_path = "/home/hermes/.hermes/config.yaml"
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+            except Exception:
+                cfg = {}
+            cfg["model"] = model
+            cfg["provider"] = "openai-codex"
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+        except Exception:
+            pass
+
+        # 3. Update session model override via gateway runner
+        try:
+            from gateway.run import _gateway_runner_ref
+            runner = _gateway_runner_ref()
+            if runner:
+                session_key = None
+                store = getattr(runner, "_session_store", None)
+                if store:
+                    for sk, entry in store._entries.items():
+                        origin = entry.origin
+                        if (origin and getattr(origin, "chat_id_str", None) == str(query.message.chat_id) if origin else False):
+                            session_key = sk
+                            break
+                if not session_key:
+                    for sk in list(getattr(runner, "_session_model_overrides", {}).keys()):
+                        if "617744661" in sk:
+                            session_key = sk
+                            break
+
+                if session_key and hasattr(runner, "_session_model_overrides"):
+                    runner._session_model_overrides[session_key] = {
+                        "model": model,
+                        "provider": "openai-codex",
+                    }
+                    if hasattr(runner, "_evict_cached_agent"):
+                        runner._evict_cached_agent(session_key)
+        except Exception:
+            pass
+
+        # 4. Confirm to user
+        text = (
+            f"{emoji} *Профиль активирован*\n\n"
+            f"`{profile}` ({plan})\n"
+            f"Модель: `{model}`\n\n"
+            "✅ Сохранено глобально в `config.yaml`.\n"
+            "Нажми `/new` для новой сессии с выбранным GPT."
+        )
+        await query.answer(text=f"{emoji} {profile} ({model})", show_alert=True)
+        try:
+            await query.edit_message_text(text=text, parse_mode="Markdown", reply_markup=None)
+        except Exception:
+            pass
+
     async def _handle_callback_query(
-        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+        self, update: "Update", context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Handle inline keyboard button clicks."""
         query = update.callback_query
@@ -1992,6 +2086,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+            return
+
+        # --- gptprof callbacks (gptprof:profile:model) ---
+        if data.startswith("gptprof:"):
+            parts = data.split(":")
+            if len(parts) >= 3:
+                profile = parts[1]
+                model = parts[2]
+                await self._handle_gptprof_callback(query, profile, model)
             return
 
         # --- Slash-confirm callbacks (sc:choice:confirm_id) ---

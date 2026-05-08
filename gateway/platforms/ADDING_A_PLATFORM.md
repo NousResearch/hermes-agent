@@ -14,7 +14,7 @@ The plugin system automatically handles: adapter creation, config parsing,
 user authorization, cron delivery, send_message routing, system prompt hints,
 status display, gateway setup, and more.
 
-**Three optional hooks cover the edges most adapters need:**
+**Optional hooks cover the edges most adapters need:**
 
 - `env_enablement_fn: () -> Optional[dict]` — seeds `PlatformConfig.extra`
   (and an optional `home_channel` dict) from env vars BEFORE the adapter is
@@ -24,6 +24,11 @@ status display, gateway setup, and more.
 - `cron_deliver_env_var: str` — name of the `*_HOME_CHANNEL` env var.  When
   set, `deliver=<name>` cron jobs route to this var without editing
   `cron/scheduler.py`'s hardcoded sets.
+- `standalone_sender_fn: async (...) -> dict`: out-of-process delivery
+  for cron jobs that run separately from the gateway.  Without this, a
+  `deliver=<name>` job fires correctly but the actual send returns
+  `No live adapter for platform '<name>'`.  Pair with `cron_deliver_env_var`
+  for end-to-end cron support.  See the docsite for the signature.
 - `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
   auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
   wizard surfaces proper descriptions, prompts, password flags, and URLs.

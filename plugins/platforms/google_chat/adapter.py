@@ -3036,6 +3036,165 @@ def interactive_setup() -> None:
     print_info("Restart the gateway: hermes gateway restart")
 
 
+# Strict resource-name pattern.  ``spaces/<id>`` and ``users/<id>`` must
+# only contain Google Chat's documented character set; anything else
+# means a tampered chat_id trying to break out of the REST URL path
+# (path traversal, ``?`` query injection, ``#`` fragment truncation).
+_GCHAT_CHAT_ID_RE = re.compile(r"^(?:spaces|users)/[A-Za-z0-9_-]+$")
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[List[str]] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """POST a single Google Chat message via the REST API without the SDK.
+
+    Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
+    runner is not in this process (e.g. ``hermes cron`` running as a
+    separate process from ``hermes gateway``).  Without this hook,
+    ``deliver=google_chat`` cron jobs fail with ``No live adapter for
+    platform``.
+
+    Configuration: requires service-account credentials via
+    ``GOOGLE_CHAT_SERVICE_ACCOUNT_JSON``, ``GOOGLE_APPLICATION_CREDENTIALS``,
+    or Application Default Credentials, and a space resource name as
+    ``chat_id`` (e.g. ``spaces/AAAA-BBBB`` or ``users/<id>``).
+
+    Security: ``chat_id`` is validated against the documented Google Chat
+    resource-name character set before substitution into the REST URL so
+    a tampered value cannot path-traverse or query-inject.
+
+    ``media_files`` and ``force_document`` are accepted for signature
+    parity but are not implemented for the standalone path; messages with
+    attachments send as text-only.  The live adapter handles attachments.
+    """
+    if not chat_id:
+        return {"error": "Google Chat standalone send: chat_id (space resource) is required"}
+    if not _GCHAT_CHAT_ID_RE.match(chat_id):
+        return {"error": (
+            f"Google Chat standalone send: chat_id {chat_id!r} must match "
+            f"'spaces/<id>' or 'users/<id>' with only [A-Za-z0-9_-] in the id"
+        )}
+    if thread_id is not None and not re.match(r"^spaces/[A-Za-z0-9_-]+/threads/[A-Za-z0-9_-]+$", thread_id):
+        return {"error": (
+            f"Google Chat standalone send: thread_id {thread_id!r} must match "
+            f"'spaces/<id>/threads/<id>'"
+        )}
+
+    extra = getattr(pconfig, "extra", {}) or {}
+    sa_value = (
+        extra.get("service_account_json")
+        or os.getenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    )
+
+    if service_account is None:
+        return {"error": "Google Chat standalone send: google-auth not installed"}
+
+    try:
+        from google.auth.transport.requests import Request as _GoogleAuthRequest
+    except Exception as e:
+        return {"error": f"Google Chat standalone send: google-auth import failed: {e}"}
+
+    try:
+        if sa_value:
+            stripped = sa_value.lstrip()
+            if stripped.startswith("{"):
+                try:
+                    info = json.loads(sa_value)
+                except json.JSONDecodeError as exc:
+                    return {"error": f"Google Chat standalone send: inline SA JSON is invalid: {exc}"}
+                creds = service_account.Credentials.from_service_account_info(info, scopes=_CHAT_SCOPES)
+            else:
+                if not os.path.exists(sa_value):
+                    return {"error": f"Google Chat standalone send: SA JSON file not found at {sa_value}"}
+                try:
+                    with open(sa_value, "r", encoding="utf-8") as fh:
+                        info = json.load(fh)
+                except json.JSONDecodeError as exc:
+                    return {"error": f"Google Chat standalone send: SA JSON file is invalid: {exc}"}
+                creds = service_account.Credentials.from_service_account_info(info, scopes=_CHAT_SCOPES)
+        else:
+            try:
+                import google.auth as _google_auth
+            except ImportError:
+                return {"error": (
+                    "Google Chat standalone send: no SA credentials configured "
+                    "and google-auth is not installed for ADC fallback"
+                )}
+            try:
+                creds, _project = _google_auth.default(scopes=_CHAT_SCOPES)
+            except Exception as exc:
+                return {"error": (
+                    f"Google Chat standalone send: no SA credentials configured "
+                    f"and Application Default Credentials are unavailable: {exc}"
+                )}
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        return {"error": f"Google Chat standalone send: credential load failed: {e}"}
+
+    # Bound the synchronous urllib3-backed token refresh so a hung Google
+    # STS endpoint cannot stall the cron scheduler indefinitely.
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(creds.refresh, _GoogleAuthRequest()),
+            timeout=10.0,
+        )
+    except asyncio.TimeoutError:
+        return {"error": "Google Chat standalone send: token refresh timed out"}
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        return {"error": f"Google Chat standalone send: token refresh failed: {e}"}
+
+    token = getattr(creds, "token", None)
+    if not token:
+        return {"error": "Google Chat standalone send: refreshed credentials have no token"}
+
+    body: Dict[str, Any] = {"text": message}
+    if thread_id:
+        body["thread"] = {"name": thread_id}
+
+    url = f"https://chat.googleapis.com/v1/{chat_id}/messages"
+    try:
+        import aiohttp as _aiohttp
+    except ImportError:
+        return {"error": "Google Chat standalone send: aiohttp not installed"}
+
+    try:
+        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=30.0)) as session:
+            async with session.post(
+                url,
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+            ) as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    return {"error": (
+                        f"Google Chat standalone send: API returned "
+                        f"{resp.status}: {text[:300]}"
+                    )}
+                payload = await resp.json()
+        return {
+            "success": True,
+            "message_id": payload.get("name"),
+        }
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.debug("Google Chat standalone send raised", exc_info=True)
+        return {"error": f"Google Chat standalone send failed: {e}"}
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup.
 
@@ -3069,6 +3228,10 @@ def register(ctx) -> None:
         # cron jobs route to the configured home space without editing
         # cron/scheduler.py's hardcoded sets.
         cron_deliver_env_var="GOOGLE_CHAT_HOME_CHANNEL",
+        # Out-of-process cron delivery via the Chat REST API.  Without this
+        # hook, deliver=google_chat cron jobs fail with "No live adapter"
+        # when cron runs separately from the gateway.
+        standalone_sender_fn=_standalone_send,
         # Auth env vars for _is_user_authorized() integration.
         allowed_users_env="GOOGLE_CHAT_ALLOWED_USERS",
         allow_all_env="GOOGLE_CHAT_ALLOW_ALL_USERS",

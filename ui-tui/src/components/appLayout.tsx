@@ -299,6 +299,7 @@ const ComposerPane = memo(function ComposerPane({
                   columns={inputColumns}
                   mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
+                  onEmptyQuestionMark={() => patchOverlayState({ picker: true })}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
                   placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}

@@ -6,6 +6,7 @@ import type { Theme } from '../theme.js'
 const COMMON_COMMANDS: [string, string][] = [
   ['/help', 'full list of commands + hotkeys'],
   ['/clear', 'start a new session'],
+  ['?', 'search previous sessions'],
   ['/resume', 'resume a prior session'],
   ['/details', 'control transcript detail level'],
   ['/copy', 'copy selection or last assistant message'],

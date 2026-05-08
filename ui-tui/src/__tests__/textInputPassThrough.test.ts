@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldPassThroughToGlobalHandler } from '../components/textInput.js'
+import { shouldOpenSessionPickerShortcut, shouldPassThroughToGlobalHandler } from '../components/textInput.js'
 import { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } from '../lib/platform.js'
 
 const key = (overrides: Record<string, unknown> = {}) =>
@@ -39,5 +39,18 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(shouldPassThroughToGlobalHandler('', key({ tab: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageUp: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageDown: true }))).toBe(true)
+  })
+})
+
+describe('shouldOpenSessionPickerShortcut', () => {
+  it('uses bare ? on an empty composer as the session search shortcut', () => {
+    expect(shouldOpenSessionPickerShortcut('?', key(), '', null)).toBe(true)
+    expect(shouldOpenSessionPickerShortcut('?', key({ shift: true }), '', null)).toBe(true)
+  })
+
+  it('preserves literal ? typing once the user is composing text', () => {
+    expect(shouldOpenSessionPickerShortcut('?', key(), 'why', null)).toBe(false)
+    expect(shouldOpenSessionPickerShortcut('?', key({ ctrl: true }), '', null)).toBe(false)
+    expect(shouldOpenSessionPickerShortcut('?', key(), '', { start: 0, end: 1 })).toBe(false)
   })
 })

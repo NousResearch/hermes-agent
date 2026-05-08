@@ -244,6 +244,7 @@ export function TextInput({
   onChange,
   onPaste,
   onSubmit,
+  onEmptyQuestionMark,
   mask,
   mouseApiRef,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
@@ -277,9 +278,11 @@ export function TextInput({
   const cbChange = useRef(onChange)
   const cbSubmit = useRef(onSubmit)
   const cbPaste = useRef(onPaste)
+  const cbEmptyQuestionMark = useRef(onEmptyQuestionMark)
   cbChange.current = onChange
   cbSubmit.current = onSubmit
   cbPaste.current = onPaste
+  cbEmptyQuestionMark.current = onEmptyQuestionMark
 
   const raw = self.current ? vRef.current : value
   const display = mask ? raw.replace(/[^\n]/g, mask[0] ?? '*') : raw
@@ -707,6 +710,12 @@ export function TextInput({
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
+      if (shouldOpenSessionPickerShortcut(inp, k, vRef.current, selRef.current)) {
+        cbEmptyQuestionMark.current?.()
+
+        return
+      }
+
       // Configured voice shortcut wins over composer-level defaults like
       // paste/copy so users who bind voice to ctrl+v / alt+v / cmd+v
       // actually get voice toggled instead of a paste (Copilot round-7
@@ -1045,6 +1054,7 @@ interface TextInputProps {
     e: PasteEvent
   ) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
   onSubmit?: (v: string) => void
+  onEmptyQuestionMark?: () => void
   placeholder?: string
   value: string
   voiceRecordKey?: ParsedVoiceRecordKey
@@ -1077,6 +1087,19 @@ export function decideRightClickAction(
   }
   return { action: 'paste' }
 }
+
+export const shouldOpenSessionPickerShortcut = (
+  input: string,
+  key: Key,
+  value: string,
+  selection: null | { end: number; start: number }
+): boolean =>
+  input === '?' &&
+  !key.ctrl &&
+  !key.meta &&
+  !key.return &&
+  !value.length &&
+  (!selection || selection.start === selection.end)
 
 export const shouldPassThroughToGlobalHandler = (
   input: string,

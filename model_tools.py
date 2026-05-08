@@ -437,19 +437,27 @@ def _compute_tool_definitions(
                         filtered_tools[i] = {"type": "function", "function": dynamic}
                         break
 
-    # Strip web tool cross-references from browser_navigate description when
-    # web_search / web_extract are not available.  The static schema says
-    # "prefer web_search or web_extract" which causes the model to hallucinate
-    # those tools when they're missing.
+    # Add cross-tool references to browser_navigate only for tools that are
+    # actually available after check_fn filtering.  Static schema descriptions
+    # must not hard-code optional tool names, or the model will hallucinate
+    # calls to tools that are disabled/unavailable in the current session.
     if "browser_navigate" in available_tool_names:
-        web_tools_available = {"web_search", "web_extract"} & available_tool_names
-        if not web_tools_available:
+        retrieval_methods = []
+        if "terminal" in available_tool_names:
+            retrieval_methods.append("curl via the terminal tool")
+        if "web_extract" in available_tool_names:
+            retrieval_methods.append("web_extract")
+        if "mcporter_call" in available_tool_names:
+            retrieval_methods.append(
+                "mcporter_call when a configured mcporter retrieval tool can fetch the needed page/document text"
+            )
+        if retrieval_methods:
             for i, td in enumerate(filtered_tools):
                 if td.get("function", {}).get("name") == "browser_navigate":
                     desc = td["function"].get("description", "")
                     desc = desc.replace(
-                        " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
-                        "",
+                        "prefer available lightweight text retrieval tools first.",
+                        f"prefer lightweight text retrieval first, such as {', '.join(retrieval_methods)}.",
                     )
                     filtered_tools[i] = {
                         "type": "function",

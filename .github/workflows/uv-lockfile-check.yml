@@ -1,0 +1,119 @@
+name: uv.lock check
+
+# Verify uv.lock is in sync with pyproject.toml.  Blocking check — PRs
+# that modify pyproject.toml without regenerating uv.lock (or vice versa)
+# must not merge, because the Docker build's `uv sync --frozen` step will
+# fail on a stale lockfile and we'd rather catch it here than in the
+# docker-publish workflow on main.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# IMPORTANT: this check runs against the MERGED state, not just your branch
+# ─────────────────────────────────────────────────────────────────────────
+#
+# For `pull_request` events, GitHub checks out `refs/pull/<N>/merge` by
+# default — a synthetic commit that merges your PR branch into the CURRENT
+# state of `main`.  That means the pyproject.toml evaluated here is
+# `main's pyproject.toml + your PR's changes to pyproject.toml`, not just
+# what's on your branch.
+#
+# Failure mode this creates: if `main` has advanced since you branched
+# (e.g. someone merged a PR that added a dep to pyproject.toml + its
+# corresponding uv.lock entries), your branch's uv.lock is missing those
+# new entries.  `uv lock --check` resolves against the merged pyproject
+# and sees a lockfile that doesn't cover all the current deps → fails
+# with "The lockfile at uv.lock needs to be updated."
+#
+# This can be confusing: `uv lock --check` passes locally (your branch
+# is internally consistent) but fails in CI (merged state isn't).
+#
+# Fix is to sync your branch with main and regenerate the lockfile:
+#
+#     git fetch origin main
+#     git rebase origin/main      # or merge, whatever the repo prefers
+#     uv lock                     # regenerates uv.lock against new pyproject.toml
+#     git add uv.lock
+#     git commit -m "chore: refresh uv.lock after rebase onto main"
+#     git push --force-with-lease # if you rebased
+#
+# If you also changed pyproject.toml in your PR, `uv lock` handles that
+# at the same time — one regeneration covers both your changes and the
+# drift from main.
+#
+# This is the correct behavior!  The check is protecting main's Docker
+# build: a post-merge build would see the same merged state and fail
+# the same way.  Better to catch it here than after merge.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/uv-lockfile-check.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/uv-lockfile-check.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uv-lockfile-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: uv lock --check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+
+      # `uv lock --check` re-resolves the project from pyproject.toml and
+      # compares the result to uv.lock, exiting non-zero if they disagree.
+      # No network writes, no file modifications.
+      #
+      # On PRs this runs against the merge commit (see comment at the top
+      # of this file) — failures often mean "your branch is behind main,
+      # rebase and regenerate uv.lock."
+      - name: Verify uv.lock is up-to-date
+        run: |
+          if ! uv lock --check; then
+            cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          ## ❌ uv.lock is out of sync with pyproject.toml
+
+          **If this is a PR:** this check runs against the merged state
+          (your branch + current `main`), not just your branch.  If
+          `uv lock --check` passes locally, your branch is likely behind
+          `main` — recent changes to `pyproject.toml` on `main` aren't
+          reflected in your branch's `uv.lock` yet.
+
+          To fix, sync with main and regenerate the lockfile:
+
+          ```bash
+          git fetch origin main
+          git rebase origin/main   # or `git merge origin/main`
+          uv lock                  # regenerate against new pyproject.toml
+          git add uv.lock
+          git commit -m "chore: refresh uv.lock after syncing with main"
+          git push --force-with-lease  # drop --force-with-lease if you merged
+          ```
+
+          **If you only changed pyproject.toml:** run `uv lock` locally
+          and commit the result.
+
+          This check is blocking because the Docker image build uses
+          `uv sync --frozen --extra all`, which rejects stale lockfiles
+          — catching it here avoids a ~15 min failed docker-publish run
+          on `main` post-merge.
+          EOF
+            echo "::error title=uv.lock out of sync::Run \`uv lock\` locally and commit the result. If on a PR, sync with main first."
+            exit 1
+          fi

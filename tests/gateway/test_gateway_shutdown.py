@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.platforms.base import MessageEvent
+from gateway.config import HomeChannel, Platform
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
@@ -245,3 +246,24 @@ async def test_gateway_stop_kills_tool_subprocesses_on_graceful_path(monkeypatch
 
     # Only the final catch-all fires on the graceful path.
     assert kill_count == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_home_notifications_snapshot_adapters_before_sending():
+    """Adapter sends may mutate runner.adapters; shutdown must not crash."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-chat",
+        name="home",
+    )
+
+    async def send_and_remove_adapter(chat_id, content, reply_to=None, metadata=None):
+        runner.adapters.pop(Platform.TELEGRAM, None)
+        return SendResult(success=True, message_id="sent")
+
+    adapter.send = send_and_remove_adapter
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert runner.adapters == {}

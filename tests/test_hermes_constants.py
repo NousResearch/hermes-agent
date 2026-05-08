@@ -9,6 +9,7 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    display_hermes_home,
     get_default_hermes_root,
     get_hermes_dir,
     get_optional_skills_dir,
@@ -250,3 +251,36 @@ class TestGetHermesDir:
         result = get_hermes_dir("nested/deep/dir", "old_dir")
         assert result.is_absolute()
         assert result == tmp_path / "nested/deep/dir"
+
+
+class TestDisplayHermesHome:
+    """Tests for display_hermes_home() — user-facing path formatter."""
+
+    def test_default_home_uses_tilde_shorthand(self, tmp_path, monkeypatch):
+        """No HERMES_HOME set → renders as ``~/.hermes``."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        assert display_hermes_home() == "~/.hermes"
+
+    def test_profile_path_uses_tilde_shorthand(self, tmp_path, monkeypatch):
+        """Profile under ~/ renders with the ``~/`` prefix preserved."""
+        profile = tmp_path / ".hermes" / "profiles" / "coder"
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        assert display_hermes_home() == "~/.hermes/profiles/coder"
+
+    def test_custom_path_outside_home_returns_full_path(
+        self, tmp_path, monkeypatch
+    ):
+        """Docker / custom installs fall back to the absolute path."""
+        custom = tmp_path / "opt" / "hermes-custom"
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+        monkeypatch.setenv("HERMES_HOME", str(custom))
+        assert display_hermes_home() == str(custom)
+
+    def test_arbitrary_subdir_under_home(self, tmp_path, monkeypatch):
+        """Any path under home (not just ``.hermes``) gets the shorthand."""
+        non_default = tmp_path / "myhermes-data"
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(non_default))
+        assert display_hermes_home() == "~/myhermes-data"

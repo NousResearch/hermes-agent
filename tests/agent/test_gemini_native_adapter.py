@@ -19,6 +19,34 @@ class DummyResponse:
         return self._payload
 
 
+def test_build_native_request_translates_video_url_to_inline_data():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this clip"},
+                {
+                    "type": "video_url",
+                    "video_url": {"url": "data:video/webm;base64,QUJDRA=="},
+                },
+            ],
+        }],
+        tools=[],
+        tool_choice=None,
+    )
+
+    parts = request["contents"][0]["parts"]
+    assert parts[0] == {"text": "Describe this clip"}
+    assert parts[1] == {
+        "inlineData": {
+            "mimeType": "video/webm",
+            "data": "QUJDRA==",
+        }
+    }
+
+
 def test_build_native_request_preserves_thought_signature_on_tool_replay():
     from agent.gemini_native_adapter import build_gemini_request
 

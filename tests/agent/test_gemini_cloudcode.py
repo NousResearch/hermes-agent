@@ -581,6 +581,29 @@ class TestBuildGeminiRequest:
         # System should NOT appear in contents
         assert all(c["role"] != "system" for c in req["contents"])
 
+    def test_video_url_part_translates_to_inline_data(self):
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        req = build_gemini_request(messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this clip"},
+                {
+                    "type": "video_url",
+                    "video_url": {"url": "data:video/mp4;base64,QUJDRA=="},
+                },
+            ],
+        }])
+
+        parts = req["contents"][0]["parts"]
+        assert parts[0] == {"text": "Describe this clip"}
+        assert parts[1] == {
+            "inlineData": {
+                "mimeType": "video/mp4",
+                "data": "QUJDRA==",
+            }
+        }
+
     def test_multiple_system_messages_joined(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request
 

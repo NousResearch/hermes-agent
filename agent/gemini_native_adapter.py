@@ -17,7 +17,6 @@ OpenAI-compat layer entirely.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import time
@@ -174,6 +173,20 @@ def _coerce_content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _data_url_to_inline_data(url: str) -> Optional[Dict[str, Dict[str, str]]]:
+    """Convert a data URL into Gemini inlineData, preserving base64 payload."""
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return None
+    try:
+        header, encoded = url.split(",", 1)
+        mime = header.split(":", 1)[1].split(";", 1)[0]
+    except Exception:
+        return None
+    if not mime or not encoded:
+        return None
+    return {"inlineData": {"mimeType": mime, "data": encoded}}
+
+
 def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
     if not isinstance(content, list):
         text = _coerce_content_to_text(content)
@@ -191,24 +204,14 @@ def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
             text = item.get("text")
             if isinstance(text, str) and text:
                 parts.append({"text": text})
-        elif ptype == "image_url":
-            url = ((item.get("image_url") or {}).get("url") or "")
-            if not isinstance(url, str) or not url.startswith("data:"):
-                continue
-            try:
-                header, encoded = url.split(",", 1)
-                mime = header.split(":", 1)[1].split(";", 1)[0]
-                raw = base64.b64decode(encoded)
-            except Exception:
-                continue
-            parts.append(
-                {
-                    "inlineData": {
-                        "mimeType": mime,
-                        "data": base64.b64encode(raw).decode("ascii"),
-                    }
-                }
-            )
+        elif ptype in ("image_url", "video_url"):
+            media = item.get(ptype) or {}
+            url = media.get("url") if isinstance(media, dict) else ""
+            inline = _data_url_to_inline_data(url)
+            if inline:
+                parts.append(inline)
+            else:
+                logger.debug("Dropping unsupported multimodal part: %s", ptype)
     return parts
 
 

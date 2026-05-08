@@ -217,6 +217,19 @@ object HermesTaskerImportBridge {
                             .toString(),
                     )
             }
+            in TASKER_GLOBAL_UI_ACTIONS -> {
+                base.put("action_type", ACTION_TYPE_UI_ACTION)
+                    .put(
+                        "command",
+                        JSONObject()
+                            .put("ui_action", TASKER_GLOBAL_UI_ACTIONS.getValue(code))
+                            .toString(),
+                    )
+            }
+            in TASKER_SETTINGS_ACTIONS -> {
+                base.put("action_type", ACTION_TYPE_SYSTEM_ACTION)
+                    .put("command", TASKER_SETTINGS_ACTIONS.getValue(code))
+            }
             else -> null
         }
     }
@@ -364,14 +377,26 @@ object HermesTaskerImportBridge {
     }
 
     private const val TASKER_LAUNCH_APP = 20
+    private const val TASKER_GO_HOME = 25
     private const val TASKER_WAIT = 30
     private const val TASKER_BROWSE_URL = 104
     private const val TASKER_RUN_SHELL = 123
+    private const val TASKER_DEVELOPER_SETTINGS = 197
+    private const val TASKER_AIRPLANE_MODE_SETTINGS = 201
+    private const val TASKER_WIFI_SETTINGS = 206
+    private const val TASKER_BLUETOOTH_SETTINGS = 218
+    private const val TASKER_QUICK_SETTINGS = 219
+    private const val TASKER_MOBILE_DATA_SETTINGS = 220
+    private const val TASKER_ACCESSIBILITY_SETTINGS = 236
+    private const val TASKER_NOTIFICATION_LISTENER_SETTINGS = 237
+    private const val TASKER_BACK_BUTTON = 245
+    private const val TASKER_SHOW_RECENTS = 247
     private const val TASKER_DELETE_FILE = 406
     private const val TASKER_WRITE_FILE = 410
     private const val TASKER_NOTIFY = 523
     private const val TASKER_VARIABLE_SET = 547
     private const val TASKER_VARIABLE_CLEAR = 549
+    private const val TASKER_NFC_SETTINGS = 956
     private const val MAX_TASKER_XML_CHARS = 512_000
     private const val MAX_LABEL_CHARS = 80
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
@@ -381,15 +406,43 @@ object HermesTaskerImportBridge {
     private val ANDROID_PACKAGE_REGEX = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
     private val DOCTYPE_REGEX = Regex("<!\\s*DOCTYPE", RegexOption.IGNORE_CASE)
     private val ENTITY_REGEX = Regex("<!\\s*ENTITY", RegexOption.IGNORE_CASE)
+    private val TASKER_GLOBAL_UI_ACTIONS = mapOf(
+        TASKER_GO_HOME to "home",
+        TASKER_BACK_BUTTON to "back",
+        TASKER_SHOW_RECENTS to "recents",
+        TASKER_QUICK_SETTINGS to "quick_settings",
+    )
+    private val TASKER_SETTINGS_ACTIONS = mapOf(
+        TASKER_DEVELOPER_SETTINGS to "open_developer_options",
+        TASKER_AIRPLANE_MODE_SETTINGS to "open_airplane_mode_settings",
+        TASKER_WIFI_SETTINGS to "open_wifi_panel",
+        TASKER_BLUETOOTH_SETTINGS to "open_bluetooth_settings",
+        TASKER_MOBILE_DATA_SETTINGS to "open_mobile_network_settings",
+        TASKER_ACCESSIBILITY_SETTINGS to "open_accessibility_settings",
+        TASKER_NOTIFICATION_LISTENER_SETTINGS to "open_notification_listener_settings",
+        TASKER_NFC_SETTINGS to "open_nfc_settings",
+    )
     private val TASKER_ACTION_LABELS = mapOf(
         TASKER_LAUNCH_APP to "Launch App",
+        TASKER_GO_HOME to "Go Home",
         TASKER_WAIT to "Wait",
         TASKER_BROWSE_URL to "Browse URL",
         TASKER_RUN_SHELL to "Run Shell",
+        TASKER_DEVELOPER_SETTINGS to "Developer Settings",
+        TASKER_AIRPLANE_MODE_SETTINGS to "Airplane Mode Settings",
+        TASKER_WIFI_SETTINGS to "Wi-Fi Settings",
+        TASKER_BLUETOOTH_SETTINGS to "Bluetooth Settings",
+        TASKER_QUICK_SETTINGS to "Quick Settings",
+        TASKER_MOBILE_DATA_SETTINGS to "Mobile Data Settings",
+        TASKER_ACCESSIBILITY_SETTINGS to "Accessibility Settings",
+        TASKER_NOTIFICATION_LISTENER_SETTINGS to "Notification Listener Settings",
+        TASKER_BACK_BUTTON to "Back Button",
+        TASKER_SHOW_RECENTS to "Show Recents",
         TASKER_DELETE_FILE to "Delete File",
         TASKER_WRITE_FILE to "Write File",
         TASKER_NOTIFY to "Notify",
         TASKER_VARIABLE_SET to "Variable Set",
         TASKER_VARIABLE_CLEAR to "Variable Clear",
+        TASKER_NFC_SETTINGS to "NFC Settings",
     )
 }

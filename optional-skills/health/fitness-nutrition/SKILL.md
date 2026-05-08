@@ -1,6 +1,7 @@
 ---
 name: fitness-nutrition
 description: >
+platforms: [linux, macos, windows]
   Gym workout planner and nutrition tracker. Search 690+ exercises by muscle,
   equipment, or category via wger. Look up macros and calories for 380,000+
   foods via USDA FoodData Central. Compute BMI, TDEE, one-rep max, macro

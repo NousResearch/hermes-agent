@@ -1,6 +1,7 @@
 ---
 name: drug-discovery
 description: >
+platforms: [linux, macos, windows]
   Pharmaceutical research assistant for drug discovery workflows. Search
   bioactive compounds on ChEMBL, calculate drug-likeness (Lipinski Ro5, QED,
   TPSA, synthetic accessibility), look up drug-drug interactions via

@@ -4,6 +4,7 @@ description: Index a codebase with GitNexus and serve an interactive knowledge g
 version: 1.0.0
 author: Hermes Agent + Teknium
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [gitnexus, code-intelligence, knowledge-graph, visualization]

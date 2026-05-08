@@ -4,6 +4,7 @@ description: Create HTML-based video compositions, animated title cards, social 
 version: 1.0.0
 author: heygen-com
 license: Apache-2.0
+platforms: [linux, macos, windows]
 prerequisites:
   commands: [node, ffmpeg, npx]
 metadata:

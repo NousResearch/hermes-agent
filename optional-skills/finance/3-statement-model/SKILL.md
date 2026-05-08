@@ -4,6 +4,7 @@ description: Build fully-integrated 3-statement models (IS, BS, CF) in Excel wit
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [finance, three-statement, income-statement, balance-sheet, cash-flow, excel, openpyxl, modeling]

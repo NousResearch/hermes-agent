@@ -6,7 +6,7 @@ Salvaged from PRs #5301 (qaqcvc) and #5117 (vvvanguards).
 import json
 import pytest
 
-from plugins.memory.mem0 import Mem0MemoryProvider
+from plugins.memory.mem0 import Mem0MemoryProvider, _Mem0RestClient
 
 
 class FakeClientV2:
@@ -225,3 +225,111 @@ class TestMem0Defaults:
         provider.initialize("test")
 
         assert provider._agent_id == "hermes"
+
+    def test_base_url_env_configures_self_hosted_client(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.setenv("MEM0_BASE_URL", "http://127.0.0.1:8888/")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        provider = Mem0MemoryProvider()
+        provider.initialize("test")
+
+        assert provider._base_url == "http://127.0.0.1:8888"
+        assert isinstance(provider._get_client(), _Mem0RestClient)
+
+
+class TestMem0RestClient:
+    """Self-hosted REST adapter maps MemoryClient-style calls to FastAPI endpoints."""
+
+    class _FakeResponse:
+        def __init__(self, payload):
+            self.payload = json.dumps(payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return self.payload
+
+    def test_search_maps_user_id_to_filters_payload(self, monkeypatch):
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["headers"] = dict(request.header_items())
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return self._FakeResponse({"results": [{"memory": "orchid", "score": 0.2}]})
+
+        monkeypatch.setattr("plugins.memory.mem0.urllib.request.urlopen", fake_urlopen)
+        client = _Mem0RestClient(base_url="http://127.0.0.1:8888/", api_key="m0sk_test")
+
+        result = client.search(query="token", filters={"user_id": "u1"}, top_k=3, rerank=False)
+
+        assert result["results"][0]["memory"] == "orchid"
+        assert captured["url"] == "http://127.0.0.1:8888/search"
+        assert captured["headers"].get("X-api-key") == "m0sk_test"
+        assert "Authorization" not in captured["headers"]
+        assert captured["body"] == {"query": "token", "filters": {"user_id": "u1"}, "top_k": 50, "rerank": False}
+
+    def test_search_sorts_self_host_distance_scores_ascending(self, monkeypatch):
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return self._FakeResponse({"results": [
+                {"memory": "worse", "score": 0.9},
+                {"memory": "better", "score": 0.1},
+                {"memory": "third", "score": 0.5},
+            ]})
+
+        monkeypatch.setattr("plugins.memory.mem0.urllib.request.urlopen", fake_urlopen)
+        client = _Mem0RestClient(base_url="http://127.0.0.1:8888/", api_key="m0sk_test")
+
+        result = client.search(query="token", filters={"user_id": "u1"}, top_k=2)
+
+        assert captured["body"]["top_k"] == 50
+        assert [r["memory"] for r in result["results"]] == ["better", "third"]
+
+    def test_get_all_maps_filters_to_query_params(self, monkeypatch):
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            return self._FakeResponse({"results": []})
+
+        monkeypatch.setattr("plugins.memory.mem0.urllib.request.urlopen", fake_urlopen)
+        client = _Mem0RestClient(base_url="http://mem0.local", api_key="m0-test")
+
+        client.get_all(filters={"user_id": "u1", "agent_id": "mina", "project": "ignored"})
+
+        assert captured["url"] == "http://mem0.local/memories?user_id=u1&agent_id=mina"
+
+    def test_add_preserves_entity_ids_and_metadata(self, monkeypatch):
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return self._FakeResponse({"results": []})
+
+        monkeypatch.setattr("plugins.memory.mem0.urllib.request.urlopen", fake_urlopen)
+        client = _Mem0RestClient(base_url="http://mem0.local", api_key="m0-test")
+
+        client.add(
+            [{"role": "user", "content": "fact"}],
+            user_id="u1",
+            agent_id="mina",
+            metadata={"project": "mem0-shadow"},
+            infer=False,
+        )
+
+        assert captured["body"] == {
+            "messages": [{"role": "user", "content": "fact"}],
+            "user_id": "u1",
+            "agent_id": "mina",
+            "metadata": {"project": "mem0-shadow"},
+            "infer": False,
+        }

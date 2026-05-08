@@ -6,7 +6,8 @@ automatic deduplication via the Mem0 Platform API.
 Original PR #2933 by kartik-mem0, adapted to MemoryProvider ABC.
 
 Config via environment variables:
-  MEM0_API_KEY       — Mem0 Platform API key (required)
+  MEM0_API_KEY       — Mem0 Platform or self-hosted API key (required)
+  MEM0_BASE_URL      — Optional self-hosted REST base URL (e.g. http://127.0.0.1:8888)
   MEM0_USER_ID       — User identifier (default: hermes-user)
   MEM0_AGENT_ID      — Agent identifier (default: hermes)
 
@@ -20,6 +21,9 @@ import logging
 import os
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
@@ -48,6 +52,7 @@ def _load_config() -> dict:
 
     config = {
         "api_key": os.environ.get("MEM0_API_KEY", ""),
+        "base_url": os.environ.get("MEM0_BASE_URL", ""),
         "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
@@ -113,6 +118,120 @@ CONCLUDE_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
+# Self-hosted REST client
+# ---------------------------------------------------------------------------
+
+class _Mem0RestClient:
+    """Small Mem0 self-hosted REST adapter with the MemoryClient-like methods we use.
+
+    The hosted ``mem0.MemoryClient`` is still used when ``base_url`` is absent.
+    Self-hosted Mem0 exposes a FastAPI REST surface instead, so this adapter keeps
+    the provider dependency-light and lets Hermes talk to a local/Mac mini server.
+    """
+
+    def __init__(self, *, base_url: str, api_key: str):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+
+    def _request(self, method: str, path: str, payload: Dict[str, Any] | None = None,
+                 query: Dict[str, Any] | None = None) -> Any:
+        qs = ""
+        if query:
+            clean = {k: v for k, v in query.items() if v is not None and v != ""}
+            if clean:
+                qs = "?" + urllib.parse.urlencode(clean)
+        data = json.dumps(payload).encode("utf-8") if payload is not None else None
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            if self.api_key.startswith("m0sk_"):
+                headers["X-API-Key"] = self.api_key
+            else:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+        request = urllib.request.Request(
+            self.base_url + path + qs,
+            data=data,
+            method=method,
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                text = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Mem0 REST {method} {path} failed: HTTP {exc.code}: {body[:500]}") from exc
+        return json.loads(text) if text else None
+
+    @staticmethod
+    def _split_filters(filters: Dict[str, Any] | None) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        filters = filters or {}
+        entity = {k: filters[k] for k in ("user_id", "agent_id", "run_id") if filters.get(k) is not None}
+        metadata = {k: v for k, v in filters.items() if k not in entity}
+        return entity, metadata
+
+    @staticmethod
+    def _sort_distance_results(response: Any, *, limit: int | None = None) -> Any:
+        """Self-hosted Mem0 currently returns distance-like scores.
+
+        The REST server response contains lower-is-better scores but may return
+        them in descending order. Normalize only inside the self-host adapter so
+        hosted ``MemoryClient`` behavior is untouched.
+        """
+        if isinstance(response, dict) and isinstance(response.get("results"), list):
+            results = response["results"]
+            if all(isinstance(item, dict) and isinstance(item.get("score"), (int, float)) for item in results):
+                response = dict(response)
+                response["results"] = sorted(results, key=lambda item: item["score"])
+                if limit is not None:
+                    response["results"] = response["results"][:limit]
+        elif isinstance(response, list):
+            if all(isinstance(item, dict) and isinstance(item.get("score"), (int, float)) for item in response):
+                response = sorted(response, key=lambda item: item["score"])
+                if limit is not None:
+                    response = response[:limit]
+        return response
+
+    def search(self, **kwargs) -> Any:
+        filters = kwargs.pop("filters", None) or {}
+        requested_top_k = kwargs.get("top_k")
+        try:
+            requested_limit = int(requested_top_k) if requested_top_k is not None else None
+        except (TypeError, ValueError):
+            requested_limit = None
+        try:
+            candidate_k = int(os.environ.get("MEM0_SELF_HOST_CANDIDATE_K", "50"))
+        except ValueError:
+            candidate_k = 50
+        # The current self-host REST server advertises top-level user_id/agent_id
+        # in OpenAPI, but the observed implementation returns 502 for that path
+        # and scopes correctly through the flat filters object.
+        payload = {"query": kwargs.pop("query"), "filters": dict(filters)}
+        for key in ("top_k", "rerank", "keyword_search"):
+            if key in kwargs and kwargs[key] is not None:
+                payload[key] = kwargs[key]
+        if requested_limit is not None:
+            payload["top_k"] = max(requested_limit, candidate_k)
+        return self._sort_distance_results(self._request("POST", "/search", payload), limit=requested_limit)
+
+    def get_all(self, **kwargs) -> Any:
+        entity, _metadata = self._split_filters(kwargs.get("filters"))
+        return self._request("GET", "/memories", query=entity)
+
+    def add(self, messages, **kwargs) -> Any:
+        payload = {"messages": messages}
+        filters = kwargs.pop("filters", None)
+        entity, metadata = self._split_filters(filters)
+        payload.update(entity)
+        if metadata:
+            payload.setdefault("metadata", {}).update(metadata)
+        for key, value in kwargs.items():
+            if key == "metadata" and isinstance(value, dict):
+                payload.setdefault("metadata", {}).update(value)
+            elif value is not None:
+                payload[key] = value
+        return self._request("POST", "/memories", payload)
+
+
+# ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
 
@@ -124,6 +243,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._client = None
         self._client_lock = threading.Lock()
         self._api_key = ""
+        self._base_url = ""
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
@@ -159,7 +279,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def get_config_schema(self):
         return [
-            {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "api_key", "description": "Mem0 Platform or self-hosted API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "base_url", "description": "Optional self-hosted Mem0 REST base URL", "default": "", "env_var": "MEM0_BASE_URL"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
@@ -169,6 +290,9 @@ class Mem0MemoryProvider(MemoryProvider):
         """Thread-safe client accessor with lazy initialization."""
         with self._client_lock:
             if self._client is not None:
+                return self._client
+            if self._base_url:
+                self._client = _Mem0RestClient(base_url=self._base_url, api_key=self._api_key)
                 return self._client
             try:
                 from mem0 import MemoryClient
@@ -203,6 +327,7 @@ class Mem0MemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
+        self._base_url = str(self._config.get("base_url", "") or "").rstrip("/")
         # Prefer gateway-provided user_id for per-user memory scoping;
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")

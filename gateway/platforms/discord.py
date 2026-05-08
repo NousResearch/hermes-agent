@@ -1470,10 +1470,10 @@ class DiscordAdapter(BasePlatformAdapter):
             message = await channel.fetch_message(int(message_id))
             await message.delete()
             return True
-        except (discord.NotFound, discord.Forbidden):
+        except (discord.NotFound, discord.Forbidden) as e:
             logger.debug(
-                "[%s] Cannot delete message %s (no access or already gone)",
-                self.name, message_id,
+                "[%s] Cannot delete message %s in chat %s (no access or already gone): %s",
+                self.name, message_id, chat_id, e,
             )
             return False
         except Exception as e:

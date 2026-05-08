@@ -1740,6 +1740,7 @@ class HermesAutomationStoreTest {
               <Task sr="task1">
                 <nme>Hermes Shizuku Controls</nme>
                 <Action><code>248</code></Action>
+                <Action><code>294</code><Int sr="arg0" val="1" /></Action>
                 <Action><code>333</code><Int sr="arg0" val="1" /></Action>
                 <Action><code>425</code><Int sr="arg0" val="0" /></Action>
                 <Action><code>433</code><Int sr="arg0" val="1" /></Action>
@@ -1758,12 +1759,12 @@ class HermesAutomationStoreTest {
             ),
         )
         assertTrue(imported.toString(), imported.getBoolean("success"))
-        assertEquals(5, imported.getInt("tasker_imported_action_count"))
+        assertEquals(6, imported.getInt("tasker_imported_action_count"))
         assertEquals(0, imported.getJSONArray("tasker_skipped_actions").length())
-        assertEquals(5, imported.getInt("imported_automation_count"))
+        assertEquals(6, imported.getInt("imported_automation_count"))
 
         val records = store.list()
-        assertEquals(5, records.size)
+        assertEquals(6, records.size)
         assertTrue(records.all { it.actionType == ACTION_TYPE_SHIZUKU_ACTION })
         assertTrue(records.all { it.useShizuku })
         assertTrue(records.none { it.enabled })
@@ -1774,6 +1775,12 @@ class HermesAutomationStoreTest {
         assertTrue(
             payloads.any {
                 it.getString("shizuku_action") == "set_airplane_mode_enabled" &&
+                    it.getBoolean("target_enabled")
+            },
+        )
+        assertTrue(
+            payloads.any {
+                it.getString("shizuku_action") == "set_bluetooth_enabled" &&
                     it.getBoolean("target_enabled")
             },
         )

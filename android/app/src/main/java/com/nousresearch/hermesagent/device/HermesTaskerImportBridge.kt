@@ -491,6 +491,7 @@ object HermesTaskerImportBridge {
     private const val TASKER_BACK_BUTTON = 245
     private const val TASKER_SHOW_RECENTS = 247
     private const val TASKER_TURN_OFF = 248
+    private const val TASKER_BLUETOOTH = 294
     private const val TASKER_AIRPLANE_MODE = 333
     private const val TASKER_DELETE_FILE = 406
     private const val TASKER_WRITE_FILE = 410
@@ -523,6 +524,7 @@ object HermesTaskerImportBridge {
     )
     private val TASKER_SHIZUKU_FIXED_ACTIONS = mapOf(
         TASKER_TURN_OFF to "turn_screen_off",
+        TASKER_BLUETOOTH to "set_bluetooth_enabled",
         TASKER_AIRPLANE_MODE to "set_airplane_mode_enabled",
         TASKER_WIFI to "set_wifi_enabled",
         TASKER_MOBILE_DATA to "set_mobile_data_enabled",
@@ -530,6 +532,7 @@ object HermesTaskerImportBridge {
     )
     private val TASKER_SHIZUKU_TOGGLE_ACTIONS = setOf(
         TASKER_AIRPLANE_MODE,
+        TASKER_BLUETOOTH,
         TASKER_WIFI,
         TASKER_MOBILE_DATA,
     )
@@ -563,6 +566,7 @@ object HermesTaskerImportBridge {
         TASKER_BACK_BUTTON to "Back Button",
         TASKER_SHOW_RECENTS to "Show Recents",
         TASKER_TURN_OFF to "Turn Off",
+        TASKER_BLUETOOTH to "Bluetooth",
         TASKER_AIRPLANE_MODE to "Airplane Mode",
         TASKER_DELETE_FILE to "Delete File",
         TASKER_WRITE_FILE to "Write File",

@@ -151,6 +151,47 @@ class TestAutoTitleSession:
         db.set_session_title.assert_called_once_with("sess-1", "Readable Session")
         assert seen == ["Readable Session"]
 
+    def test_uses_next_lineage_title_on_uniqueness_conflict(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.set_session_title.side_effect = [ValueError("Title conflict"), True]
+        db.get_next_title_in_lineage.return_value = "New Title #2"
+        seen = []
+
+        with patch("agent.title_generator.generate_title", return_value="New Title"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "hi",
+                "hello",
+                title_callback=seen.append,
+            )
+
+        assert db.set_session_title.call_args_list == [
+            (("sess-1", "New Title"),),
+            (("sess-1", "New Title #2"),),
+        ]
+        db.get_next_title_in_lineage.assert_called_once_with("New Title")
+        assert seen == ["New Title #2"]
+
+    def test_skips_callback_if_lineage_fallback_fails(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.set_session_title.side_effect = ValueError("Title conflict")
+        db.get_next_title_in_lineage.side_effect = RuntimeError("boom")
+        seen = []
+
+        with patch("agent.title_generator.generate_title", return_value="New Title"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "hi",
+                "hello",
+                title_callback=seen.append,
+            )
+
+        assert seen == []
+
     def test_skips_if_generation_fails(self):
         db = MagicMock()
         db.get_session_title.return_value = None

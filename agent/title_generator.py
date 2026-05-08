@@ -118,16 +118,27 @@ def auto_title_session(
     if not title:
         return
 
+    final_title = title
     try:
-        session_db.set_session_title(session_id, title)
-        logger.debug("Auto-generated session title: %s", title)
-        if title_callback is not None:
-            try:
-                title_callback(title)
-            except Exception:
-                logger.debug("Auto-title callback failed", exc_info=True)
+        session_db.set_session_title(session_id, final_title)
+    except ValueError as e:
+        logger.debug("Auto-generated title conflict for '%s': %s", final_title, e)
+        try:
+            final_title = session_db.get_next_title_in_lineage(final_title)
+            session_db.set_session_title(session_id, final_title)
+        except Exception as lineage_error:
+            logger.debug("Failed to set lineage auto-generated title: %s", lineage_error)
+            return
     except Exception as e:
         logger.debug("Failed to set auto-generated title: %s", e)
+        return
+
+    logger.debug("Auto-generated session title: %s", final_title)
+    if title_callback is not None:
+        try:
+            title_callback(final_title)
+        except Exception:
+            logger.debug("Auto-title callback failed", exc_info=True)
 
 
 def maybe_auto_title(

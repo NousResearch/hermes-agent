@@ -36,6 +36,8 @@ from tools.skills_guard import (
     ScanResult, content_hash, TRUSTED_REPOS,
 )
 
+from utils import atomic_json_write
+
 logger = logging.getLogger(__name__)
 
 
@@ -2561,8 +2563,7 @@ class HubLockFile:
             return {"version": 1, "installed": {}}
 
     def save(self, data: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        atomic_json_write(self.path, data, indent=2)
 
     def record_install(
         self,
@@ -2628,8 +2629,7 @@ class TapsManager:
             return []
 
     def save(self, taps: List[dict]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"taps": taps}, indent=2) + "\n")
+        atomic_json_write(self.path, {"taps": taps}, indent=2)
 
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""
@@ -2915,8 +2915,7 @@ def _load_hermes_index() -> Optional[dict]:
 
     # Cache locally
     try:
-        HERMES_INDEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        HERMES_INDEX_CACHE_FILE.write_text(json.dumps(data))
+        atomic_json_write(HERMES_INDEX_CACHE_FILE, data)
     except OSError:
         pass
 

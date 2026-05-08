@@ -406,6 +406,18 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlists (`true`/`false`, default: `false`) |
 
+### Microsoft Graph (Teams Meetings)
+
+App-only credentials for the Microsoft Graph REST client used by the upcoming Teams meeting summary pipeline. See [Register a Microsoft Graph application](/docs/guides/microsoft-graph-app-registration) for the Azure portal walkthrough and the exact API permissions required.
+
+| Variable | Description |
+|----------|-------------|
+| `MSGRAPH_TENANT_ID` | Azure AD tenant ID (directory GUID) for the Graph app registration. |
+| `MSGRAPH_CLIENT_ID` | Application (client) ID of the Azure app registration. |
+| `MSGRAPH_CLIENT_SECRET` | Client secret value for the app registration. Store in `~/.hermes/.env` with `chmod 600`; rotate periodically via the Azure portal. |
+| `MSGRAPH_SCOPE` | OAuth2 scope for the client-credentials token request (default: `https://graph.microsoft.com/.default`). |
+| `MSGRAPH_AUTHORITY_URL` | Microsoft identity platform authority (default: `https://login.microsoftonline.com`). Override only for national/sovereign clouds (e.g. `https://login.microsoftonline.us` for GCC High). |
+
 ### Advanced Messaging Tuning
 
 Advanced per-platform knobs for throttling the outbound message batcher. Most users never need to touch these; defaults are set to respect each platform's rate limits without feeling sluggish.

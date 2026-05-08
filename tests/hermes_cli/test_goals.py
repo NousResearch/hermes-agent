@@ -175,6 +175,40 @@ class TestJudgeGoal:
         assert verdict == "continue"
         assert reason == "not yet"
 
+    def test_explicit_incomplete_response_overrides_done_judge(self):
+        """A response saying the goal is not 100% done must not be marked achieved.
+
+        This guards against broad goals where the assistant reports remaining
+        open work and the LLM judge incorrectly treats that status summary as
+        a terminal blocker/deliverable.
+        """
+        from hermes_cli import goals
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = MagicMock(
+            choices=[
+                MagicMock(
+                    message=MagicMock(content='{"done": true, "reason": "identified blockers"}')
+                )
+            ]
+        )
+        response = (
+            "Phase 0: not 100% complete.\n"
+            "Phase 1: not 100% complete.\n"
+            "Current remaining open items include auth client consolidation, query dedupe, "
+            "and external-call timeout cleanup."
+        )
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(fake_client, "judge-model"),
+        ):
+            verdict, reason, parse_failed = goals.judge_goal(
+                "continue until Phase 0/1 are 100% complete", response
+            )
+        assert verdict == "continue"
+        assert "explicitly reports incomplete" in reason
+        assert parse_failed is False
+
 
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager lifecycle + persistence

@@ -2916,6 +2916,7 @@ class BasePlatformAdapter(ABC):
                         if event.source.platform == Platform.FEISHU and event.source.thread_id and event.reply_to_message_id
                         else event.message_id
                     )
+                    self.pause_typing_for_chat(event.source.chat_id)
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,

@@ -107,12 +107,15 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
         except OSError:
             pass
         return
-    try:
-        os.kill(pid, 0)  # check existence
-        os.kill(pid, signal.SIGTERM)
-        logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+    # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484) — use the
+    # cross-platform existence check before sending a real signal.
+    from gateway.status import _pid_exists
+    if _pid_exists(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
     try:
         pid_file.unlink()
     except OSError:

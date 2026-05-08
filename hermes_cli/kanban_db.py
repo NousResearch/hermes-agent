@@ -2805,12 +2805,18 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
 def _pid_alive(pid: Optional[int]) -> bool:
     """Return True if ``pid`` is still running on this host.
 
-    Cross-platform: uses ``os.kill(pid, 0)`` on POSIX and ``OpenProcess``
-    on Windows. Returns False for falsy PIDs or on any OS error.
+    Cross-platform: uses ``OpenProcess`` + ``WaitForSingleObject`` on
+    Windows (via ``gateway.status._pid_exists``) and ``os.kill(pid, 0)``
+    on POSIX. Returns False for falsy PIDs or on any OS error.
 
-    **Zombie handling:** ``os.kill(pid, 0)`` succeeds against
-    zombie processes (post-exit, pre-reap) because the process table
-    entry still exists. A worker that exits without being reaped by its
+    **DO NOT** use ``os.kill(pid, 0)`` directly on Windows — Python's
+    Windows ``os.kill`` treats ``sig=0`` as ``CTRL_C_EVENT`` (bpo-14484)
+    and will broadcast it to the target's console group, potentially
+    killing unrelated processes.
+
+    **Zombie handling:** the existence check succeeds against zombie
+    processes (post-exit, pre-reap) because the process table entry
+    still exists. A worker that exits without being reaped by its
     parent would stay "alive" to the dispatcher forever. Dispatcher
     workers are started via ``start_new_session=True`` + intentional
     Popen handle abandonment, so init reaps them quickly — but during
@@ -2821,17 +2827,10 @@ def _pid_alive(pid: Optional[int]) -> bool:
     """
     if not pid or pid <= 0:
         return False
-    try:
-        if hasattr(os, "kill"):
-            os.kill(int(pid), 0)
-    except ProcessLookupError:
+    from gateway.status import _pid_exists
+    if not _pid_exists(int(pid)):
         return False
-    except PermissionError:
-        # Process exists, we just can't signal it.
-        return True
-    except OSError:
-        return False
-    # Still here → kill(0) succeeded. Check for zombie on platforms
+    # Still here → process exists. Check for zombie on platforms
     # where we have a cheap, deterministic process-state probe.
     if sys.platform == "linux":
         try:

@@ -115,3 +115,68 @@ class TestEdgeCases:
     def test_very_long_name_does_not_match_by_accident(self, repair):
         # Fuzzy match should not claim a tool for something obviously unrelated.
         assert repair("ThisIsNotRemotelyARealToolName_tool") is None
+
+
+MCP_VALID = {
+    "mcp_APE_meta",
+    "mcp_APE_search",
+    "mcp_APE_add",
+    "mcp_APE_contextualize",
+    "mcp_APE_graph_nearby",
+    "mcp_APE_graph_connect",
+    "mcp_discord_send",
+    "terminal",
+    "read_file",
+}
+
+
+@pytest.fixture
+def mcp_repair():
+    """Repair fixture with MCP-prefixed tool names registered."""
+    from run_agent import AIAgent
+    stub = SimpleNamespace(valid_tool_names=MCP_VALID)
+    return AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+
+class TestMcpPrefixDrop:
+    """Regression guard: models drop the ``mcp_`` prefix Hermes adds when
+    registering MCP server tools (e.g. ``APE_search`` instead of
+    ``mcp_APE_search``).  difflib scores ~0.60 for this pattern — just
+    below the 0.7 cutoff — so the fuzzy path misses it.  The explicit
+    prefix-prepend check introduced alongside these tests catches it."""
+
+    def test_ape_meta_without_prefix(self, mcp_repair):
+        assert mcp_repair("APE_meta") == "mcp_APE_meta"
+
+    def test_ape_search_without_prefix(self, mcp_repair):
+        assert mcp_repair("APE_search") == "mcp_APE_search"
+
+    def test_ape_add_without_prefix(self, mcp_repair):
+        assert mcp_repair("APE_add") == "mcp_APE_add"
+
+    def test_ape_contextualize_without_prefix(self, mcp_repair):
+        assert mcp_repair("APE_contextualize") == "mcp_APE_contextualize"
+
+    def test_ape_graph_nearby_without_prefix(self, mcp_repair):
+        assert mcp_repair("APE_graph_nearby") == "mcp_APE_graph_nearby"
+
+    def test_other_mcp_server_without_prefix(self, mcp_repair):
+        # Not APE-specific — any mcp_<server>_<tool> pattern should resolve.
+        assert mcp_repair("discord_send") == "mcp_discord_send"
+
+    def test_already_correct_name_unchanged(self, mcp_repair):
+        # Already has prefix — fast-path returns it directly, no double-prefix.
+        assert mcp_repair("mcp_APE_meta") == "mcp_APE_meta"
+
+    def test_uppercase_without_prefix(self, mcp_repair):
+        # Case-insensitive: APE_SEARCH -> mcp_APE_search via lowered candidate.
+        assert mcp_repair("APE_SEARCH") == "mcp_APE_search"
+
+    def test_non_mcp_tool_unaffected(self, mcp_repair):
+        # Non-MCP tools in the valid set must still resolve normally.
+        assert mcp_repair("TERMINAL") == "terminal"
+
+    def test_prefix_drop_does_not_invent_tools(self, mcp_repair):
+        # Prepending mcp_ to a non-existent name must not return a wrong match.
+        assert mcp_repair("APE_nonexistent") is None
+

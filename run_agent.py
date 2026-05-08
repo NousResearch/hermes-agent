@@ -5629,6 +5629,22 @@ class AIAgent:
         if normalized in self.valid_tool_names:
             return normalized
 
+        # MCP prefix-strip: models sometimes drop the ``mcp_`` prefix that
+        # Hermes prepends when registering MCP server tools, e.g. calling
+        # ``APE_search`` instead of ``mcp_APE_search``.  A direct prepend
+        # check is unambiguous — only resolves when there's an exact match.
+        # (difflib scores ~0.60 for this pattern, just under the 0.7 cutoff.)
+        for prefix_candidate in (f"mcp_{tool_name}", f"mcp_{lowered}", f"mcp_{normalized}"):
+            if prefix_candidate in self.valid_tool_names:
+                return prefix_candidate
+        # Also try mcp_ + each valid name stripped of its prefix, case-folded.
+        # Handles APE_SEARCH -> mcp_APE_search when the registered name has
+        # mixed case after the server component.
+        lowered_with_prefix = f"mcp_{lowered}"
+        for vname in self.valid_tool_names:
+            if vname.lower() == lowered_with_prefix:
+                return vname
+
         # Build the full candidate set for class-like emissions.
         cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
         # Strip trailing tool-suffix up to twice — TodoTool_tool needs it.

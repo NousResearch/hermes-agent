@@ -15,6 +15,8 @@ import shlex
 import subprocess
 import threading
 import time
+import atexit
+import glob
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -24,6 +26,30 @@ from hermes_constants import get_hermes_home
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
+
+
+def _cleanup_orphan_snapshot_files():
+    """Remove any /tmp/hermes-{snap,cwd}-* files left behind on Python exit.
+
+    init_session() writes a per-session env snapshot to /tmp. The snapshot
+    is large (env vars + functions + aliases) and may contain secrets that
+    were exported into the parent shell. If the process is killed before
+    cleanup() runs (SIGKILL, OOM, abrupt restart), the file persists.
+
+    This sweeps the LOCAL host /tmp on Python exit. Remote-sandbox backends
+    (Docker/Daytona/Modal) clean up via container teardown — their snapshot
+    files live inside the container and disappear with it.
+    """
+    for pattern in ("/tmp/hermes-snap-*.sh", "/tmp/hermes-cwd-*.txt"):
+        for path in glob.glob(pattern):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+atexit.register(_cleanup_orphan_snapshot_files)
+
 
 # Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
 # HERMES_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
@@ -340,6 +366,10 @@ class BaseEnvironment(ABC):
         # pwd -P captures the profile's directory, not terminal.cwd.
         _quoted_cwd = shlex.quote(self.cwd)
         bootstrap = (
+            # umask 077 so snapshot/cwd files are mode 600 (owner-only).
+            # Prevents leakage of secrets carried in env vars (API keys,
+            # OAuth tokens, etc.) via world-readable /tmp on multi-user hosts.
+            f"umask 077\n"
             f"export -p > {self._snapshot_path}\n"
             f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
             f"alias -p >> {self._snapshot_path}\n"

@@ -38,7 +38,7 @@ def _skill_dir(tmp_path):
 
 VALID_SKILL_CONTENT = """\
 ---
-name: test-skill
+name: my-skill
 description: A test skill for unit testing.
 ---
 
@@ -49,7 +49,7 @@ Step 1: Do the thing.
 
 VALID_SKILL_CONTENT_2 = """\
 ---
-name: test-skill
+name: my-skill
 description: Updated description.
 ---
 
@@ -148,6 +148,22 @@ class TestValidateFrontmatter:
         content = "---\n: invalid: yaml: {{{\n---\n\nBody.\n"
         assert "YAML frontmatter parse error" in _validate_frontmatter(content)
 
+    def test_frontmatter_name_mismatch_with_expected_name(self):
+        content = "---\nname: wrong-name\ndescription: desc\n---\n\nBody.\n"
+        err = _validate_frontmatter(content, expected_name="right-name")
+        assert err is not None
+        assert "wrong-name" in err
+        assert "right-name" in err
+        assert "does not match" in err
+
+    def test_frontmatter_name_matches_expected_name(self):
+        content = "---\nname: my-skill\ndescription: desc\n---\n\nBody.\n"
+        assert _validate_frontmatter(content, expected_name="my-skill") is None
+
+    def test_expected_name_none_skips_cross_check(self):
+        content = "---\nname: anything\ndescription: desc\n---\n\nBody.\n"
+        assert _validate_frontmatter(content, expected_name=None) is None
+
 
 # ---------------------------------------------------------------------------
 # _validate_file_path — path traversal prevention
@@ -245,6 +261,21 @@ class TestCreateSkill:
         assert f"Invalid category '{outside}'" in result["error"]
         assert not (outside / "my-skill" / "SKILL.md").exists()
 
+    def test_create_rejects_frontmatter_name_mismatch(self, tmp_path):
+        """Frontmatter name must match the 'name' parameter — no divergence."""
+        mismatched = VALID_SKILL_CONTENT.replace("name: my-skill", "name: wrong-name")
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", mismatched)
+        assert result["success"] is False
+        assert "does not match" in result["error"]
+        assert "wrong-name" in result["error"]
+        assert "my-skill" in result["error"]
+
+    def test_create_succeeds_when_frontmatter_name_matches(self, tmp_path):
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is True
+
 
 class TestEditSkill:
     def test_edit_existing_skill(self, tmp_path):
@@ -257,7 +288,7 @@ class TestEditSkill:
 
     def test_edit_nonexistent_skill(self, tmp_path):
         with _skill_dir(tmp_path):
-            result = _edit_skill("nonexistent", VALID_SKILL_CONTENT)
+            result = _edit_skill("nonexistent", VALID_SKILL_CONTENT.replace("name: my-skill", "name: nonexistent"))
         assert result["success"] is False
         assert "not found" in result["error"]
 
@@ -269,6 +300,18 @@ class TestEditSkill:
         # Original content should be preserved
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "A test skill" in content
+
+    def test_edit_rejects_frontmatter_name_mismatch(self, tmp_path):
+        """Edit cannot change the frontmatter name away from the directory name."""
+        mismatched = VALID_SKILL_CONTENT.replace("name: my-skill", "name: wrong-name")
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _edit_skill("my-skill", mismatched)
+        assert result["success"] is False
+        assert "does not match" in result["error"]
+        # Original content preserved
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "name: my-skill" in content
 
 
 class TestPatchSkill:
@@ -290,7 +333,7 @@ class TestPatchSkill:
     def test_patch_ambiguous_match_rejected(self, tmp_path):
         content = """\
 ---
-name: test-skill
+name: my-skill
 description: A test skill.
 ---
 
@@ -307,7 +350,7 @@ word word
     def test_patch_replace_all(self, tmp_path):
         content = """\
 ---
-name: test-skill
+name: my-skill
 description: A test skill.
 ---
 
@@ -351,6 +394,17 @@ word word
         assert "escapes" in result["error"].lower()
         assert outside_file.read_text() == "old text here"
 
+    def test_patch_rejects_frontmatter_name_change(self, tmp_path):
+        """Patching SKILL.md to change the frontmatter name is rejected."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "name: my-skill", "name: wrong-name")
+        assert result["success"] is False
+        assert "does not match" in result["error"]
+        # Original content preserved
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "name: my-skill" in content
+
 
 class TestDeleteSkill:
     def test_delete_existing(self, tmp_path):
@@ -373,8 +427,8 @@ class TestDeleteSkill:
 
     def test_delete_with_absorbed_into_valid_target(self, tmp_path):
         with _skill_dir(tmp_path):
-            _create_skill("umbrella", VALID_SKILL_CONTENT)
-            _create_skill("narrow", VALID_SKILL_CONTENT)
+            _create_skill("umbrella", VALID_SKILL_CONTENT.replace("name: my-skill", "name: umbrella"))
+            _create_skill("narrow", VALID_SKILL_CONTENT.replace("name: my-skill", "name: narrow"))
             result = _delete_skill("narrow", absorbed_into="umbrella")
         assert result["success"] is True
         assert "absorbed into 'umbrella'" in result["message"]
@@ -383,7 +437,7 @@ class TestDeleteSkill:
 
     def test_delete_with_absorbed_into_empty_string_means_pruned(self, tmp_path):
         with _skill_dir(tmp_path):
-            _create_skill("stale-skill", VALID_SKILL_CONTENT)
+            _create_skill("stale-skill", VALID_SKILL_CONTENT.replace("name: my-skill", "name: stale-skill"))
             result = _delete_skill("stale-skill", absorbed_into="")
         assert result["success"] is True
         # Empty absorbed_into is explicit prune — no "absorbed into" suffix in message
@@ -391,7 +445,7 @@ class TestDeleteSkill:
 
     def test_delete_with_absorbed_into_nonexistent_target_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
-            _create_skill("narrow", VALID_SKILL_CONTENT)
+            _create_skill("narrow", VALID_SKILL_CONTENT.replace("name: my-skill", "name: narrow"))
             result = _delete_skill("narrow", absorbed_into="ghost-umbrella")
         assert result["success"] is False
         assert "does not exist" in result["error"]
@@ -400,7 +454,7 @@ class TestDeleteSkill:
 
     def test_delete_with_absorbed_into_equals_self_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
-            _create_skill("narrow", VALID_SKILL_CONTENT)
+            _create_skill("narrow", VALID_SKILL_CONTENT.replace("name: my-skill", "name: narrow"))
             result = _delete_skill("narrow", absorbed_into="narrow")
         assert result["success"] is False
         assert "cannot equal" in result["error"]
@@ -409,7 +463,7 @@ class TestDeleteSkill:
     def test_delete_with_absorbed_into_whitespace_only_treated_as_prune(self, tmp_path):
         # Leading/trailing whitespace only: .strip() → "" → pruned path
         with _skill_dir(tmp_path):
-            _create_skill("narrow", VALID_SKILL_CONTENT)
+            _create_skill("narrow", VALID_SKILL_CONTENT.replace("name: my-skill", "name: narrow"))
             result = _delete_skill("narrow", absorbed_into="   ")
         assert result["success"] is True
         assert "absorbed into" not in result["message"]
@@ -539,7 +593,7 @@ class TestSkillManageDispatcher:
         or prune it).
         """
         with _skill_dir(tmp_path):
-            raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT.replace("name: my-skill", "name: test-skill"))
             from tools.skill_usage import load_usage
             usage = load_usage()
         result = json.loads(raw)
@@ -556,7 +610,7 @@ class TestSkillManageDispatcher:
         try:
             with _skill_dir(tmp_path):
                 raw = skill_manage(
-                    action="create", name="review-sediment", content=VALID_SKILL_CONTENT
+                    action="create", name="review-sediment", content=VALID_SKILL_CONTENT.replace("name: my-skill", "name: review-sediment")
                 )
                 from tools.skill_usage import load_usage
                 usage = load_usage()
@@ -571,8 +625,8 @@ class TestSkillManageDispatcher:
         # Dispatcher must plumb absorbed_into through to _delete_skill so the
         # validation + message suffix paths are exercised end-to-end.
         with _skill_dir(tmp_path):
-            skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT)
-            skill_manage(action="create", name="narrow", content=VALID_SKILL_CONTENT)
+            skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT.replace("name: my-skill", "name: umbrella"))
+            skill_manage(action="create", name="narrow", content=VALID_SKILL_CONTENT.replace("name: my-skill", "name: narrow"))
             raw = skill_manage(action="delete", name="narrow", absorbed_into="umbrella")
         result = json.loads(raw)
         assert result["success"] is True
@@ -580,7 +634,7 @@ class TestSkillManageDispatcher:
 
     def test_delete_via_dispatcher_rejects_missing_absorbed_target(self, tmp_path):
         with _skill_dir(tmp_path):
-            skill_manage(action="create", name="narrow", content=VALID_SKILL_CONTENT)
+            skill_manage(action="create", name="narrow", content=VALID_SKILL_CONTENT.replace("name: my-skill", "name: narrow"))
             raw = skill_manage(action="delete", name="narrow", absorbed_into="ghost")
         result = json.loads(raw)
         assert result["success"] is False
@@ -829,7 +883,7 @@ class TestExternalSkillMutations:
 
         with _two_roots(local, external):
             result = _create_skill("fresh-skill", VALID_SKILL_CONTENT.replace(
-                "name: test-skill", "name: fresh-skill"))
+                "name: my-skill", "name: fresh-skill"))
 
         assert result["success"] is True, result
         assert (local / "fresh-skill" / "SKILL.md").exists()
@@ -923,8 +977,8 @@ class TestPinnedGuard:
         skill must still be freely deletable.
         """
         with _skill_dir(tmp_path):
-            _create_skill("pinned-one", VALID_SKILL_CONTENT)
-            _create_skill("free-one", VALID_SKILL_CONTENT)
+            _create_skill("pinned-one", VALID_SKILL_CONTENT.replace("name: my-skill", "name: pinned-one"))
+            _create_skill("free-one", VALID_SKILL_CONTENT.replace("name: my-skill", "name: free-one"))
             with self._pin("pinned-one"):
                 blocked = _delete_skill("pinned-one")
                 allowed = _delete_skill("free-one")

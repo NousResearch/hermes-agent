@@ -214,9 +214,16 @@ def _validate_category(category: Optional[str]) -> Optional[str]:
     return None
 
 
-def _validate_frontmatter(content: str) -> Optional[str]:
+def _validate_frontmatter(content: str, expected_name: str = None) -> Optional[str]:
     """
     Validate that SKILL.md content has proper frontmatter with required fields.
+
+    Args:
+        content: The SKILL.md text to validate.
+        expected_name: If provided, the frontmatter ``name`` must match this
+            value exactly.  Prevents the directory name and the displayed name
+            from diverging (root cause of several read-path bugs).
+
     Returns error message or None if valid.
     """
     if not content.strip():
@@ -241,6 +248,11 @@ def _validate_frontmatter(content: str) -> Optional[str]:
 
     if "name" not in parsed:
         return "Frontmatter must include 'name' field."
+    if expected_name and str(parsed["name"]) != expected_name:
+        return (
+            f"Frontmatter name '{parsed['name']}' does not match skill name "
+            f"'{expected_name}'. The frontmatter name must match the 'name' parameter."
+        )
     if "description" not in parsed:
         return "Frontmatter must include 'description' field."
     if len(str(parsed["description"])) > MAX_DESCRIPTION_LENGTH:
@@ -382,7 +394,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         return {"success": False, "error": err}
 
     # Validate content
-    err = _validate_frontmatter(content)
+    err = _validate_frontmatter(content, expected_name=name)
     if err:
         return {"success": False, "error": err}
 
@@ -429,7 +441,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
-    err = _validate_frontmatter(content)
+    err = _validate_frontmatter(content, expected_name=name)
     if err:
         return {"success": False, "error": err}
 
@@ -532,7 +544,7 @@ def _patch_skill(
 
     # If patching SKILL.md, validate frontmatter is still intact
     if not file_path:
-        err = _validate_frontmatter(new_content)
+        err = _validate_frontmatter(new_content, expected_name=name)
         if err:
             return {
                 "success": False,

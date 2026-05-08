@@ -47,10 +47,13 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
-# Availability gate: UDS requires a POSIX OS
+# Availability gate.  On Windows we fall back to loopback TCP for the
+# sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
+# ``_use_tcp_rpc`` in ``_execute_local`` below.  That makes execute_code
+# available on every platform Hermes itself runs on.
 logger = logging.getLogger(__name__)
 
-SANDBOX_AVAILABLE = sys.platform != "win32"
+SANDBOX_AVAILABLE = True
 
 # The 7 tools allowed inside the sandbox. The intersection of this list
 # and the session's enabled tools determines which stubs are generated.
@@ -971,7 +974,8 @@ def execute_code(
     """
     if not SANDBOX_AVAILABLE:
         return json.dumps({
-            "error": "execute_code is not available on Windows. Use normal tool calls instead."
+            "error": "execute_code sandbox is unavailable in this environment. "
+                     "Use normal tool calls (terminal, read_file, write_file, ...) instead."
         })
 
     if not code or not code.strip():

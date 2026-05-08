@@ -774,11 +774,17 @@ class TestEnvVarFiltering(unittest.TestCase):
 class TestExecuteCodeEdgeCases(unittest.TestCase):
 
     def test_windows_returns_error(self):
-        """On Windows (or when SANDBOX_AVAILABLE is False), returns error JSON."""
+        """When SANDBOX_AVAILABLE is False (e.g. when the backend deems
+        the sandbox unusable for this environment), execute_code returns
+        an error JSON with a readable message pointing the caller at
+        regular tool calls.  Previously this was a Windows-only gate;
+        execute_code now works on Windows via loopback TCP, so the
+        error is only emitted when SANDBOX_AVAILABLE is explicitly
+        flipped off (e.g. for future platform-specific disables)."""
         with patch("tools.code_execution_tool.SANDBOX_AVAILABLE", False):
             result = json.loads(execute_code("print('hi')", task_id="test"))
             self.assertIn("error", result)
-            self.assertIn("Windows", result["error"])
+            self.assertIn("unavailable", result["error"].lower())
 
     def test_whitespace_only_code(self):
         result = json.loads(execute_code("   \n\t  ", task_id="test"))

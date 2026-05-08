@@ -2,10 +2,13 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with seven providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
+  - **gemini** (free) — Google Gemini 3.1 Flash Lite via AI Studio. Free tier:
+    15 req/min, 250K tokens/min, 500 req/day. Requires ``GEMINI_API_KEY`` or
+    ``GOOGLE_API_KEY``. Get one at https://aistudio.google.com/app/apikey
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
@@ -84,6 +87,7 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_GEMINI_STT_MODEL = os.getenv("STT_GEMINI_MODEL", "gemini-3.1-flash-lite")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -91,6 +95,7 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
+GEMINI_STT_BASE_URL = os.getenv("GEMINI_STT_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -268,14 +273,26 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "gemini":
+            if _resolve_gemini_stt_api_key():
+                return "gemini"
+            logger.warning(
+                "STT provider 'gemini' configured but no Gemini API key found "
+                "(set GEMINI_STT_API_KEY, GEMINI_API_KEY, or GOOGLE_API_KEY)"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > mistral > xai -
+    # --- Auto-detect (no explicit provider): local > gemini (free) > groq (free) > openai > mistral > xai -
 
     if _HAS_FASTER_WHISPER:
         return "local"
     if _has_local_command():
         return "local_command"
+    if _resolve_gemini_stt_api_key():
+        logger.info("No local STT available, using Gemini STT API (free tier)")
+        return "gemini"
     if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
@@ -321,6 +338,153 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
         return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
 
     return None
+
+# ---------------------------------------------------------------------------
+# Provider: gemini (Google AI Studio — free tier)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_gemini_stt_api_key() -> Optional[str]:
+    """Resolve Gemini STT API key from dedicated env or generic Gemini/Google keys."""
+    return (
+        get_env_value("GEMINI_STT_API_KEY")
+        or get_env_value("GEMINI_API_KEY")
+        or get_env_value("GOOGLE_API_KEY")
+    )
+
+
+_GEMINI_AUDIO_MIME_TYPES = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".webm": "audio/webm",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".aiff": "audio/aiff",
+    ".aif": "audio/aiff",
+}
+
+
+def _transcribe_gemini(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Google Gemini via the AI Studio API (free tier).
+
+    Uses the ``generateContent`` REST endpoint with inline audio data.
+    Supports up to 15 req/min and 500 req/day on the free tier.
+    Requires ``GEMINI_STT_API_KEY``, ``GEMINI_API_KEY``, or ``GOOGLE_API_KEY``.
+    Get a free key at https://aistudio.google.com/app/apikey
+    """
+    api_key = _resolve_gemini_stt_api_key()
+    if not api_key:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": (
+                "Gemini STT requires an API key. Set GEMINI_STT_API_KEY, "
+                "GEMINI_API_KEY, or GOOGLE_API_KEY. Get a free key at "
+                "https://aistudio.google.com/app/apikey"
+            ),
+        }
+
+    stt_config = _load_stt_config()
+    gemini_cfg = stt_config.get("gemini", {})
+    base_url = str(
+        gemini_cfg.get("base_url")
+        or get_env_value("GEMINI_STT_BASE_URL")
+        or GEMINI_STT_BASE_URL
+    ).strip().rstrip("/")
+
+    audio_path = Path(file_path)
+    mime_type = _GEMINI_AUDIO_MIME_TYPES.get(audio_path.suffix.lower(), "audio/ogg")
+
+    try:
+        import base64
+        import json
+        import urllib.request
+
+        with open(file_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        # Language hint from config (optional — Gemini auto-detects well)
+        language = str(
+            gemini_cfg.get("language")
+            or os.getenv(LOCAL_STT_LANGUAGE_ENV)
+            or ""
+        ).strip()
+
+        prompt_text = (
+            "Transcribe this audio accurately. "
+            "Output ONLY the transcript text, preserving the original language."
+        )
+        if language:
+            prompt_text += f" The audio is in {language}."
+
+        body = json.dumps({
+            "contents": [{
+                "parts": [
+                    {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
+                    {"text": prompt_text},
+                ],
+            }],
+        }).encode("utf-8")
+
+        url = f"{base_url}/models/{model_name}:generateContent?key={api_key}"
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+
+        # Extract text from Gemini response
+        candidates = result.get("candidates", [])
+        if not candidates:
+            feedback = result.get("promptFeedback", {})
+            block_reason = feedback.get("blockReason", "")
+            safety = feedback.get("safetyRatings", [])
+            detail = block_reason or str(safety) or "Empty candidates list"
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"Gemini STT returned no candidates: {detail}",
+            }
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+        transcript_text = "".join(
+            part.get("text", "") for part in parts if "text" in part
+        ).strip()
+
+        if not transcript_text:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "Gemini STT returned empty transcript",
+            }
+
+        logger.info(
+            "Transcribed %s via Gemini API (%s, %d chars)",
+            audio_path.name, model_name, len(transcript_text),
+        )
+        return {"success": True, "transcript": transcript_text, "provider": "gemini"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            err_body = json.loads(e.read().decode("utf-8"))
+            detail = err_body.get("error", {}).get("message", "") or str(err_body)
+        except Exception:
+            detail = e.reason or f"HTTP {e.code}"
+        logger.error("Gemini STT HTTP error: %s", detail)
+        return {"success": False, "transcript": "", "error": f"Gemini STT API error: {detail}"}
+    except Exception as e:
+        logger.error("Gemini transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Gemini transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
 # Provider: local (faster-whisper)
@@ -792,7 +956,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     Provider priority:
       1. User config (``stt.provider`` in config.yaml)
-      2. Auto-detect: local faster-whisper (free) > Groq (free tier) > OpenAI (paid)
+      2. Auto-detect: local faster-whisper (free) > Gemini (free) > Groq (free tier) > OpenAI (paid)
 
     Args:
         file_path: Absolute path to the audio file to transcribe.
@@ -854,6 +1018,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
 
+    if provider == "gemini":
+        gemini_cfg = stt_config.get("gemini", {})
+        model_name = model or gemini_cfg.get("model", DEFAULT_GEMINI_STT_MODEL)
+        return _transcribe_gemini(file_path, model_name)
+
     # No provider available
     return {
         "success": False,
@@ -861,6 +1030,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         "error": (
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
+            "set GEMINI_API_KEY or GOOGLE_API_KEY for free Gemini STT, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
             "Voxtral Transcribe, set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."

@@ -938,10 +938,14 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "gemini" (free, AI Studio) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+        },
+        "gemini": {
+            "model": "gemini-3.1-flash-lite",  # or gemini-3.1-flash-lite-preview, gemini-3-flash-preview
+            "language": "",  # optional language hint; leave empty for auto-detect
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
@@ -1449,6 +1453,14 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "provider",
         "advanced": True,
+    },
+    "GEMINI_STT_API_KEY": {
+        "description": "Dedicated Gemini API key for STT (falls back to GEMINI_API_KEY / GOOGLE_API_KEY)",
+        "prompt": "Gemini STT API key (optional — get a free key at https://aistudio.google.com/app/apikey)",
+        "url": "https://aistudio.google.com/app/apikey",
+        "password": True,
+        "category": "provider",
+        "advanced": False,
     },
     "XAI_API_KEY": {
         "description": "xAI API key",

@@ -66,7 +66,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   - `scratch` (default) — fresh tmp dir under `~/.hermes/kanban/workspaces/<id>/` (or `~/.hermes/kanban/boards/<slug>/workspaces/<id>/` on non-default boards).
   - `dir:<path>` — an existing shared directory (Obsidian vault, mail ops dir, per-account folder). **Must be an absolute path.** Relative paths like `dir:../tenants/foo/` are rejected at dispatch because they'd resolve against whatever CWD the dispatcher happens to be in, which is ambiguous and a confused-deputy escape vector. The path is otherwise trusted — it's your box, your filesystem, the worker runs with your uid. This is the trusted-local-user threat model; kanban is single-host by design.
   - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Worker-side `git worktree add` creates it.
-- **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After ~5 consecutive spawn failures on the same task the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
+- **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive non-success attempts on the same task (default 2), the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, workers time out, or subprocesses crash. A worker that exits cleanly while its task is still `running` is treated more strictly: the dispatcher records a `protocol_violation` and auto-blocks immediately because the worker almost certainly answered without calling `kanban_complete` or `kanban_block`.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
 
 ## Boards (multi-project)
@@ -334,6 +334,13 @@ Any profile that should be able to work kanban tasks must load the `kanban-worke
 2. `cd $HERMES_KANBAN_WORKSPACE` (via the terminal tool) and do the work there.
 3. Call `kanban_heartbeat(note="...")` every few minutes during long operations.
 4. Complete with `kanban_complete(summary="...", metadata={...})`, or `kanban_block(reason="...")` if stuck.
+
+That final `kanban_complete` / `kanban_block` call is part of the worker
+protocol. If the worker process exits with status 0 while the task is still
+`running`, the dispatcher treats that as a protocol violation, emits a
+`protocol_violation` event, and auto-blocks the task on the next tick instead
+of respawning it into the same loop. This usually means the model wrote a
+plain-text answer and exited without using the Kanban tool surface.
 
 `kanban-worker` is a bundled skill, synced into every profile during install and
 update — there is no separate Skills Hub install step. Verify it is present in
@@ -785,7 +792,8 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `crashed` | `{pid, claimer}` | Worker PID no longer alive but TTL hadn't expired yet. |
 | `timed_out` | `{pid, elapsed_seconds, limit_seconds, sigkill}` | `max_runtime_seconds` exceeded; dispatcher SIGTERM'd (then SIGKILL'd after 5 s grace) and re-queued. |
 | `spawn_failed` | `{error, failures}` | One spawn attempt failed (missing PATH, workspace unmountable, …). Counter increments; task returns to `ready` for retry. |
-| `gave_up` | `{failures, error}` | Circuit breaker fired after N consecutive `spawn_failed`. Task auto-blocks with the last error. Default N = 5; override via `--failure-limit`. |
+| `protocol_violation` | `{pid, claimer, exit_code}` | Worker exited successfully while the task was still `running`, usually because it answered without calling `kanban_complete` or `kanban_block`. The dispatcher also emits `gave_up` and auto-blocks immediately instead of retrying. |
+| `gave_up` | `{failures, error, trigger_outcome, effective_limit, limit_source}` | Circuit breaker fired after N consecutive non-success attempts (`spawn_failed`, `timed_out`, or `crashed`), or after the immediate protocol-violation path. Task auto-blocks with the last error. Default N comes from `kanban.failure_limit` (2 by default); override globally with dispatcher `--failure-limit` / config, or per task with `--max-retries`. |
 
 `hermes kanban tail <id>` shows these for a single task. `hermes kanban watch` streams them board-wide.
 

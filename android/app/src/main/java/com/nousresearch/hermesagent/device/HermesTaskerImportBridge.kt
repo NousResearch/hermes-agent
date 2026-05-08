@@ -180,6 +180,33 @@ object HermesTaskerImportBridge {
                             .toString(),
                     )
             }
+            TASKER_VARIABLE_SET -> {
+                val name = argText(action, 0).trim()
+                val normalized = HermesAutomationStore.normalizeVariableName(name) ?: return null
+                val value = argText(action, 1)
+                if (value.indexOf('\u0000') >= 0) return null
+                base.put("action_type", ACTION_TYPE_VARIABLE_ACTION)
+                    .put(
+                        "command",
+                        JSONObject()
+                            .put("variable_action", "set")
+                            .put("name", normalized)
+                            .put("value", value.take(MAX_VARIABLE_VALUE_CHARS))
+                            .toString(),
+                    )
+            }
+            TASKER_VARIABLE_CLEAR -> {
+                val name = argText(action, 0).trim()
+                val normalized = HermesAutomationStore.normalizeVariableName(name) ?: return null
+                base.put("action_type", ACTION_TYPE_VARIABLE_ACTION)
+                    .put(
+                        "command",
+                        JSONObject()
+                            .put("variable_action", "clear")
+                            .put("name", normalized)
+                            .toString(),
+                    )
+            }
             else -> null
         }
     }
@@ -312,6 +339,8 @@ object HermesTaskerImportBridge {
     private const val TASKER_DELETE_FILE = 406
     private const val TASKER_WRITE_FILE = 410
     private const val TASKER_NOTIFY = 523
+    private const val TASKER_VARIABLE_SET = 547
+    private const val TASKER_VARIABLE_CLEAR = 549
     private const val MAX_TASKER_XML_CHARS = 512_000
     private const val MAX_LABEL_CHARS = 80
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
@@ -327,5 +356,7 @@ object HermesTaskerImportBridge {
         TASKER_DELETE_FILE to "Delete File",
         TASKER_WRITE_FILE to "Write File",
         TASKER_NOTIFY to "Notify",
+        TASKER_VARIABLE_SET to "Variable Set",
+        TASKER_VARIABLE_CLEAR to "Variable Clear",
     )
 }

@@ -35,6 +35,7 @@ object HermesAutomationBridge {
             "create_shizuku_action_task", "create_shizuku_action", "create_privileged_action_task", "privileged_action_task" -> createShizukuActionTaskJson(context, arguments)
             "create_sunrise_sunset_task", "create_sun_task", "create_solar_task" -> createSunriseSunsetTaskJson(context, arguments)
             "create_notification_task", "create_notify_task", "create_notify", "notify_task" -> createNotificationTaskJson(context, arguments)
+            "create_variable_action_task", "create_variable_task", "create_variable_set_task", "create_variable_clear_task" -> createVariableActionTaskJson(context, arguments)
             "create_launcher_shortcut", "create_shortcut", "create_home_screen_shortcut", "pin_automation_shortcut" -> HermesLauncherShortcutBridge.createShortcutJson(context, arguments)
             "list_launcher_shortcuts", "list_shortcuts", "launcher_shortcuts" -> HermesLauncherShortcutBridge.listShortcutsJson(context)
             "remove_launcher_shortcut", "delete_launcher_shortcut", "remove_shortcut", "delete_shortcut" -> HermesLauncherShortcutBridge.removeShortcutJson(context, arguments)
@@ -582,6 +583,42 @@ object HermesAutomationBridge {
             actionType = ACTION_TYPE_NOTIFICATION_ACTION,
             payload = payload.toString(),
             defaultLabel = "Hermes notification automation",
+        )
+    }
+
+    fun createVariableActionTaskJson(context: Context, arguments: JSONObject): String {
+        val variableAction = normalizeVariableAction(
+            stringArgument(arguments, "variable_action", "variableAction", "operation", "mode")
+                .orEmpty()
+                .ifBlank {
+                    when {
+                        arguments.has("value") || arguments.has("variable_value") -> VARIABLE_ACTION_SET
+                        else -> VARIABLE_ACTION_CLEAR
+                    }
+                },
+        ) ?: return errorJson("create_variable_action_task supports variable_action set or clear")
+        val rawName = stringArgument(arguments, "name", "variable", "variable_name", "variableName")
+            ?.trim()
+            ?: return errorJson("create_variable_action_task requires a variable name like NAME or %NAME")
+        val normalized = HermesAutomationStore.normalizeVariableName(rawName)
+            ?: return errorJson("create_variable_action_task requires a variable name like NAME or %NAME")
+        val payload = JSONObject()
+            .put("variable_action", variableAction)
+            .put("name", normalized)
+        if (variableAction == VARIABLE_ACTION_SET) {
+            val value = stringArgument(arguments, "value", "variable_value", "text", "content", allowEmpty = true)
+                ?: return errorJson("create_variable_action_task set requires a value argument")
+            if (value.indexOf('\u0000') >= 0) {
+                return errorJson("create_variable_action_task value must not contain NUL bytes")
+            }
+            payload.put("value", value)
+        }
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_VARIABLE_ACTION,
+            payload = payload.toString(),
+            defaultLabel = "Hermes variable automation",
         )
     }
 
@@ -1213,6 +1250,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_SHIZUKU_ACTION -> runShizukuActionRecord(context, record, variables)
             ACTION_TYPE_SUNRISE_SUNSET -> runSunriseSunsetRecord(store, record, variables)
             ACTION_TYPE_NOTIFICATION_ACTION -> runNotificationActionRecord(context, record, variables)
+            ACTION_TYPE_VARIABLE_ACTION -> runVariableActionRecord(store, record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
         }
         val exitCode = rawResult.optInt("exit_code", if (rawResult.optBoolean("success", false)) 0 else -1)
@@ -1351,6 +1389,46 @@ object HermesAutomationBridge {
         val payload = runCatching { JSONObject(record.command) }.getOrNull()
             ?: return JSONObject(errorJson("Saved notification automation payload is invalid"))
         return JSONObject(HermesNotificationActionBridge.performNotificationJson(context, expandNotificationPayload(payload, variables)))
+    }
+
+    private fun runVariableActionRecord(
+        store: HermesAutomationStore,
+        record: HermesAutomationRecord,
+        variables: JSONObject,
+    ): JSONObject {
+        val payload = runCatching { JSONObject(record.command) }.getOrNull()
+            ?: return JSONObject(errorJson("Saved variable_action automation payload is invalid"))
+        val variableAction = normalizeVariableAction(expandVariables(payload.optString("variable_action"), variables))
+            ?: return JSONObject(errorJson("Unsupported saved variable action: ${payload.optString("variable_action")}"))
+        val normalized = HermesAutomationStore.normalizeVariableName(expandVariables(payload.optString("name"), variables))
+            ?: return JSONObject(errorJson("Saved variable_action automation requires a variable name like NAME or %NAME"))
+        return when (variableAction) {
+            VARIABLE_ACTION_SET -> {
+                val value = expandVariables(payload.optString("value"), variables)
+                if (value.indexOf('\u0000') >= 0) {
+                    return JSONObject(errorJson("Saved variable_action value must not contain NUL bytes"))
+                }
+                store.setVariable(normalized, value)
+                JSONObject()
+                    .put("success", true)
+                    .put("exit_code", 0)
+                    .put("action", VARIABLE_ACTION_SET)
+                    .put("name", normalized)
+                    .put("value", value.take(MAX_VARIABLE_VALUE_CHARS))
+                    .put("message", "Set Android automation variable %$normalized")
+            }
+            VARIABLE_ACTION_CLEAR -> {
+                val removed = store.removeVariable(normalized)
+                JSONObject()
+                    .put("success", true)
+                    .put("exit_code", 0)
+                    .put("action", VARIABLE_ACTION_CLEAR)
+                    .put("name", normalized)
+                    .put("removed", removed)
+                    .put("message", "Cleared Android automation variable %$normalized")
+            }
+            else -> JSONObject(errorJson("Unsupported saved variable action: $variableAction"))
+        }
     }
 
     fun deleteJson(context: Context, id: String): String {
@@ -3271,6 +3349,14 @@ object HermesAutomationBridge {
         }
     }
 
+    private fun normalizeVariableAction(action: String): String? {
+        return when (action.trim().lowercase().replace("-", "_").replace(" ", "_")) {
+            "set", "variable_set", "set_variable", "assign" -> VARIABLE_ACTION_SET
+            "clear", "delete", "remove", "variable_clear", "variable_delete", "delete_variable" -> VARIABLE_ACTION_CLEAR
+            else -> null
+        }
+    }
+
     private fun constantTimeEquals(left: String, right: String): Boolean {
         return MessageDigest.isEqual(left.toByteArray(Charsets.UTF_8), right.toByteArray(Charsets.UTF_8))
     }
@@ -3296,6 +3382,7 @@ object HermesAutomationBridge {
         "create_shizuku_action_task",
         "create_sunrise_sunset_task",
         "create_notification_task",
+        "create_variable_action_task",
         "create_launcher_shortcut",
         "list_launcher_shortcuts",
         "remove_launcher_shortcut",
@@ -3345,6 +3432,7 @@ object HermesAutomationBridge {
         ACTION_TYPE_SHIZUKU_ACTION,
         ACTION_TYPE_SUNRISE_SUNSET,
         ACTION_TYPE_NOTIFICATION_ACTION,
+        ACTION_TYPE_VARIABLE_ACTION,
     )
     private val ACTION_TYPE_SYNONYMS = mapOf(
         "shizuku" to ACTION_TYPE_SHIZUKU_ACTION,
@@ -3358,6 +3446,10 @@ object HermesAutomationBridge {
         "notification" to ACTION_TYPE_NOTIFICATION_ACTION,
         "notify" to ACTION_TYPE_NOTIFICATION_ACTION,
         "post_notification" to ACTION_TYPE_NOTIFICATION_ACTION,
+        "variable" to ACTION_TYPE_VARIABLE_ACTION,
+        "variable_action" to ACTION_TYPE_VARIABLE_ACTION,
+        "variable_set" to ACTION_TYPE_VARIABLE_ACTION,
+        "variable_clear" to ACTION_TYPE_VARIABLE_ACTION,
         "android_intent" to ACTION_TYPE_INTENT,
         "start_activity" to ACTION_TYPE_INTENT,
         "open_uri" to ACTION_TYPE_INTENT,
@@ -3607,6 +3699,8 @@ object HermesAutomationBridge {
     )
     private val TASKER_VARIABLE_PATTERN = Regex("%([A-Za-z_][A-Za-z0-9_]{1,63})")
     private val BRACE_VARIABLE_PATTERN = Regex("\\{\\{([A-Za-z_][A-Za-z0-9_]{0,63})\\}\\}")
+    private const val VARIABLE_ACTION_SET = "set"
+    private const val VARIABLE_ACTION_CLEAR = "clear"
     private const val AUTOMATION_TIMEOUT_SECONDS = 30
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
     private const val MAX_RESULT_CHARS = 2_000

@@ -47,6 +47,14 @@ DEFAULT_MAX_TURNS = 20
 DEFAULT_JUDGE_TIMEOUT = 30.0
 # Cap how much of the last response + recent messages we send to the judge.
 _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
+# After this many consecutive judge *parse* failures (empty output / non-JSON),
+# the loop auto-pauses and points the user at the goal_judge config. API /
+# transport errors do NOT count toward this — those are transient. This guards
+# against small models (e.g. deepseek-v4-flash) that cannot follow the strict
+# JSON reply contract; without it the loop runs until the turn budget is
+# exhausted with every reply shaped like `judge returned empty response` or
+# `judge reply was not JSON`.
+DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -99,6 +107,7 @@ class GoalState:
     last_verdict: Optional[str] = None        # "done" | "continue" | "skipped"
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
+    consecutive_parse_failures: int = 0       # judge-output parse failures in a row
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -116,6 +125,7 @@ class GoalState:
             last_verdict=data.get("last_verdict"),
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
+            consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
         )
 
 
@@ -220,13 +230,17 @@ def _truncate(text: str, limit: int) -> str:
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
 
-def _parse_judge_response(raw: str) -> Tuple[bool, str]:
-    """Parse the judge's reply. Fail-open to ``(False, "<reason>")``.
+def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
+    """Parse the judge's reply. Fail-open to ``(False, "<reason>", parse_failed)``.
 
-    Returns ``(done, reason)``.
+    Returns ``(done, reason, parse_failed)``. ``parse_failed`` is True when the
+    judge returned output that couldn't be interpreted as the expected JSON
+    verdict (empty body, prose, malformed JSON). Callers use that flag to
+    auto-pause after N consecutive parse failures so a weak judge model
+    doesn't silently burn the turn budget.
     """
     if not raw:
-        return False, "judge returned empty response"
+        return False, "judge returned empty response", True
 
     text = raw.strip()
 
@@ -252,7 +266,7 @@ def _parse_judge_response(raw: str) -> Tuple[bool, str]:
                 data = None
 
     if not isinstance(data, dict):
-        return False, f"judge reply was not JSON: {_truncate(raw, 200)!r}"
+        return False, f"judge reply was not JSON: {_truncate(raw, 200)!r}", True
 
     done_val = data.get("done")
     if isinstance(done_val, str):
@@ -262,7 +276,7 @@ def _parse_judge_response(raw: str) -> Tuple[bool, str]:
     reason = str(data.get("reason") or "").strip()
     if not reason:
         reason = "no reason provided"
-    return done, reason
+    return done, reason, False
 
 
 def judge_goal(
@@ -270,36 +284,42 @@ def judge_goal(
     last_response: str,
     *,
     timeout: float = DEFAULT_JUDGE_TIMEOUT,
-) -> Tuple[str, str]:
+) -> Tuple[str, str, bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
-    Returns ``(verdict, reason)`` where verdict is ``"done"``, ``"continue"``,
-    or ``"skipped"`` (when the judge couldn't be reached).
+    Returns ``(verdict, reason, parse_failed)`` where verdict is ``"done"``,
+    ``"continue"``, or ``"skipped"`` (when the judge couldn't be reached).
 
-    This is deliberately fail-open: any error returns ``("continue", "...")``
-    so a broken judge doesn't wedge progress — the turn budget is the
-    backstop.
+    ``parse_failed`` is True only when the judge call succeeded but its output
+    was unusable (empty or non-JSON). API/transport errors return False — they
+    are transient and should fail-open silently. Callers use this flag to
+    auto-pause after N consecutive parse failures (see
+    ``DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES``).
+
+    This is deliberately fail-open: any error returns ``("continue", "...", False)``
+    so a broken judge doesn't wedge progress — the turn budget and the
+    consecutive-parse-failures auto-pause are the backstops.
     """
     if not goal.strip():
-        return "skipped", "empty goal"
+        return "skipped", "empty goal", False
     if not last_response.strip():
         # No substantive reply this turn — almost certainly not done yet.
-        return "continue", "empty response (nothing to evaluate)"
+        return "continue", "empty response (nothing to evaluate)", False
 
     try:
         from agent.auxiliary_client import get_text_auxiliary_client
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
-        return "continue", "auxiliary client unavailable"
+        return "continue", "auxiliary client unavailable", False
 
     try:
         client, model = get_text_auxiliary_client("goal_judge")
     except Exception as exc:
         logger.debug("goal judge: get_text_auxiliary_client failed: %s", exc)
-        return "continue", "auxiliary client unavailable"
+        return "continue", "auxiliary client unavailable", False
 
     if client is None or not model:
-        return "continue", "no auxiliary client configured"
+        return "continue", "no auxiliary client configured", False
 
     prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
         goal=_truncate(goal, 2000),
@@ -319,17 +339,17 @@ def judge_goal(
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}"
+        return "continue", f"judge error: {type(exc).__name__}", False
 
     try:
         raw = resp.choices[0].message.content or ""
     except Exception:
         raw = ""
 
-    done, reason = _parse_judge_response(raw)
+    done, reason, parse_failed = _parse_judge_response(raw)
     verdict = "done" if done else "continue"
     logger.info("goal judge: verdict=%s reason=%s", verdict, _truncate(reason, 120))
-    return verdict, reason
+    return verdict, reason, parse_failed
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -473,9 +493,17 @@ class GoalManager:
         state.turns_used += 1
         state.last_turn_at = time.time()
 
-        verdict, reason = judge_goal(state.goal, last_response)
+        verdict, reason, parse_failed = judge_goal(state.goal, last_response)
         state.last_verdict = verdict
         state.last_reason = reason
+
+        # Track consecutive judge parse failures. Reset on any usable reply,
+        # including API / transport errors (parse_failed=False) so a flaky
+        # network doesn't trip the auto-pause meant for bad judge models.
+        if parse_failed:
+            state.consecutive_parse_failures += 1
+        else:
+            state.consecutive_parse_failures = 0
 
         if verdict == "done":
             state.status = "done"
@@ -487,6 +515,36 @@ class GoalManager:
                 "verdict": "done",
                 "reason": reason,
                 "message": f"✓ Goal achieved: {reason}",
+            }
+
+        # Auto-pause when the judge model can't produce the expected JSON
+        # verdict N turns in a row. Points the user at the goal_judge config
+        # so they can route this side task to a model that follows the
+        # contract (e.g. google/gemini-3-flash-preview). Without this guard,
+        # weak judge models burn the entire turn budget returning prose or
+        # empty strings.
+        if state.consecutive_parse_failures >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
+            state.status = "paused"
+            state.paused_reason = (
+                f"judge model returned unparseable output {state.consecutive_parse_failures} turns in a row"
+            )
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "continue",
+                "reason": reason,
+                "message": (
+                    f"⏸ Goal paused — the judge model ({state.consecutive_parse_failures} turns) "
+                    "isn't returning the required JSON verdict. Route the judge to a stricter "
+                    "model in ~/.hermes/config.yaml:\n"
+                    "  auxiliary:\n"
+                    "    goal_judge:\n"
+                    "      provider: openrouter\n"
+                    "      model: google/gemini-3-flash-preview\n"
+                    "Then /goal resume to continue."
+                ),
             }
 
         if state.turns_used >= state.max_turns:

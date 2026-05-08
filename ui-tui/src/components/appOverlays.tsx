@@ -182,7 +182,7 @@ export function FloatingOverlays({
 
               return (
                 <Box
-                  backgroundColor={active ? theme.color.completionCurrentBg : undefined}
+                  backgroundColor={active ? theme.color.completionCurrentBg : theme.color.completionBg}
                   flexDirection="row"
                   key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
                   width="100%"
@@ -191,7 +191,15 @@ export function FloatingOverlays({
                     {' '}
                     {item.display}
                   </Text>
-                  {item.meta ? <Text color={theme.color.muted}> {item.meta}</Text> : null}
+                  {item.meta ? (
+                    <Text
+                      backgroundColor={active ? theme.color.completionMetaCurrentBg : theme.color.completionMetaBg}
+                      color={theme.color.muted}
+                    >
+                      {' '}
+                      {item.meta}
+                    </Text>
+                  ) : null}
                 </Box>
               )
             })}

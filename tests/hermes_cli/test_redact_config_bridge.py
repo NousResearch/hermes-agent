@@ -72,11 +72,13 @@ def test_redact_secrets_false_in_config_yaml_is_honored(tmp_path):
     assert "ENV_VAR=false" in result.stdout
 
 
-def test_redact_secrets_default_false_when_unset(tmp_path):
-    """Without the config key, redaction stays OFF by default.
+def test_redact_secrets_default_true_when_unset(tmp_path):
+    """Without the config key or env var, redaction is ON by default (#17691).
 
-    Secret redaction is opt-in — users who want it must set
-    `security.redact_secrets: true` explicitly (or HERMES_REDACT_SECRETS=true).
+    Secret redaction is a secure default — users who need raw credential
+    values in tool output (e.g. working on the redactor itself) must set
+    `security.redact_secrets: false` explicitly (or
+    `HERMES_REDACT_SECRETS=false`).
     """
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -107,7 +109,7 @@ def test_redact_secrets_default_false_when_unset(tmp_path):
         timeout=30,
     )
     assert result.returncode == 0, f"probe failed: {result.stderr}"
-    assert "REDACT_ENABLED=False" in result.stdout
+    assert "REDACT_ENABLED=True" in result.stdout
 
 
 def test_redact_secrets_true_in_config_yaml_is_honored(tmp_path):

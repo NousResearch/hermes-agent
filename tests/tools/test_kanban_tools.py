@@ -214,6 +214,61 @@ def test_heartbeat_without_note(worker_env):
     assert d["ok"] is True
 
 
+def test_heartbeat_extends_claim_expires(worker_env):
+    """The kanban_heartbeat tool MUST extend claim_expires, not just
+    update last_heartbeat_at — otherwise long-running workers loop the
+    heartbeat tool diligently and still get reclaimed by
+    release_stale_claims at DEFAULT_CLAIM_TTL_SECONDS.
+
+    Regression test for the bug where _handle_heartbeat called
+    heartbeat_worker but never heartbeat_claim, so claim_expires sat
+    static while last_heartbeat_at advanced.
+    """
+    import time as _time
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Rewind claim_expires into the past so any forward movement is
+    # unambiguous (avoids time.sleep flakiness).
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (1, worker_env),
+        )
+        conn.commit()
+        before = conn.execute(
+            "SELECT claim_expires FROM tasks WHERE id = ?", (worker_env,)
+        ).fetchone()["claim_expires"]
+    finally:
+        conn.close()
+    assert before == 1
+
+    out = kt._handle_heartbeat({"note": "still alive"})
+    assert json.loads(out).get("ok") is True
+
+    conn = kb.connect()
+    try:
+        after = conn.execute(
+            "SELECT claim_expires FROM tasks WHERE id = ?", (worker_env,)
+        ).fetchone()["claim_expires"]
+    finally:
+        conn.close()
+
+    now = int(_time.time())
+    # claim_expires should be roughly now + DEFAULT_CLAIM_TTL_SECONDS.
+    # We assert a generous floor (now + half the default TTL) to keep the
+    # test stable against future TTL changes.
+    assert after > before, (
+        f"claim_expires did not advance ({before} -> {after}); workers "
+        f"would be reclaimed at TTL despite heartbeating"
+    )
+    assert after >= now + (kb.DEFAULT_CLAIM_TTL_SECONDS // 2), (
+        f"claim_expires={after} is suspiciously close to now={now}; "
+        f"expected at least now + {kb.DEFAULT_CLAIM_TTL_SECONDS // 2}"
+    )
+
+
 def test_comment_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_comment({

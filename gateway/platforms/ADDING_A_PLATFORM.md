@@ -4,18 +4,34 @@ There are two ways to add a platform to the Hermes gateway:
 
 ## Plugin Path (Recommended for Community/Third-Party)
 
-Create a plugin directory in `~/.hermes/plugins/` with a `PLUGIN.yaml` and
-`adapter.py`.  The adapter inherits from `BasePlatformAdapter` and registers
-via `ctx.register_platform()` in the `register(ctx)` entry point.  This
-requires **zero changes to core Hermes code**.
+Create a plugin directory in `~/.hermes/plugins/` (or under `plugins/platforms/`
+for bundled plugins) with a `plugin.yaml` and `adapter.py`.  The adapter
+inherits from `BasePlatformAdapter` and registers via
+`ctx.register_platform()` in the `register(ctx)` entry point.  This requires
+**zero changes to core Hermes code**.
 
 The plugin system automatically handles: adapter creation, config parsing,
 user authorization, cron delivery, send_message routing, system prompt hints,
 status display, gateway setup, and more.
 
-See `plugins/platforms/irc/` for a complete reference implementation, and
+**Three optional hooks cover the edges most adapters need:**
+
+- `env_enablement_fn: () -> Optional[dict]` — seeds `PlatformConfig.extra`
+  (and an optional `home_channel` dict) from env vars BEFORE the adapter is
+  constructed.  Without this, env-only setups don't surface in
+  `hermes gateway status` or `get_connected_platforms()` until the SDK
+  instantiates.
+- `cron_deliver_env_var: str` — name of the `*_HOME_CHANNEL` env var.  When
+  set, `deliver=<name>` cron jobs route to this var without editing
+  `cron/scheduler.py`'s hardcoded sets.
+- `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
+  auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
+  wizard surfaces proper descriptions, prompts, password flags, and URLs.
+
+See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
+`plugins/platforms/google_chat/` for complete working examples, and
 `website/docs/developer-guide/adding-platform-adapters.md` for the full
-plugin guide with code examples.
+plugin guide with code examples and hook documentation.
 
 ---
 

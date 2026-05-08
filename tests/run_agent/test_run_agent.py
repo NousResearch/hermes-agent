@@ -724,6 +724,56 @@ class TestInit:
             )
             assert a._cache_ttl == "1h"
 
+    def test_model_max_tokens_from_config(self):
+        """model.max_tokens config populates the chat-completions request cap."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"max_tokens": 4096}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            kwargs = a._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert a.max_tokens == 4096
+        assert kwargs["max_tokens"] == 4096
+
+    def test_constructor_max_tokens_wins_over_config(self):
+        """Explicit constructor max_tokens keeps programmatic callers stable."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"max_tokens": 4096}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                max_tokens=8192,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert a.max_tokens == 8192
+
     def test_prompt_caching_cache_ttl_invalid_falls_back(self):
         """Non-Anthropic TTL values keep default 5m without raising."""
         with (
@@ -3666,9 +3716,21 @@ class TestMaxTokensParam:
         result = agent._max_tokens_param(4096)
         assert result == {"max_completion_tokens": 4096}
 
+    def test_returns_max_completion_tokens_for_github_copilot(self, agent):
+        """GitHub Copilot's OpenAI-compatible API rejects max_tokens for newer models."""
+        agent.base_url = "https://api.githubcopilot.com"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
 
-class TestAzureOpenAIRouting:
-    """Verify Azure OpenAI endpoints stay on chat_completions for gpt-5.x."""
+    def test_returns_max_completion_tokens_for_github_copilot_path(self, agent):
+        """Detect Copilot by hostname even when the configured URL includes a path."""
+        agent.base_url = "https://api.githubcopilot.com/chat/completions"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+
+class TestGpt5ApiModeRouting:
+    """Verify provider-specific GPT-5 API-mode routing."""
 
     def test_azure_gpt5_stays_on_chat_completions(self, agent):
         """Azure serves gpt-5.x on /chat/completions — must not upgrade to codex_responses."""
@@ -3706,6 +3768,25 @@ class TestAzureOpenAIRouting:
         ):
             agent.api_mode = "codex_responses"
         assert agent.api_mode == "codex_responses"
+
+    def test_nous_gpt5_stays_on_chat_completions(self, agent):
+        """Nous serves gpt-5.x on /chat/completions — must not upgrade to codex_responses."""
+        agent.provider = "nous"
+        agent.base_url = "https://inference-api.nousresearch.com/v1"
+        agent.api_mode = "chat_completions"
+        agent.model = "openai/gpt-5.5"
+        if (
+            agent.api_mode == "chat_completions"
+            and not agent._is_azure_openai_url()
+            and (
+                agent._is_direct_openai_url()
+                or agent._provider_model_requires_responses_api(
+                    agent.model, provider=agent.provider,
+                )
+            )
+        ):
+            agent.api_mode = "codex_responses"
+        assert agent.api_mode == "chat_completions"
 
     def test_is_azure_openai_url_detection(self, agent):
         assert agent._is_azure_openai_url("https://foo.openai.azure.com/openai/v1") is True

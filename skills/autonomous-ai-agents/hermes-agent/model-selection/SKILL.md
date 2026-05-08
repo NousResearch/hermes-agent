@@ -62,6 +62,18 @@ Don't escalate to Opus for routine chat, simple lookups, format conversions, or 
 
 **Always use the dashed form** for Anthropic identifiers (`claude-opus-4-6`, not `claude-opus-4.6`). The dotted form silently routes to an older variant — Anthropic's API treats `4.6` as a decimal that gets truncated to `4`, landing on `claude-opus-4-20250514` (Opus 4.0) instead of the intended `claude-opus-4-6` (Opus 4.6). Same applies to Sonnet.
 
+## Verifying the current model
+
+**You cannot reliably verify the active model from within the agent.** Logs (`agent.log`) only show inbound messages, not internal routing decisions. `_session_model_overrides` is in-memory and not readable from tools. The only tell is behavioral:
+
+- **MiniMax-M2.7**: snappy, concise responses
+- **Sonnet 4.6**: more verbose, visible reasoning, higher latency
+- **Opus 4.6**: noticeably deliberate, longest reasoning traces
+
+If the user asks "what model are you on?", be honest: say you can't verify programmatically and describe the behavioral tell. Do NOT guess or assert a model you can't confirm.
+
+To verify externally, the user can run `hermes model` in a terminal (requires an interactive session — can't run through a pipe). The env var `HERMES_ENFORCED_MODEL` shows the enforced default (not session overrides).
+
 ## Mid-conversation switch — what to expect
 
 Switching from a large-context model (Sonnet/Opus, 1M) down to MiniMax (200K) only triggers compression if the conversation has actually grown past ~170K tokens. For everyday chat, that's never. When it does fire, the compressor uses **Gemini 3 Flash** to summarize middle turns, preserving system prompt + first 3 turns + last ~20 messages. Older middle detail gets a lossy summary, not deletion.

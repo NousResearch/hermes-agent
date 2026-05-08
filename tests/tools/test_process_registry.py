@@ -728,18 +728,30 @@ class TestKillProcess:
         s.detached = True
         registry._running[s.id] = s
 
-        calls = []
+        terminate_calls = []
 
-        def fake_kill(pid, sig):
-            calls.append((pid, sig))
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+            def children(self, recursive=False):
+                return []
+            def terminate(self):
+                terminate_calls.append(("terminate", self.pid))
+
+        import psutil as _psutil
 
         try:
-            with patch("tools.process_registry.os.kill", side_effect=fake_kill):
+            # Post-#21561: liveness probe routes through
+            # ``ProcessRegistry._is_host_pid_alive`` (→
+            # ``gateway.status._pid_exists``), and the actual kill on POSIX
+            # routes through ``psutil.Process(pid).terminate()``. Neither
+            # touches ``os.kill`` directly. Mock both seams.
+            with patch("gateway.status._pid_exists", return_value=True), \
+                 patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)):
                 result = registry.kill_process(s.id)
 
             assert result["status"] == "killed"
-            assert (424242, 0) in calls
-            assert (424242, signal.SIGTERM) in calls
+            assert ("terminate", 424242) in terminate_calls
         finally:
             registry._running.pop(s.id, None)
 

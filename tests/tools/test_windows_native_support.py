@@ -308,52 +308,104 @@ class TestSigkillFallback:
 
 
 # ---------------------------------------------------------------------------
-# OSError widening on os.kill(pid, 0) probes
+# OSError widening on liveness probes
+#
+# Post-#21561, ``ProcessRegistry._is_host_pid_alive`` delegates to
+# ``gateway.status._pid_exists``, which is the cross-platform liveness
+# primitive (psutil-first, ctypes/os.kill fallback). The tests below assert
+# (a) the delegation is correct and (b) ``_pid_exists`` correctly widens
+# Windows' ``OSError(WinError 87)`` / ``PermissionError`` behavior on the
+# POSIX fallback branch.
 # ---------------------------------------------------------------------------
 
 
 class TestProcessRegistryOSErrorWidening:
-    """_is_host_pid_alive must treat Windows' OSError as 'not alive'."""
+    """_is_host_pid_alive delegates to gateway.status._pid_exists."""
 
     def test_oserror_treated_as_not_alive(self, monkeypatch):
+        """_pid_exists → False propagates as _is_host_pid_alive → False."""
         from tools.process_registry import ProcessRegistry
 
-        def fake_kill(pid, sig):
-            # Simulate Windows' WinError 87 for an unknown PID
-            raise OSError(22, "Invalid argument")
-
-        monkeypatch.setattr("tools.process_registry.os.kill", fake_kill)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
         assert ProcessRegistry._is_host_pid_alive(12345) is False
 
-    def test_permission_error_treated_as_not_alive(self, monkeypatch):
-        """Conservative: PermissionError also means 'not alive' (matches existing behavior)."""
+    def test_permission_error_treated_as_alive(self, monkeypatch):
+        """PermissionError is encoded by _pid_exists as alive=True; propagates as-is.
+
+        This is a meaningful semantic change from the pre-#21561 version of
+        this test (which asserted PermissionError → not-alive). The old
+        ``os.kill(pid, 0)``-based probe couldn't distinguish "gone" from
+        "owned by another user" on some platforms, so it conservatively
+        returned False. The new psutil-based probe CAN distinguish them via
+        ``OpenProcess + ERROR_ACCESS_DENIED`` on Windows / ``except
+        PermissionError`` on POSIX, so alive=True is correct.
+        """
         from tools.process_registry import ProcessRegistry
 
-        def fake_kill(pid, sig):
-            raise PermissionError(1, "Operation not permitted")
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+        assert ProcessRegistry._is_host_pid_alive(12345) is True
 
-        monkeypatch.setattr("tools.process_registry.os.kill", fake_kill)
-        assert ProcessRegistry._is_host_pid_alive(12345) is False
-
-    def test_zero_or_none_pid_returns_false_without_calling_kill(self, monkeypatch):
+    def test_zero_or_none_pid_returns_false_without_probing(self, monkeypatch):
         """No wasted syscall on falsy pids."""
         from tools.process_registry import ProcessRegistry
 
-        kill_calls = []
+        probes = []
         monkeypatch.setattr(
-            "tools.process_registry.os.kill",
-            lambda pid, sig: kill_calls.append(pid),
+            "gateway.status._pid_exists",
+            lambda pid: probes.append(pid) or True,
         )
         assert ProcessRegistry._is_host_pid_alive(None) is False
         assert ProcessRegistry._is_host_pid_alive(0) is False
-        assert kill_calls == []
+        assert probes == []
 
     def test_alive_pid_returns_true(self, monkeypatch):
         from tools.process_registry import ProcessRegistry
 
-        # os.kill returning None (default) means "probe succeeded → pid alive"
-        monkeypatch.setattr("tools.process_registry.os.kill", lambda pid, sig: None)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
         assert ProcessRegistry._is_host_pid_alive(os.getpid()) is True
+
+
+class TestPidExistsOSErrorWidening:
+    """gateway.status._pid_exists itself must widen Windows errors correctly.
+
+    The POSIX fallback branch (reached when psutil isn't importable) is the
+    only path where Python raises ``OSError(WinError 87)`` on Windows for a
+    gone PID instead of ``ProcessLookupError``. The function must catch the
+    wider ``OSError`` to match POSIX semantics.
+    """
+
+    def test_oserror_gone_pid_returns_false(self, monkeypatch):
+        """Simulate Windows' OSError(WinError 87) for a gone PID via the POSIX fallback."""
+        from gateway import status
+
+        # Force the psutil-first branch to miss so we exercise the fallback.
+        monkeypatch.setitem(
+            __import__("sys").modules, "psutil",
+            type("P", (), {"pid_exists": staticmethod(lambda pid: (_ for _ in ()).throw(ImportError()))})()
+        )
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
+
+        def fake_kill(pid, sig):
+            raise OSError(22, "Invalid argument")
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+        assert status._pid_exists(12345) is False
+
+    def test_permission_error_returns_true(self, monkeypatch):
+        """POSIX fallback: PermissionError means alive (owned by another user)."""
+        from gateway import status
+
+        monkeypatch.setitem(
+            __import__("sys").modules, "psutil",
+            type("P", (), {"pid_exists": staticmethod(lambda pid: (_ for _ in ()).throw(ImportError()))})()
+        )
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
+
+        def fake_kill(pid, sig):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+        assert status._pid_exists(12345) is True
 
 
 # ---------------------------------------------------------------------------

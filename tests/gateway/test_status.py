@@ -410,7 +410,9 @@ class TestScopedLocks:
             "kind": "hermes-gateway",
         }))
 
-        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        # Post-#21561 the liveness probe routes through
+        # ``gateway.status._pid_exists`` (psutil-first, safe on Windows).
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
 
         acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
@@ -428,10 +430,8 @@ class TestScopedLocks:
             "kind": "hermes-gateway",
         }))
 
-        def fake_kill(pid, sig):
-            raise ProcessLookupError
-
-        monkeypatch.setattr(status.os, "kill", fake_kill)
+        # Post-#21561: simulate "PID gone" via _pid_exists returning False.
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
 
         acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 

@@ -39,6 +39,8 @@ object HermesAutomationBridge {
             "create_wait_task", "create_wait", "wait_task", "delay_task" -> createWaitTaskJson(context, arguments)
             "create_clipboard_task", "create_set_clipboard_task", "set_clipboard_task", "clipboard_task" -> createClipboardTaskJson(context, arguments)
             "create_vibration_task", "create_vibrate_task", "vibrate_task", "vibration_task" -> createVibrationTaskJson(context, arguments)
+            "create_overlay_scene_task", "create_scene_task", "overlay_scene_task", "scene_task" -> createOverlaySceneTaskJson(context, arguments)
+            "overlay_scene_status", "scene_status", "overlay_status", "show_overlay_scene", "show_scene", "overlay_scene", "hide_overlay_scene", "dismiss_overlay_scene", "clear_overlay_scene", "hide_scene" -> HermesOverlaySceneBridge.performSceneJson(context, action, arguments)
             "create_launcher_shortcut", "create_shortcut", "create_home_screen_shortcut", "pin_automation_shortcut" -> HermesLauncherShortcutBridge.createShortcutJson(context, arguments)
             "list_launcher_shortcuts", "list_shortcuts", "launcher_shortcuts" -> HermesLauncherShortcutBridge.listShortcutsJson(context)
             "remove_launcher_shortcut", "delete_launcher_shortcut", "remove_shortcut", "delete_shortcut" -> HermesLauncherShortcutBridge.removeShortcutJson(context, arguments)
@@ -691,6 +693,19 @@ object HermesAutomationBridge {
         )
     }
 
+    fun createOverlaySceneTaskJson(context: Context, arguments: JSONObject): String {
+        val payload = runCatching { HermesOverlaySceneBridge.payloadFromArguments(arguments) }.getOrElse { error ->
+            return errorJson(error.message ?: "create_overlay_scene_task arguments are invalid")
+        }
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_OVERLAY_SCENE,
+            payload = payload.toString(),
+            defaultLabel = "Hermes overlay scene automation",
+        )
+    }
+
     private fun createRecordJson(
         context: Context,
         arguments: JSONObject,
@@ -1323,6 +1338,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_WAIT -> runWaitRecord(record, variables)
             ACTION_TYPE_CLIPBOARD_ACTION -> runClipboardActionRecord(context, record, variables)
             ACTION_TYPE_VIBRATION_ACTION -> runVibrationActionRecord(context, record, variables)
+            ACTION_TYPE_OVERLAY_SCENE -> runOverlaySceneRecord(context, record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
         }
         val exitCode = rawResult.optInt("exit_code", if (rawResult.optBoolean("success", false)) 0 else -1)
@@ -1461,6 +1477,14 @@ object HermesAutomationBridge {
         val payload = runCatching { JSONObject(record.command) }.getOrNull()
             ?: return JSONObject(errorJson("Saved notification automation payload is invalid"))
         return JSONObject(HermesNotificationActionBridge.performNotificationJson(context, expandNotificationPayload(payload, variables)))
+    }
+
+    private fun runOverlaySceneRecord(context: Context, record: HermesAutomationRecord, variables: JSONObject): JSONObject {
+        val payload = runCatching { JSONObject(record.command) }.getOrNull()
+            ?: return JSONObject(errorJson("Saved overlay_scene automation payload is invalid"))
+        val expanded = expandOverlayScenePayload(payload, variables)
+        val sceneAction = expanded.optString("scene_action").ifBlank { "show" }
+        return JSONObject(HermesOverlaySceneBridge.performSceneJson(context, "${sceneAction}_overlay_scene", expanded))
     }
 
     private fun runVariableActionRecord(
@@ -2693,6 +2717,17 @@ object HermesAutomationBridge {
         return expanded
     }
 
+    private fun expandOverlayScenePayload(payload: JSONObject, variables: JSONObject): JSONObject {
+        val expanded = JSONObject()
+        payload.keys().forEach { key ->
+            when (val value = payload.opt(key)) {
+                is String -> expanded.put(key, expandVariables(value, variables))
+                else -> expanded.put(key, value)
+            }
+        }
+        return HermesOverlaySceneBridge.payloadFromArguments(expanded)
+    }
+
     private fun waitDurationMsFromPayload(payload: JSONObject, variables: JSONObject): Long {
         val expanded = JSONObject()
         payload.keys().forEach { key ->
@@ -3684,6 +3719,10 @@ object HermesAutomationBridge {
         "create_wait_task",
         "create_clipboard_task",
         "create_vibration_task",
+        "create_overlay_scene_task",
+        "overlay_scene_status",
+        "show_overlay_scene",
+        "hide_overlay_scene",
         "create_launcher_shortcut",
         "list_launcher_shortcuts",
         "remove_launcher_shortcut",
@@ -3738,6 +3777,7 @@ object HermesAutomationBridge {
         ACTION_TYPE_WAIT,
         ACTION_TYPE_CLIPBOARD_ACTION,
         ACTION_TYPE_VIBRATION_ACTION,
+        ACTION_TYPE_OVERLAY_SCENE,
     )
     private val ACTION_TYPE_SYNONYMS = mapOf(
         "shizuku" to ACTION_TYPE_SHIZUKU_ACTION,
@@ -3761,6 +3801,9 @@ object HermesAutomationBridge {
         "set_clipboard" to ACTION_TYPE_CLIPBOARD_ACTION,
         "vibrate" to ACTION_TYPE_VIBRATION_ACTION,
         "vibration" to ACTION_TYPE_VIBRATION_ACTION,
+        "scene" to ACTION_TYPE_OVERLAY_SCENE,
+        "overlay" to ACTION_TYPE_OVERLAY_SCENE,
+        "overlay_scene" to ACTION_TYPE_OVERLAY_SCENE,
         "android_intent" to ACTION_TYPE_INTENT,
         "start_activity" to ACTION_TYPE_INTENT,
         "open_uri" to ACTION_TYPE_INTENT,

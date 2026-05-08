@@ -552,6 +552,10 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # Hard cap on foreground terminal timeout (seconds). When
+        # TERMINAL_MAX_FOREGROUND_TIMEOUT is set in the environment, it wins
+        # over this key (same numeric default as the env fallback: 600).
+        "max_foreground_timeout_seconds": 600,
     },
 
     "web": {
@@ -1048,6 +1052,8 @@ DEFAULT_CONFIG = {
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
         "max_turns": 20,
+        # Auxiliary LLM timeout (seconds) for each /goal verdict call.
+        "judge_timeout_seconds": 30,
     },
 
     # Skills — external skill directories for sharing skills across tools/agents.
@@ -4589,7 +4595,12 @@ def show_config():
     print(f"  Backend:      {terminal.get('backend', 'local')}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
-    
+    print(
+        "  Foreground max:"
+        f" {terminal.get('max_foreground_timeout_seconds', 600)}s"
+        " (env TERMINAL_MAX_FOREGROUND_TIMEOUT overrides when set)"
+    )
+
     if terminal.get('backend') == 'docker':
         print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
     elif terminal.get('backend') == 'singularity':
@@ -4610,6 +4621,12 @@ def show_config():
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
+    
+    print()
+    print(color("◆ Goals", Colors.CYAN, Colors.BOLD))
+    goals_cfg = config.get("goals", {})
+    print(f"  Judge timeout: {goals_cfg.get('judge_timeout_seconds', 30)}s")
+    print(f"  Goal max turns: {goals_cfg.get('max_turns', 20)}")
     
     # Timezone
     print()

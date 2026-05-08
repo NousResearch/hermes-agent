@@ -45,6 +45,21 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TURNS = 20
 DEFAULT_JUDGE_TIMEOUT = 30.0
+
+
+def _effective_judge_timeout() -> float:
+    """Goal judge LLM timeout from config (``goals.judge_timeout_seconds``)."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = load_config().get("goals", {}).get("judge_timeout_seconds")
+        if raw is not None and str(raw).strip() != "":
+            return max(1.0, float(raw))
+    except Exception:
+        pass
+    return float(DEFAULT_JUDGE_TIMEOUT)
+
+
 # Cap how much of the last response + recent messages we send to the judge.
 _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # After this many consecutive judge *parse* failures (empty output / non-JSON),
@@ -283,7 +298,7 @@ def judge_goal(
     goal: str,
     last_response: str,
     *,
-    timeout: float = DEFAULT_JUDGE_TIMEOUT,
+    timeout: Optional[float] = None,
 ) -> Tuple[str, str, bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -326,6 +341,8 @@ def judge_goal(
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
     )
 
+    effective_timeout = float(timeout) if timeout is not None else _effective_judge_timeout()
+
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -335,7 +352,7 @@ def judge_goal(
             ],
             temperature=0,
             max_tokens=200,
-            timeout=timeout,
+            timeout=effective_timeout,
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)

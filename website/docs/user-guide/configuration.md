@@ -90,6 +90,7 @@ terminal:
   backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
+  max_foreground_timeout_seconds: 600  # Max allowed foreground `timeout=` on the terminal tool (env TERMINAL_MAX_FOREGROUND_TIMEOUT overrides when set)
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
@@ -97,6 +98,16 @@ terminal:
 ```
 
 For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+
+**Foreground timeout cap.** Foreground `terminal()` calls with an explicit `timeout` above `terminal.max_foreground_timeout_seconds` (default `600`, same as the historical `TERMINAL_MAX_FOREGROUND_TIMEOUT` default) are rejected in favor of `background=true`. When `TERMINAL_MAX_FOREGROUND_TIMEOUT` is set in the environment, it overrides `terminal.max_foreground_timeout_seconds`.
+
+### Goals (`/goal`)
+
+```yaml
+goals:
+  max_turns: 20
+  judge_timeout_seconds: 30   # OpenAI client timeout (seconds) for each auxiliary judge call
+```
 
 ### Backend Overview
 

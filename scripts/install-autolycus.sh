@@ -163,11 +163,19 @@ install_uv() {
     fi
 
     # Fallback: install via cargo (requires Rust toolchain)
-    # Redirect TMPDIR away from /tmp to avoid tmpfs quota issues
-    # (cargo install ignores CARGO_BUILD_BUILD_DIR for its staging dir)
-    export TMPDIR="$HOME/.cargo/cargo-tmp"
-    mkdir -p "$TMPDIR"
     echo -e "${YELLOW}⚠${NC} Pre-built installer failed, falling back to cargo install (slower)..."
+
+    # Some systems (e.g. Arch with systemd user quotas) reject writes to /tmp
+    # with EDQUOT even when df shows free space. Try /tmp first, fall back to home.
+    export TMPDIR=$(mktemp -d 2>/dev/null) || true
+    if [ -z "$TMPDIR" ] || ! touch "$TMPDIR/test" 2>/dev/null; then
+        rm -rf "$TMPDIR" 2>/dev/null
+        TMPDIR="$HOME/.cargo/cargo-tmp"
+        mkdir -p "$TMPDIR"
+        echo -e "${YELLOW}⚠${NC} /tmp not writable, using $TMPDIR instead..."
+    else
+        rm -f "$TMPDIR/test"
+    fi
     if cargo install uv; then
         if [ -x "$HOME/.cargo/bin/uv" ]; then
             UV_CMD="$HOME/.cargo/bin/uv"

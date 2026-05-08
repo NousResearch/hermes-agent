@@ -71,6 +71,24 @@ private val DEFAULT_PRIVILEGED_ACTIONS = listOf(
     "set_wifi_tethering_enabled",
     "enable_wifi_tethering",
     "disable_wifi_tethering",
+    "set_dnd_mode",
+    "enable_dnd",
+    "disable_dnd",
+    "set_power_save_mode",
+    "enable_power_save_mode",
+    "disable_power_save_mode",
+    "turn_screen_off",
+    "end_call",
+    "global_back",
+    "global_home",
+    "global_recents",
+    "global_notifications",
+    "global_quick_settings",
+    "collapse_status_bar",
+    "set_mobile_network_type",
+    "start_user_profile",
+    "stop_user_profile",
+    "switch_user_profile",
     "set_custom_setting",
     "get_custom_setting",
     "delete_custom_setting",
@@ -189,6 +207,33 @@ object HermesPrivilegedAccessBridge {
         } else {
             null
         }
+        val dndMode = if (normalizedAction == "set_dnd_mode") {
+            dndModeArgument(arguments) ?: return structuredError(normalizedAction, "requires dnd_mode: on, none, priority, alarms, all, or off")
+        } else {
+            null
+        }
+        val userId = if (normalizedAction in USER_PROFILE_ACTIONS) {
+            userIdArgument(arguments) ?: return structuredError(normalizedAction, "requires user_id between 0 and 9999")
+        } else {
+            null
+        }
+        val networkTypesBitmask = if (normalizedAction == "set_mobile_network_type") {
+            networkTypesBitmaskArgument(arguments)
+                ?: return structuredError(normalizedAction, "requires network_types_bitmask as a binary Android TelephonyManager network-type bitmask")
+        } else {
+            null
+        }
+        val slotId = if (normalizedAction == "set_mobile_network_type") {
+            val rawSlotId = stringArgument(arguments, "slot_id", "sim_slot_id", "subscription_slot")?.trim()
+            if (rawSlotId == null) {
+                null
+            } else {
+                rawSlotId.toIntOrNull()?.takeIf { it in 0..8 }
+                    ?: return structuredError(normalizedAction, "slot_id must be an integer between 0 and 8")
+            }
+        } else {
+            null
+        }
 
         val command = when (normalizedAction) {
             "grant_runtime_permission" -> "pm grant $packageName $permission"
@@ -217,6 +262,24 @@ object HermesPrivilegedAccessBridge {
             "set_wifi_tethering_enabled" -> wifiTetheringCommand(enabledArgument(arguments))
             "enable_wifi_tethering" -> wifiTetheringCommand(true)
             "disable_wifi_tethering" -> wifiTetheringCommand(false)
+            "set_dnd_mode" -> dndCommand(dndMode!!)
+            "enable_dnd" -> dndCommand("on")
+            "disable_dnd" -> dndCommand("off")
+            "set_power_save_mode" -> powerSaveCommand(enabledArgument(arguments))
+            "enable_power_save_mode" -> powerSaveCommand(true)
+            "disable_power_save_mode" -> powerSaveCommand(false)
+            "turn_screen_off" -> "input keyevent KEYCODE_SLEEP"
+            "end_call" -> "input keyevent KEYCODE_ENDCALL"
+            "global_back" -> "input keyevent KEYCODE_BACK"
+            "global_home" -> "input keyevent KEYCODE_HOME"
+            "global_recents" -> "input keyevent KEYCODE_APP_SWITCH"
+            "global_notifications" -> "cmd statusbar expand-notifications"
+            "global_quick_settings" -> "cmd statusbar expand-settings"
+            "collapse_status_bar" -> "cmd statusbar collapse"
+            "set_mobile_network_type" -> mobileNetworkTypeCommand(networkTypesBitmask!!, slotId)
+            "start_user_profile" -> "am start-user -w $userId"
+            "stop_user_profile" -> "am stop-user -w $userId"
+            "switch_user_profile" -> "am switch-user $userId"
             "set_custom_setting" -> customSettingCommand("put", customSetting!!)
             "get_custom_setting" -> customSettingCommand("get", customSetting!!)
             "delete_custom_setting" -> customSettingCommand("delete", customSetting!!)
@@ -230,6 +293,10 @@ object HermesPrivilegedAccessBridge {
             .put("setting_namespace", customSetting?.namespace ?: JSONObject.NULL)
             .put("setting_name", customSetting?.name ?: JSONObject.NULL)
             .put("setting_value", customSetting?.value ?: JSONObject.NULL)
+            .put("dnd_mode", dndMode ?: JSONObject.NULL)
+            .put("user_id", userId ?: JSONObject.NULL)
+            .put("network_types_bitmask", networkTypesBitmask ?: JSONObject.NULL)
+            .put("slot_id", slotId ?: JSONObject.NULL)
             .put("adb_shell_command", command)
             .toString()
     }
@@ -469,6 +536,55 @@ object HermesPrivilegedAccessBridge {
         }
     }
 
+    private fun dndCommand(mode: String): String {
+        return "cmd notification set_dnd $mode"
+    }
+
+    private fun powerSaveCommand(enabled: Boolean): String {
+        return "cmd power set-mode ${if (enabled) 1 else 0}"
+    }
+
+    private fun mobileNetworkTypeCommand(bitmask: String, slotId: Int?): String {
+        return if (slotId == null) {
+            "cmd phone set-allowed-network-types-for-users $bitmask"
+        } else {
+            "cmd phone set-allowed-network-types-for-users -s $slotId $bitmask"
+        }
+    }
+
+    private fun dndModeArgument(arguments: JSONObject): String? {
+        val raw = stringArgument(arguments, "dnd_mode", "mode", "zen_mode", "state")
+            ?.trim()
+            ?.lowercase()
+            ?: return null
+        return when (raw) {
+            "on", "none", "enable", "enabled", "true", "1" -> "on"
+            "priority", "important_interruptions" -> "priority"
+            "alarms", "alarms_only" -> "alarms"
+            "all", "off", "disable", "disabled", "false", "0" -> "off"
+            else -> null
+        }
+    }
+
+    private fun userIdArgument(arguments: JSONObject): Int? {
+        val raw = stringArgument(arguments, "user_id", "profile_user_id", "android_user_id", "work_profile_user_id")
+            ?.trim()
+            ?: return null
+        return raw.toIntOrNull()?.takeIf { it in 0..9999 }
+    }
+
+    private fun networkTypesBitmaskArgument(arguments: JSONObject): String? {
+        val raw = stringArgument(
+            arguments,
+            "network_types_bitmask",
+            "network_type_bitmask",
+            "mobile_network_bitmask",
+            "allowed_network_types",
+            "bitmask",
+        )?.trim() ?: return null
+        return raw.takeIf { Regex("[01]{1,64}").matches(it) }
+    }
+
     private fun customSettingCommand(operation: String, setting: CustomSettingArguments): String {
         return when (operation) {
             "put" -> "settings put ${setting.namespace} ${shellQuote(setting.name)} ${shellQuote(setting.value.orEmpty())}"
@@ -554,6 +670,24 @@ object HermesPrivilegedAccessBridge {
         "set_wifi_tethering_enabled",
         "enable_wifi_tethering",
         "disable_wifi_tethering",
+        "set_dnd_mode",
+        "enable_dnd",
+        "disable_dnd",
+        "set_power_save_mode",
+        "enable_power_save_mode",
+        "disable_power_save_mode",
+        "turn_screen_off",
+        "end_call",
+        "global_back",
+        "global_home",
+        "global_recents",
+        "global_notifications",
+        "global_quick_settings",
+        "collapse_status_bar",
+        "set_mobile_network_type",
+        "start_user_profile",
+        "stop_user_profile",
+        "switch_user_profile",
         "set_custom_setting",
         "get_custom_setting",
         "delete_custom_setting",
@@ -597,6 +731,40 @@ object HermesPrivilegedAccessBridge {
         "wifi_hotspot_off" to "disable_wifi_tethering",
         "hotspot_on" to "enable_wifi_tethering",
         "hotspot_off" to "disable_wifi_tethering",
+        "dnd" to "set_dnd_mode",
+        "do_not_disturb" to "set_dnd_mode",
+        "set_do_not_disturb" to "set_dnd_mode",
+        "dnd_on" to "enable_dnd",
+        "do_not_disturb_on" to "enable_dnd",
+        "dnd_off" to "disable_dnd",
+        "do_not_disturb_off" to "disable_dnd",
+        "battery_saver" to "set_power_save_mode",
+        "set_battery_saver" to "set_power_save_mode",
+        "power_save_mode" to "set_power_save_mode",
+        "battery_saver_on" to "enable_power_save_mode",
+        "power_save_on" to "enable_power_save_mode",
+        "battery_saver_off" to "disable_power_save_mode",
+        "power_save_off" to "disable_power_save_mode",
+        "turn_off" to "turn_screen_off",
+        "screen_off" to "turn_screen_off",
+        "sleep_device" to "turn_screen_off",
+        "hang_up" to "end_call",
+        "end_phone_call" to "end_call",
+        "back" to "global_back",
+        "home" to "global_home",
+        "recents" to "global_recents",
+        "overview" to "global_recents",
+        "notifications" to "global_notifications",
+        "quick_settings" to "global_quick_settings",
+        "collapse_notifications" to "collapse_status_bar",
+        "collapse_quick_settings" to "collapse_status_bar",
+        "mobile_network_type" to "set_mobile_network_type",
+        "set_allowed_network_types" to "set_mobile_network_type",
+        "start_work_profile" to "start_user_profile",
+        "enable_work_profile" to "start_user_profile",
+        "stop_work_profile" to "stop_user_profile",
+        "disable_work_profile" to "stop_user_profile",
+        "switch_profile" to "switch_user_profile",
         "custom_setting" to "set_custom_setting",
         "tasker_custom_setting" to "set_custom_setting",
         "put_custom_setting" to "set_custom_setting",
@@ -620,6 +788,7 @@ object HermesPrivilegedAccessBridge {
     private val PERMISSION_ACTIONS = setOf("grant_runtime_permission", "revoke_runtime_permission")
     private val SELF_PROTECTING_ACTIONS = setOf("force_stop_app", "clear_app_data", "disable_app", "set_app_enabled")
     private val CUSTOM_SETTING_ACTIONS = setOf("set_custom_setting", "get_custom_setting", "delete_custom_setting")
+    private val USER_PROFILE_ACTIONS = setOf("start_user_profile", "stop_user_profile", "switch_user_profile")
     private val CUSTOM_SETTING_NAMESPACES = setOf("system", "secure", "global")
     private val ANDROID_PACKAGE_OR_PERMISSION_REGEX = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)*")
     private val ANDROID_SETTING_NAME_REGEX = Regex("[A-Za-z0-9._:-]{1,160}")

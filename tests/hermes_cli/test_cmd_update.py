@@ -246,3 +246,15 @@ class TestCmdUpdateProfileSkillSync:
             cmd_update(mock_args)
 
         assert default_p.path in synced_paths
+
+
+def test_is_termux_env_true_for_termux_prefix():
+    from hermes_cli import main as hm
+
+    assert hm._is_termux_env({"PREFIX": "/data/data/com.termux/files/usr"}) is True
+
+
+def test_is_termux_env_false_for_non_termux_prefix():
+    from hermes_cli import main as hm
+
+    assert hm._is_termux_env({"PREFIX": "/usr/local"}) is False

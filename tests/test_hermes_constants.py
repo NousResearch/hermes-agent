@@ -10,6 +10,7 @@ import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     get_default_hermes_root,
+    get_optional_skills_dir,
     is_container,
     parse_reasoning_effort,
 )
@@ -171,3 +172,39 @@ class TestParseReasoningEffort:
         """
         documented = {"minimal", "low", "medium", "high", "xhigh"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
+
+
+class TestGetOptionalSkillsDir:
+    """Tests for get_optional_skills_dir() — env override + default fallback."""
+
+    def test_env_override_wins(self, tmp_path, monkeypatch):
+        """HERMES_OPTIONAL_SKILLS, when set, takes precedence over everything."""
+        override = tmp_path / "custom-optional"
+        monkeypatch.setenv("HERMES_OPTIONAL_SKILLS", str(override))
+        assert get_optional_skills_dir() == override
+        assert get_optional_skills_dir(default=tmp_path / "ignored") == override
+
+    def test_env_override_is_stripped(self, tmp_path, monkeypatch):
+        """Surrounding whitespace in the env var is trimmed before use."""
+        override = tmp_path / "whitespace-optional"
+        monkeypatch.setenv("HERMES_OPTIONAL_SKILLS", f"  {override}\t\n")
+        assert get_optional_skills_dir() == override
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\t", "\n"])
+    def test_blank_env_falls_through(self, tmp_path, monkeypatch, blank):
+        """Empty / whitespace-only env var is treated as unset."""
+        monkeypatch.setenv("HERMES_OPTIONAL_SKILLS", blank)
+        default = tmp_path / "from-default"
+        assert get_optional_skills_dir(default=default) == default
+
+    def test_default_used_when_env_unset(self, tmp_path, monkeypatch):
+        """When env is unset and default provided, default wins."""
+        monkeypatch.delenv("HERMES_OPTIONAL_SKILLS", raising=False)
+        default = tmp_path / "packaged-optional"
+        assert get_optional_skills_dir(default=default) == default
+
+    def test_falls_back_to_hermes_home(self, tmp_path, monkeypatch):
+        """No env, no default → HERMES_HOME / 'optional-skills'."""
+        monkeypatch.delenv("HERMES_OPTIONAL_SKILLS", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert get_optional_skills_dir() == tmp_path / "optional-skills"

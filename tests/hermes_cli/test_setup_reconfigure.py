@@ -12,7 +12,7 @@ On a fresh install, all three are no-ops — fall through to first-time setup.
 
 from argparse import Namespace
 from contextlib import ExitStack
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -24,6 +24,8 @@ def _make_setup_args(**overrides):
         reset=overrides.get("reset", False),
         reconfigure=overrides.get("reconfigure", False),
         quick=overrides.get("quick", False),
+        install_option=overrides.get("install_option", None),
+        setup_minimal=overrides.get("setup_minimal", False),
     )
 
 
@@ -230,6 +232,106 @@ class TestFreshInstall:
 
         m["prompt"].assert_called_once()
         m["first"].assert_called_once()
+
+
+class TestInstallOptionToolSetup:
+    """Install options should set defaults without hiding tool configuration."""
+
+    def test_minimal_install_option_offers_optional_tool_configuration(self, fresh_install):
+        args = _make_setup_args(install_option="minimal")
+        config = {}
+
+        with ExitStack() as stack:
+            mocks = {}
+            for name, target, kwargs in [
+                ("ensure_home", "hermes_cli.setup.ensure_hermes_home", {}),
+                ("interactive", "hermes_cli.setup.is_interactive_stdin", {"return_value": True}),
+                ("managed", "hermes_cli.config.is_managed", {"return_value": False}),
+                ("load", "hermes_cli.setup.load_config", {"return_value": config}),
+                ("save", "hermes_cli.setup.save_config", {}),
+                ("home", "hermes_cli.setup.get_hermes_home", {"return_value": fresh_install}),
+                ("config_path", "hermes_cli.setup.get_config_path", {"return_value": fresh_install / "config.yaml"}),
+                ("model", "hermes_cli.setup.setup_model_provider", {}),
+                ("tools", "hermes_cli.setup.setup_tools", {}),
+                ("yes_no", "hermes_cli.setup.prompt_yes_no", {"return_value": True}),
+                ("summary", "hermes_cli.setup._print_setup_summary", {}),
+                ("launch", "hermes_cli.setup._offer_launch_chat", {}),
+            ]:
+                mocks[name] = stack.enter_context(patch(target, **kwargs))
+
+            from hermes_cli import setup as setup_mod
+            setup_mod.run_setup_wizard(args)
+
+            mocks["model"].assert_called_once_with(config, quick=True)
+            mocks["tools"].assert_called_once_with(config, first_install=True)
+            assert config["install_option"] == "minimal"
+            assert config["platform_toolsets"]["cli"] == ["hermes-minimal"]
+            assert any(
+                "Configure CLI tools now" in call.args[0]
+                for call in mocks["yes_no"].call_args_list
+            )
+
+    def test_tools_section_is_not_swallowed_by_minimal_install_option(self, fresh_install):
+        args = _make_setup_args(section="tools", install_option="minimal")
+        config = {}
+
+        from hermes_cli import setup as setup_mod
+        tools_mock = MagicMock(name="setup_tools")
+
+        with ExitStack() as stack:
+            mocks = {}
+            for name, target, kwargs in [
+                ("ensure_home", "hermes_cli.setup.ensure_hermes_home", {}),
+                ("interactive", "hermes_cli.setup.is_interactive_stdin", {"return_value": True}),
+                ("managed", "hermes_cli.config.is_managed", {"return_value": False}),
+                ("load", "hermes_cli.setup.load_config", {"return_value": config}),
+                ("save", "hermes_cli.setup.save_config", {}),
+                ("home", "hermes_cli.setup.get_hermes_home", {"return_value": fresh_install}),
+                ("config_path", "hermes_cli.setup.get_config_path", {"return_value": fresh_install / "config.yaml"}),
+                ("model", "hermes_cli.setup.setup_model_provider", {}),
+                ("summary", "hermes_cli.setup._print_setup_summary", {}),
+                ("launch", "hermes_cli.setup._offer_launch_chat", {}),
+                ("sections", "hermes_cli.setup.SETUP_SECTIONS", {"new": [("tools", "Tools", tools_mock)]}),
+            ]:
+                mocks[name] = stack.enter_context(patch(target, **kwargs))
+
+            setup_mod.run_setup_wizard(args)
+
+            mocks["model"].assert_not_called()
+            tools_mock.assert_called_once_with(config)
+            assert config["install_option"] == "minimal"
+            assert config["platform_toolsets"]["cli"] == ["hermes-minimal"]
+
+    def test_standard_quick_setup_offers_tool_configuration(self, fresh_install):
+        config = {"install_option": "standard"}
+
+        with ExitStack() as stack:
+            mocks = {}
+            for name, target, kwargs in [
+                ("model", "hermes_cli.setup.setup_model_provider", {}),
+                ("terminal", "hermes_cli.setup.setup_terminal_backend", {}),
+                ("agent_defaults", "hermes_cli.setup._apply_default_agent_settings", {}),
+                ("save", "hermes_cli.setup.save_config", {}),
+                ("yes_no", "hermes_cli.setup.prompt_yes_no", {"return_value": True}),
+                ("tools", "hermes_cli.setup.setup_tools", {}),
+                ("choice", "hermes_cli.setup.prompt_choice", {"return_value": 1}),
+                ("gateway", "hermes_cli.setup.setup_gateway", {}),
+                ("summary", "hermes_cli.setup._print_setup_summary", {}),
+                ("launch", "hermes_cli.setup._offer_launch_chat", {}),
+            ]:
+                mocks[name] = stack.enter_context(patch(target, **kwargs))
+
+            from hermes_cli import setup as setup_mod
+            setup_mod._run_first_time_quick_setup(config, fresh_install, is_existing=False)
+
+            mocks["model"].assert_called_once_with(config, quick=True)
+            mocks["terminal"].assert_called_once_with(config)
+            mocks["tools"].assert_called_once_with(config, first_install=True)
+            mocks["gateway"].assert_not_called()
+            assert any(
+                "Configure CLI tools now" in call.args[0]
+                for call in mocks["yes_no"].call_args_list
+            )
 
 
 class TestArgparse:

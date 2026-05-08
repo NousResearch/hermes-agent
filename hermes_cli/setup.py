@@ -2595,6 +2595,53 @@ def setup_tools(config: dict, first_install: bool = False):
     tools_command(first_install=first_install, config=config)
 
 
+def _apply_install_option_defaults(config: dict, requested_option: str) -> None:
+    """Apply install-option-specific defaults without deciding setup flow.
+
+    Install options control dependency/default-toolset choices. They must not
+    hide explicit setup sections such as `hermes setup tools --install-option
+    minimal`; section routing stays separate below.
+    """
+    config["install_option"] = requested_option
+    if requested_option == "minimal":
+        config["toolsets"] = ["hermes-minimal"]
+        config.setdefault("platform_toolsets", {})["cli"] = ["hermes-minimal"]
+    elif requested_option == "standard":
+        standard_toolsets = [
+            "skills",
+            "file",
+            "terminal",
+            "todo",
+            "memory",
+            "session_search",
+            "clarify",
+        ]
+        config["toolsets"] = standard_toolsets
+        config.setdefault("platform_toolsets", {})["cli"] = list(standard_toolsets)
+    elif requested_option == "full":
+        config["toolsets"] = ["hermes-cli"]
+        config.setdefault("platform_toolsets", {})["cli"] = ["hermes-cli"]
+
+
+def _offer_tool_configuration(
+    config: dict,
+    *,
+    first_install: bool,
+    default: bool = False,
+) -> None:
+    """Offer tool configuration without changing install-option dependencies."""
+    print()
+    print_header("Tools")
+    print_info(
+        "Install options choose dependencies and safe defaults; tool choices remain configurable."
+    )
+    print_info("You can add missing feature dependencies later with 'hermes install-feature <name>'.")
+    if prompt_yes_no("Configure CLI tools now?", default):
+        setup_tools(config, first_install=first_install)
+    else:
+        print_info("Skipped. Configure later with: hermes setup tools")
+
+
 # =============================================================================
 # Post-Migration Section Skip Logic
 # =============================================================================
@@ -3067,26 +3114,7 @@ def run_setup_wizard(args):
         requested_option = "minimal"
 
     if requested_option:
-        config["install_option"] = requested_option
-        if requested_option == "minimal":
-            config["toolsets"] = ["hermes-minimal"]
-            config.setdefault("platform_toolsets", {})["cli"] = ["hermes-minimal"]
-            print()
-            print_header("Minimal Setup")
-            print_info("Configuring only the provider and model required for classic CLI chat.")
-            setup_model_provider(config, quick=True)
-            save_config(config)
-            _print_setup_summary(config, hermes_home)
-            _offer_launch_chat()
-            return
-        if requested_option == "standard":
-            config["toolsets"] = ["skills", "file", "terminal", "todo", "memory", "session_search", "clarify"]
-            config.setdefault("platform_toolsets", {})["cli"] = [
-                "skills", "file", "terminal", "todo", "memory", "session_search", "clarify"
-            ]
-        elif requested_option == "full":
-            config["toolsets"] = ["hermes-cli"]
-            config.setdefault("platform_toolsets", {})["cli"] = ["hermes-cli"]
+        _apply_install_option_defaults(config, requested_option)
 
     # Check if a specific section was requested
     section = getattr(args, "section", None)
@@ -3115,6 +3143,19 @@ def run_setup_wizard(args):
 
         print_error(f"Unknown setup section: {section}")
         print_info(f"Available sections: {', '.join(k for k, _, _ in SETUP_SECTIONS)}")
+        return
+
+    if requested_option == "minimal":
+        print()
+        print_header("Minimal Setup")
+        print_info("Configuring the provider and model required for classic CLI chat.")
+        print_info("A small safe toolset is enabled by default; tool configuration is optional.")
+        setup_model_provider(config, quick=True)
+        save_config(config)
+        _offer_tool_configuration(config, first_install=True, default=False)
+        save_config(config)
+        _print_setup_summary(config, hermes_home)
+        _offer_launch_chat()
         return
 
     # Check if this is an existing installation with a provider configured
@@ -3266,10 +3307,11 @@ def _offer_launch_chat():
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
-    """Streamlined first-time setup: provider, model, terminal & messaging.
+    """Streamlined first-time setup with optional tool configuration.
 
-    Applies sensible defaults for TTS (Edge), agent settings, and tools —
-    the user can customize later via ``hermes setup <section>``.
+    The quick path keeps the initial wizard short, but still asks whether to
+    configure CLI tools now. Install options select dependency sets and safe
+    defaults; they should not remove the tool configuration path.
     """
     # Step 1: Model & Provider (essential — skips rotation/vision/TTS)
     setup_model_provider(config, quick=True)
@@ -3282,7 +3324,11 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
 
     save_config(config)
 
-    # Step 4: Offer messaging gateway setup
+    # Step 4: Offer tool setup without requiring the full setup path.
+    _offer_tool_configuration(config, first_install=not is_existing, default=False)
+    save_config(config)
+
+    # Step 5: Offer messaging gateway setup
     print()
     gateway_choice = prompt_choice(
         "Connect a messaging platform? (Telegram, Discord, etc.)",

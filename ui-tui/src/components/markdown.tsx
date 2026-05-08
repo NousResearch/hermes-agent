@@ -216,11 +216,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     const k = parts.length
 
     if (i > last) {
-      parts.push(
-        <Text key={k} wrap="wrap-trim">
-          {text.slice(last, i)}
-        </Text>
-      )
+      parts.push(<Text key={k}>{text.slice(last, i)}</Text>)
     }
 
     if (m[1] && m[2]) {
@@ -303,11 +299,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       parts.push(renderAutolink(parts.length, t, url))
 
       if (url.length < m[16].length) {
-        parts.push(
-          <Text key={parts.length} wrap="wrap-trim">
-            {m[16].slice(url.length)}
-          </Text>
-        )
+        parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)
       }
     } else if (m[17] ?? m[18]) {
       // Inline math is run through `texToUnicode` (Greek letters, ℕℤℚℝ,
@@ -328,24 +320,10 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
   }
 
   if (last < text.length) {
-    parts.push(
-      <Text key={parts.length} wrap="wrap-trim">
-        {text.slice(last)}
-      </Text>
-    )
+    parts.push(<Text key={parts.length}>{text.slice(last)}</Text>)
   }
 
-  return (
-    <Text wrap="wrap-trim">
-      {parts.length ? (
-        parts
-      ) : (
-        <Text wrap="wrap-trim">
-          {text}
-        </Text>
-      )}
-    </Text>
-  )
+  return <Text wrap="wrap-trim">{parts.length ? parts : text}</Text>
 }
 
 // Cross-instance parsed-children cache: useMemo's per-instance cache dies

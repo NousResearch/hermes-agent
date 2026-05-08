@@ -558,6 +558,18 @@ def _resolve_api_key_provider_secret(
         if has_usable_secret(val):
             return val, env_var
 
+    try:
+        model_cfg = read_raw_config().get("model")
+        if isinstance(model_cfg, dict):
+            cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+            if cfg_provider == provider_id:
+                for key_name in ("api_key", "api"):
+                    val = model_cfg.get(key_name)
+                    if has_usable_secret(val):
+                        return str(val).strip(), f"config:model.{key_name}"
+    except Exception:
+        pass
+
     # Fallback: try credential pool (e.g. zai key stored via auth.json)
     try:
         from agent.credential_pool import load_pool

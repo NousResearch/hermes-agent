@@ -208,3 +208,25 @@ class TestAuthCredentialPoolFallback:
         assert key == "sk-dotenv-priority-xyz"
         assert source == "DEEPSEEK_API_KEY"
         mp.assert_not_called()
+
+    def test_config_api_key_takes_priority_over_pool(self, isolated_hermes_home):
+        """A matching config.yaml model.api_key beats stale pool entries."""
+        (isolated_hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  provider: deepseek\n"
+            "  api_key: sk-config-fresh-abc123\n"
+        )
+
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = True
+
+        from hermes_cli.auth import _resolve_api_key_provider_secret
+        with patch("agent.credential_pool.load_pool", return_value=mock_pool) as mp:
+            key, source = _resolve_api_key_provider_secret(
+                provider_id="deepseek",
+                pconfig=_make_pconfig(),
+            )
+
+        assert key == "sk-config-fresh-abc123"
+        assert source == "config:model.api_key"
+        mp.assert_not_called()

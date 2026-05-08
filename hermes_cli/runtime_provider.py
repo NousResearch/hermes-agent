@@ -129,6 +129,17 @@ def _get_model_config() -> Dict[str, Any]:
     return {}
 
 
+def _matching_config_api_key(model_cfg: Dict[str, Any], provider: str) -> str:
+    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+    if cfg_provider != provider:
+        return ""
+    for key_name in ("api_key", "api"):
+        value = model_cfg.get(key_name)
+        if has_usable_secret(value):
+            return str(value).strip()
+    return ""
+
+
 def _provider_supports_explicit_api_mode(provider: Optional[str], configured_provider: Optional[str] = None) -> bool:
     """Check whether a persisted api_mode should be honored for a given provider.
 
@@ -972,7 +983,8 @@ def resolve_runtime_provider(
     if explicit_runtime:
         return explicit_runtime
 
-    should_use_pool = provider != "openrouter"
+    config_api_key = _matching_config_api_key(model_cfg, provider)
+    should_use_pool = provider != "openrouter" and not config_api_key
     if provider == "openrouter":
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = str(model_cfg.get("base_url") or "").strip()
@@ -985,7 +997,7 @@ def resolve_runtime_provider(
         )
         if cfg_base_url and cfg_provider in {"auto", "custom"}:
             has_custom_endpoint = True
-        has_runtime_override = bool(explicit_api_key or explicit_base_url)
+        has_runtime_override = bool(explicit_api_key or explicit_base_url or config_api_key)
         should_use_pool = (
             requested_provider in {"openrouter", "auto"}
             and not has_custom_endpoint

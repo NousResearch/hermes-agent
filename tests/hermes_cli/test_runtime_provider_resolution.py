@@ -95,6 +95,39 @@ def test_resolve_runtime_provider_anthropic_explicit_override_skips_pool(monkeyp
     assert resolved.get("credential_pool") is None
 
 
+def test_resolve_runtime_provider_config_api_key_skips_pool(monkeypatch):
+    def _unexpected_pool(provider):
+        raise AssertionError(f"load_pool should not be called for {provider}")
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "zai")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "zai",
+            "api_key": "sk-config-fresh-abc123",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", _unexpected_pool)
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "sk-config-fresh-abc123",
+            "base_url": "https://api.z.ai/api/paas/v4",
+            "source": "config:model.api_key",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="zai")
+
+    assert resolved["provider"] == "zai"
+    assert resolved["api_key"] == "sk-config-fresh-abc123"
+    assert resolved["source"] == "config:model.api_key"
+    assert resolved.get("credential_pool") is None
+
+
 def test_resolve_runtime_provider_falls_back_when_pool_empty(monkeypatch):
     class _Pool:
         def has_credentials(self):

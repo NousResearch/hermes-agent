@@ -430,6 +430,7 @@ AUTHOR_MAP = {
     "johnsonblake1@gmail.com": "voteblake",
     "hcn518@gmail.com": "pedh",
     "haileymarshall005@gmail.com": "haileymarshall",
+    "bennet.yr.wang@gmail.com": "BennetYrWang",
     "greer.guthrie@gmail.com": "g-guthrie",
     "kennyx102@gmail.com": "bobashopcashier",
     "77253505+bobashopcashier@users.noreply.github.com": "bobashopcashier",

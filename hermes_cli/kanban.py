@@ -70,6 +70,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "completed_at": t.completed_at,
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
+        "max_retries": t.max_retries,
     }
 
 
@@ -284,6 +285,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "(repeatable). Appended to the built-in "
                                "kanban-worker skill. Example: "
                                "--skill translation --skill github-code-review")
+    p_create.add_argument("--max-retries", type=int, default=None,
+                          metavar="N",
+                          help="Per-task override for the consecutive-failure "
+                               "circuit breaker. Trip on the Nth failure — "
+                               "e.g. --max-retries 1 blocks on the first "
+                               "failure (no retries), --max-retries 3 allows "
+                               "two retries. Omit to use the dispatcher's "
+                               "kanban.failure_limit config "
+                               f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
@@ -443,8 +453,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Cap number of spawns this pass")
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
-                        help=f"Auto-block a task after this many consecutive spawn failures "
-                             f"(default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
+                        help=f"Auto-block a task after this many consecutive non-success attempts "
+                             f"(spawn_failed, timed_out, or crashed; default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
     p_disp.add_argument("--json", action="store_true")
 
     # --- daemon (deprecated) ---
@@ -560,6 +570,42 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_ctx.add_argument("task_id")
 
+    # --- specify --- (triage → todo via auxiliary LLM)
+    p_specify = sub.add_parser(
+        "specify",
+        help="Flesh out a triage-column task into a concrete spec "
+             "(title + body) and promote it to todo. Uses the auxiliary "
+             "LLM configured under auxiliary.triage_specifier.",
+    )
+    p_specify.add_argument(
+        "task_id",
+        nargs="?",
+        default=None,
+        help="Task id to specify (required unless --all is given)",
+    )
+    p_specify.add_argument(
+        "--all",
+        dest="all_triage",
+        action="store_true",
+        help="Specify every task currently in the triage column",
+    )
+    p_specify.add_argument(
+        "--tenant",
+        default=None,
+        help="When used with --all, restrict the sweep to this tenant",
+    )
+    p_specify.add_argument(
+        "--author",
+        default=None,
+        help="Author name recorded on the audit comment "
+             "(default: $HERMES_PROFILE or 'specifier')",
+    )
+    p_specify.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one JSON object per task on stdout",
+    )
+
     # --- gc ---
     p_gc = sub.add_parser(
         "gc", help="Garbage-collect archived-task workspaces, old events, and old logs",
@@ -674,6 +720,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "notify-list":        _cmd_notify_list,
         "notify-unsubscribe": _cmd_notify_unsubscribe,
         "context":  _cmd_context,
+        "specify":  _cmd_specify,
         "gc":       _cmd_gc,
     }
     handler = handlers.get(action)
@@ -982,6 +1029,14 @@ def _cmd_create(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"kanban: --max-runtime: {exc}", file=sys.stderr)
         return 2
+    max_retries = getattr(args, "max_retries", None)
+    if max_retries is not None and max_retries < 1:
+        print(
+            f"kanban: --max-retries must be >= 1 (got {max_retries}); "
+            "use 1 to trip on the first failure.",
+            file=sys.stderr,
+        )
+        return 2
     with kb.connect() as conn:
         task_id = kb.create_task(
             conn,
@@ -998,6 +1053,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
+            max_retries=max_retries,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1125,6 +1181,23 @@ def _cmd_show(args: argparse.Namespace) -> int:
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
+    # Effective retry threshold. Show the per-task override if set,
+    # otherwise the dispatcher's resolved value from config (or the
+    # default if config doesn't set it either). Helps operators see
+    # why a task auto-blocked earlier/later than they expected.
+    if task.max_retries is not None:
+        print(f"  max-retries: {task.max_retries} (task)")
+    else:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            cfg_val = (cfg.get("kanban", {}) or {}).get("failure_limit")
+        except Exception:
+            cfg_val = None
+        if cfg_val is not None and int(cfg_val) != kb.DEFAULT_FAILURE_LIMIT:
+            print(f"  max-retries: {int(cfg_val)} (config kanban.failure_limit)")
+        else:
+            print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
     print(f"  created:   {_fmt_ts(task.created_at)} by {task.created_by or '-'}")
 
     # Diagnostics section — surface active distress signals at the top
@@ -1657,6 +1730,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             "    kanban:\n"
             "      dispatch_in_gateway: true      # default\n"
             "      dispatch_interval_seconds: 60\n"
+            "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
             "\n"
             "Running both the gateway AND this standalone daemon will\n"
             "race for claims. If you truly need the old standalone\n"
@@ -1941,6 +2015,80 @@ def _cmd_context(args: argparse.Namespace) -> int:
         text = kb.build_worker_context(conn, args.task_id)
     print(text)
     return 0
+
+
+def _cmd_specify(args: argparse.Namespace) -> int:
+    """Flesh out a triage task (or all of them) via auxiliary LLM,
+    then promote to todo. Thin wrapper over ``kanban_specify``."""
+    from hermes_cli import kanban_specify as spec
+
+    all_flag = bool(getattr(args, "all_triage", False))
+    tenant = getattr(args, "tenant", None)
+    author = getattr(args, "author", None) or _profile_author()
+    want_json = bool(getattr(args, "json", False))
+
+    if args.task_id and all_flag:
+        print(
+            "kanban: pass either a task id OR --all, not both",
+            file=sys.stderr,
+        )
+        return 2
+
+    if all_flag:
+        ids = spec.list_triage_ids(tenant=tenant)
+        if not ids:
+            msg = (
+                "No triage tasks"
+                + (f" for tenant {tenant!r}" if tenant else "")
+                + "."
+            )
+            if want_json:
+                print(json.dumps({"specified": 0, "total": 0}))
+            else:
+                print(msg)
+            return 0
+    elif args.task_id:
+        ids = [args.task_id]
+    else:
+        print(
+            "kanban: specify requires a task id or --all",
+            file=sys.stderr,
+        )
+        return 2
+
+    ok_count = 0
+    fail_count = 0
+    for tid in ids:
+        outcome = spec.specify_task(tid, author=author)
+        if outcome.ok:
+            ok_count += 1
+        else:
+            fail_count += 1
+        if want_json:
+            print(json.dumps({
+                "task_id": outcome.task_id,
+                "ok": outcome.ok,
+                "reason": outcome.reason,
+                "new_title": outcome.new_title,
+            }))
+        else:
+            if outcome.ok:
+                title_suffix = (
+                    f" — retitled: {outcome.new_title!r}"
+                    if outcome.new_title
+                    else ""
+                )
+                print(f"Specified {outcome.task_id} → todo{title_suffix}")
+            else:
+                print(
+                    f"kanban: specify {outcome.task_id}: {outcome.reason}",
+                    file=sys.stderr,
+                )
+    if not all_flag:
+        return 0 if ok_count == 1 else 1
+    # --all: succeed if at least one promotion landed; exit 1 only when
+    # every candidate failed (honest signal for scripts).
+    return 0 if (ok_count > 0 or not ids) else 1
 
 
 def _cmd_gc(args: argparse.Namespace) -> int:

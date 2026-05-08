@@ -378,6 +378,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `tail <id>` | Follow a task's event stream. |
 | `dispatch` | One dispatcher pass on the active board. Flags: `--dry-run`, `--max N`, `--json`. |
 | `context <id>` | Print the full context a worker would see (title + body + parent results + comments). |
+| `specify <id>` / `specify --all` | Flesh out a triage-column task into a concrete spec (title + body with goal, approach, acceptance criteria) via the auxiliary LLM, then promote it to `todo`. Flags: `--tenant` (scope `--all` to one tenant), `--author`, `--json`. Configure the model under `auxiliary.triage_specifier` in `config.yaml`. |
 | `gc` | Remove scratch workspaces for archived tasks. |
 
 Examples:
@@ -802,8 +803,8 @@ The curator is an auxiliary-model background task that periodically reviews agen
 | Subcommand | Description |
 |------------|-------------|
 | `status` | Show curator status and skill stats |
-| `run` | Trigger a curator review now |
-| `run --sync` | Block until the LLM pass finishes |
+| `run` | Trigger a curator review now (blocks until the LLM pass finishes) |
+| `run --background` | Start the LLM pass in a background thread and return immediately |
 | `run --dry-run` | Preview only — produce the review report with no mutations |
 | `backup` | Take a manual tar.gz snapshot of `~/.hermes/skills/` (curator also snapshots automatically before every real run) |
 | `rollback` | Restore `~/.hermes/skills/` from a snapshot (defaults to newest) |

@@ -477,6 +477,34 @@ class VoiceReceiver:
                 pass
 
 
+def _read_dm_role_auth_guild() -> Optional[int]:
+    """Return the guild ID opted-in for DM role-based auth, or None.
+
+    Reads ``discord.dm_role_auth_guild`` from config.yaml. This is
+    deliberately a config.yaml-only setting (not an env var): per repo
+    policy, ``~/.hermes/.env`` is for secrets only, and this is a
+    behavioral setting. Guild IDs aren't secrets.
+
+    Accepts ints or numeric strings in the config. Anything else
+    (empty, malformed, None) returns None, which keeps the secure
+    default (DM role-auth disabled).
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config() or {}
+        discord_cfg = cfg.get("discord", {}) or {}
+        raw = discord_cfg.get("dm_role_auth_guild")
+    except Exception:
+        return None
+    if raw is None or raw == "":
+        return None
+    try:
+        guild_id = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return guild_id if guild_id > 0 else None
+
+
 class DiscordAdapter(BasePlatformAdapter):
     """
     Discord bot adapter.
@@ -701,7 +729,17 @@ class DiscordAdapter(BasePlatformAdapter):
                     # human-user allowlist below (bots aren't in it).
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
-                    if not self._is_allowed_user(str(message.author.id), message.author):
+                    # Pass guild + is_dm so role checks are scoped to the
+                    # originating guild (prevents cross-guild DM bypass, see
+                    # _is_allowed_user docstring).
+                    _msg_guild = getattr(message, "guild", None)
+                    _is_dm = isinstance(message.channel, discord.DMChannel) or _msg_guild is None
+                    if not self._is_allowed_user(
+                        str(message.author.id),
+                        message.author,
+                        guild=_msg_guild,
+                        is_dm=_is_dm,
+                    ):
                         return
                 
                 # Multi-agent filtering: if the message mentions specific bots
@@ -2063,8 +2101,16 @@ class DiscordAdapter(BasePlatformAdapter):
                         pass
 
                 completed = receiver.check_silence()
+                # Voice inputs always originate from a specific guild
+                # (guild_id is in scope). Pass it so role checks are
+                # guild-scoped and not cross-guild.
+                _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None
                 for user_id, pcm_data in completed:
-                    if not self._is_allowed_user(str(user_id)):
+                    if not self._is_allowed_user(
+                        str(user_id),
+                        guild=_vc_guild,
+                        is_dm=False,
+                    ):
                         continue
                     await self._process_voice_input(guild_id, user_id, pcm_data)
         except asyncio.CancelledError:
@@ -2107,13 +2153,32 @@ class DiscordAdapter(BasePlatformAdapter):
             except OSError:
                 pass
 
-    def _is_allowed_user(self, user_id: str, author=None) -> bool:
+    def _is_allowed_user(
+        self,
+        user_id: str,
+        author=None,
+        *,
+        guild=None,
+        is_dm: bool = False,
+    ) -> bool:
         """Check if user is allowed via DISCORD_ALLOWED_USERS or DISCORD_ALLOWED_ROLES.
 
         Uses OR semantics: if the user matches EITHER allowlist, they're allowed.
         If both allowlists are empty, everyone is allowed (backwards compatible).
-        When author is a Member, checks .roles directly; otherwise falls back
-        to scanning the bot's mutual guilds for a Member record.
+
+        Role checks are **scoped to the guild the message originated from**.
+        For DMs (no guild context), role-based auth is disabled by default and
+        only user-ID allowlist applies. Set ``discord.dm_role_auth_guild``
+        in config.yaml to a specific guild ID to opt-in: role membership in
+        that one guild will authorize DMs. This prevents cross-guild
+        privilege escalation where a user with the configured role in any
+        shared public server could DM the bot and pass the allowlist.
+
+        Args:
+            user_id: Author ID as a string.
+            author: Optional Member/User object for in-guild role lookup.
+            guild: The guild the message arrived in (None for DMs).
+            is_dm: True if the message came from a DM channel.
         """
         # ``getattr`` fallbacks here guard against test fixtures that build
         # an adapter via ``object.__new__(DiscordAdapter)`` and skip __init__
@@ -2124,31 +2189,54 @@ class DiscordAdapter(BasePlatformAdapter):
         has_roles = bool(allowed_roles)
         if not has_users and not has_roles:
             return True
-        # Check user ID allowlist
+        # Check user ID allowlist (works for both DMs and guild messages)
         if has_users and user_id in allowed_users:
             return True
-        # Check role allowlist
-        if has_roles:
-            # Try direct role check from Member object
-            direct_roles = getattr(author, "roles", None) if author is not None else None
-            if direct_roles:
-                if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
-                    return True
-            # Fallback: scan mutual guilds for member's roles
-            if self._client is not None:
-                try:
-                    uid_int = int(user_id)
-                except (TypeError, ValueError):
-                    uid_int = None
-                if uid_int is not None:
-                    for guild in self._client.guilds:
-                        m = guild.get_member(uid_int)
-                        if m is None:
-                            continue
-                        m_roles = getattr(m, "roles", None) or []
-                        if any(getattr(r, "id", None) in allowed_roles for r in m_roles):
-                            return True
-        return False
+        # Role allowlist is only consulted when configured.
+        if not has_roles:
+            return False
+
+        # DM path: roles require explicit opt-in via
+        # ``discord.dm_role_auth_guild`` in config.yaml. Without this, a
+        # user with the configured role in ANY mutual guild could DM the
+        # bot and bypass the allowlist (cross-guild leakage).
+        if is_dm or guild is None:
+            dm_guild_id = _read_dm_role_auth_guild()
+            if dm_guild_id is None:
+                return False
+            if self._client is None:
+                return False
+            dm_guild = self._client.get_guild(dm_guild_id)
+            if dm_guild is None:
+                return False
+            try:
+                uid_int = int(user_id)
+            except (TypeError, ValueError):
+                return False
+            m = dm_guild.get_member(uid_int)
+            if m is None:
+                return False
+            m_roles = getattr(m, "roles", None) or []
+            return any(getattr(r, "id", None) in allowed_roles for r in m_roles)
+
+        # Guild path: role check is scoped to THIS guild only.
+        # 1) Prefer the direct Member object passed in (correct guild by construction).
+        direct_roles = getattr(author, "roles", None) if author is not None else None
+        author_guild = getattr(author, "guild", None)
+        if direct_roles and (author_guild is None or author_guild.id == guild.id):
+            if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
+                return True
+        # 2) Fallback: resolve the Member in the message's guild only — NEVER
+        #    scan other mutual guilds (that is the cross-guild bypass bug).
+        try:
+            uid_int = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        m = guild.get_member(uid_int)
+        if m is None:
+            return False
+        m_roles = getattr(m, "roles", None) or []
+        return any(getattr(r, "id", None) in allowed_roles for r in m_roles)
 
     # ── Slash command authorization ─────────────────────────────────────
     # Slash commands (``_run_simple_slash`` and ``_handle_thread_create_slash``)
@@ -2245,7 +2333,16 @@ class DiscordAdapter(BasePlatformAdapter):
             return (True, None)
 
         user_id = str(user.id)
-        if not self._is_allowed_user(user_id, author=user):
+        # Pass guild + is_dm so role check is scoped to the originating
+        # guild and cross-guild DM bypass (#12136) can't land via the
+        # slash surface either.
+        interaction_guild = getattr(interaction, "guild", None)
+        if not self._is_allowed_user(
+            user_id,
+            author=user,
+            guild=interaction_guild,
+            is_dm=in_dm,
+        ):
             return (
                 False,
                 "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES",

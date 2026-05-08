@@ -360,6 +360,48 @@ class TestExtractMedia:
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
+    def test_media_tag_with_bare_extension_is_dropped(self):
+        """Regression: ``MEDIA:.ogg`` must not be passed to the platform
+        sender — the regex's permissive ``\\S+`` fallback used to capture
+        such tokens, producing ``File not found: .ogg`` errors.  See
+        #21527."""
+        content = "MEDIA:.ogg"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == []
+
+    def test_media_tag_with_relative_path_is_dropped(self):
+        """A relative path is not safe to feed to ``send_voice`` /
+        ``send_image_file`` — those resolve against the gateway CWD,
+        which is not what an LLM-emitted relative path implies.  See
+        #21527."""
+        content = "MEDIA:relative/audio.ogg"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == []
+
+    def test_media_tag_with_regex_fragment_is_dropped(self):
+        """Regression for #21527: when the regex pattern itself appeared
+        in the content (e.g. echoed back through error logs), the
+        ``\\S+`` fallback would happily capture the pattern fragment as
+        a "path".  These must be dropped, not sent."""
+        content = "MEDIA:.(?:png|jpe?g|gif)"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == []
+
+    def test_media_tag_mix_of_valid_and_invalid_keeps_valid(self):
+        """A response with a malformed MEDIA tag alongside a good one
+        should still deliver the good one."""
+        content = "MEDIA:.ogg\nMEDIA:/tmp/good.ogg"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/good.ogg", False)]
+
+    def test_media_tag_windows_drive_path_is_kept(self):
+        """Windows-style drive paths look absolute and must be accepted
+        even though gateway typically runs on Linux."""
+        content = "MEDIA:'C:\\\\Users\\\\me\\\\out.png'"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0].startswith("C:")
+
 
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio

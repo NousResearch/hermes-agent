@@ -63,6 +63,22 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     return True
 
 
+def _looks_like_absolute_path(path: str) -> bool:
+    """Return True if *path* looks like an absolute filesystem path.
+
+    Accepts POSIX-absolute paths (``/foo``) and Windows drive paths
+    (``C:\\foo`` or ``C:/foo``).  Tilde paths must already be expanded
+    via ``os.path.expanduser`` before this check.
+    """
+    if not path:
+        return False
+    if path[0] == '/':
+        return True
+    if len(path) >= 3 and path[0].isalpha() and path[1] == ':' and path[2] in '\\/':
+        return True
+    return False
+
+
 def utf16_len(s: str) -> int:
     """Count UTF-16 code units in *s*.
 
@@ -1928,12 +1944,28 @@ class BasePlatformAdapter(ABC):
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
-            path = match.group("path").strip()
+            raw = match.group("path").strip()
+            path = raw
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-            if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+            if not path:
+                continue
+            expanded = os.path.expanduser(path)
+            # The regex's trailing ``\S+`` alternative is a permissive
+            # fallback that can capture arbitrary non-whitespace tokens
+            # (e.g. ``.ogg``, regex fragments echoed in tool output, or
+            # debug placeholders).  Hand only absolute-looking paths to
+            # the platform sender — anything else gets logged and
+            # dropped so we don't pass bogus strings to ``send_voice`` /
+            # ``send_image_file``.  See #21527.
+            if not _looks_like_absolute_path(expanded):
+                logger.warning(
+                    "[extract_media] Discarding non-path MEDIA value: %r",
+                    raw,
+                )
+                continue
+            media.append((expanded, has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:

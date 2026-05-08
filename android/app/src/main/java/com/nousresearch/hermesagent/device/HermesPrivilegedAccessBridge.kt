@@ -68,6 +68,12 @@ private val DEFAULT_PRIVILEGED_ACTIONS = listOf(
     "set_airplane_mode_enabled",
     "enable_airplane_mode",
     "disable_airplane_mode",
+    "set_wifi_tethering_enabled",
+    "enable_wifi_tethering",
+    "disable_wifi_tethering",
+    "set_custom_setting",
+    "get_custom_setting",
+    "delete_custom_setting",
 )
 
 object HermesPrivilegedAccessBridge {
@@ -177,6 +183,12 @@ object HermesPrivilegedAccessBridge {
         } else {
             null
         }
+        val customSetting = if (normalizedAction in CUSTOM_SETTING_ACTIONS) {
+            customSettingArguments(normalizedAction, arguments)
+                ?: return structuredError(normalizedAction, "requires valid setting_namespace, setting_name, and setting_value for set actions")
+        } else {
+            null
+        }
 
         val command = when (normalizedAction) {
             "grant_runtime_permission" -> "pm grant $packageName $permission"
@@ -202,6 +214,12 @@ object HermesPrivilegedAccessBridge {
             "set_airplane_mode_enabled" -> airplaneModeCommand(enabledArgument(arguments))
             "enable_airplane_mode" -> airplaneModeCommand(true)
             "disable_airplane_mode" -> airplaneModeCommand(false)
+            "set_wifi_tethering_enabled" -> wifiTetheringCommand(enabledArgument(arguments))
+            "enable_wifi_tethering" -> wifiTetheringCommand(true)
+            "disable_wifi_tethering" -> wifiTetheringCommand(false)
+            "set_custom_setting" -> customSettingCommand("put", customSetting!!)
+            "get_custom_setting" -> customSettingCommand("get", customSetting!!)
+            "delete_custom_setting" -> customSettingCommand("delete", customSetting!!)
             else -> return structuredError(normalizedAction, "unsupported action after normalization", packageName = packageName)
         }
         val shellResult = JSONObject(runShellCommandJson(appContext, command, arguments.optInt("timeout_seconds", DEFAULT_SHELL_TIMEOUT_SECONDS)))
@@ -209,6 +227,9 @@ object HermesPrivilegedAccessBridge {
             .put("action", normalizedAction)
             .put("package_name", packageName)
             .put("permission", permission ?: JSONObject.NULL)
+            .put("setting_namespace", customSetting?.namespace ?: JSONObject.NULL)
+            .put("setting_name", customSetting?.name ?: JSONObject.NULL)
+            .put("setting_value", customSetting?.value ?: JSONObject.NULL)
             .put("adb_shell_command", command)
             .toString()
     }
@@ -440,6 +461,54 @@ object HermesPrivilegedAccessBridge {
         }
     }
 
+    private fun wifiTetheringCommand(enabled: Boolean): String {
+        return if (enabled) {
+            "cmd connectivity tether start wifi"
+        } else {
+            "cmd connectivity tether stop wifi"
+        }
+    }
+
+    private fun customSettingCommand(operation: String, setting: CustomSettingArguments): String {
+        return when (operation) {
+            "put" -> "settings put ${setting.namespace} ${shellQuote(setting.name)} ${shellQuote(setting.value.orEmpty())}"
+            "get" -> "settings get ${setting.namespace} ${shellQuote(setting.name)}"
+            else -> "settings delete ${setting.namespace} ${shellQuote(setting.name)}"
+        }
+    }
+
+    private fun customSettingArguments(action: String, arguments: JSONObject): CustomSettingArguments? {
+        val namespace = stringArgument(
+            arguments,
+            "setting_namespace",
+            "settings_namespace",
+            "namespace",
+            "setting_table",
+            "table",
+        )?.trim()?.lowercase() ?: return null
+        if (namespace !in CUSTOM_SETTING_NAMESPACES) {
+            return null
+        }
+        val name = stringArgument(arguments, "setting_name", "setting_key", "name", "key")
+            ?.trim()
+            ?: return null
+        if (!ANDROID_SETTING_NAME_REGEX.matches(name)) {
+            return null
+        }
+        val value = if (action == "set_custom_setting") {
+            stringArgument(arguments, "setting_value", "value", "settingValue")
+                ?.also { if (it.indexOf('\u0000') >= 0) return null }
+                ?: return null
+        } else {
+            null
+        }
+        return CustomSettingArguments(namespace = namespace, name = name, value = value)
+    }
+
+    private fun shellQuote(value: String): String {
+        return "'" + value.replace("'", "'\"'\"'") + "'"
+    }
+
     fun normalizeStructuredAction(action: String): String? {
         val normalized = action.trim().lowercase().replace("-", "_").replace(" ", "_")
         return STRUCTURED_ACTION_SYNONYMS[normalized] ?: normalized.takeIf { it in STRUCTURED_PRIVILEGED_ACTIONS }
@@ -482,6 +551,12 @@ object HermesPrivilegedAccessBridge {
         "set_airplane_mode_enabled",
         "enable_airplane_mode",
         "disable_airplane_mode",
+        "set_wifi_tethering_enabled",
+        "enable_wifi_tethering",
+        "disable_wifi_tethering",
+        "set_custom_setting",
+        "get_custom_setting",
+        "delete_custom_setting",
     )
     private val STRUCTURED_ACTION_SYNONYMS = mapOf(
         "grant_permission" to "grant_runtime_permission",
@@ -514,6 +589,24 @@ object HermesPrivilegedAccessBridge {
         "airplane_mode_enabled" to "set_airplane_mode_enabled",
         "airplane_mode_on" to "enable_airplane_mode",
         "airplane_mode_off" to "disable_airplane_mode",
+        "set_wifi_tethering" to "set_wifi_tethering_enabled",
+        "wifi_tethering_enabled" to "set_wifi_tethering_enabled",
+        "wifi_tethering_on" to "enable_wifi_tethering",
+        "wifi_tethering_off" to "disable_wifi_tethering",
+        "wifi_hotspot_on" to "enable_wifi_tethering",
+        "wifi_hotspot_off" to "disable_wifi_tethering",
+        "hotspot_on" to "enable_wifi_tethering",
+        "hotspot_off" to "disable_wifi_tethering",
+        "custom_setting" to "set_custom_setting",
+        "tasker_custom_setting" to "set_custom_setting",
+        "put_custom_setting" to "set_custom_setting",
+        "settings_put" to "set_custom_setting",
+        "get_setting" to "get_custom_setting",
+        "read_custom_setting" to "get_custom_setting",
+        "settings_get" to "get_custom_setting",
+        "delete_setting" to "delete_custom_setting",
+        "remove_custom_setting" to "delete_custom_setting",
+        "settings_delete" to "delete_custom_setting",
     )
     private val PACKAGE_ACTIONS = setOf(
         "grant_runtime_permission",
@@ -526,7 +619,16 @@ object HermesPrivilegedAccessBridge {
     )
     private val PERMISSION_ACTIONS = setOf("grant_runtime_permission", "revoke_runtime_permission")
     private val SELF_PROTECTING_ACTIONS = setOf("force_stop_app", "clear_app_data", "disable_app", "set_app_enabled")
+    private val CUSTOM_SETTING_ACTIONS = setOf("set_custom_setting", "get_custom_setting", "delete_custom_setting")
+    private val CUSTOM_SETTING_NAMESPACES = setOf("system", "secure", "global")
     private val ANDROID_PACKAGE_OR_PERMISSION_REGEX = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)*")
+    private val ANDROID_SETTING_NAME_REGEX = Regex("[A-Za-z0-9._:-]{1,160}")
+
+    private data class CustomSettingArguments(
+        val namespace: String,
+        val name: String,
+        val value: String?,
+    )
 }
 
 private const val DEFAULT_SHELL_TIMEOUT_SECONDS = 30

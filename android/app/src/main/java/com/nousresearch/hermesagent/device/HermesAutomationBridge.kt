@@ -491,6 +491,40 @@ object HermesAutomationBridge {
                 }
             }
         }
+        if (shizukuAction in SHIZUKU_CUSTOM_SETTING_ACTIONS) {
+            val namespace = stringArgument(
+                arguments,
+                "setting_namespace",
+                "settings_namespace",
+                "namespace",
+                "setting_table",
+                "table",
+            )?.trim() ?: return errorJson("create_shizuku_action_task $shizukuAction requires a setting_namespace argument")
+            if (namespace.indexOf('\u0000') >= 0) {
+                return errorJson("create_shizuku_action_task setting_namespace must not contain NUL bytes")
+            }
+            val settingName = stringArgument(arguments, "setting_name", "setting_key", "name", "key")
+                ?.trim()
+                ?: return errorJson("create_shizuku_action_task $shizukuAction requires a setting_name argument")
+            if (settingName.indexOf('\u0000') >= 0) {
+                return errorJson("create_shizuku_action_task setting_name must not contain NUL bytes")
+            }
+            payload.put("setting_namespace", namespace)
+            payload.put("setting_name", settingName)
+            if (shizukuAction == "set_custom_setting") {
+                val settingValue = stringArgument(
+                    arguments,
+                    "setting_value",
+                    "value",
+                    "settingValue",
+                    allowEmpty = true,
+                ) ?: return errorJson("create_shizuku_action_task set_custom_setting requires a setting_value argument")
+                if (settingValue.indexOf('\u0000') >= 0) {
+                    return errorJson("create_shizuku_action_task setting_value must not contain NUL bytes")
+                }
+                payload.put("setting_value", settingValue)
+            }
+        }
         optionalPositiveInt(arguments, "timeout_seconds")?.let { timeout ->
             payload.put("timeout_seconds", timeout)
         }
@@ -1473,6 +1507,13 @@ object HermesAutomationBridge {
         }
         if (payload.has("state") && !payload.isNull("state")) {
             actionArguments.put("state", expandVariables(payload.optString("state"), variables))
+        }
+        if (shizukuAction in SHIZUKU_CUSTOM_SETTING_ACTIONS) {
+            actionArguments.put("setting_namespace", expandVariables(payload.optString("setting_namespace"), variables))
+            actionArguments.put("setting_name", expandVariables(payload.optString("setting_name"), variables))
+            if (payload.has("setting_value") && !payload.isNull("setting_value")) {
+                actionArguments.put("setting_value", expandVariables(payload.optString("setting_value"), variables))
+            }
         }
         if (payload.has("timeout_seconds") && !payload.isNull("timeout_seconds")) {
             actionArguments.put("timeout_seconds", payload.optInt("timeout_seconds", AUTOMATION_TIMEOUT_SECONDS))
@@ -4109,6 +4150,12 @@ object HermesAutomationBridge {
         "set_airplane_mode_enabled",
         "enable_airplane_mode",
         "disable_airplane_mode",
+        "set_wifi_tethering_enabled",
+        "enable_wifi_tethering",
+        "disable_wifi_tethering",
+        "set_custom_setting",
+        "get_custom_setting",
+        "delete_custom_setting",
     )
     private val SHIZUKU_PACKAGE_ACTIONS = setOf(
         "grant_runtime_permission",
@@ -4126,7 +4173,9 @@ object HermesAutomationBridge {
         "set_bluetooth_enabled",
         "set_mobile_data_enabled",
         "set_airplane_mode_enabled",
+        "set_wifi_tethering_enabled",
     )
+    private val SHIZUKU_CUSTOM_SETTING_ACTIONS = setOf("set_custom_setting", "get_custom_setting", "delete_custom_setting")
     private val UI_GLOBAL_ACTIONS = setOf("back", "home", "recents", "notifications", "quick_settings")
     private val UI_SELECTOR_ACTIONS = setOf("click", "long_click", "focus", "set_text", "scroll_forward", "scroll_backward")
     private val UI_AUTOMATION_ACTIONS = UI_GLOBAL_ACTIONS + UI_SELECTOR_ACTIONS

@@ -211,6 +211,62 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesShizukuCustomSettingAndTetheringRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        HermesAutomationStore(context).clear()
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shizuku_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-custom-setting")
+                    .put("label", "Tasker custom setting smoke")
+                    .put("shizuku_action", "settings_put")
+                    .put("setting_namespace", "global")
+                    .put("setting_name", "animator_duration_scale")
+                    .put("setting_value", "%SCALE")
+                    .put("automation_enabled", false),
+            ),
+        )
+
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        assertEquals(ACTION_TYPE_SHIZUKU_ACTION, automation.getString("action_type"))
+        assertTrue(automation.getBoolean("use_shizuku"))
+        val payload = org.json.JSONObject(automation.getString("command"))
+        assertEquals("set_custom_setting", payload.getString("shizuku_action"))
+        assertEquals("global", payload.getString("setting_namespace"))
+        assertEquals("animator_duration_scale", payload.getString("setting_name"))
+        assertEquals("%SCALE", payload.getString("setting_value"))
+
+        val directSetting = org.json.JSONObject(
+            HermesPrivilegedAccessBridge.performStructuredActionJson(
+                context,
+                "settings_put",
+                org.json.JSONObject()
+                    .put("setting_namespace", "global")
+                    .put("setting_name", "animator_duration_scale")
+                    .put("setting_value", "0.5"),
+            ),
+        )
+        assertFalse(directSetting.toString(), directSetting.getBoolean("success"))
+        assertEquals("set_custom_setting", directSetting.getString("action"))
+        assertEquals("settings put global 'animator_duration_scale' '0.5'", directSetting.getString("adb_shell_command"))
+
+        val directTethering = org.json.JSONObject(
+            HermesPrivilegedAccessBridge.performStructuredActionJson(
+                context,
+                "hotspot_on",
+                org.json.JSONObject(),
+            ),
+        )
+        assertFalse(directTethering.toString(), directTethering.getBoolean("success"))
+        assertEquals("enable_wifi_tethering", directTethering.getString("action"))
+        assertEquals("cmd connectivity tether start wifi", directTethering.getString("adb_shell_command"))
+    }
+
+    @Test
     fun bridgeCreatesAndRunsToastRecords() {
         val context = RuntimeEnvironment.getApplication()
         val store = HermesAutomationStore(context)

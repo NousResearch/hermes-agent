@@ -313,11 +313,11 @@ class NativeToolCallingChatClient(
                     "When the user asks to run a command, inspect the filesystem, read a file, or use a device command, call terminal_tool instead of simulating the result. " +
                     "terminal_tool runs through /system/bin/sh in the Hermes app workspace. " +
                     "file_write_tool writes UTF-8 text files in the Hermes app workspace; file_write_tool can only write inside the Hermes app workspace. " +
-                    "When the user asks about Android settings, phone connectivity, permissions, background runtime, app enable/disable, app data clearing, app force-stop, or safe system panels, call android_system_tool. " +
+                    "When the user asks about Android settings, phone connectivity, Wi-Fi hotspot/tethering, permissions, background runtime, app enable/disable, app data clearing, app force-stop, or safe system panels, call android_system_tool. " +
                     "android_system_tool status includes Shizuku/Sui privileged-access state, and it can open Shizuku, wireless debugging, and developer settings setup flows. " +
                     "If Shizuku/Sui is running and the user granted Hermes permission, android_system_tool can run explicit ADB/root-identity shell commands with action run_privileged_shell and a command argument. " +
-                    "For Tasker-style Shizuku actions, android_system_tool can run grant_runtime_permission, revoke_runtime_permission, force_stop_app, clear_app_data, enable_app, disable_app, set_app_enabled, Wi-Fi/Bluetooth/mobile-data toggles, and airplane-mode toggles with explicit package_name, permission, or enabled arguments where needed. " +
-                    "When the user asks to create a recurring phone automation, reusable Android task, Tasker-like variable, time/day trigger, phone-state trigger, app-foreground trigger, notification trigger, calendar event trigger, location trigger, sensor trigger, logcat entry trigger, Shizuku availability trigger, sunrise/sunset calculation, saved notification action, saved variable set/clear action, saved clipboard action, saved Tasker Flash/toast action, saved vibration action, saved file action, safe saved Android settings action, saved visible-UI action, saved Android intent, broadcast, URI, activity launch, saved app-launch action, Quick Settings tile automation, home-screen widget automation, or backup/restore Hermes automations, call android_automation_tool. It can save shell, file-write, file-delete, variable set/clear, clipboard set, Tasker Flash/toast messages, vibration, safe Android system-action, accessibility UI-action, app-launch, Android intent, Shizuku package-permission/data-clear/connectivity-toggle, offline sunrise/sunset, and notification post/cancel tasks, configure a user-added Hermes Quick Settings tile or home-screen widget to run a saved automation, calculate sun times directly, export/import Hermes automation bundles, run tasks manually, enable/disable/delete them, schedule interval and time-of-day tasks with Android alarms, run boot/power/battery/time/app-foreground/notification-posted/calendar-event/location/sensor/logcat-entry/Shizuku-state triggers, and expand saved variables in commands, file content, clipboard text, toast messages, UI selectors, intent fields, package names, trigger packages, Shizuku state fields, sunrise/sunset location/date/timezone fields, notification action fields, variable action fields, and notification, calendar, location, sensor, logcat, or time event fields. " +
+                    "For Tasker-style Shizuku actions, android_system_tool can run grant_runtime_permission, revoke_runtime_permission, force_stop_app, clear_app_data, enable_app, disable_app, set_app_enabled, Wi-Fi/Bluetooth/mobile-data toggles, airplane-mode toggles, Wi-Fi tethering toggles, and custom Android settings get/set/delete with explicit package_name, permission, enabled, or setting arguments where needed. " +
+                    "When the user asks to create a recurring phone automation, reusable Android task, Tasker-like variable, time/day trigger, phone-state trigger, app-foreground trigger, notification trigger, calendar event trigger, location trigger, sensor trigger, logcat entry trigger, Shizuku availability trigger, sunrise/sunset calculation, saved notification action, saved variable set/clear action, saved clipboard action, saved Tasker Flash/toast action, saved vibration action, saved file action, safe saved Android settings action, saved visible-UI action, saved Android intent, broadcast, URI, activity launch, saved app-launch action, Quick Settings tile automation, home-screen widget automation, or backup/restore Hermes automations, call android_automation_tool. It can save shell, file-write, file-delete, variable set/clear, clipboard set, Tasker Flash/toast messages, vibration, safe Android system-action, accessibility UI-action, app-launch, Android intent, Shizuku package-permission/data-clear/connectivity/custom-setting/tethering, offline sunrise/sunset, and notification post/cancel tasks, configure a user-added Hermes Quick Settings tile or home-screen widget to run a saved automation, calculate sun times directly, export/import Hermes automation bundles, run tasks manually, enable/disable/delete them, schedule interval and time-of-day tasks with Android alarms, run boot/power/battery/time/app-foreground/notification-posted/calendar-event/location/sensor/logcat-entry/Shizuku-state triggers, and expand saved variables in commands, file content, clipboard text, toast messages, UI selectors, intent fields, package names, trigger packages, Shizuku state fields, sunrise/sunset location/date/timezone fields, notification action fields, variable action fields, and notification, calendar, location, sensor, logcat, or time event fields. " +
                     "When the user asks to inspect the visible phone screen, click, type, scroll, or use Back/Home/Recents/Quick Settings, call android_ui_tool. " +
                     "android_ui_tool requires the user-enabled Hermes accessibility service for screen snapshots and UI actions. " +
                     "Protected Android settings require user-granted permissions, Shizuku/Sui, accessibility service, or an opened settings panel.",
@@ -1182,7 +1182,7 @@ class NativeToolCallingChatClient(
                                                     .put("type", "string")
                                                     .put(
                                                         "description",
-                                                        "Use status to read device state, run_privileged_shell with a command argument, grant_runtime_permission/revoke_runtime_permission with package_name and permission, force_stop_app/clear_app_data/enable_app/disable_app/set_app_enabled with package_name, Shizuku connectivity toggles such as set_wifi_enabled/set_bluetooth_enabled/set_mobile_data_enabled/set_airplane_mode_enabled with enabled/state, or one of the available actions returned in status.",
+                                                        "Use status to read device state, run_privileged_shell with a command argument, grant_runtime_permission/revoke_runtime_permission with package_name and permission, force_stop_app/clear_app_data/enable_app/disable_app/set_app_enabled with package_name, Shizuku connectivity toggles such as set_wifi_enabled/set_bluetooth_enabled/set_mobile_data_enabled/set_airplane_mode_enabled, set_wifi_tethering_enabled with enabled/state, custom setting actions set_custom_setting/get_custom_setting/delete_custom_setting with setting_namespace and setting_name, or one of the available actions returned in status.",
                                                     ),
                                             )
                                             .put(
@@ -1195,7 +1195,7 @@ class NativeToolCallingChatClient(
                                                 "package_name",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Android package name for Shizuku app-management actions such as force_stop_app, clear_app_data, enable_app, disable_app, set_app_enabled, grant_runtime_permission, and revoke_runtime_permission. Not needed for Shizuku Wi-Fi, Bluetooth, mobile-data, or airplane-mode toggles."),
+                                                    .put("description", "Android package name for Shizuku app-management actions such as force_stop_app, clear_app_data, enable_app, disable_app, set_app_enabled, grant_runtime_permission, and revoke_runtime_permission. Not needed for Shizuku Wi-Fi, Bluetooth, mobile-data, airplane-mode, Wi-Fi tethering, or custom setting actions."),
                                             )
                                             .put(
                                                 "permission",
@@ -1207,13 +1207,31 @@ class NativeToolCallingChatClient(
                                                 "enabled",
                                                 JSONObject()
                                                     .put("type", "boolean")
-                                                    .put("description", "Desired enabled state for set_app_enabled."),
+                                                    .put("description", "Desired enabled state for set_app_enabled, Shizuku connectivity toggles, or set_wifi_tethering_enabled."),
+                                            )
+                                            .put(
+                                                "setting_namespace",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Android settings namespace for custom setting actions: system, secure, or global."),
+                                            )
+                                            .put(
+                                                "setting_name",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Android settings key for custom setting actions."),
+                                            )
+                                            .put(
+                                                "setting_value",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Value for set_custom_setting."),
                                             )
                                             .put(
                                                 "timeout_seconds",
                                                 JSONObject()
                                                     .put("type", "integer")
-                                                    .put("description", "Optional timeout for run_privileged_shell and Shizuku-backed package-manager or connectivity toggle actions, clamped by Hermes."),
+                                                    .put("description", "Optional timeout for run_privileged_shell and Shizuku-backed package-manager, setting, tethering, or connectivity toggle actions, clamped by Hermes."),
                                             )
                                     )
                                     .put("required", JSONArray().put("action")),

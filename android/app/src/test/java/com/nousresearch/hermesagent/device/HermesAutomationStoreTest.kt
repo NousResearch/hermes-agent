@@ -172,6 +172,45 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesShizukuConnectivityToggleRecordsWithoutPackageName() {
+        val context = RuntimeEnvironment.getApplication()
+        HermesAutomationStore(context).clear()
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shizuku_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-wifi-off")
+                    .put("label", "Wi-Fi off smoke")
+                    .put("shizuku_action", "set_wifi_enabled")
+                    .put("target_enabled", false)
+                    .put("automation_enabled", false),
+            ),
+        )
+
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        assertEquals(ACTION_TYPE_SHIZUKU_ACTION, automation.getString("action_type"))
+        assertTrue(automation.getBoolean("use_shizuku"))
+        val payload = org.json.JSONObject(automation.getString("command"))
+        assertEquals("set_wifi_enabled", payload.getString("shizuku_action"))
+        assertFalse(payload.has("package_name"))
+        assertFalse(payload.getBoolean("target_enabled"))
+
+        val direct = org.json.JSONObject(
+            HermesPrivilegedAccessBridge.performStructuredActionJson(
+                context,
+                "bluetooth_on",
+                org.json.JSONObject(),
+            ),
+        )
+        assertFalse(direct.toString(), direct.getBoolean("success"))
+        assertEquals("enable_bluetooth", direct.getString("action"))
+        assertEquals("cmd bluetooth_manager enable", direct.getString("adb_shell_command"))
+    }
+
+    @Test
     fun bridgeCreatesAndRunsToastRecords() {
         val context = RuntimeEnvironment.getApplication()
         val store = HermesAutomationStore(context)

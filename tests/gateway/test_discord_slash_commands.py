@@ -779,6 +779,29 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
     assert os.getenv("DISCORD_AUTO_THREAD") == "true"
 
 
+def test_discord_typing_config_bridge(monkeypatch, tmp_path):
+    """discord.typing in config.yaml should be bridged to DISCORD_TYPING env var."""
+    import yaml
+    from pathlib import Path
+
+    hermes_dir = tmp_path / ".hermes"
+    hermes_dir.mkdir()
+    config_path = hermes_dir / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "discord": {"typing": False},
+    }))
+
+    monkeypatch.delenv("DISCORD_TYPING", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_TYPING") == "false"
+
+
 # ------------------------------------------------------------------
 # /skill command registration (flat + autocomplete)
 # ------------------------------------------------------------------

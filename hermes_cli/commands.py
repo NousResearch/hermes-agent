@@ -98,7 +98,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
-               args_hint="[name]"),
+               aliases=("sessions",), args_hint="[name]"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",

@@ -105,6 +105,7 @@ class TestResolveCommand:
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
         assert resolve_command("tasks").name == "agents"
+        assert resolve_command("sessions").name == "resume"
 
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"

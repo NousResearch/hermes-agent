@@ -525,6 +525,44 @@ object HermesAutomationBridge {
                 payload.put("setting_value", settingValue)
             }
         }
+        if (shizukuAction in SHIZUKU_DND_ACTIONS) {
+            val mode = stringArgument(arguments, "dnd_mode", "mode", "zen_mode", "state")
+                ?.trim()
+                ?: return errorJson("create_shizuku_action_task $shizukuAction requires a dnd_mode argument")
+            if (mode.indexOf('\u0000') >= 0) {
+                return errorJson("create_shizuku_action_task dnd_mode must not contain NUL bytes")
+            }
+            payload.put("dnd_mode", mode)
+        }
+        if (shizukuAction in SHIZUKU_USER_PROFILE_ACTIONS) {
+            val userId = stringArgument(arguments, "user_id", "profile_user_id", "android_user_id", "work_profile_user_id")
+                ?.trim()
+                ?: return errorJson("create_shizuku_action_task $shizukuAction requires a user_id argument")
+            if (userId.toIntOrNull()?.takeIf { it in 0..9999 } == null) {
+                return errorJson("create_shizuku_action_task user_id must be an integer between 0 and 9999")
+            }
+            payload.put("user_id", userId)
+        }
+        if (shizukuAction in SHIZUKU_MOBILE_NETWORK_TYPE_ACTIONS) {
+            val bitmask = stringArgument(
+                arguments,
+                "network_types_bitmask",
+                "network_type_bitmask",
+                "mobile_network_bitmask",
+                "allowed_network_types",
+                "bitmask",
+            )?.trim() ?: return errorJson("create_shizuku_action_task $shizukuAction requires a network_types_bitmask argument")
+            if (!Regex("[01]{1,64}").matches(bitmask)) {
+                return errorJson("create_shizuku_action_task network_types_bitmask must be a binary bitmask string")
+            }
+            payload.put("network_types_bitmask", bitmask)
+            stringArgument(arguments, "slot_id", "sim_slot_id", "subscription_slot")?.trim()?.let { slotId ->
+                if (slotId.toIntOrNull()?.takeIf { it in 0..8 } == null) {
+                    return errorJson("create_shizuku_action_task slot_id must be an integer between 0 and 8")
+                }
+                payload.put("slot_id", slotId)
+            }
+        }
         optionalPositiveInt(arguments, "timeout_seconds")?.let { timeout ->
             payload.put("timeout_seconds", timeout)
         }
@@ -1513,6 +1551,18 @@ object HermesAutomationBridge {
             actionArguments.put("setting_name", expandVariables(payload.optString("setting_name"), variables))
             if (payload.has("setting_value") && !payload.isNull("setting_value")) {
                 actionArguments.put("setting_value", expandVariables(payload.optString("setting_value"), variables))
+            }
+        }
+        if (shizukuAction in SHIZUKU_DND_ACTIONS && payload.has("dnd_mode") && !payload.isNull("dnd_mode")) {
+            actionArguments.put("dnd_mode", expandVariables(payload.optString("dnd_mode"), variables))
+        }
+        if (shizukuAction in SHIZUKU_USER_PROFILE_ACTIONS && payload.has("user_id") && !payload.isNull("user_id")) {
+            actionArguments.put("user_id", expandVariables(payload.optString("user_id"), variables))
+        }
+        if (shizukuAction in SHIZUKU_MOBILE_NETWORK_TYPE_ACTIONS) {
+            actionArguments.put("network_types_bitmask", expandVariables(payload.optString("network_types_bitmask"), variables))
+            if (payload.has("slot_id") && !payload.isNull("slot_id")) {
+                actionArguments.put("slot_id", expandVariables(payload.optString("slot_id"), variables))
             }
         }
         if (payload.has("timeout_seconds") && !payload.isNull("timeout_seconds")) {
@@ -4153,6 +4203,24 @@ object HermesAutomationBridge {
         "set_wifi_tethering_enabled",
         "enable_wifi_tethering",
         "disable_wifi_tethering",
+        "set_dnd_mode",
+        "enable_dnd",
+        "disable_dnd",
+        "set_power_save_mode",
+        "enable_power_save_mode",
+        "disable_power_save_mode",
+        "turn_screen_off",
+        "end_call",
+        "global_back",
+        "global_home",
+        "global_recents",
+        "global_notifications",
+        "global_quick_settings",
+        "collapse_status_bar",
+        "set_mobile_network_type",
+        "start_user_profile",
+        "stop_user_profile",
+        "switch_user_profile",
         "set_custom_setting",
         "get_custom_setting",
         "delete_custom_setting",
@@ -4174,8 +4242,12 @@ object HermesAutomationBridge {
         "set_mobile_data_enabled",
         "set_airplane_mode_enabled",
         "set_wifi_tethering_enabled",
+        "set_power_save_mode",
     )
     private val SHIZUKU_CUSTOM_SETTING_ACTIONS = setOf("set_custom_setting", "get_custom_setting", "delete_custom_setting")
+    private val SHIZUKU_DND_ACTIONS = setOf("set_dnd_mode")
+    private val SHIZUKU_USER_PROFILE_ACTIONS = setOf("start_user_profile", "stop_user_profile", "switch_user_profile")
+    private val SHIZUKU_MOBILE_NETWORK_TYPE_ACTIONS = setOf("set_mobile_network_type")
     private val UI_GLOBAL_ACTIONS = setOf("back", "home", "recents", "notifications", "quick_settings")
     private val UI_SELECTOR_ACTIONS = setOf("click", "long_click", "focus", "set_text", "scroll_forward", "scroll_backward")
     private val UI_AUTOMATION_ACTIONS = UI_GLOBAL_ACTIONS + UI_SELECTOR_ACTIONS

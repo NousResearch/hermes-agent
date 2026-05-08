@@ -267,6 +267,139 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesShizukuTaskerFixedActionRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        HermesAutomationStore(context).clear()
+
+        val dnd = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shizuku_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-dnd")
+                    .put("label", "DND priority smoke")
+                    .put("shizuku_action", "set_dnd_mode")
+                    .put("dnd_mode", "priority")
+                    .put("automation_enabled", false),
+            ),
+        )
+        assertTrue(dnd.toString(), dnd.getBoolean("success"))
+        val dndPayload = org.json.JSONObject(dnd.getJSONObject("automation").getString("command"))
+        assertEquals("set_dnd_mode", dndPayload.getString("shizuku_action"))
+        assertEquals("priority", dndPayload.getString("dnd_mode"))
+
+        val power = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shizuku_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-power-save")
+                    .put("shizuku_action", "set_power_save_mode")
+                    .put("target_enabled", true)
+                    .put("automation_enabled", false),
+            ),
+        )
+        assertTrue(power.toString(), power.getBoolean("success"))
+        val powerPayload = org.json.JSONObject(power.getJSONObject("automation").getString("command"))
+        assertEquals("set_power_save_mode", powerPayload.getString("shizuku_action"))
+        assertTrue(powerPayload.getBoolean("target_enabled"))
+
+        val profile = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shizuku_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-work-profile")
+                    .put("shizuku_action", "stop_work_profile")
+                    .put("user_id", "10")
+                    .put("automation_enabled", false),
+            ),
+        )
+        assertTrue(profile.toString(), profile.getBoolean("success"))
+        val profilePayload = org.json.JSONObject(profile.getJSONObject("automation").getString("command"))
+        assertEquals("stop_user_profile", profilePayload.getString("shizuku_action"))
+        assertEquals("10", profilePayload.getString("user_id"))
+
+        val mobileNetwork = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shizuku_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-network-type")
+                    .put("shizuku_action", "set_mobile_network_type")
+                    .put("network_types_bitmask", "11000001000000000000")
+                    .put("slot_id", "1")
+                    .put("automation_enabled", false),
+            ),
+        )
+        assertTrue(mobileNetwork.toString(), mobileNetwork.getBoolean("success"))
+        val networkPayload = org.json.JSONObject(mobileNetwork.getJSONObject("automation").getString("command"))
+        assertEquals("set_mobile_network_type", networkPayload.getString("shizuku_action"))
+        assertEquals("11000001000000000000", networkPayload.getString("network_types_bitmask"))
+        assertEquals("1", networkPayload.getString("slot_id"))
+
+        val directDnd = org.json.JSONObject(
+            HermesPrivilegedAccessBridge.performStructuredActionJson(
+                context,
+                "set_dnd_mode",
+                org.json.JSONObject().put("dnd_mode", "alarms"),
+            ),
+        )
+        assertFalse(directDnd.toString(), directDnd.getBoolean("success"))
+        assertEquals("set_dnd_mode", directDnd.getString("action"))
+        assertEquals("cmd notification set_dnd alarms", directDnd.getString("adb_shell_command"))
+
+        val directPower = org.json.JSONObject(
+            HermesPrivilegedAccessBridge.performStructuredActionJson(
+                context,
+                "battery_saver_on",
+                org.json.JSONObject(),
+            ),
+        )
+        assertFalse(directPower.toString(), directPower.getBoolean("success"))
+        assertEquals("enable_power_save_mode", directPower.getString("action"))
+        assertEquals("cmd power set-mode 1", directPower.getString("adb_shell_command"))
+
+        val directBack = org.json.JSONObject(
+            HermesPrivilegedAccessBridge.performStructuredActionJson(
+                context,
+                "global_back",
+                org.json.JSONObject(),
+            ),
+        )
+        assertFalse(directBack.toString(), directBack.getBoolean("success"))
+        assertEquals("global_back", directBack.getString("action"))
+        assertEquals("input keyevent KEYCODE_BACK", directBack.getString("adb_shell_command"))
+
+        val directProfile = org.json.JSONObject(
+            HermesPrivilegedAccessBridge.performStructuredActionJson(
+                context,
+                "stop_work_profile",
+                org.json.JSONObject().put("user_id", "10"),
+            ),
+        )
+        assertFalse(directProfile.toString(), directProfile.getBoolean("success"))
+        assertEquals("stop_user_profile", directProfile.getString("action"))
+        assertEquals("am stop-user -w 10", directProfile.getString("adb_shell_command"))
+
+        val directNetwork = org.json.JSONObject(
+            HermesPrivilegedAccessBridge.performStructuredActionJson(
+                context,
+                "set_mobile_network_type",
+                org.json.JSONObject()
+                    .put("network_types_bitmask", "01000001000000000000")
+                    .put("slot_id", "0"),
+            ),
+        )
+        assertFalse(directNetwork.toString(), directNetwork.getBoolean("success"))
+        assertEquals("set_mobile_network_type", directNetwork.getString("action"))
+        assertEquals(
+            "cmd phone set-allowed-network-types-for-users -s 0 01000001000000000000",
+            directNetwork.getString("adb_shell_command"),
+        )
+    }
+
+    @Test
     fun bridgeCreatesAndRunsToastRecords() {
         val context = RuntimeEnvironment.getApplication()
         val store = HermesAutomationStore(context)

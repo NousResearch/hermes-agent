@@ -500,6 +500,7 @@ group_sessions_per_user: true
 # Stream tokens to messaging platforms in real-time. The bot sends a message
 # on first token, then progressively edits it as more tokens arrive.
 # Disabled by default — enable to try the streaming UX on Telegram/Discord/Slack.
+# For Telegram, partial edits are sent as plain text and only the final edit uses MarkdownV2.
 streaming:
   enabled: false
   # transport: edit           # "edit" = progressive editMessageText

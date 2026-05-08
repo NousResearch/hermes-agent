@@ -64,3 +64,39 @@ class TestToolsetIntersection:
         scoped = [t for t in requested if t in parent_toolsets]
 
         assert scoped == []
+
+    def test_all_tools_enabled_skips_intersection(self):
+        """When parent.enabled_toolsets is None (all tools enabled),
+        child's requested toolsets pass through without intersection.
+
+        Regression for https://github.com/NousResearch/hermes-agent/issues/21658:
+        child agents in cron context lost file/terminal tools because
+        valid_tool_names derivation was incomplete.
+        """
+        # Simulate the fixed _build_child_agent logic
+        parent_enabled = None  # all tools enabled
+        parent_toolsets = set(["terminal", "file", "web"])  # derived fallback
+        requested = ["terminal", "file"]
+
+        if parent_enabled is not None:
+            scoped = [t for t in requested if t in parent_toolsets]
+        else:
+            scoped = list(requested)
+
+        assert "terminal" in scoped
+        assert "file" in scoped
+
+    def test_restricted_parent_still_intersects(self):
+        """When parent has restricted toolsets, intersection still applies."""
+        parent_enabled = ["terminal", "web"]
+        parent_toolsets = set(parent_enabled)
+        requested = ["terminal", "file", "web"]
+
+        if parent_enabled is not None:
+            scoped = [t for t in requested if t in parent_toolsets]
+        else:
+            scoped = list(requested)
+
+        assert "terminal" in scoped
+        assert "web" in scoped
+        assert "file" not in scoped  # parent doesn't have file

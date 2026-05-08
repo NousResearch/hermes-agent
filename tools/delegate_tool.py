@@ -836,8 +836,14 @@ def _build_child_agent(
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
     if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks
-        child_toolsets = [t for t in toolsets if t in parent_toolsets]
+        if parent_enabled is not None:
+            # Parent has a restricted toolset — intersect so the child
+            # cannot gain tools the parent lacks (security boundary).
+            child_toolsets = [t for t in toolsets if t in parent_toolsets]
+        else:
+            # Parent has ALL tools enabled (enabled_toolsets=None) — trust
+            # the child's request.  No intersection needed.
+            child_toolsets = list(toolsets)
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets

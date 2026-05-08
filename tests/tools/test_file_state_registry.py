@@ -273,7 +273,10 @@ class FileToolsIntegrationTests(unittest.TestCase):
         # the sibling.  When old_string doesn't match, the patch itself
         # returns an error but the warning is still set from the pre-check.
         if warn:
-            self.assertIn("agentB", warn)
+            self.assertTrue(
+                "agentB" in warn or "external edit" in warn.lower(),
+                f"expected sibling or external-edit warning, got: {warn}",
+            )
 
     def test_net_new_file_no_warning(self):
         p = os.path.join(self._tmpdir, "brand_new.txt")

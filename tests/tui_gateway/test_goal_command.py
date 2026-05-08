@@ -52,9 +52,9 @@ def server(hermes_home):
 
 
 @pytest.fixture()
-def session(server):
-    sid = "sid-test"
-    session_key = "tui-goal-session-1"
+def session(server, request):
+    sid = f"sid-{request.node.name}"
+    session_key = f"tui-goal-session-{request.node.name}"
     s = {
         "session_key": session_key,
         "history": [],

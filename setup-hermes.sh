@@ -35,6 +35,36 @@ export UV_NO_CONFIG=1
 
 PYTHON_VERSION="3.11"
 
+# pyproject.toml uses [tool.uv] exclude-newer with a relative duration ("7 days"),
+# which uv only learned to parse in 0.9.17 (Dec 2025).  Older uv (commonly stale
+# Homebrew) fails `uv venv` with a misleading "input contains invalid characters"
+# TOML error.  Fail fast with an actionable upgrade hint instead.
+MIN_UV_VERSION="0.9.17"
+
+ensure_uv_version_supported() {
+    local raw="$1"
+    local current
+    current="$(printf '%s\n' "$raw" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+    if [ -z "$current" ]; then
+        echo -e "${YELLOW}⚠${NC} Could not parse uv version from: $raw — skipping check"
+        return 0
+    fi
+    # 0 if current >= MIN_UV_VERSION
+    if [ "$(printf '%s\n%s\n' "$MIN_UV_VERSION" "$current" | sort -V | head -n1)" = "$MIN_UV_VERSION" ]; then
+        return 0
+    fi
+    echo -e "${RED}✗${NC} uv $current is too old — Hermes requires uv >= $MIN_UV_VERSION."
+    echo -e "${CYAN}→${NC} (pyproject.toml uses [tool.uv] exclude-newer with a relative"
+    echo -e "${CYAN}→${NC}  duration, which was added in uv 0.9.17 — December 2025.)"
+    echo
+    echo -e "${CYAN}→${NC} Upgrade uv with one of:"
+    echo -e "${CYAN}→${NC}   • Homebrew:   brew upgrade uv"
+    echo -e "${CYAN}→${NC}   • Official:   curl -LsSf https://astral.sh/uv/install.sh | sh"
+    echo -e "${CYAN}→${NC}   • pipx:       pipx upgrade uv"
+    echo -e "${CYAN}→${NC} Then re-run ./setup-hermes.sh"
+    exit 1
+}
+
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
@@ -80,6 +110,7 @@ else
     if [ -n "$UV_CMD" ]; then
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         echo -e "${GREEN}✓${NC} uv found ($UV_VERSION)"
+        ensure_uv_version_supported "$UV_VERSION"
     else
         echo -e "${CYAN}→${NC} Installing uv..."
         if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then

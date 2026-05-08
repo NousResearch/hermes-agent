@@ -166,6 +166,50 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+# ---------------------------------------------------------------------------
+# uv version requirement
+# ---------------------------------------------------------------------------
+# pyproject.toml uses [tool.uv] exclude-newer with a relative-duration value
+# (e.g. "7 days"), which uv only learned to parse in 0.9.17 (Dec 2025). Older
+# uv — commonly a stale Homebrew formula — fails `uv venv` with a misleading
+# "input contains invalid characters" TOML error, leaving the install half
+# done. Fail fast with an actionable upgrade hint instead.
+MIN_UV_VERSION="0.9.17"
+
+uv_version_at_least() {
+    # 0 if $1 >= $2, else 1.  Uses sort -V (macOS >= 11, modern Linux, Termux).
+    [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
+}
+
+parse_uv_version() {
+    # Extract X.Y.Z from `uv --version` output, e.g.
+    #   "uv 0.2.25 (Homebrew 2024-07-15)" -> "0.2.25"
+    printf '%s\n' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1
+}
+
+ensure_uv_version_supported() {
+    local raw="$1"
+    local current
+    current="$(parse_uv_version "$raw")"
+    if [ -z "$current" ]; then
+        log_warn "Could not parse uv version from: $raw — skipping version check"
+        return 0
+    fi
+    if uv_version_at_least "$current" "$MIN_UV_VERSION"; then
+        return 0
+    fi
+    log_error "uv $current is too old — Hermes requires uv >= $MIN_UV_VERSION."
+    log_info "(pyproject.toml uses [tool.uv] exclude-newer with a relative"
+    log_info " duration, which was added in uv 0.9.17 — December 2025.)"
+    echo
+    log_info "Upgrade uv with one of:"
+    log_info "  • Homebrew:   brew upgrade uv"
+    log_info "  • Official:   curl -LsSf https://astral.sh/uv/install.sh | sh"
+    log_info "  • pipx:       pipx upgrade uv"
+    log_info "Then re-run the Hermes installer."
+    exit 1
+}
+
 prompt_yes_no() {
     local question="$1"
     local default="${2:-yes}"
@@ -345,6 +389,7 @@ install_uv() {
         UV_CMD="uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         log_success "uv found ($UV_VERSION)"
+        ensure_uv_version_supported "$UV_VERSION"
         return 0
     fi
 
@@ -353,6 +398,7 @@ install_uv() {
         UV_CMD="$HOME/.local/bin/uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         log_success "uv found at ~/.local/bin ($UV_VERSION)"
+        ensure_uv_version_supported "$UV_VERSION"
         return 0
     fi
 
@@ -361,6 +407,7 @@ install_uv() {
         UV_CMD="$HOME/.cargo/bin/uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         log_success "uv found at ~/.cargo/bin ($UV_VERSION)"
+        ensure_uv_version_supported "$UV_VERSION"
         return 0
     fi
 

@@ -64,7 +64,7 @@ For fine-grained control, add platform settings to `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
-  qq:
+  qqbot:
     enabled: true
     extra:
       app_id: "your-app-id"

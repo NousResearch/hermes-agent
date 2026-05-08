@@ -6,7 +6,7 @@ REST API (``api.sgroup.qq.com``) for outbound messages and media uploads.
 
 Configuration in config.yaml:
     platforms:
-      qq:
+      qqbot:
         enabled: true
         extra:
           app_id: "your-app-id"            # or QQ_APP_ID env var

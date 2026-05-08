@@ -264,15 +264,21 @@ export function useMainApp(gw: GatewayClient) {
     return cache
   }, [heightCacheKey])
 
+  // Index of the first user-role message — separator-rendering in
+  // appLayout.tsx skips this row, so the height estimator must skip it
+  // too. -1 when no user message exists yet (no row will gate true).
+  const firstUserIdx = useMemo(() => virtualRows.findIndex(r => r.msg.role === 'user'), [virtualRows])
+
   const estimateRowHeight = useCallback(
     (index: number) =>
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
         limitHistory: index < virtualRows.length - FULL_RENDER_TAIL_ITEMS,
-        userPrompt: ui.theme.brand.prompt
+        userPrompt: ui.theme.brand.prompt,
+        withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
       }),
-    [cols, detailsVisible, ui.compact, ui.theme.brand.prompt, virtualRows]
+    [cols, detailsVisible, firstUserIdx, ui.compact, ui.theme.brand.prompt, virtualRows]
   )
 
   const syncHeightCache = useCallback(

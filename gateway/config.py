@@ -1418,12 +1418,16 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     msgraph_webhook_port = os.getenv("MSGRAPH_WEBHOOK_PORT")
     msgraph_webhook_client_state = os.getenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "")
     msgraph_webhook_resources = os.getenv("MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES", "")
+    msgraph_webhook_allowed_cidrs = os.getenv(
+        "MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS", ""
+    )
     if (
         msgraph_webhook_enabled
         or Platform.MSGRAPH_WEBHOOK in config.platforms
         or msgraph_webhook_port
         or msgraph_webhook_client_state
         or msgraph_webhook_resources
+        or msgraph_webhook_allowed_cidrs
     ):
         if Platform.MSGRAPH_WEBHOOK not in config.platforms:
             config.platforms[Platform.MSGRAPH_WEBHOOK] = PlatformConfig()
@@ -1450,6 +1454,16 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 config.platforms[Platform.MSGRAPH_WEBHOOK].extra[
                     "accepted_resources"
                 ] = resources
+        if msgraph_webhook_allowed_cidrs:
+            cidrs = [
+                cidr.strip()
+                for cidr in msgraph_webhook_allowed_cidrs.split(",")
+                if cidr.strip()
+            ]
+            if cidrs:
+                config.platforms[Platform.MSGRAPH_WEBHOOK].extra[
+                    "allowed_source_cidrs"
+                ] = cidrs
 
     # DingTalk
     dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")

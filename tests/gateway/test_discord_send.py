@@ -54,7 +54,7 @@ async def test_send_retries_without_reference_when_reply_target_is_system_messag
     sent_msg = SimpleNamespace(id=1234)
     send_calls = []
 
-    async def fake_send(*, content, reference=None):
+    async def fake_send(*, content, reference=None, **_kwargs):
         send_calls.append({"content": content, "reference": reference})
         if len(send_calls) == 1:
             raise RuntimeError(
@@ -92,7 +92,7 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     sent_msgs = [SimpleNamespace(id=1001), SimpleNamespace(id=1002)]
     send_calls = []
 
-    async def fake_send(*, content, reference=None):
+    async def fake_send(*, content, reference=None, **_kwargs):
         send_calls.append({"content": content, "reference": reference})
         if len(send_calls) == 1:
             raise RuntimeError(
@@ -135,7 +135,7 @@ async def test_send_does_not_retry_on_unrelated_errors():
     ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))
     send_calls = []
 
-    async def fake_send(*, content, reference=None):
+    async def fake_send(*, content, reference=None, **_kwargs):
         send_calls.append({"content": content, "reference": reference})
         raise RuntimeError(
             "403 Forbidden (error code: 50013): Missing Permissions"

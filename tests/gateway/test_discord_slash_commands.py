@@ -97,9 +97,19 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    for name in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_ALLOW_BOTS",
+        "DISCORD_IGNORE_NO_MENTION",
+    ):
+        monkeypatch.delenv(name, raising=False)
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
+    adapter._allowed_user_ids = {"42"}
     adapter._client = SimpleNamespace(
         tree=FakeTree(),
         get_channel=lambda _id: None,
@@ -980,4 +990,20 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
+
+
+@pytest.mark.asyncio
+async def test_send_suppresses_embeds_for_plain_text_messages(adapter):
+    channel = SimpleNamespace(id=123)
+    channel.send = AsyncMock(return_value=SimpleNamespace(id=456))
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    result = await adapter.send("123", "See https://example.com")
+
+    assert result.success is True
+    channel.send.assert_awaited_once_with(
+        content="See https://example.com",
+        reference=None,
+        suppress_embeds=True,
+    )
 

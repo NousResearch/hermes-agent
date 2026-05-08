@@ -1436,6 +1436,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     msg = await channel.send(
                         content=chunk,
                         reference=chunk_reference,
+                        suppress_embeds=True,
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -1458,6 +1459,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
+                            suppress_embeds=True,
                         )
                     else:
                         raise

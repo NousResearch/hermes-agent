@@ -495,6 +495,7 @@ object HermesTaskerImportBridge {
     private const val TASKER_SET_CLIPBOARD = 105
     private const val TASKER_WIFI_TETHER = 113
     private const val TASKER_RUN_SHELL = 123
+    private const val TASKER_POWER_MODE = 175
     private const val TASKER_DEVELOPER_SETTINGS = 197
     private const val TASKER_AIRPLANE_MODE_SETTINGS = 201
     private const val TASKER_WIFI_SETTINGS = 206
@@ -543,6 +544,7 @@ object HermesTaskerImportBridge {
         TASKER_BLUETOOTH to "set_bluetooth_enabled",
         TASKER_DO_NOT_DISTURB to "set_dnd_mode",
         TASKER_AIRPLANE_MODE to "set_airplane_mode_enabled",
+        TASKER_POWER_MODE to "set_power_save_mode",
         TASKER_WIFI_TETHER to "set_wifi_tethering_enabled",
         TASKER_WIFI to "set_wifi_enabled",
         TASKER_MOBILE_DATA to "set_mobile_data_enabled",
@@ -551,6 +553,7 @@ object HermesTaskerImportBridge {
     private val TASKER_SHIZUKU_TOGGLE_ACTIONS = setOf(
         TASKER_AIRPLANE_MODE,
         TASKER_BLUETOOTH,
+        TASKER_POWER_MODE,
         TASKER_WIFI_TETHER,
         TASKER_WIFI,
         TASKER_MOBILE_DATA,
@@ -575,6 +578,7 @@ object HermesTaskerImportBridge {
         TASKER_SET_CLIPBOARD to "Set Clipboard",
         TASKER_WIFI_TETHER to "WiFi Tether",
         TASKER_RUN_SHELL to "Run Shell",
+        TASKER_POWER_MODE to "Power Mode",
         TASKER_DEVELOPER_SETTINGS to "Developer Settings",
         TASKER_AIRPLANE_MODE_SETTINGS to "Airplane Mode Settings",
         TASKER_WIFI_SETTINGS to "Wi-Fi Settings",

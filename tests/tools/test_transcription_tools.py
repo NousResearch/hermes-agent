@@ -358,14 +358,15 @@ class TestTranscribeLocalCommand:
         monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
         monkeypatch.setattr("tools.transcription_tools._find_whisper_binary", lambda: "/opt/homebrew/bin/whisper")
 
-        from tools.transcription_tools import _get_local_command_template
+        from tools.transcription_tools import _build_default_whisper_argv
 
-        template = _get_local_command_template()
+        argv = _build_default_whisper_argv("/tmp/audio.ogg", "/tmp/out", "en", "base")
 
-        assert template is not None
-        assert template.startswith("/opt/homebrew/bin/whisper ")
-        assert "{model}" in template
-        assert "{output_dir}" in template
+        assert argv is not None
+        assert argv[0] == "/opt/homebrew/bin/whisper"
+        assert "/tmp/audio.ogg" in argv
+        assert "base" in argv
+        assert "--output_dir" in argv
 
     def test_command_fallback_with_template(self, monkeypatch, sample_ogg, tmp_path):
         out_dir = tmp_path / "local-out"
@@ -387,13 +388,16 @@ class TestTranscribeLocalCommand:
 
             return _TempDir()
 
+        captured_argv = []
+
         def fake_run(cmd, *args, **kwargs):
-            if isinstance(cmd, list):
+            if isinstance(cmd, list) and cmd[0].endswith("ffmpeg"):
                 output_path = cmd[-1]
                 with open(output_path, "wb") as handle:
                     handle.write(b"RIFF....WAVEfmt ")
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
+            captured_argv.extend(cmd if isinstance(cmd, list) else [cmd])
             (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -408,6 +412,9 @@ class TestTranscribeLocalCommand:
         assert result["success"] is True
         assert result["transcript"] == "hello from local command"
         assert result["provider"] == "local_command"
+        # Verify the command was passed as a list (no shell=True)
+        assert isinstance(captured_argv, list)
+        assert captured_argv[0] == "whisper"
 
 
 # ============================================================================

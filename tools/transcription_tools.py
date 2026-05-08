@@ -154,22 +154,46 @@ def _find_whisper_binary() -> Optional[str]:
 
 
 def _get_local_command_template() -> Optional[str]:
+    """Return the user-configured STT command template, or ``None``.
+
+    Returns only the *user-configured* template string (from the
+    ``HERMES_LOCAL_STT_COMMAND`` env var).  The auto-detected whisper
+    binary is handled separately by ``_build_default_whisper_argv()``
+    so it can be passed as a safe argv list without shell parsing.
+    """
     configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
     if configured:
         return configured
-
-    whisper_binary = _find_whisper_binary()
-    if whisper_binary:
-        quoted_binary = shlex.quote(whisper_binary)
-        return (
-            f"{quoted_binary} {{input_path}} --model {{model}} --output_format txt "
-            "--output_dir {output_dir} --language {language}"
-        )
     return None
 
 
+def _build_default_whisper_argv(
+    prepared_input: str,
+    output_dir: str,
+    language: str,
+    model: str,
+) -> Optional[list]:
+    """Build an argv list for the auto-detected whisper binary.
+
+    Returns ``None`` when no whisper binary is found on ``$PATH``.
+    Building an argv list directly (instead of a shell command string)
+    avoids shell-injection risks and handles paths with spaces.
+    """
+    whisper_binary = _find_whisper_binary()
+    if not whisper_binary:
+        return None
+    return [
+        whisper_binary,
+        prepared_input,
+        "--model", model,
+        "--output_format", "txt",
+        "--output_dir", output_dir,
+        "--language", language,
+    ]
+
+
 def _has_local_command() -> bool:
-    return _get_local_command_template() is not None
+    return _get_local_command_template() is not None or _find_whisper_binary() is not None
 
 
 def _normalize_local_model(model_name: Optional[str]) -> str:
@@ -472,14 +496,6 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
 def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]:
     """Run the configured local STT command template and read back a .txt transcript."""
     command_template = _get_local_command_template()
-    if not command_template:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": (
-                f"{LOCAL_STT_COMMAND_ENV} not configured and no local whisper binary was found"
-            ),
-        }
 
     # Language: config.yaml (stt.local.language) > env var > "en" default.
     language = (
@@ -495,13 +511,39 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             if prep_error:
                 return {"success": False, "transcript": "", "error": prep_error}
 
-            command = command_template.format(
-                input_path=shlex.quote(prepared_input),
-                output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language),
-                model=shlex.quote(normalized_model),
-            )
-            subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+            if command_template:
+                # User-configured template: split into argv BEFORE
+                # substituting placeholder values so that spaces, quotes,
+                # or shell metacharacters inside substituted values cannot
+                # alter the argv structure or trigger shell interpretation.
+                template_argv = shlex.split(
+                    command_template, posix=(os.name != "nt"),
+                )
+                argv = [
+                    token.format(
+                        input_path=prepared_input,
+                        output_dir=output_dir,
+                        language=language,
+                        model=normalized_model,
+                    )
+                    for token in template_argv
+                ]
+            else:
+                # Auto-detected whisper binary: build argv directly.
+                argv = _build_default_whisper_argv(
+                    prepared_input, output_dir, language, normalized_model,
+                )
+                if argv is None:
+                    return {
+                        "success": False,
+                        "transcript": "",
+                        "error": (
+                            f"{LOCAL_STT_COMMAND_ENV} not configured and "
+                            "no local whisper binary was found"
+                        ),
+                    }
+
+            subprocess.run(argv, check=True, capture_output=True, text=True)
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:
@@ -525,6 +567,12 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             "success": False,
             "transcript": "",
             "error": f"Invalid {LOCAL_STT_COMMAND_ENV} template, missing placeholder: {e}",
+        }
+    except ValueError as e:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Invalid {LOCAL_STT_COMMAND_ENV} template (could not parse): {e}",
         }
     except subprocess.CalledProcessError as e:
         details = e.stderr.strip() or e.stdout.strip() or str(e)

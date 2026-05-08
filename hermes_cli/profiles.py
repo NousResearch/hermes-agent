@@ -828,15 +828,13 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         # and raw os.kill with SIGTERM doesn't cascade to child processes
         # the same way taskkill /T does.
         from gateway.status import terminate_pid as _terminate_pid
+        from gateway.status import _pid_exists
         _terminate_pid(pid)  # graceful first
-        # Wait up to 10s for graceful shutdown
+        # Wait up to 10s for graceful shutdown. On Windows, os.kill(pid, 0)
+        # is NOT a no-op — use the handle-based existence check.
         for _ in range(20):
             _time.sleep(0.5)
-            try:
-                os.kill(pid, 0)
-            except (ProcessLookupError, OSError):
-                # OSError covers Windows' WinError 87 "invalid parameter"
-                # returned for an invalid/gone PID probe.
+            if not _pid_exists(pid):
                 print(f"✓ Gateway stopped (PID {pid})")
                 return
         # Force kill

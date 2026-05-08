@@ -223,18 +223,15 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     import time as _time
 
     deadline = _time.monotonic() + max(drain_timeout, 1.0)
+    # IMPORTANT Windows note: ``os.kill(pid, 0)`` is NOT a no-op on
+    # Windows — Python's implementation calls ``TerminateProcess(handle, 0)``
+    # for sig=0, hard-killing the target. Use the cross-platform
+    # ``_pid_exists`` helper in gateway.status which does OpenProcess +
+    # WaitForSingleObject on Windows.
+    from gateway.status import _pid_exists
+
     while _time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)  # signal 0 — probe liveness
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            # Process still exists but we can't signal it.  Treat as alive
-            # so the caller falls back.
-            pass
-        except OSError:
-            # Windows raises OSError (WinError 87 "invalid parameter") for
-            # a gone PID — treat the same as ProcessLookupError.
+        if not _pid_exists(pid):
             return True
         _time.sleep(0.5)
     # Drain didn't finish in time.
@@ -303,6 +300,11 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                 or f"HERMES_HOME={current_home}" in command
             )
 
+        # Default-profile case: no profile flag in argv. Accept as long as
+        # the command doesn't advertise *some other* profile. HERMES_HOME
+        # may be passed via env (not visible in wmic/CIM command line) so
+        # its absence is NOT disqualifying — only a non-matching explicit
+        # HERMES_HOME= in argv is.
         if "--profile " in command or " -p " in command:
             return False
         if "HERMES_HOME=" in command and f"HERMES_HOME={current_home}" not in command:
@@ -513,14 +515,10 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
         cmd = sys.argv[2:]
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                break
-            except PermissionError:
-                pass
-            except OSError:
-                # Windows: gone PID raises OSError (WinError 87).
+            # ``os.kill(pid, 0)`` is not a no-op on Windows — use the
+            # cross-platform existence check.
+            from gateway.status import _pid_exists
+            if not _pid_exists(pid):
                 break
             time.sleep(0.2)
 
@@ -1007,15 +1005,14 @@ def stop_profile_gateway() -> bool:
         print(f"⚠ Permission denied to kill PID {pid}")
         return False
 
-    # Wait briefly for it to exit
+    # Wait briefly for it to exit. On Windows, os.kill(pid, 0) is NOT
+    # a no-op — route through the cross-platform existence check.
     import time as _time
+    from gateway.status import _pid_exists
     for _ in range(20):
-        try:
-            os.kill(pid, 0)
-            _time.sleep(0.5)
-        except (ProcessLookupError, PermissionError, OSError):
-            # OSError covers Windows' WinError 87 for gone PIDs.
+        if not _pid_exists(pid):
             break
+        _time.sleep(0.5)
 
     if get_running_pid() is None:
         remove_pid_file()
@@ -2910,22 +2907,49 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     # stays alive; real user Ctrl+C still comes through prompt_toolkit /
     # the asyncio signal handler when running in a real console.
     #
-    # Detection: sys.stdin is None / stdin-not-a-tty AND we're on Windows.
-    # This mirrors the same pattern as ``cli.py`` (commit 449ad952b).
+    # IMPORTANT lesson (May 2026): we originally gated this on "stdin is
+    # NOT a TTY" assuming only detached pythonw runs would be vulnerable.
+    # Wrong. When the user runs `hermes gateway start` from a PowerShell
+    # console, the gateway inherits that console and stdin IS a TTY —
+    # but it's STILL vulnerable to CTRL_C_EVENT broadcast by any sibling
+    # `hermes` invocation (like `hermes gateway status` 30 seconds later)
+    # because Windows routes console events to all processes sharing the
+    # console. Every hermes CLI process after that sibling fires is a
+    # potential drive-by killer. So on Windows, for `gateway run`
+    # specifically (never interactive by design), always install the
+    # SIGINT absorber regardless of TTY state.
+    try:
+        _stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
+    except (ValueError, OSError):
+        _stdin_is_tty = False
     if is_windows():
         try:
-            _stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
-        except (ValueError, OSError):
-            _stdin_is_tty = False
-        if not _stdin_is_tty:
-            try:
-                signal.signal(signal.SIGINT, signal.SIG_IGN)
-                if hasattr(signal, "SIGBREAK"):
-                    signal.signal(signal.SIGBREAK, signal.SIG_IGN)
-            except (OSError, ValueError):
-                # SetConsoleCtrlHandler not available (rare on Windows) —
-                # best-effort, proceed either way.
-                pass
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            if hasattr(signal, "SIGBREAK"):
+                signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+        except (OSError, ValueError):
+            # SetConsoleCtrlHandler not available (rare on Windows) —
+            # best-effort, proceed either way.
+            pass
+        # Python's signal module only hooks SIGINT/SIGBREAK. To also
+        # absorb CTRL_CLOSE_EVENT / CTRL_LOGOFF_EVENT and any other
+        # console control signals Windows may broadcast to the console
+        # process group, call the native SetConsoleCtrlHandler(NULL, TRUE)
+        # — this tells the kernel to IGNORE all console control events
+        # for this process entirely, which is what background services
+        # are supposed to do. Belt-and-braces over the Python-level
+        # handlers above.
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            # BOOL SetConsoleCtrlHandler(NULL, Add)  —  Add=TRUE means
+            # "install the NULL handler", which has the documented
+            # effect of ignoring Ctrl+C. Called twice for defense in
+            # depth: once before any Python import could have flipped
+            # our disposition, once as our last word.
+            kernel32.SetConsoleCtrlHandler(None, 1)
+        except (OSError, AttributeError):
+            pass
 
     # Refresh the systemd unit definition on every boot so that restart
     # settings (RestartSec, StartLimitIntervalSec, etc.) stay current even
@@ -2954,15 +2978,86 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=always will retry on transient errors
     verbosity = None if quiet else verbose
+
+    # ── Exit-path diagnostics ────────────────────────────────────────────
+    # When the gateway dies silently on Windows (no shutdown log, no
+    # traceback in gateway.log / errors.log), we're usually blind to the
+    # cause. The code below captures *every* way the asyncio.run() call
+    # below can return, with full context dumped to a dedicated log so
+    # the next silent death yields evidence instead of a mystery. This
+    # is diagnostic scaffolding; cheap to keep on, costs nothing during
+    # normal operation, and the emitted lines are opt-in via the
+    # HERMES_GATEWAY_EXIT_DIAG env var (default: on while we're still
+    # chasing the Windows lifecycle bug).
+    import atexit as _atexit
+    import traceback as _traceback
+    from datetime import datetime as _dt, timezone as _tz
+
+    def _exit_diag(tag: str, **extra: object) -> None:
+        if os.environ.get("HERMES_GATEWAY_EXIT_DIAG", "1") != "1":
+            return
+        try:
+            from hermes_constants import get_hermes_home as _ghh
+            log_dir = _ghh() / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            ts = _dt.now(_tz.utc).isoformat()
+            line = {
+                "ts": ts,
+                "tag": tag,
+                "pid": os.getpid(),
+                "python": sys.version.split()[0],
+                "platform": sys.platform,
+                **extra,
+            }
+            import json as _json
+            with open(log_dir / "gateway-exit-diag.log", "a", encoding="utf-8") as f:
+                f.write(_json.dumps(line, default=str) + "\n")
+        except Exception:
+            pass  # never let the diagnostic itself crash the gateway
+
+    _exit_diag(
+        "gateway.start",
+        replace=replace,
+        argv=sys.argv,
+        stdin_is_tty=_stdin_is_tty,
+    )
+
+    def _atexit_hook() -> None:
+        _exit_diag("atexit.hook", sys_exc=repr(sys.exc_info()))
+
+    _atexit.register(_atexit_hook)
+
+    success = False
     try:
         success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+        _exit_diag("asyncio.run.returned", success=success)
     except KeyboardInterrupt:
         # On Windows-detached runs this shouldn't fire (we absorb SIGINT above),
         # but keep the handler for console runs.
+        _exit_diag(
+            "asyncio.run.KeyboardInterrupt",
+            traceback=_traceback.format_exc(),
+        )
         print("\nGateway stopped.")
         return
+    except SystemExit as e:
+        _exit_diag("asyncio.run.SystemExit", code=getattr(e, "code", None),
+                   traceback=_traceback.format_exc())
+        raise
+    except BaseException as e:
+        # Absolutely everything else: Exception, asyncio.CancelledError,
+        # even exotic BaseException subclasses. We want the cause logged.
+        _exit_diag(
+            "asyncio.run.exception",
+            exc_type=type(e).__name__,
+            exc_repr=repr(e),
+            traceback=_traceback.format_exc(),
+        )
+        raise
     if not success:
+        _exit_diag("gateway.exit_nonzero")
         sys.exit(1)
+    _exit_diag("gateway.exit_clean")
 
 
 # =============================================================================

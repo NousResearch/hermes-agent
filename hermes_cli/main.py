@@ -5787,16 +5787,14 @@ def _kill_stale_dashboard_processes(
         while pending and _time.monotonic() < deadline:
             _time.sleep(0.1)
             still_pending = []
+            # On Windows, os.kill(pid, 0) is NOT a no-op. Route through
+            # the cross-platform existence check.
+            from gateway.status import _pid_exists
             for pid in pending:
-                try:
-                    os.kill(pid, 0)  # probe
-                except ProcessLookupError:
-                    killed.append(pid)
-                except (PermissionError, OSError):
-                    # Can't probe — assume still there.
+                if _pid_exists(pid):
                     still_pending.append(pid)
                 else:
-                    still_pending.append(pid)
+                    killed.append(pid)
             pending = still_pending
 
         # SIGKILL any survivors.

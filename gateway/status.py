@@ -299,6 +299,71 @@ def _try_acquire_file_lock(handle) -> bool:
         return False
 
 
+def _pid_exists(pid: int) -> bool:
+    """Cross-platform "is this PID alive" check that does NOT kill the target.
+
+    CRITICAL on Windows: Python's ``os.kill(pid, 0)`` is NOT a no-op like it
+    is on POSIX. CPython's Windows implementation
+    (``Modules/posixmodule.c::os_kill_impl``) treats ``sig=0`` as
+    ``CTRL_C_EVENT`` because the two values collide at the C level, and
+    routes it through ``GenerateConsoleCtrlEvent(0, pid)`` — which sends
+    a Ctrl+C to the entire console process group containing the target
+    PID, not just the PID itself. Any caller that wanted to "check if
+    this PID is alive" via ``os.kill(pid, 0)`` on Windows was silently
+    killing that process (and often unrelated processes in the same
+    console group). Long-standing Python quirk; see bpo-14484.
+
+    Fix: use the Win32 ``OpenProcess`` / ``WaitForSingleObject`` pair on
+    Windows to check existence without any signal path; use the POSIX
+    ``os.kill(pid, 0)`` idiom on POSIX where it actually is a no-op.
+    """
+    if _IS_WINDOWS:
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            # Pin return types — default ctypes restype is c_int (signed),
+            # which mangles WAIT_* DWORD return codes into negative numbers.
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.WaitForSingleObject.restype = ctypes.c_uint
+            kernel32.GetLastError.restype = ctypes.c_uint
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            SYNCHRONIZE = 0x100000  # required for WaitForSingleObject
+            WAIT_TIMEOUT = 0x00000102
+            ERROR_INVALID_PARAMETER = 87
+            ERROR_ACCESS_DENIED = 5
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, int(pid)
+            )
+            if not handle:
+                err = kernel32.GetLastError()
+                if err == ERROR_INVALID_PARAMETER:
+                    return False  # PID definitely gone
+                if err == ERROR_ACCESS_DENIED:
+                    return True   # Exists but owned by another user/session
+                return False      # Conservative default for unknown errors
+            try:
+                wait_result = kernel32.WaitForSingleObject(handle, 0)
+                # WAIT_TIMEOUT = still running; anything else (WAIT_OBJECT_0
+                # via exit, WAIT_FAILED via handle issue) = treat as gone.
+                return wait_result == WAIT_TIMEOUT
+            finally:
+                kernel32.CloseHandle(handle)
+        except (OSError, AttributeError):
+            return False
+    else:
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # Process exists but we can't signal it — still alive.
+            return True
+        except OSError:
+            return False
+
+
+
 def _release_file_lock(handle) -> None:
     try:
         if _IS_WINDOWS:
@@ -503,10 +568,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
 
         stale = existing_pid is None
         if not stale:
-            try:
-                os.kill(existing_pid, 0)
-            except (ProcessLookupError, PermissionError, OSError):
-                # Windows raises OSError with WinError 87 for invalid pid check
+            if not _pid_exists(existing_pid):
                 stale = True
             else:
                 current_start = _get_process_start_time(existing_pid)
@@ -517,7 +579,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                 ):
                     stale = True
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
-                # processes still respond to os.kill(pid, 0) but are not
+                # processes still appear alive to _pid_exists but are not
                 # actually running. Treat them as stale so --replace works.
                 if not stale:
                     try:
@@ -824,20 +886,7 @@ def get_running_pid(
         if pid is None:
             continue
 
-        try:
-            os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
-        except ProcessLookupError:
-            continue
-        except PermissionError:
-            # The process exists but belongs to another user/service scope.
-            # With the runtime lock still held, prefer keeping it visible
-            # rather than deleting the PID file as "stale".
-            if _record_looks_like_gateway(record):
-                return pid
-            continue
-        except OSError:
-            # Windows raises OSError with WinError 87 for an invalid pid
-            # (process is definitely gone). Treat as "process doesn't exist".
+        if not _pid_exists(pid):
             continue
 
         recorded_start = record.get("start_time")

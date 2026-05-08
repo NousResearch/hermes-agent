@@ -70,14 +70,11 @@ def _clear_active() -> None:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # Process exists but we can't signal it — treat as alive.
-        return True
-    return True
+    # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484) — it
+    # routes through GenerateConsoleCtrlEvent and can kill the target.
+    # Use the cross-platform existence check.
+    from gateway.status import _pid_exists
+    return _pid_exists(pid)
 
 
 # ---------------------------------------------------------------------------

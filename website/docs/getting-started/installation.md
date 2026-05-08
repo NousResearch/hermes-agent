@@ -25,11 +25,11 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 ```
 
 The installer detects Termux automatically and switches to a tested Android flow:
-- uses Termux `pkg` for system dependencies (`git`, `python`, `nodejs`, `ripgrep`, `ffmpeg`, build tools)
+- uses Termux `pkg` for hard requirements (`git`, `python`, certificates/curl, build tools as needed)
 - creates the virtualenv with `python -m venv`
 - exports `ANDROID_API_LEVEL` automatically for Android wheel builds
-- installs a curated `.[termux]` extra with `pip`
-- skips the untested browser / WhatsApp bootstrap by default
+- installs `.[termux-minimal]` by default, `.[termux]` for `--profile standard`, or `.[termux-all]` for `--full`
+- skips Node/browser, WhatsApp, TUI/npm, voice/TTS, dashboard, and `ffmpeg` unless the selected profile or `--with ...` requests them
 
 If you want the fully explicit path, follow the dedicated [Termux guide](./termux.md).
 
@@ -37,9 +37,23 @@ If you want the fully explicit path, follow the dedicated [Termux guide](./termu
 Native Windows is **not supported**. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes Agent from there. The install command above works inside WSL2.
 :::
 
+The default installer creates a **minimal** Hermes profile: it installs the Python CLI, provider/model setup, skills, and a small default toolset. It does **not** install Node.js, browser automation, the TUI/npm frontend, dashboard server deps, voice/TTS deps, messaging gateway extras, or `ffmpeg`.
+
+For the legacy all-in install, pass `--full`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --full
+```
+
+To opt into specific features during install, use `--with`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --with terminal,file,web-search
+```
+
 ### What the Installer Does
 
-The installer handles everything automatically — all dependencies (Python, Node.js, ripgrep, ffmpeg), the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. By the end, you're ready to chat.
+The installer handles the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. The minimal profile installs only the core Python package dependencies. Selected profiles/features add their own extras: for example `--with dashboard` installs web server dependencies, `--with browser` enables Node/browser setup, and `--with tts`/`--with voice` checks `ffmpeg`. By the end, you're ready to chat in the classic CLI; install extra features only when you need them.
 
 #### Install Layout
 
@@ -75,16 +89,16 @@ hermes setup          # Or run the full setup wizard to configure everything at 
 
 ## Prerequisites
 
-The only prerequisite is **Git**. The installer automatically handles everything else:
+The only hard prerequisite is **Git**. Minimal install keeps the system footprint small:
 
-- **uv** (fast Python package manager)
-- **Python 3.11** (via uv, no sudo needed)
-- **Node.js v22** (for browser automation and WhatsApp bridge)
-- **ripgrep** (fast file search)
-- **ffmpeg** (audio format conversion for TTS)
+- **uv** (fast Python package manager) is bootstrapped if missing
+- **Python 3.11** is managed via uv on desktop platforms
+- **Node.js v22** is only checked/installed for browser or TUI features (`--with browser`, `--with tui`, or `--full`)
+- **ripgrep** is optional in minimal; file search falls back when it is absent
+- **ffmpeg** is only checked/installed for TTS or voice (`--with tts`, `--with voice`, or `--full`)
 
 :::info
-You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually. The installer detects what's missing and installs it for you. Just make sure `git` is available (`git --version`).
+You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually for the minimal smoke path. Make sure `git` is available (`git --version`), run the installer, reload your shell, then start with `hermes`.
 :::
 
 :::tip Nix users

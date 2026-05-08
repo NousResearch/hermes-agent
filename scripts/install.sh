@@ -69,6 +69,8 @@ ROOT_FHS_LAYOUT=false
 USE_VENV=true
 RUN_SETUP=true
 BRANCH="main"
+INSTALL_PROFILE="${HERMES_INSTALL_PROFILE:-minimal}"
+WITH_FEATURES=()
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -103,6 +105,49 @@ while [[ $# -gt 0 ]]; do
             HERMES_HOME="$2"
             shift 2
             ;;
+        --profile)
+            if [ -z "${2:-}" ]; then
+                echo "Missing value for --profile (valid: minimal, standard, full)"
+                exit 1
+            fi
+            case "$2" in
+                minimal|standard|full) INSTALL_PROFILE="$2" ;;
+                *) echo "Unknown profile: $2 (valid: minimal, standard, full)"; exit 1 ;;
+            esac
+            shift 2
+            ;;
+        --minimal)
+            INSTALL_PROFILE="minimal"
+            shift
+            ;;
+        --full)
+            INSTALL_PROFILE="full"
+            WITH_FEATURES+=("all")
+            shift
+            ;;
+        --with)
+            if [ -z "${2:-}" ]; then
+                echo "Missing value for --with"
+                echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web, web-search, image-gen, cron, file, terminal, all"
+                exit 1
+            fi
+            IFS=',' read -ra _features <<< "$2"
+            for _feature in "${_features[@]}"; do
+                _feature="${_feature//[[:space:]]/}"
+                [ -z "$_feature" ] && continue
+                case "$_feature" in
+                    browser|tts|voice|dashboard|tui|gateway|web|web-search|image-gen|cron|file|terminal|all)
+                        WITH_FEATURES+=("$_feature")
+                        ;;
+                    *)
+                        echo "Unknown --with feature: $_feature"
+                        echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web, web-search, image-gen, cron, file, terminal, all"
+                        exit 1
+                        ;;
+                esac
+            done
+            shift 2
+            ;;
         -h|--help)
             echo "Hermes Agent Installer"
             echo ""
@@ -112,6 +157,12 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --profile NAME Install profile: minimal (default), standard, full"
+            echo "  --minimal      Alias for --profile minimal"
+            echo "  --full         Alias for --profile full / --with all"
+            echo "  --with LIST    Add optional features (comma-separated):"
+            echo "                 browser, tts, voice, dashboard, tui, gateway, web,"
+            echo "                 web-search, image-gen, cron, file, terminal, all"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -164,6 +215,84 @@ log_warn() {
 
 log_error() {
     echo -e "${RED}✗${NC} $1"
+}
+
+has_feature() {
+    local needle="$1"
+    local feature
+    for feature in "${WITH_FEATURES[@]}"; do
+        if [ "$feature" = "$needle" ] || [ "$feature" = "all" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+profile_includes_feature() {
+    local feature="$1"
+    if [ "$INSTALL_PROFILE" = "full" ]; then
+        return 0
+    fi
+    if has_feature "$feature"; then
+        return 0
+    fi
+    return 1
+}
+
+should_check_node() {
+    profile_includes_feature "browser" || profile_includes_feature "tui"
+}
+
+should_check_ffmpeg() {
+    profile_includes_feature "tts" || profile_includes_feature "voice"
+}
+
+should_check_web_network() {
+    profile_includes_feature "browser" || profile_includes_feature "web" || \
+        profile_includes_feature "web-search" || profile_includes_feature "dashboard"
+}
+
+resolve_python_extras() {
+    if [ "$INSTALL_PROFILE" = "full" ] || has_feature "all"; then
+        echo "all"
+        return 0
+    fi
+
+    local extras=()
+    case "$INSTALL_PROFILE" in
+        minimal) extras+=("minimal") ;;
+        standard) extras+=("standard") ;;
+    esac
+
+    has_feature "browser" && extras+=("browser")
+    has_feature "tts" && extras+=("tts")
+    has_feature "voice" && extras+=("voice")
+    has_feature "dashboard" && extras+=("dashboard")
+    has_feature "web" && extras+=("web")
+    has_feature "web-search" && extras+=("web-search")
+    has_feature "image-gen" && extras+=("image-gen")
+    has_feature "cron" && extras+=("cron")
+    has_feature "gateway" && extras+=("messaging")
+
+    local joined=""
+    local extra
+    for extra in "${extras[@]}"; do
+        case ",$joined," in
+            *,"$extra",*) ;;
+            *) joined="${joined:+$joined,}$extra" ;;
+        esac
+    done
+    echo "$joined"
+}
+
+resolve_termux_extra() {
+    if [ "$INSTALL_PROFILE" = "full" ] || has_feature "all"; then
+        echo "termux-all"
+    elif [ "$INSTALL_PROFILE" = "standard" ]; then
+        echo "termux"
+    else
+        echo "termux-minimal"
+    fi
 }
 
 prompt_yes_no() {
@@ -484,7 +613,13 @@ check_git() {
 }
 
 check_node() {
-    log_info "Checking Node.js (for browser tools)..."
+    if ! should_check_node; then
+        HAS_NODE=false
+        log_info "Skipping Node.js check (profile '$INSTALL_PROFILE' does not include browser/TUI features)"
+        return 0
+    fi
+
+    log_info "Checking Node.js (for browser/TUI features)..."
 
     if command -v node &> /dev/null; then
         local found_ver=$(node --version)
@@ -620,11 +755,15 @@ install_node() {
 }
 
 check_network_prerequisites() {
-    log_info "Checking internet connectivity for package install and web tools..."
+    log_info "Checking internet connectivity for package install..."
 
     local url
     local failed=false
-    local checks=("https://pypi.org/simple/" "https://duckduckgo.com/")
+    local checks=("https://pypi.org/simple/")
+    if should_check_web_network; then
+        checks+=("https://duckduckgo.com/")
+        log_info "Selected web/browser features require web-tool connectivity checks"
+    fi
 
     if ! command -v curl >/dev/null 2>&1; then
         log_warn "curl not found; skipping connectivity probes"
@@ -647,7 +786,10 @@ check_network_prerequisites() {
         log_warn "Termux network prerequisites may be incomplete."
         log_info "Try: pkg install -y ca-certificates curl && pkg update"
         log_info "If mirrors are stale: termux-change-repo"
-        log_info "Then test: curl -I https://pypi.org/simple/ && curl -I https://duckduckgo.com/"
+        log_info "Then test: curl -I https://pypi.org/simple/"
+        if should_check_web_network; then
+            log_info "Web-tool probe: curl -I https://duckduckgo.com/"
+        fi
     else
         log_warn "Network checks failed. Hermes install may complete, but web search and dependency downloads can fail."
         log_info "Verify internet/DNS and retry if pip install fails."
@@ -665,17 +807,23 @@ install_system_packages() {
     if command -v rg &> /dev/null; then
         log_success "$(rg --version | head -1) found"
         HAS_RIPGREP=true
-    else
+    elif [ "$INSTALL_PROFILE" = "full" ] || has_feature "all"; then
         need_ripgrep=true
+    else
+        log_warn "ripgrep not found (file search will use grep fallback); not installing it for minimal profile"
     fi
 
-    log_info "Checking ffmpeg (TTS voice messages)..."
-    if command -v ffmpeg &> /dev/null; then
-        local ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
-        log_success "ffmpeg $ffmpeg_ver found"
-        HAS_FFMPEG=true
+    if should_check_ffmpeg; then
+        log_info "Checking ffmpeg (TTS/voice features)..."
+        if command -v ffmpeg &> /dev/null; then
+            local ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
+            log_success "ffmpeg $ffmpeg_ver found"
+            HAS_FFMPEG=true
+        else
+            need_ffmpeg=true
+        fi
     else
-        need_ffmpeg=true
+        log_info "Skipping ffmpeg check (profile '$INSTALL_PROFILE' does not include TTS/voice features)"
     fi
 
     # Termux always needs the Android build toolchain for the tested pip path,
@@ -985,24 +1133,29 @@ install_deps() {
 
         "$PIP_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null
 
-        # Try the broad Termux profile first (best-effort "install all" for Android),
-        # then fall back to the conservative Termux baseline, then base package.
-        if ! "$PIP_PYTHON" -m pip install -e '.[termux-all]' -c constraints-termux.txt; then
-            log_warn "Termux broad profile (.[termux-all]) failed, trying baseline Termux profile..."
-            if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
-                log_warn "Termux baseline profile (.[termux]) failed, trying base install..."
+        local termux_extra
+        termux_extra="$(resolve_termux_extra)"
+        local termux_install_log
+        termux_install_log=$(mktemp)
+        if ! "$PIP_PYTHON" -m pip install -e ".[${termux_extra}]" -c constraints-termux.txt 2>"$termux_install_log"; then
+            log_warn "Termux profile (.[${termux_extra}]) failed, trying minimal Termux profile..."
+            log_info "Reason: $(tail -5 "$termux_install_log" | head -3)"
+            rm -f "$termux_install_log"
+            if ! "$PIP_PYTHON" -m pip install -e '.[termux-minimal]' -c constraints-termux.txt; then
+                log_warn "Termux minimal profile (.[termux-minimal]) failed, trying base install..."
                 if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
                     log_error "Package installation failed on Termux."
                     log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl ca-certificates curl"
-                    log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
+                    log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[${termux_extra}]' -c constraints-termux.txt"
                     exit 1
                 fi
             fi
+        else
+            rm -f "$termux_install_log"
         fi
 
         log_success "Main package installed"
-        log_info "Termux note: matrix e2ee and local faster-whisper extras are excluded from .[termux-all] due to upstream Android wheel/toolchain blockers."
-        log_info "Termux note: browser/WhatsApp tooling is not installed by default; see the Termux guide for optional follow-up steps."
+        log_info "Termux note: full profile uses .[termux-all]; the default profile stays minimal and skips browser/WhatsApp tooling."
 
         if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
             log_info "tinker-atropos submodule found — skipping install (optional, for RL training)"
@@ -1020,7 +1173,7 @@ install_deps() {
 
     # On Debian/Ubuntu (including WSL), some Python packages need build tools.
     # Check and offer to install them if missing.
-    if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
+    if { [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; } && { [ "$INSTALL_PROFILE" = "full" ] || has_feature "voice" || has_feature "all"; }; then
         local need_build_tools=false
         for pkg in gcc python3-dev libffi-dev; do
             if ! dpkg -s "$pkg" &>/dev/null; then
@@ -1046,21 +1199,27 @@ install_deps() {
         fi
     fi
 
-    # Install the main package in editable mode with all extras.
-    # Try [all] first, fall back to base install if extras have issues.
-    ALL_INSTALL_LOG=$(mktemp)
-    if ! $UV_CMD pip install -e ".[all]" 2>"$ALL_INSTALL_LOG"; then
-        log_warn "Full install (.[all]) failed, trying base install..."
-        log_info "Reason: $(tail -5 "$ALL_INSTALL_LOG" | head -3)"
-        rm -f "$ALL_INSTALL_LOG"
+    # Install the main package in editable mode with the selected profile/extras.
+    local extras
+    extras="$(resolve_python_extras)"
+    local install_target="."
+    if [ -n "$extras" ]; then
+        install_target=".[${extras}]"
+    fi
+
+    INSTALL_LOG=$(mktemp)
+    if ! $UV_CMD pip install -e "$install_target" 2>"$INSTALL_LOG"; then
+        log_warn "Install ($install_target) failed, trying base install..."
+        log_info "Reason: $(tail -5 "$INSTALL_LOG" | head -3)"
+        rm -f "$INSTALL_LOG"
         if ! $UV_CMD pip install -e "."; then
             log_error "Package installation failed."
-            log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
-            log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
+            log_info "Check that build tools are installed if your selected extras need native wheels."
+            log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '$install_target'"
             exit 1
         fi
     else
-        rm -f "$ALL_INSTALL_LOG"
+        rm -f "$INSTALL_LOG"
     fi
 
     log_success "Main package installed"
@@ -1093,9 +1252,9 @@ setup_path() {
         log_warn "hermes entry point not found at $HERMES_BIN"
         log_info "This usually means the pip install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
-            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
+            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[$(resolve_termux_extra)]' -c constraints-termux.txt"
         else
-            log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[all]'"
+            log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[$(resolve_python_extras)]'"
         fi
         return 0
     fi
@@ -1299,6 +1458,11 @@ SOUL_EOF
 }
 
 install_node_deps() {
+    if ! should_check_node; then
+        log_info "Skipping Node.js dependencies (browser/TUI features not selected)"
+        return 0
+    fi
+
     if [ "$HAS_NODE" = false ]; then
         log_info "Skipping Node.js dependencies (Node not installed)"
         return 0
@@ -1311,7 +1475,7 @@ install_node_deps() {
         return 0
     fi
 
-    if [ -f "$INSTALL_DIR/package.json" ]; then
+    if profile_includes_feature "browser" && [ -f "$INSTALL_DIR/package.json" ]; then
         log_info "Installing Node.js dependencies (browser tools)..."
         cd "$INSTALL_DIR"
         npm install --silent 2>/dev/null || {
@@ -1379,7 +1543,7 @@ install_node_deps() {
     fi
 
     # Install TUI dependencies
-    if [ -f "$INSTALL_DIR/ui-tui/package.json" ]; then
+    if profile_includes_feature "tui" && [ -f "$INSTALL_DIR/ui-tui/package.json" ]; then
         log_info "Installing TUI dependencies..."
         cd "$INSTALL_DIR/ui-tui"
         npm install --silent 2>/dev/null || {
@@ -1419,9 +1583,9 @@ run_setup_wizard() {
     # Run hermes setup using the venv Python directly (no activation needed).
     # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
     if [ "$USE_VENV" = true ]; then
-        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
+        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup --profile "$INSTALL_PROFILE" < /dev/tty
     else
-        python -m hermes_cli.main setup < /dev/tty
+        python -m hermes_cli.main setup --profile "$INSTALL_PROFILE" < /dev/tty
     fi
 }
 

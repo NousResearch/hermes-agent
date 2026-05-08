@@ -3062,6 +3062,32 @@ def run_setup_wizard(args):
         )
         return
 
+    requested_profile = getattr(args, "profile", None)
+    if getattr(args, "setup_minimal", False):
+        requested_profile = "minimal"
+
+    if requested_profile:
+        config["install_profile"] = requested_profile
+        if requested_profile == "minimal":
+            config["toolsets"] = ["hermes-minimal"]
+            config.setdefault("platform_toolsets", {})["cli"] = ["hermes-minimal"]
+            print()
+            print_header("Minimal Setup")
+            print_info("Configuring only the provider and model required for classic CLI chat.")
+            setup_model_provider(config, quick=True)
+            save_config(config)
+            _print_setup_summary(config, hermes_home)
+            _offer_launch_chat()
+            return
+        if requested_profile == "standard":
+            config["toolsets"] = ["skills", "file", "terminal", "todo", "memory", "session_search", "clarify"]
+            config.setdefault("platform_toolsets", {})["cli"] = [
+                "skills", "file", "terminal", "todo", "memory", "session_search", "clarify"
+            ]
+        elif requested_profile == "full":
+            config["toolsets"] = ["hermes-cli"]
+            config.setdefault("platform_toolsets", {})["cli"] = ["hermes-cli"]
+
     # Check if a specific section was requested
     section = getattr(args, "section", None)
     if section:

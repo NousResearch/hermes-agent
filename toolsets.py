@@ -26,7 +26,14 @@ Usage:
 from typing import List, Dict, Any, Set, Optional
 
 
-# Shared tool list for CLI and all messaging platform toolsets.
+# Bare-minimum tool list for a fresh minimal install.  These tools have no
+# heavyweight runtime dependencies and keep the default schema small.
+_HERMES_MINIMAL_TOOLS = [
+    "skills_list", "skill_view", "skill_manage",
+    "todo", "clarify",
+]
+
+# Shared legacy/full tool list for CLI and all messaging platform toolsets.
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
@@ -353,6 +360,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "hermes-minimal": {
+        "description": "Bare minimum Hermes toolset: skills and minimal interaction helpers only",
+        "tools": _HERMES_MINIMAL_TOOLS,
+        "includes": []
+    },
+
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
         "tools": _HERMES_CORE_TOOLS,

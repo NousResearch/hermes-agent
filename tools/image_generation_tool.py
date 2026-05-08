@@ -29,8 +29,6 @@ import uuid
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
-import fal_client
-
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
@@ -40,6 +38,23 @@ from tools.tool_backend_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+_fal_client = None
+
+
+def _require_fal_client():
+    """Import fal-client lazily so minimal installs can import this module."""
+    global _fal_client
+    if _fal_client is None:
+        try:
+            import fal_client as client
+        except ImportError as exc:
+            raise RuntimeError(
+                "Image generation dependencies are not installed. "
+                "Install them with `hermes install-feature image-gen` or "
+                "`pip install 'hermes-agent[image-gen]'`."
+            ) from exc
+        _fal_client = client
+    return _fal_client
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +353,7 @@ class _ManagedFalSyncClient:
     """Small per-instance wrapper around fal_client.SyncClient for managed queue hosts."""
 
     def __init__(self, *, key: str, queue_run_origin: str):
+        fal_client = _require_fal_client()
         sync_client_class = getattr(fal_client, "SyncClient", None)
         if sync_client_class is None:
             raise RuntimeError("fal_client.SyncClient is required for managed FAL gateway mode")
@@ -438,7 +454,7 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
-        return fal_client.submit(model, arguments=arguments, headers=request_headers)
+        return _require_fal_client().submit(model, arguments=arguments, headers=request_headers)
 
     managed_client = _get_managed_fal_client(managed_gateway)
     try:
@@ -788,9 +804,9 @@ def check_image_generation_requirements() -> bool:
     """
     try:
         if check_fal_api_key():
-            fal_client  # noqa: F401 — SDK presence check
+            _require_fal_client()
             return True
-    except ImportError:
+    except (ImportError, RuntimeError):
         pass
 
     # Probe plugin providers. Discovery is idempotent and cheap.

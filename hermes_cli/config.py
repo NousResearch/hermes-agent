@@ -397,7 +397,13 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
-    "toolsets": ["hermes-cli"],
+    "install_profile": "minimal",
+    # Legacy top-level toolsets value is kept for compatibility with callers
+    # that have not moved to platform_toolsets yet.
+    "toolsets": ["hermes-minimal"],
+    "platform_toolsets": {
+        "cli": ["hermes-minimal"],
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

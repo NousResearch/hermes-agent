@@ -28,10 +28,25 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-import websockets
-from websockets.asyncio.client import ClientConnection
+try:
+    import websockets
+    from websockets.asyncio.client import ClientConnection
+except ImportError:  # Browser/CDP support is optional in the minimal profile.
+    websockets = None  # type: ignore[assignment]
+    ClientConnection = Any  # type: ignore[misc, assignment]
 
 logger = logging.getLogger(__name__)
+
+
+def _require_websockets():
+    """Return the websockets module or raise a clear optional-feature error."""
+    if websockets is None:
+        raise RuntimeError(
+            "Browser CDP dependencies are not installed. "
+            "Install them with `hermes install-feature browser` or "
+            "`pip install 'hermes-agent[browser]'`."
+        )
+    return websockets
 
 
 # ── Config defaults ───────────────────────────────────────────────────────────
@@ -505,7 +520,10 @@ class CDPSupervisor:
         while not self._stop_requested:
             try:
                 self._ws = await asyncio.wait_for(
-                    websockets.connect(self.cdp_url, max_size=50 * 1024 * 1024),
+                    _require_websockets().connect(
+                        self.cdp_url,
+                        max_size=50 * 1024 * 1024,
+                    ),
                     timeout=10.0,
                 )
             except Exception as e:

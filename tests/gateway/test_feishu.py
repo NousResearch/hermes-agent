@@ -4885,3 +4885,42 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestOutboundPayloadMarkdownTables(unittest.TestCase):
+    """Markdown tables must reach Feishu via the post pipeline so the
+    surrounding prose still renders.  Forcing the entire reply to plain
+    text (#21778) leaves headings, fences, bold, links, lists all
+    appearing as raw markdown source."""
+
+    def _build(self, content: str) -> tuple[str, str]:
+        from gateway.platforms.feishu import FeishuAdapter
+        return FeishuAdapter._build_outbound_payload(None, content)  # type: ignore[arg-type]
+
+    def test_table_uses_post_payload(self):
+        content = (
+            "Here are the results:\n"
+            "\n"
+            "| Name  | Score |\n"
+            "|-------|-------|\n"
+            "| Alice | 12    |\n"
+            "| Bob   | 7     |\n"
+            "\n"
+            "**Total**: 19"
+        )
+        msg_type, payload = self._build(content)
+        self.assertEqual(msg_type, "post")
+        # Surrounding prose survives in the post structure.
+        decoded = json.loads(payload)
+        flattened = json.dumps(decoded)
+        self.assertIn("Here are the results", flattened)
+        self.assertIn("**Total**", flattened)
+
+    def test_plain_text_without_markdown_uses_text_payload(self):
+        msg_type, payload = self._build("Just a plain status update.")
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload), {"text": "Just a plain status update."})
+
+    def test_markdown_without_table_uses_post_payload(self):
+        msg_type, _ = self._build("# Heading\n\n**Bold** body")
+        self.assertEqual(msg_type, "post")

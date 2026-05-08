@@ -134,6 +134,79 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesAndRunsOverlaySceneRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+        store.setVariable("SCENE_MESSAGE", "overlay-ok")
+
+        val payload = HermesOverlaySceneBridge.payloadFromArguments(
+            org.json.JSONObject()
+                .put("scene_id", "test-scene")
+                .put("scene_title", "Hermes %SCENE_MESSAGE")
+                .put("scene_text", "Tasker scene %SCENE_MESSAGE")
+                .put("scene_button_text", "Close")
+                .put("scene_position", "bottom")
+                .put("scene_width_dp", 999)
+                .put("scene_hide_after_ms", 9999999),
+        )
+        assertEquals("show", payload.getString("scene_action"))
+        assertEquals("test-scene", payload.getString("scene_id"))
+        assertEquals("Hermes %SCENE_MESSAGE", payload.getString("title"))
+        assertEquals("bottom", payload.getString("position"))
+        assertEquals(560, payload.getInt("width_dp"))
+        assertEquals(600000L, payload.getLong("hide_after_ms"))
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_overlay_scene_task",
+                org.json.JSONObject()
+                    .put("id", "auto-scene")
+                    .put("scene_title", "Hermes %SCENE_MESSAGE")
+                    .put("scene_text", "Tasker scene %SCENE_MESSAGE")
+                    .put("scene_button_text", "Close")
+                    .put("scene_position", "bottom"),
+            ),
+        )
+
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals(ACTION_TYPE_OVERLAY_SCENE, created.getJSONObject("automation").getString("action_type"))
+
+        val run = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run",
+                org.json.JSONObject().put("id", "auto-scene"),
+            ),
+        )
+        assertFalse(run.toString(), run.getBoolean("success"))
+        assertEquals("show_overlay_scene", run.getJSONObject("result").getString("action"))
+        assertTrue(run.getJSONObject("result").getBoolean("requires_overlay_permission"))
+
+        val hideCreated = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_overlay_scene_task",
+                org.json.JSONObject()
+                    .put("id", "auto-hide-scene")
+                    .put("scene_action", "hide")
+                    .put("scene_id", "test-scene"),
+            ),
+        )
+        assertTrue(hideCreated.toString(), hideCreated.getBoolean("success"))
+        val hide = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run",
+                org.json.JSONObject().put("id", "auto-hide-scene"),
+            ),
+        )
+        assertTrue(hide.toString(), hide.getBoolean("success"))
+        assertEquals("hide_overlay_scene", hide.getJSONObject("result").getString("action"))
+    }
+
+    @Test
     fun bridgeCreatesPhoneStateTriggerRecords() {
         val context = RuntimeEnvironment.getApplication()
         HermesAutomationStore(context).clear()

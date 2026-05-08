@@ -484,7 +484,8 @@ class TestLaunchdServiceRecovery:
         calls = []
 
         def fake_run(cmd, check=False, **kwargs):
-            calls.append(cmd)
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -497,6 +498,36 @@ class TestLaunchdServiceRecovery:
         assert calls[:2] == [
             ["launchctl", "bootout", f"{domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
+        ]
+
+
+    def test_launchd_refresh_raises_when_bootstrap_fails_after_bootout(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append((cmd, check))
+            if cmd == ["launchctl", "bootstrap", domain, str(plist_path)]:
+                if check:
+                    raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="Input/output error")
+                return SimpleNamespace(returncode=5, stdout="", stderr="Input/output error")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert calls == [
+            (["launchctl", "bootout", f"{domain}/{label}"], False),
+            (["launchctl", "bootstrap", domain, str(plist_path)], True),
         ]
 
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
@@ -516,6 +547,7 @@ class TestLaunchdServiceRecovery:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: True)
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.launchd_start()
@@ -544,6 +576,7 @@ class TestLaunchdServiceRecovery:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: True)
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.launchd_start()

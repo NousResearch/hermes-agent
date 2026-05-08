@@ -252,6 +252,12 @@ class TestTelegramBotCommands:
         assert "steer" in names
 
 
+    def test_includes_droidmodels_gateway_command(self):
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "droidmodels" in names
+        assert "droidmodels" in GATEWAY_KNOWN_COMMANDS
+        assert resolve_command("droidmodels").name == "droidmodels"
+
 class TestSlackSubcommandMap:
     def test_returns_dict(self):
         mapping = slack_subcommand_map()

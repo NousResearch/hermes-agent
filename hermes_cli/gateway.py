@@ -1951,6 +1951,18 @@ def get_launchd_plist_path() -> Path:
     name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
     return _launchd_user_home() / "Library" / "LaunchAgents" / f"{name}.plist"
 
+
+def _launchd_hermes_agent_app_executable() -> Path:
+    """Return the local macOS app-wrapper executable for TCC permission UI naming.
+
+    Running the launchd gateway through a venv ``python`` binary makes macOS
+    Privacy & Security panes show the requester as Python/Python3. If the user
+    has installed a Python-compatible Hermes Agent app wrapper, use its executable
+    as argv[0] so permission prompts identify the process as Hermes Agent.
+    """
+    return _launchd_user_home() / "Applications" / "Hermes Agent.app" / "Contents" / "MacOS" / "Hermes Agent"
+
+
 def _detect_venv_dir() -> Path | None:
     """Detect the active virtualenv directory.
 
@@ -2740,8 +2752,37 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
+def _launchd_app_can_run_hermes(app_python_path: Path) -> bool:
+    """Return True when the macOS app wrapper can import Hermes dependencies.
+
+    Some lightweight app wrappers are only a renamed Python executable. They may
+    satisfy TCC naming goals but lack the venv's site-packages under launchd,
+    causing gateway crash loops on imports such as ``yaml``. Prefer the app only
+    when it can actually run the Hermes module; otherwise fall back to the venv
+    Python so Telegram stays online.
+    """
+    if not app_python_path.exists():
+        return False
+    try:
+        result = subprocess.run(
+            [str(app_python_path), "-c", "import yaml; import hermes_cli.main"],
+            cwd=str(PROJECT_ROOT),
+            env={**os.environ, "PYTHONPATH": str(PROJECT_ROOT)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
+    app_python_path = _launchd_hermes_agent_app_executable()
+    if _launchd_app_can_run_hermes(app_python_path):
+        python_path = str(app_python_path)
     working_dir = str(PROJECT_ROOT)
     hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
@@ -2852,9 +2893,12 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
-    # Bootout/bootstrap so launchd picks up the new definition
+    # Bootout/bootstrap so launchd picks up the new definition. bootout is
+    # intentionally tolerant because the job may already be unloaded, but
+    # bootstrap must be checked: if it fails after bootout, the service is left
+    # unloaded even though the plist exists on disk.
     subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
+    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 

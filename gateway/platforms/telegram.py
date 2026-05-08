@@ -14,6 +14,8 @@ import os
 import tempfile
 import html as _html
 import re
+import shutil
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -422,6 +424,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
+        # Droid routing picker state per chat (Telegram inline keyboard)
+        self._droid_model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -2292,6 +2296,294 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_droid_model_picker(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send Stanislav's Factory Droid routing picker as Telegram buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔒 Strict BYOK", callback_data="dm:p:byok")],
+            [InlineKeyboardButton("🧠 Inherit /model", callback_data="dm:p:inherit")],
+            [InlineKeyboardButton("✗ Cancel", callback_data="dm:x")],
+        ])
+        text = (
+            "🤖 *Factory Droid model routing*\n\n"
+            "Choose the top-level mode:\n\n"
+            "• *Strict BYOK* — then pick BYOK models per Droid role.\n"
+            "• *Inherit /model* — set all role droids to `model: inherit`, so Droid TUI `/model` controls them."
+        )
+        try:
+            thread_id = self._metadata_thread_id(metadata)
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+                message_thread_id=self._message_thread_id_for_send(thread_id),
+                **self._link_preview_kwargs(),
+            )
+            self._droid_model_picker_state[str(chat_id)] = {"msg_id": msg.message_id, "stage": "mode"}
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_droid_model_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    # Keep this aligned with Droid TUI's model settings roles.
+    # Current Droid exposes three configurable role droids:
+    # worker, user-testing-flow-validator, and scrutiny-feature-reviewer.
+    _DROID_ROLE_FILES = {
+        "worker": "worker.md",
+        "user_testing": "user-testing-flow-validator.md",
+        "scrutiny": "scrutiny-feature-reviewer.md",
+    }
+    _DROID_ROLE_LABELS = {
+        "worker": "Worker",
+        "user_testing": "User testing",
+        "scrutiny": "Scrutiny review",
+    }
+    _DROID_BYOK_FALLBACK_MODELS = [
+        {
+            "id": "custom:AEON-Qwen3.6-DFlash-[Local-BYOK]-0",
+            "displayName": "AEON Qwen3.6 DFlash [Local BYOK]",
+        },
+        {
+            "id": "custom:Step3.5-Flash-GGUF-[Local-BYOK]-1",
+            "displayName": "Step3.5 Flash GGUF [Local BYOK]",
+        },
+        {
+            "id": "custom:GLM-5.1-[Z.AI-BYOK]-2",
+            "displayName": "GLM 5.1 [Z.AI BYOK]",
+        },
+    ]
+
+    def _droid_droid_dir(self) -> _Path:
+        return _Path.home() / ".factory" / "droids"
+
+    def _load_droid_byok_models(self) -> List[Dict[str, str]]:
+        """Read BYOK/custom models configured in Droid settings."""
+        settings = _Path.home() / ".factory" / "settings.json"
+        models: List[Dict[str, str]] = []
+        if settings.exists():
+            try:
+                data = json.loads(settings.read_text())
+                for item in data.get("customModels", []) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    model_id = str(item.get("id") or "").strip()
+                    if not model_id.startswith("custom:"):
+                        continue
+                    display = str(item.get("displayName") or model_id).strip()
+                    models.append({"id": model_id, "displayName": display})
+            except Exception:
+                logger.debug("Could not read Droid custom models from %s", settings, exc_info=True)
+        return models or list(self._DROID_BYOK_FALLBACK_MODELS)
+
+    def _get_droid_role_model(self, role: str) -> str:
+        path = self._droid_droid_dir() / self._DROID_ROLE_FILES[role]
+        if not path.exists():
+            return "missing"
+        for line in path.read_text(errors="ignore").splitlines()[:30]:
+            if line.startswith("model:"):
+                return line.split(":", 1)[1].strip() or "unset"
+        return "unset"
+
+    def _set_droid_frontmatter_model(self, path: _Path, model: str) -> None:
+        text = path.read_text()
+        lines = text.splitlines()
+        end = None
+        if lines and lines[0].strip() == "---":
+            for i in range(1, len(lines)):
+                if lines[i].strip() == "---":
+                    end = i
+                    break
+        search_end = end if end is not None else min(len(lines), 20)
+        for i in range(1 if end is not None else 0, search_end):
+            if lines[i].startswith("model:"):
+                lines[i] = f"model: {model}"
+                path.write_text("\n".join(lines) + "\n")
+                return
+        insert_at = 1 if end is not None else 0
+        for i in range(1 if end is not None else 0, search_end):
+            if lines[i].startswith("name:"):
+                insert_at = i + 1
+                break
+        lines.insert(insert_at, f"model: {model}")
+        path.write_text("\n".join(lines) + "\n")
+
+    def _write_droid_models(self, updates: Dict[str, str]) -> str:
+        """Apply file->model updates with per-file backup."""
+        droid_dir = self._droid_droid_dir()
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        changed = []
+        for filename, model in updates.items():
+            path = droid_dir / filename
+            if not path.exists():
+                raise FileNotFoundError(str(path))
+            backup = path.with_name(f"{path.name}.bak-{stamp}")
+            shutil.copy2(path, backup)
+            self._set_droid_frontmatter_model(path, model)
+            changed.append((path.name, model, backup.name))
+        lines = ["Updated Droid routing:"]
+        lines.extend(f"• `{name}` → `{model}` (backup `{backup}`)" for name, model, backup in changed)
+        return "\n".join(lines)
+
+    def _apply_droid_inherit(self) -> str:
+        return "✅ *Inherit mode applied*\n" + self._write_droid_models({
+            "worker.md": "inherit",
+            "user-testing-flow-validator.md": "inherit",
+            "scrutiny-feature-reviewer.md": "inherit",
+        })
+
+    def _build_droid_role_keyboard(self) -> InlineKeyboardMarkup:
+        rows = [
+            [InlineKeyboardButton(
+                f"🛠 Worker: {self._short_droid_model(self._get_droid_role_model('worker'))}",
+                callback_data="dm:r:worker",
+            )],
+            [InlineKeyboardButton(
+                f"🧪 User testing: {self._short_droid_model(self._get_droid_role_model('user_testing'))}",
+                callback_data="dm:r:user_testing",
+            )],
+            [InlineKeyboardButton(
+                f"🔎 Scrutiny review: {self._short_droid_model(self._get_droid_role_model('scrutiny'))}",
+                callback_data="dm:r:scrutiny",
+            )],
+            [InlineKeyboardButton("◀ Back", callback_data="dm:b"), InlineKeyboardButton("Done", callback_data="dm:done")],
+        ]
+        return InlineKeyboardMarkup(rows)
+
+    def _build_droid_byok_model_keyboard(self, role: str) -> InlineKeyboardMarkup:
+        rows = []
+        for idx, model in enumerate(self._load_droid_byok_models()):
+            label = model.get("displayName") or model.get("id") or f"model {idx + 1}"
+            if len(label) > 42:
+                label = label[:39] + "..."
+            rows.append([InlineKeyboardButton(label, callback_data=f"dm:m:{role}:{idx}")])
+        rows.append([InlineKeyboardButton("◀ Roles", callback_data="dm:p:byok"), InlineKeyboardButton("✗ Cancel", callback_data="dm:x")])
+        return InlineKeyboardMarkup(rows)
+
+    @staticmethod
+    def _short_droid_model(model: str) -> str:
+        if model == "inherit":
+            return "inherit"
+        if model == "missing":
+            return "missing"
+        cleaned = model.replace("custom:", "")
+        return cleaned if len(cleaned) <= 26 else cleaned[:23] + "..."
+
+    async def _handle_droid_model_picker_callback(self, query, data: str, chat_id: str) -> None:
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(caller_id):
+            await query.answer(text="⛔ Not authorized.")
+            return
+
+        if data == "dm:x":
+            self._droid_model_picker_state.pop(chat_id, None)
+            await query.edit_message_text(text="Droid routing selection cancelled.", reply_markup=None)
+            await query.answer()
+            return
+
+        if data == "dm:b":
+            self._droid_model_picker_state.pop(chat_id, None)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔒 Strict BYOK", callback_data="dm:p:byok")],
+                [InlineKeyboardButton("🧠 Inherit /model", callback_data="dm:p:inherit")],
+                [InlineKeyboardButton("✗ Cancel", callback_data="dm:x")],
+            ])
+            await query.edit_message_text(
+                text=(
+                    "🤖 *Factory Droid model routing*\n\n"
+                    "Choose the top-level mode:\n\n"
+                    "• *Strict BYOK* — then pick BYOK models per Droid role.\n"
+                    "• *Inherit /model* — all role droids become `model: inherit`."
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+            return
+
+        if data == "dm:done":
+            self._droid_model_picker_state.pop(chat_id, None)
+            await query.edit_message_text(text="✅ Droid BYOK routing picker closed.", reply_markup=None)
+            await query.answer()
+            return
+
+        if data == "dm:p:inherit":
+            try:
+                result_text = self._apply_droid_inherit()
+            except Exception as exc:
+                logger.error("Droid inherit update failed: %s", exc, exc_info=True)
+                result_text = f"❌ Droid routing update failed: `{exc}`"
+            self._droid_model_picker_state.pop(chat_id, None)
+            try:
+                await query.edit_message_text(text=result_text, parse_mode=ParseMode.MARKDOWN, reply_markup=None)
+            except Exception:
+                await query.edit_message_text(text=result_text, reply_markup=None)
+            await query.answer(text="Inherit applied")
+            return
+
+        if data == "dm:p:byok":
+            self._droid_model_picker_state[chat_id] = {"stage": "roles"}
+            await query.edit_message_text(
+                text=(
+                    "🔒 *Strict BYOK routing*\n\n"
+                    "Choose which Droid role to configure. These match Droid TUI's model settings roles:\n\n"
+                    "• `worker.md`\n"
+                    "• `user-testing-flow-validator.md`\n"
+                    "• `scrutiny-feature-reviewer.md`"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=self._build_droid_role_keyboard(),
+            )
+            await query.answer()
+            return
+
+        if data.startswith("dm:r:"):
+            role = data.split(":", 2)[2]
+            if role not in self._DROID_ROLE_FILES:
+                await query.answer(text="Unknown role")
+                return
+            self._droid_model_picker_state[chat_id] = {"stage": "models", "role": role}
+            await query.edit_message_text(
+                text=f"Select BYOK model for *{self._DROID_ROLE_LABELS[role]}*:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=self._build_droid_byok_model_keyboard(role),
+            )
+            await query.answer()
+            return
+
+        if data.startswith("dm:m:"):
+            try:
+                _, _, role, idx_s = data.split(":", 3)
+                idx = int(idx_s)
+                models = self._load_droid_byok_models()
+                model_id = models[idx]["id"]
+                filename = self._DROID_ROLE_FILES[role]
+                result_text = f"✅ *{self._DROID_ROLE_LABELS[role]} updated*\n" + self._write_droid_models({filename: model_id})
+            except Exception as exc:
+                logger.error("Droid BYOK role update failed: %s", exc, exc_info=True)
+                result_text = f"❌ Droid routing update failed: `{exc}`"
+                try:
+                    await query.edit_message_text(text=result_text, parse_mode=ParseMode.MARKDOWN, reply_markup=None)
+                except Exception:
+                    await query.edit_message_text(text=result_text, reply_markup=None)
+                await query.answer(text="Update failed")
+                return
+            await query.edit_message_text(
+                text=result_text + "\n\nChoose another role or tap Done.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=self._build_droid_role_keyboard(),
+            )
+            await query.answer(text="Role updated")
+            return
+
+        await query.answer()
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -2617,6 +2909,13 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Droid model routing picker callbacks ---
+        if data.startswith("dm:"):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_droid_model_picker_callback(query, data, chat_id)
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
@@ -4010,6 +4309,19 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         
         event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)
+        command = event.get_command()
+        if command in ("droidmodels", "droid_models", "droid-models"):
+            result = await self.send_droid_model_picker(
+                event.source.chat_id,
+                metadata={"thread_id": event.source.thread_id} if event.source.thread_id else None,
+            )
+            if not result.success:
+                await self.send_message(
+                    event.source.chat_id,
+                    f"Could not open Droid model picker: {result.error or 'unknown error'}",
+                    metadata={"thread_id": event.source.thread_id} if event.source.thread_id else None,
+                )
+            return
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

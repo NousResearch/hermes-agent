@@ -124,6 +124,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", args_hint="[auto|codex_app_server]"),
+    CommandDef("droidmodels", "Configure Factory Droid BYOK/inherit routing", "Configuration",
+               gateway_only=True, aliases=("droid_models", "droid-models")),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
 
@@ -465,6 +467,11 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
         args_hint = str(meta.get("args_hint") or "").strip()
         entries.append((name, description, args_hint))
     return entries
+
+
+def _requires_argument(args_hint: str) -> bool:
+    """Return True when selecting a command without text would be incomplete."""
+    return args_hint.strip().startswith("<")
 
 
 def telegram_bot_commands() -> list[tuple[str, str]]:

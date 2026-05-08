@@ -12552,10 +12552,10 @@ class HermesCLI:
         try:
             from hermes_cli.skin_engine import get_active_skin
             _welcome_skin = get_active_skin()
-            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Hermes Agent! Type your message or /help for commands.")
+            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Autolycus Agent! Type your message or /help for commands.")
             _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
         except Exception:
-            _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
+            _welcome_text = "Welcome to Autolycus Agent! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
 
@@ -12634,21 +12634,13 @@ class HermesCLI:
             self._startup_skills_line_shown = True
         self._console_print()
 
-        # First-run agent greeting — on the very first session, the agent
-        # introduces itself by name via an auto-prompt. This is tracked
-        # in onboarding.seen.agent_greeting so it only fires once.
+        # First-run agent greeting — only shown when invoked as 'lycus'
+        # The agent introduces itself by name via an auto-prompt.
         try:
-            from agent.onboarding import (
-                AGENT_GREETING_FLAG,
-                agent_greeting_prompt,
-                is_seen,
-                mark_seen,
-            )
-            from hermes_cli.config import get_config_path as _get_cfg_path_greet
-            if not is_seen(self.config, AGENT_GREETING_FLAG):
+            from agent.onboarding import agent_greeting_prompt, is_lycus_command
+            if is_lycus_command():
                 _greeting = agent_greeting_prompt()
                 self._console_print(f"[bold {_welcome_color}]{_greeting}[/]")
-                mark_seen(_get_cfg_path_greet(), AGENT_GREETING_FLAG)
         except Exception:
             pass  # greeting is non-critical — never break startup
 

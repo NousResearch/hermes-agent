@@ -138,6 +138,7 @@ AGENT_NAMES = [
 ]
 
 _AGENT_NAME_FILE = ".hermes_agent_name"  # stored in ~/.hermes/
+_LYCUS_AGENT_NAME_FILE = ".lycus_agent_name"  # stored in ~/.hermes/
 
 
 def _ensure_agent_name() -> str:
@@ -164,9 +165,38 @@ def _ensure_agent_name() -> str:
         return random.choice(AGENT_NAMES)  # best-effort fallback
 
 
+def _ensure_lycus_agent_name() -> str:
+    """Return the agent name for Lycus.
+
+    On first call, picks a random name from AGENT_NAMES and persists it
+    to ~/.hermes/.lycus_agent_name.  Subsequent calls return the stored
+    name.  This ensures Lycus has its own unique identity.
+    """
+    try:
+        hermes_home = get_hermes_home()
+        name_file = hermes_home / _LYCUS_AGENT_NAME_FILE
+
+        if name_file.exists():
+            return name_file.read_text(encoding="utf-8").strip()
+
+        # First Lycus run — pick a random name
+        chosen = random.choice(AGENT_NAMES)
+        name_file.write_text(chosen, encoding="utf-8")
+        logger.info("lycus_identity: assigned name '%s' for this install", chosen)
+        return chosen
+    except Exception as e:
+        logger.debug("lycus_identity: failed to persist name: %s", e)
+        return random.choice(AGENT_NAMES)  # best-effort fallback
+
+
 def get_agent_name() -> str:
     """Return the agent's display name for this install."""
     return _ensure_agent_name()
+
+
+def get_lycus_agent_name() -> str:
+    """Return the Lycus agent's display name."""
+    return _ensure_lycus_agent_name()
 
 
 # =========================================================================

@@ -144,6 +144,16 @@ def agent_greeting_prompt() -> str:
     )
 
 
+def is_lycus_command() -> bool:
+    """Check if the current command was invoked as 'lycus'."""
+    import sys
+    try:
+        argv0 = sys.argv[0]
+        return 'lycus' in argv0.lower()
+    except Exception:
+        return False
+
+
 # -------------------------------------------------------------------------
 # State read / write
 # -------------------------------------------------------------------------

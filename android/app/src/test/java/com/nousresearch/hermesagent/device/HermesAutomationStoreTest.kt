@@ -1730,6 +1730,68 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeImportsTaskerFixedShizukuActionsDisabled() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val taskerXml = """
+            <TaskerData sr="" dvi="1" tv="6.6.18">
+              <Task sr="task1">
+                <nme>Hermes Shizuku Controls</nme>
+                <Action><code>248</code></Action>
+                <Action><code>333</code><Int sr="arg0" val="1" /></Action>
+                <Action><code>425</code><Int sr="arg0" val="0" /></Action>
+                <Action><code>433</code><Int sr="arg0" val="1" /></Action>
+                <Action><code>733</code></Action>
+              </Task>
+            </TaskerData>
+        """.trimIndent()
+
+        val imported = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "import_tasker_xml",
+                org.json.JSONObject()
+                    .put("tasker_xml", taskerXml)
+                    .put("replace", true),
+            ),
+        )
+        assertTrue(imported.toString(), imported.getBoolean("success"))
+        assertEquals(5, imported.getInt("tasker_imported_action_count"))
+        assertEquals(0, imported.getJSONArray("tasker_skipped_actions").length())
+        assertEquals(5, imported.getInt("imported_automation_count"))
+
+        val records = store.list()
+        assertEquals(5, records.size)
+        assertTrue(records.all { it.actionType == ACTION_TYPE_SHIZUKU_ACTION })
+        assertTrue(records.all { it.useShizuku })
+        assertTrue(records.none { it.enabled })
+
+        val payloads = records.map { org.json.JSONObject(it.command) }
+        assertTrue(payloads.any { it.getString("shizuku_action") == "turn_screen_off" })
+        assertTrue(payloads.any { it.getString("shizuku_action") == "end_call" })
+        assertTrue(
+            payloads.any {
+                it.getString("shizuku_action") == "set_airplane_mode_enabled" &&
+                    it.getBoolean("target_enabled")
+            },
+        )
+        assertTrue(
+            payloads.any {
+                it.getString("shizuku_action") == "set_wifi_enabled" &&
+                    !it.getBoolean("target_enabled")
+            },
+        )
+        assertTrue(
+            payloads.any {
+                it.getString("shizuku_action") == "set_mobile_data_enabled" &&
+                    it.getBoolean("target_enabled")
+            },
+        )
+    }
+
+    @Test
     fun bridgeImportsTaskerGlobalUiAndSettingsActions() {
         val context = RuntimeEnvironment.getApplication()
         val store = HermesAutomationStore(context)

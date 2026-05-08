@@ -279,8 +279,23 @@ object HermesTaskerImportBridge {
                 base.put("action_type", ACTION_TYPE_SYSTEM_ACTION)
                     .put("command", TASKER_SETTINGS_ACTIONS.getValue(code))
             }
+            in TASKER_SHIZUKU_FIXED_ACTIONS -> {
+                shizukuRecordFromTaskerAction(base, code, action) ?: return null
+            }
             else -> null
         }
+    }
+
+    private fun shizukuRecordFromTaskerAction(base: JSONObject, code: Int, action: Element): JSONObject? {
+        val payload = JSONObject()
+            .put("shizuku_action", TASKER_SHIZUKU_FIXED_ACTIONS.getValue(code))
+        if (code in TASKER_SHIZUKU_TOGGLE_ACTIONS) {
+            val enabled = taskerToggleEnabledFromAction(action) ?: return null
+            payload.put("target_enabled", enabled)
+        }
+        return base.put("action_type", ACTION_TYPE_SHIZUKU_ACTION)
+            .put("use_shizuku", true)
+            .put("command", payload.toString())
     }
 
     private fun parseVariables(root: Element): JSONObject {
@@ -321,6 +336,14 @@ object HermesTaskerImportBridge {
         return when (argText(action, index).trim().lowercase()) {
             "1", "true", "yes", "on" -> true
             else -> false
+        }
+    }
+
+    private fun taskerToggleEnabledFromAction(action: Element): Boolean? {
+        return when (argText(action, 0).trim().lowercase()) {
+            "1", "true", "yes", "on", "enabled", "enable" -> true
+            "0", "false", "no", "off", "disabled", "disable" -> false
+            else -> null
         }
     }
 
@@ -467,12 +490,17 @@ object HermesTaskerImportBridge {
     private const val TASKER_NOTIFICATION_LISTENER_SETTINGS = 237
     private const val TASKER_BACK_BUTTON = 245
     private const val TASKER_SHOW_RECENTS = 247
+    private const val TASKER_TURN_OFF = 248
+    private const val TASKER_AIRPLANE_MODE = 333
     private const val TASKER_DELETE_FILE = 406
     private const val TASKER_WRITE_FILE = 410
+    private const val TASKER_WIFI = 425
+    private const val TASKER_MOBILE_DATA = 433
     private const val TASKER_NOTIFY = 523
     private const val TASKER_VARIABLE_SET = 547
     private const val TASKER_FLASH = 548
     private const val TASKER_VARIABLE_CLEAR = 549
+    private const val TASKER_END_CALL = 733
     private const val TASKER_NFC_SETTINGS = 956
     private const val MAX_TASKER_XML_CHARS = 512_000
     private const val MAX_LABEL_CHARS = 80
@@ -492,6 +520,18 @@ object HermesTaskerImportBridge {
         TASKER_BACK_BUTTON to "back",
         TASKER_SHOW_RECENTS to "recents",
         TASKER_QUICK_SETTINGS to "quick_settings",
+    )
+    private val TASKER_SHIZUKU_FIXED_ACTIONS = mapOf(
+        TASKER_TURN_OFF to "turn_screen_off",
+        TASKER_AIRPLANE_MODE to "set_airplane_mode_enabled",
+        TASKER_WIFI to "set_wifi_enabled",
+        TASKER_MOBILE_DATA to "set_mobile_data_enabled",
+        TASKER_END_CALL to "end_call",
+    )
+    private val TASKER_SHIZUKU_TOGGLE_ACTIONS = setOf(
+        TASKER_AIRPLANE_MODE,
+        TASKER_WIFI,
+        TASKER_MOBILE_DATA,
     )
     private val TASKER_SETTINGS_ACTIONS = mapOf(
         TASKER_DEVELOPER_SETTINGS to "open_developer_options",
@@ -522,12 +562,17 @@ object HermesTaskerImportBridge {
         TASKER_NOTIFICATION_LISTENER_SETTINGS to "Notification Listener Settings",
         TASKER_BACK_BUTTON to "Back Button",
         TASKER_SHOW_RECENTS to "Show Recents",
+        TASKER_TURN_OFF to "Turn Off",
+        TASKER_AIRPLANE_MODE to "Airplane Mode",
         TASKER_DELETE_FILE to "Delete File",
         TASKER_WRITE_FILE to "Write File",
+        TASKER_WIFI to "Wi-Fi",
+        TASKER_MOBILE_DATA to "Mobile Data",
         TASKER_NOTIFY to "Notify",
         TASKER_VARIABLE_SET to "Variable Set",
         TASKER_FLASH to "Flash",
         TASKER_VARIABLE_CLEAR to "Variable Clear",
+        TASKER_END_CALL to "End Call",
         TASKER_NFC_SETTINGS to "NFC Settings",
     )
 }

@@ -8,7 +8,7 @@ from hermes_cli.office_state import build_empty_office_state
 
 def test_redact_display_text_removes_secret_like_strings():
     text = (
-        "token sk-test-secret-1234567890 and Bearer abc123SECRET plus "
+        "token sk-office-redaction-sentinel and Bearer bearerRedactionSentinel plus "
         "bot 123456789:AAExampleTelegramToken and /home/alice/.hermes/.env"
     )
 
@@ -16,7 +16,7 @@ def test_redact_display_text_removes_secret_like_strings():
 
     assert REDACTION_POLICY_VERSION == 1
     assert "sk-test-secret" not in redacted
-    assert "Bearer abc123SECRET" not in redacted
+    assert "Bearer bearerRedactionSentinel" not in redacted
     assert "123456789:AAExampleTelegramToken" not in redacted
     assert ".env" not in redacted
     assert report.redacted_field_count >= 4

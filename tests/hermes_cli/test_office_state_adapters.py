@@ -45,7 +45,7 @@ def test_kanban_adapter_reports_missing_without_creating_a_db(isolated_kanban_ho
 
 def test_kanban_adapter_projects_safe_room_task_and_event_fields(isolated_kanban_home):
     kb.init_db()
-    secret_title = "Deploy sk-testSECRET1234567890 from /home/alice/.hermes/.env"
+    secret_title = "Deploy sk-office-redaction-sentinel from /home/alice/.hermes/.env"
     with kb.connect() as conn:
         parent = kb.create_task(
             conn,
@@ -58,7 +58,7 @@ def test_kanban_adapter_projects_safe_room_task_and_event_fields(isolated_kanban
         child = kb.create_task(
             conn,
             title=secret_title,
-            body="body sk-bodySECRET1234567890 must not leak",
+            body="body sk-body-redaction-sentinel must not leak",
             assignee="worker",
             created_by="telegram",
             priority=5,
@@ -85,7 +85,7 @@ def test_kanban_adapter_projects_safe_room_task_and_event_fields(isolated_kanban
     assert child_item["dependency_counts"] == {"parents": 1, "children": 0}
     assert child_item["provenance"] == {"status": "unknown", "missing_reason": "kanban_task_has_no_source_columns"}
 
-    assert "sk-testSECRET1234567890" not in child_item["title"]
+    assert "sk-office-redaction-sentinel" not in child_item["title"]
     assert "/home/alice" not in child_item["title"]
     assert result.redactions.redacted_field_count >= 1
 
@@ -165,7 +165,7 @@ def test_cron_adapter_projects_safe_automation_fields(isolated_kanban_home):
                 "jobs": [
                     {
                         "id": "job_secret",
-                        "name": "Daily sk-cronSECRET1234567890",
+                        "name": "Daily sk-cron-redaction-sentinel",
                         "prompt": "prompt must not leak",
                         "script": "/home/alice/.hermes/scripts/private.py",
                         "context_from": ["upstream_secret"],
@@ -230,7 +230,7 @@ def test_session_adapter_projects_metadata_without_transcripts(isolated_kanban_h
         user_id="123456",
         model="gpt-test",
     )
-    db.set_session_title("sess_secret_full_id", "Title sk-sessionSECRET1234567890")
+    db.set_session_title("sess_secret_full_id", "Title sk-session-redaction-sentinel")
     db.append_message("sess_secret_full_id", "user", "raw prompt sk-messageSECRET must not leak")
     db.append_message(
         "sess_secret_full_id",

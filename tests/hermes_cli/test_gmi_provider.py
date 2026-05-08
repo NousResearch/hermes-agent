@@ -269,9 +269,9 @@ class TestGmiModelMetadata:
 
 class TestGmiAuxiliary:
     def test_aux_default_model(self):
-        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
+        from agent.auxiliary_client import _get_aux_model_for_provider
 
-        assert _API_KEY_PROVIDER_AUX_MODELS["gmi"] == "google/gemini-3.1-flash-lite-preview"
+        assert _get_aux_model_for_provider("gmi") == "google/gemini-3.1-flash-lite-preview"
 
     def test_resolve_provider_client_uses_gmi_aux_default(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "gmi-test-key")

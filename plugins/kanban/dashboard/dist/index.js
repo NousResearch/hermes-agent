@@ -60,8 +60,48 @@
     blocked: "Mark this task as blocked? The worker's claim is released.",
   };
 
+  // Diagnostic kind labels for the events-tab callout. Event kinds emitted
+  // by the kernel get a human-readable header when we detect them in the
+  // events list; add new entries here as new diagnostic event kinds land.
+  const DIAGNOSTIC_EVENT_LABELS = {
+    completion_blocked_hallucination: "⚠ Completion blocked — phantom card ids",
+    suspected_hallucinated_references: "⚠ Prose referenced phantom card ids",
+  };
+
+  function isDiagnosticEvent(kind) {
+    return Object.prototype.hasOwnProperty.call(DIAGNOSTIC_EVENT_LABELS, kind);
+  }
+
+  function phantomIdsFromEvent(ev) {
+    if (!ev || !ev.payload) return [];
+    const p = ev.payload;
+    return p.phantom_cards || p.phantom_refs || [];
+  }
+
+  function withCompletionSummary(patch, count) {
+    if (!patch || patch.status !== "done") return patch;
+    const label = count && count > 1 ? `${count} selected task(s)` : "this task";
+    const value = window.prompt(
+      `Completion summary for ${label}. This is stored as the task result.`,
+      "",
+    );
+    if (value === null) return null;
+    const summary = value.trim();
+    if (!summary) {
+      window.alert("Completion summary is required before marking a task done.");
+      return null;
+    }
+    return Object.assign({}, patch, { result: summary, summary });
+  }
+
   const API = "/api/plugins/kanban";
   const MIME_TASK = "text/x-hermes-task";
+
+  // Docs link — surfaced as a `?` icon next to the board switcher and as
+  // `title=` hints on unlabelled controls. Kept in one place so rebrands or
+  // path changes are a single edit.
+  const DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban";
+  const DOCS_TUTORIAL_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban-tutorial";
 
   // localStorage key for the user's selected board. Independent of the
   // CLI's on-disk ``<root>/kanban/current`` pointer so browser users
@@ -78,17 +118,30 @@
 
   function writeSelectedBoard(slug) {
     try {
-      if (slug && slug !== "default") window.localStorage.setItem(LS_BOARD_KEY, slug);
+      // Persist the user's dashboard-side board pin even for "default".
+      // Previously this stripped "default" to keep localStorage empty,
+      // but the fetch layer read that absence as "no opinion" and fell
+      // through to the server-side ``current`` file — which the board
+      // switcher also writes. Result: selecting the default tab after
+      // creating a new board with "switch" checked showed the new
+      // board's (wrong) data because the URL omitted ``?board=`` and
+      // the backend happily returned whichever board was "current".
+      // Persisting every selection keeps the dashboard's board opinion
+      // independent of the CLI's active board, which was the original
+      // design intent. Regression: #20879.
+      if (slug) window.localStorage.setItem(LS_BOARD_KEY, slug);
       else window.localStorage.removeItem(LS_BOARD_KEY);
     } catch (_e) { /* ignore quota / private mode */ }
   }
 
   function withBoard(url, board) {
-    // Append ?board=<slug> when a non-default board is active. Omitted
-    // for default so the URL stays clean and the backend falls through
-    // to its own resolution chain (env var → ``current`` file →
-    // default) which is already correct.
-    if (!board || board === "default") return url;
+    // Always append ?board=<slug> when we have one picked — including
+    // "default". Omitting the param would fall through to the backend's
+    // resolution chain (env var → ``current`` file → default), which
+    // means the dashboard's tab selection gets silently overridden by
+    // whatever board the CLI or "switch" checkbox last activated.
+    // Regression: #20879.
+    if (!board) return url;
     const sep = url.indexOf("?") >= 0 ? "&" : "?";
     return `${url}${sep}board=${encodeURIComponent(board)}`;
   }
@@ -413,9 +466,11 @@
           token: token,
         };
         // Pin the WS stream to the currently-selected board so events
-        // from other boards don't bleed in. Only set for non-default so
-        // single-board installs keep the cleaner URL.
-        if (board && board !== "default") qsParams.board = board;
+        // from other boards don't bleed in. Includes "default" so the
+        // dashboard's own board pin always wins over the server-side
+        // ``current`` file — same rationale as ``withBoard()`` above.
+        // Regression: #20879.
+        if (board) qsParams.board = board;
         const qs = new URLSearchParams(qsParams);
         const url = `${proto}//${window.location.host}${API}/events?${qs}`;
         let ws;
@@ -462,6 +517,7 @@
       if (!boardData) return null;
       const q = search.trim().toLowerCase();
       const filterTask = function (t) {
+        if (tenantFilter && t.tenant !== tenantFilter) return false;
         if (assigneeFilter && t.assignee !== assigneeFilter) return false;
         if (q) {
           const hay = `${t.id} ${t.title || ""} ${t.assignee || ""} ${t.tenant || ""}`.toLowerCase();
@@ -474,12 +530,14 @@
           return Object.assign({}, col, { tasks: col.tasks.filter(filterTask) });
         }),
       });
-    }, [boardData, assigneeFilter, search]);
+    }, [boardData, tenantFilter, assigneeFilter, search]);
 
     // --- actions ------------------------------------------------------------
     const moveTask = useCallback(function (taskId, newStatus) {
       const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
       if (confirmMsg && !window.confirm(confirmMsg)) return;
+      const patch = withCompletionSummary({ status: newStatus }, 1);
+      if (!patch) return;
       setBoardData(function (b) {
         if (!b) return b;
         let moved = null;
@@ -499,7 +557,7 @@
       SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify(patch),
       }).catch(function (err) {
         setError(`Move failed: ${err.message || err}`);
         loadBoard();
@@ -538,7 +596,9 @@
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
       if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const body = Object.assign({ ids: Array.from(selectedIds) }, patch);
+      const finalPatch = withCompletionSummary(patch, selectedIds.size);
+      if (!finalPatch) return;
+      const body = Object.assign({ ids: Array.from(selectedIds) }, finalPatch);
       SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -626,6 +686,10 @@
             return createNewBoard(payload).then(function () { setShowNewBoard(false); });
           },
         }) : null,
+        h(AttentionStrip, {
+          boardData,
+          onOpen: setSelectedTaskId,
+        }),
         h(BoardToolbar, {
           board: boardData,
           tenantFilter, setTenantFilter,
@@ -664,6 +728,7 @@
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          assignees: (boardData && boardData.assignees) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
       ),
@@ -671,8 +736,417 @@
   }
 
   // -------------------------------------------------------------------------
+  // Attention strip — surfaces every task with active diagnostics,
+  // severity-marked (warning/error/critical). Collapsed by default; click
+  // Show to expand into per-task rows with Open buttons. Dismissible
+  // per session via state flag.
+  // -------------------------------------------------------------------------
+
+  function collectDiagTasks(boardData) {
+    if (!boardData || !boardData.columns) return [];
+    const out = [];
+    for (const col of boardData.columns) {
+      for (const t of col.tasks || []) {
+        if (t.diagnostics && t.diagnostics.length > 0) out.push(t);
+        else if (t.warnings && t.warnings.count > 0) out.push(t);
+      }
+    }
+    // Sort: highest severity first (critical > error > warning), then by
+    // most recent latest_at.
+    const sevIdx = function (s) {
+      if (s === "critical") return 3;
+      if (s === "error") return 2;
+      if (s === "warning") return 1;
+      return 0;
+    };
+    out.sort(function (a, b) {
+      const aSev = sevIdx((a.warnings && a.warnings.highest_severity) || "warning");
+      const bSev = sevIdx((b.warnings && b.warnings.highest_severity) || "warning");
+      if (aSev !== bSev) return bSev - aSev;
+      const aLa = (a.warnings && a.warnings.latest_at) || 0;
+      const bLa = (b.warnings && b.warnings.latest_at) || 0;
+      return bLa - aLa;
+    });
+    return out;
+  }
+
+  function AttentionStrip(props) {
+    const [expanded, setExpanded] = useState(false);
+    const [dismissed, setDismissed] = useState(false);
+    const diagTasks = useMemo(
+      function () { return collectDiagTasks(props.boardData); },
+      [props.boardData]
+    );
+    if (dismissed || diagTasks.length === 0) return null;
+    // Pick the highest severity present so we can colour the strip.
+    let topSev = "warning";
+    for (const t of diagTasks) {
+      const s = (t.warnings && t.warnings.highest_severity) || "warning";
+      if (s === "critical") { topSev = "critical"; break; }
+      if (s === "error" && topSev !== "critical") topSev = "error";
+    }
+    return h("div", {
+      className: cn(
+        "hermes-kanban-attention",
+        "hermes-kanban-attention--" + topSev,
+      ),
+    },
+      h("div", { className: "hermes-kanban-attention-bar" },
+        h("span", { className: "hermes-kanban-attention-icon" },
+          topSev === "critical" ? "!!!" : topSev === "error" ? "!!" : "⚠"),
+        h("span", { className: "hermes-kanban-attention-text" },
+          diagTasks.length === 1
+            ? "1 task needs attention"
+            : `${diagTasks.length} tasks need attention`,
+        ),
+        h("button", {
+          className: "hermes-kanban-attention-toggle",
+          onClick: function () { setExpanded(function (x) { return !x; }); },
+          type: "button",
+        }, expanded ? "Hide" : "Show"),
+        h("button", {
+          className: "hermes-kanban-attention-dismiss",
+          onClick: function () { setDismissed(true); },
+          title: "Hide until next page reload",
+          type: "button",
+        }, "\u2715"),
+      ),
+      expanded
+        ? h("div", { className: "hermes-kanban-attention-list" },
+            diagTasks.map(function (t) {
+              const sev = (t.warnings && t.warnings.highest_severity) || "warning";
+              const kinds = t.warnings && t.warnings.kinds ? Object.keys(t.warnings.kinds) : [];
+              return h("div", {
+                key: t.id,
+                className: cn(
+                  "hermes-kanban-attention-row",
+                  "hermes-kanban-attention-row--" + sev,
+                ),
+              },
+                h("span", { className: "hermes-kanban-attention-row-sev" },
+                  sev === "critical" ? "!!!" : sev === "error" ? "!!" : "⚠"),
+                h("span", { className: "hermes-kanban-attention-row-id" }, t.id),
+                h("span", { className: "hermes-kanban-attention-row-title" },
+                  t.title || "(untitled)"),
+                h("span", { className: "hermes-kanban-attention-row-meta" },
+                  t.assignee ? "@" + t.assignee : "unassigned",
+                  " \u00b7 ",
+                  kinds.length > 0 ? kinds.join(", ") : "diagnostic",
+                ),
+                h("button", {
+                  className: "hermes-kanban-attention-row-btn",
+                  onClick: function () { props.onOpen(t.id); },
+                  type: "button",
+                }, "Open"),
+              );
+            }),
+          )
+        : null,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Diagnostics section — generic renderer for a task's active distress
+  // signals. Each diagnostic carries its own title, detail, data payload,
+  // and a list of structured actions; the section renders them uniformly
+  // regardless of kind. Replaces the hallucination-specific
+  // ``RecoveryPopover`` from the previous iteration.
+  //
+  // Action kinds supported today:
+  //   reclaim   → POST /tasks/:id/reclaim
+  //   reassign  → POST /tasks/:id/reassign (with profile picker)
+  //   unblock   → PATCH /tasks/:id  body: {status: "ready"}
+  //   comment   → scroll to the comment input at the bottom of the drawer
+  //   cli_hint  → copy payload.command to clipboard
+  //   open_docs → open payload.url in a new tab
+  // Unknown kinds are rendered as a disabled informational row so the
+  // server can add new action kinds without breaking the UI.
+  // -------------------------------------------------------------------------
+
+  function DiagnosticActionButton(props) {
+    const { action, onExec, busy, extra } = props;
+    const label = (action.suggested ? "\u2606 " : "") + action.label;
+    const cls = cn(
+      "hermes-kanban-diag-action-btn",
+      action.suggested ? "hermes-kanban-diag-action-btn--suggested" : "",
+    );
+    if (action.kind === "reclaim" || action.kind === "reassign" ||
+        action.kind === "unblock") {
+      return h("button", {
+        className: cls,
+        disabled: busy || (extra && extra.disabled),
+        onClick: function () { onExec(action); },
+        type: "button",
+      }, label);
+    }
+    if (action.kind === "cli_hint") {
+      return h("button", {
+        className: cls,
+        disabled: busy,
+        onClick: function () { onExec(action); },
+        type: "button",
+        title: "Copy command to clipboard",
+      }, (extra && extra.copied) ? "Copied" : label);
+    }
+    if (action.kind === "comment") {
+      return h("button", {
+        className: cls,
+        onClick: function () { onExec(action); },
+        type: "button",
+      }, label);
+    }
+    if (action.kind === "open_docs") {
+      return h("a", {
+        className: cls,
+        href: (action.payload && action.payload.url) || "#",
+        target: "_blank",
+        rel: "noreferrer",
+      }, label);
+    }
+    // Unknown kind — render informational, non-interactive.
+    return h("span", { className: cls + " hermes-kanban-diag-action-btn--unknown" },
+      label);
+  }
+
+  function DiagnosticCard(props) {
+    const { diag, task, boardSlug, assignees, onRefresh } = props;
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null);
+    const [copiedKey, setCopiedKey] = useState(null);
+    const [reassignProfile, setReassignProfile] = useState(task.assignee || "");
+
+    const execAction = function (action) {
+      if (busy) return;
+      if (action.kind === "cli_hint") {
+        const cmd = (action.payload && action.payload.command) || action.label;
+        const fallback = function () { window.prompt("Copy this command:", cmd); };
+        try {
+          const p = navigator.clipboard && navigator.clipboard.writeText(cmd);
+          if (p && p.then) {
+            p.then(function () {
+              setCopiedKey(action.label);
+              setTimeout(function () { setCopiedKey(null); }, 2000);
+            }).catch(fallback);
+          } else {
+            fallback();
+          }
+        } catch (_) {
+          fallback();
+        }
+        return;
+      }
+      if (action.kind === "comment") {
+        // Scroll the comment input into view; the drawer already has one
+        // at the bottom. Focus it so the operator can start typing.
+        const ta = document.querySelector(".hermes-kanban-drawer-comment-row input, .hermes-kanban-drawer-comment-row textarea");
+        if (ta) {
+          ta.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          ta.focus();
+        }
+        return;
+      }
+      if (action.kind === "unblock") {
+        setBusy(true); setMsg(null);
+        const url = withBoard(`${API}/tasks/${encodeURIComponent(task.id)}`, boardSlug);
+        SDK.fetchJSON(url, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "ready" }),
+        }).then(function () {
+          setMsg({ ok: true, text: `Unblocked ${task.id}. Task is ready for the next tick.` });
+          if (onRefresh) onRefresh();
+        }).catch(function (err) {
+          setMsg({ ok: false, text: `Unblock failed: ${err.message || err}` });
+        }).then(function () { setBusy(false); });
+        return;
+      }
+      if (action.kind === "reclaim") {
+        setBusy(true); setMsg(null);
+        const url = withBoard(`${API}/tasks/${encodeURIComponent(task.id)}/reclaim`, boardSlug);
+        SDK.fetchJSON(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: `recovery action for ${diag.kind}` }),
+        }).then(function () {
+          setMsg({ ok: true, text: `Reclaimed ${task.id}. Task is back to ready.` });
+          if (onRefresh) onRefresh();
+        }).catch(function (err) {
+          setMsg({ ok: false, text: `Reclaim failed: ${err.message || err}` });
+        }).then(function () { setBusy(false); });
+        return;
+      }
+      if (action.kind === "reassign") {
+        if (!reassignProfile) {
+          setMsg({ ok: false, text: "Pick a profile first." });
+          return;
+        }
+        setBusy(true); setMsg(null);
+        const url = withBoard(`${API}/tasks/${encodeURIComponent(task.id)}/reassign`, boardSlug);
+        const body = {
+          profile: reassignProfile || null,
+          reclaim_first: !!(action.payload && action.payload.reclaim_first),
+          reason: `recovery action for ${diag.kind}`,
+        };
+        SDK.fetchJSON(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }).then(function () {
+          setMsg({
+            ok: true,
+            text: `Reassigned ${task.id} to ${reassignProfile}.`,
+          });
+          if (onRefresh) onRefresh();
+        }).catch(function (err) {
+          setMsg({ ok: false, text: `Reassign failed: ${err.message || err}` });
+        }).then(function () { setBusy(false); });
+        return;
+      }
+    };
+
+    // Pull out the reassign action so we can render its picker inline.
+    const reassignAction = (diag.actions || []).find(function (a) {
+      return a.kind === "reassign";
+    });
+
+    const sevClass = "hermes-kanban-diag--" + (diag.severity || "warning");
+    return h("div", { className: cn("hermes-kanban-diag", sevClass) },
+      h("div", { className: "hermes-kanban-diag-header" },
+        h("span", { className: "hermes-kanban-diag-sev" },
+          diag.severity === "critical" ? "!!!" :
+          diag.severity === "error" ? "!!" : "\u26a0"),
+        h("span", { className: "hermes-kanban-diag-title" },
+          diag.title),
+      ),
+      h("div", { className: "hermes-kanban-diag-detail" },
+        diag.detail),
+      diag.data && Object.keys(diag.data).length > 0
+        ? h("div", { className: "hermes-kanban-diag-data" },
+            Object.keys(diag.data).map(function (k) {
+              const v = diag.data[k];
+              if (Array.isArray(v) && v.length > 0 && typeof v[0] === "string" &&
+                  v[0].indexOf("t_") === 0) {
+                // Task-id list — render as chips.
+                return h("div", { key: k, className: "hermes-kanban-diag-data-row" },
+                  h("span", { className: "hermes-kanban-diag-data-key" }, k + ":"),
+                  v.map(function (x) {
+                    return h("code", {
+                      key: x, className: "hermes-kanban-event-phantom-chip",
+                    }, x);
+                  }),
+                );
+              }
+              return h("div", { key: k, className: "hermes-kanban-diag-data-row" },
+                h("span", { className: "hermes-kanban-diag-data-key" }, k + ":"),
+                h("span", { className: "hermes-kanban-diag-data-val" },
+                  Array.isArray(v) ? v.join(", ") : String(v)),
+              );
+            }),
+          )
+        : null,
+      // Inline reassign picker — only shown when the diagnostic offers
+      // a reassign action. Profile list comes from the board payload.
+      reassignAction
+        ? h("div", { className: "hermes-kanban-diag-reassign-row" },
+            h("span", { className: "hermes-kanban-diag-reassign-label" },
+              "Reassign to:"),
+            h("select", {
+              className: "hermes-kanban-recovery-select",
+              value: reassignProfile,
+              onChange: function (e) { setReassignProfile(e.target.value); },
+            },
+              h("option", { value: "" }, "(unassigned)"),
+              (assignees || []).map(function (a) {
+                return h("option", { key: a, value: a }, a);
+              }),
+            ),
+          )
+        : null,
+      h("div", { className: "hermes-kanban-diag-actions" },
+        (diag.actions || []).map(function (a, i) {
+          return h(DiagnosticActionButton, {
+            key: a.kind + i,
+            action: a,
+            onExec: execAction,
+            busy: busy,
+            extra: {
+              copied: copiedKey === a.label,
+              disabled: (a.kind === "reassign" && !reassignProfile),
+            },
+          });
+        }),
+      ),
+      msg
+        ? h("div", {
+            className: cn(
+              "hermes-kanban-diag-msg",
+              msg.ok ? "hermes-kanban-diag-msg--ok" : "hermes-kanban-diag-msg--err",
+            ),
+          }, msg.text)
+        : null,
+    );
+  }
+
+  function DiagnosticsSection(props) {
+    const diags = props.diagnostics || [];
+    const hasOpenDiags = diags.length > 0;
+    const [open, setOpen] = useState(hasOpenDiags);
+    useEffect(function () {
+      if (hasOpenDiags) setOpen(true);
+    }, [hasOpenDiags]);
+    if (!hasOpenDiags && !props.alwaysVisible) {
+      // Nothing active. Collapse the section entirely rather than showing
+      // an empty "Recovery" header — keeps clean tasks visually clean.
+      return null;
+    }
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head-row" },
+        h("span", { className: "hermes-kanban-section-head" },
+          hasOpenDiags
+            ? h("span", { className: "hermes-kanban-section-head-warning" },
+                `\u26a0 Diagnostics (${diags.length})`)
+            : "Diagnostics",
+        ),
+        h("button", {
+          className: "hermes-kanban-section-toggle",
+          onClick: function () { setOpen(function (x) { return !x; }); },
+          type: "button",
+        }, open ? "Hide" : "Show"),
+      ),
+      open
+        ? h("div", { className: "hermes-kanban-diag-list" },
+            diags.map(function (d, i) {
+              return h(DiagnosticCard, {
+                key: props.task.id + ":" + d.kind + i,
+                diag: d,
+                task: props.task,
+                boardSlug: props.boardSlug,
+                assignees: props.assignees,
+                onRefresh: props.onRefresh,
+              });
+            }),
+          )
+        : null,
+    );
+  }
+
+    // -------------------------------------------------------------------------
   // Board switcher (multi-project)
   // -------------------------------------------------------------------------
+
+  // Small `?` affordance next to the board controls. Opens the kanban docs
+  // page in a new tab so users can look up what any of the widgets mean
+  // without losing the current board view.
+  function DocsLink() {
+    return h("a", {
+      href: DOCS_URL,
+      target: "_blank",
+      rel: "noopener noreferrer",
+      className: "hermes-kanban-docs-link",
+      title: "Open Hermes Kanban docs in a new tab",
+      "aria-label": "Hermes Kanban documentation",
+    }, "?");
+  }
 
   function BoardSwitcher(props) {
     const list = props.boardList || [];
@@ -698,6 +1172,7 @@
           size: "sm",
           className: "h-7 text-xs",
         }, "+ New board"),
+        h(DocsLink, null),
       );
     }
 
@@ -711,6 +1186,7 @@
               value: props.board,
               className: "h-8 min-w-[220px]",
               "aria-label": "Switch kanban board",
+              title: "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
             }, selectChangeHandler(function (v) { if (v) props.onSwitch(v); })),
               list.map(function (b) {
                 const label = b.total > 0
@@ -724,10 +1200,12 @@
           ),
         ),
         h("div", { className: "flex-1" }),
+        h(DocsLink, null),
         h(Button, {
           onClick: props.onNewClick,
           size: "sm",
           className: "h-8",
+          title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
         }, "+ New board"),
         props.board !== "default"
           ? h(Button, {
@@ -872,7 +1350,8 @@
     const tenants = (props.board && props.board.tenants) || [];
     const assignees = (props.board && props.board.assignees) || [];
     return h("div", { className: "flex flex-wrap items-end gap-3" },
-      h("div", { className: "flex flex-col gap-1" },
+      h("div", { className: "flex flex-col gap-1",
+                 title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
         h(Label, { className: "text-xs text-muted-foreground" }, "Search"),
         h(Input, {
           placeholder: "Filter cards…",
@@ -881,7 +1360,8 @@
           className: "w-56 h-8",
         }),
       ),
-      h("div", { className: "flex flex-col gap-1" },
+      h("div", { className: "flex flex-col gap-1",
+                 title: "Tenants are free-form tags on a task (e.g. customer, project, team). Set them via the task drawer or kanban_create." },
         h(Label, { className: "text-xs text-muted-foreground" }, "Tenant"),
         h(Select, Object.assign({
           value: props.tenantFilter,
@@ -893,7 +1373,8 @@
           }),
         ),
       ),
-      h("div", { className: "flex flex-col gap-1" },
+      h("div", { className: "flex flex-col gap-1",
+                 title: "Filter by assigned Hermes profile. Profiles are the named agent identities that claim and work on tasks." },
         h(Label, { className: "text-xs text-muted-foreground" }, "Assignee"),
         h(Select, Object.assign({
           value: props.assigneeFilter,
@@ -905,7 +1386,8 @@
           }),
         ),
       ),
-      h("label", { className: "flex items-center gap-2 text-xs" },
+      h("label", { className: "flex items-center gap-2 text-xs",
+                   title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
         h("input", {
           type: "checkbox",
           checked: props.includeArchived,
@@ -926,10 +1408,12 @@
       h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",
+        title: "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately.",
       }, "Nudge dispatcher"),
       h(Button, {
         onClick: props.onRefresh,
         size: "sm",
+        title: "Reload the board from the database. The board auto-refreshes on task events; this is for forcing a re-read.",
       }, "Refresh"),
     );
   }
@@ -946,6 +1430,7 @@
       h(Button, {
         onClick: function () { props.onApply({ status: "ready" }); },
         size: "sm",
+        title: "Move selected tasks to Ready. Ready tasks are picked up by the dispatcher on the next tick.",
       }, "→ ready"),
       h(Button, {
         onClick: function () {
@@ -953,6 +1438,7 @@
             `Mark ${props.count} task(s) as done?`);
         },
         size: "sm",
+        title: "Mark selected tasks as done. Releases any claims and unblocks dependent children. You'll be asked for a completion summary.",
       }, "Complete"),
       h(Button, {
         onClick: function () {
@@ -960,8 +1446,10 @@
             `Archive ${props.count} task(s)?`);
         },
         size: "sm",
+        title: "Archive selected tasks. They disappear from the default board view but remain in the database.",
       }, "Archive"),
-      h("div", { className: "hermes-kanban-bulk-reassign" },
+      h("div", { className: "hermes-kanban-bulk-reassign",
+                 title: "Reassign selected tasks to a different Hermes profile. Pick a profile (or unassign) and click Apply." },
         h(Select, {
           value: assignee,
           onChange: function (e) { setAssignee(e.target.value); },
@@ -981,12 +1469,14 @@
           },
           disabled: !assignee,
           size: "sm",
+          title: "Apply the selected assignee to all selected tasks.",
         }, "Apply"),
       ),
       h("div", { className: "flex-1" }),
       h(Button, {
         onClick: props.onClear,
         size: "sm",
+        title: "Deselect all tasks and hide this bar.",
       }, "Clear"),
     );
   }
@@ -1067,11 +1557,13 @@
       onDragLeave: handleDragLeave,
       onDrop: handleDrop,
     },
-      h("div", { className: "hermes-kanban-column-header" },
+      h("div", { className: "hermes-kanban-column-header",
+                 title: COLUMN_HELP[props.column.name] || "" },
         h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[props.column.name]) }),
         h("span", { className: "hermes-kanban-column-label" },
           COLUMN_LABEL[props.column.name] || props.column.name),
-        h("span", { className: "hermes-kanban-column-count" },
+        h("span", { className: "hermes-kanban-column-count",
+                    title: `${props.column.tasks.length} task${props.column.tasks.length === 1 ? "" : "s"} in this column` },
           props.column.tasks.length),
         h("button", {
           type: "button",
@@ -1198,12 +1690,30 @@
               onClick: function (e) { e.stopPropagation(); },
               title: "Select for bulk actions",
             }),
-            h("span", { className: "hermes-kanban-card-id" }, t.id),
+            h("span", { className: "hermes-kanban-card-id",
+                        title: `Task id: ${t.id}. Use this id with kanban_show, /kanban show, or hermes kanban show.` }, t.id),
+            t.warnings && t.warnings.count > 0
+              ? h("span", {
+                  className: cn(
+                    "hermes-kanban-warning-badge",
+                    "hermes-kanban-warning-badge--" + (t.warnings.highest_severity || "warning"),
+                  ),
+                  title: (
+                    `${t.warnings.count} active diagnostic` +
+                    (t.warnings.count === 1 ? "" : "s") +
+                    ` (severity: ${t.warnings.highest_severity || "warning"}). ` +
+                    `Click to open for details.`
+                  ),
+                }, t.warnings.highest_severity === "critical" ? "!!!" :
+                   t.warnings.highest_severity === "error" ? "!!" : "⚠")
+              : null,
             t.priority > 0
-              ? h(Badge, { className: "hermes-kanban-priority" }, `P${t.priority}`)
+              ? h(Badge, { className: "hermes-kanban-priority",
+                           title: `Priority ${t.priority}. Higher-priority tasks are claimed first by the dispatcher.` }, `P${t.priority}`)
               : null,
             t.tenant
-              ? h(Badge, { variant: "outline", className: "hermes-kanban-tag" }, t.tenant)
+              ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
+                           title: `Tenant: ${t.tenant}. Free-form tag for grouping tasks (customer, project, team).` }, t.tenant)
               : null,
             progress
               ? h("span", {
@@ -1218,16 +1728,21 @@
           h("div", { className: "hermes-kanban-card-title" }, t.title || "(untitled)"),
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
             t.assignee
-              ? h("span", { className: "hermes-kanban-assignee" }, "@", t.assignee)
-              : h("span", { className: "hermes-kanban-unassigned" }, "unassigned"),
+              ? h("span", { className: "hermes-kanban-assignee",
+                            title: `Assigned to Hermes profile @${t.assignee}` }, "@", t.assignee)
+              : h("span", { className: "hermes-kanban-unassigned",
+                            title: "No profile assigned. The dispatcher will pick one from available profiles when the task is Ready." }, "unassigned"),
             t.comment_count > 0
-              ? h("span", { className: "hermes-kanban-count" }, "💬 ", t.comment_count)
+              ? h("span", { className: "hermes-kanban-count",
+                            title: `${t.comment_count} comment${t.comment_count === 1 ? "" : "s"} on this task` }, "💬 ", t.comment_count)
               : null,
             t.link_counts && (t.link_counts.parents + t.link_counts.children) > 0
-              ? h("span", { className: "hermes-kanban-count" },
+              ? h("span", { className: "hermes-kanban-count",
+                            title: `${t.link_counts.parents} parent${t.link_counts.parents === 1 ? "" : "s"}, ${t.link_counts.children} child${t.link_counts.children === 1 ? "" : "ren"}. Children stay blocked until their parent is done.` },
                   "↔ ", t.link_counts.parents + t.link_counts.children)
               : null,
-            h("span", { className: "hermes-kanban-ago" },
+            h("span", { className: "hermes-kanban-ago",
+                        title: t.created_at ? `Created ${t.created_at}` : "" },
               timeAgo ? timeAgo(t.created_at) : ""),
           ),
         ),
@@ -1288,18 +1803,19 @@
       : "workspace path (optional, derived from assignee if blank)";
 
     return h("div", { className: "hermes-kanban-inline-create" },
-      h(Input, {
+      h("textarea", {
         value: title,
         onChange: function (e) { setTitle(e.target.value); },
         onKeyDown: function (e) {
-          if (e.key === "Enter") { e.preventDefault(); submit(); }
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
           if (e.key === "Escape") props.onCancel();
         },
         placeholder: props.columnName === "triage"
           ? "Rough idea — AI will spec it…"
           : "New task title…",
         autoFocus: true,
-        className: "h-8 text-sm",
+        className: "text-sm min-h-[2rem] max-h-32 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+        rows: 2,
       }),
       h("div", { className: "flex gap-2" },
         h(Input, {
@@ -1307,6 +1823,9 @@
           onChange: function (e) { setAssignee(e.target.value); },
           placeholder: props.columnName === "triage" ? "specifier" : "assignee",
           className: "h-7 text-xs flex-1",
+          title: props.columnName === "triage"
+            ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
+            : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
         }),
         h(Input, {
           type: "number",
@@ -1314,6 +1833,7 @@
           onChange: function (e) { setPriority(e.target.value); },
           placeholder: "pri",
           className: "h-7 text-xs w-16",
+          title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
         }),
       ),
       h(Input, {
@@ -1345,6 +1865,7 @@
         value: parent,
         onChange: function (e) { setParent(e.target.value); },
         className: "h-7 text-xs",
+        title: "Optional parent task. A child stays blocked in its current column until the parent is marked done.",
       },
         h(SelectOption, { value: "" }, "— no parent —"),
         (props.allTasks || []).map(function (t) {
@@ -1375,6 +1896,11 @@
     const [err, setErr] = useState(null);
     const [newComment, setNewComment] = useState("");
     const [editing, setEditing] = useState(false);
+    // Home-channel notification toggles. homeChannels is the list of platforms
+    // the user has a /sethome on; each entry has a `subscribed` bool telling
+    // us whether this task is currently subscribed via that platform's home.
+    const [homeChannels, setHomeChannels] = useState([]);
+    const [homeBusy, setHomeBusy] = useState({});
     const boardSlug = props.boardSlug;
 
     const load = useCallback(function () {
@@ -1384,10 +1910,19 @@
         .finally(function () { setLoading(false); });
     }, [props.taskId, boardSlug]);
 
+    const loadHomeChannels = useCallback(function () {
+      const qs = new URLSearchParams({ task_id: props.taskId });
+      const url = withBoard(`${API}/home-channels?${qs}`, boardSlug);
+      return SDK.fetchJSON(url)
+        .then(function (d) { setHomeChannels(d.home_channels || []); })
+        .catch(function () { /* silent — endpoint optional on older gateways */ });
+    }, [props.taskId, boardSlug]);
+
     // Reload when the WS stream reports new events for this task id
     // (completion, block, crash, etc. — anything that'd make the drawer
     // show stale data if we only loaded on mount).
     useEffect(function () { load(); }, [load, props.eventTick]);
+    useEffect(function () { loadHomeChannels(); }, [loadHomeChannels]);
     useEffect(function () {
       function onKey(e) { if (e.key === "Escape" && !editing) props.onClose(); }
       window.addEventListener("keydown", onKey);
@@ -1412,11 +1947,36 @@
       if (opts && opts.confirm && !window.confirm(opts.confirm)) {
         return Promise.resolve();
       }
+      const finalPatch = withCompletionSummary(patch, 1);
+      if (!finalPatch) return Promise.resolve();
       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
+        body: JSON.stringify(finalPatch),
       }).then(function () { load(); props.onRefresh(); });
+    };
+
+    // Triage specifier — calls the auxiliary LLM to flesh out a rough
+    // idea in the Triage column into a concrete spec (title + body with
+    // goal, approach, acceptance criteria) and promotes it to todo.
+    // Not a PATCH: runs through a dedicated POST endpoint because the
+    // LLM call can take tens of seconds, and its outcome is richer than
+    // a status flip (may update title AND body AND emit an audit
+    // comment — or fail with a human-readable reason that the UI
+    // surfaces inline without treating it as an HTTP error).
+    const doSpecify = function () {
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/specify`, boardSlug),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }
+      ).then(function (res) {
+        load();
+        props.onRefresh();
+        return res;
+      });
     };
 
     const addLink = function (parentId) {
@@ -1448,6 +2008,43 @@
         .catch(function (e) { setErr(String(e.message || e)); });
     };
 
+    const toggleHomeSubscription = function (platform, currentlySubscribed) {
+      // Optimistic flip + busy flag to keep double-clicks idempotent.
+      setHomeBusy(function (b) { return Object.assign({}, b, { [platform]: true }); });
+      setHomeChannels(function (list) {
+        return list.map(function (h) {
+          return h.platform === platform
+            ? Object.assign({}, h, { subscribed: !currentlySubscribed })
+            : h;
+        });
+      });
+      const method = currentlySubscribed ? "DELETE" : "POST";
+      const url = withBoard(
+        `${API}/tasks/${encodeURIComponent(props.taskId)}/home-subscribe/${encodeURIComponent(platform)}`,
+        boardSlug,
+      );
+      return SDK.fetchJSON(url, { method: method })
+        .then(function () { return loadHomeChannels(); })
+        .catch(function (e) {
+          // Revert optimistic flip on failure.
+          setHomeChannels(function (list) {
+            return list.map(function (h) {
+              return h.platform === platform
+                ? Object.assign({}, h, { subscribed: currentlySubscribed })
+                : h;
+            });
+          });
+          setErr(String(e.message || e));
+        })
+        .finally(function () {
+          setHomeBusy(function (b) {
+            const next = Object.assign({}, b);
+            delete next[platform];
+            return next;
+          });
+        });
+    };
+
     return h("div", { className: "hermes-kanban-drawer-shade", onClick: props.onClose },
       h("div", {
         className: "hermes-kanban-drawer",
@@ -1468,12 +2065,18 @@
           data, editing, setEditing,
           renderMarkdown: props.renderMarkdown,
           allTasks: props.allTasks,
+          assignees: props.assignees || [],
           boardSlug: boardSlug,
           onPatch: doPatch,
+          onSpecify: doSpecify,
           onAddParent: addLink,
           onRemoveParent: removeLink,
           onAddChild: addChild,
           onRemoveChild: removeChild,
+          homeChannels: homeChannels,
+          homeBusy: homeBusy,
+          onToggleHomeSub: toggleHomeSubscription,
+          onRefresh: props.onRefresh,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -1534,7 +2137,23 @@
         }) : null,
         t.created_by ? h(MetaRow, { label: "Created by", value: t.created_by }) : null,
       ),
-      h(StatusActions, { task: t, onPatch: props.onPatch }),
+      h(StatusActions, {
+        task: t,
+        onPatch: props.onPatch,
+        onSpecify: props.onSpecify,
+      }),
+      h(DiagnosticsSection, {
+        task: t,
+        boardSlug: props.boardSlug,
+        assignees: props.assignees,
+        diagnostics: t.diagnostics || [],
+        onRefresh: props.onRefresh,
+      }),
+      h(HomeSubsSection, {
+        homeChannels: props.homeChannels || [],
+        homeBusy: props.homeBusy || {},
+        onToggle: props.onToggleHomeSub,
+      }),
       h(BodyEditor, {
         task: t,
         renderMarkdown: props.renderMarkdown,
@@ -1570,11 +2189,41 @@
       h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" }, `Events (${events.length})`),
         events.slice().reverse().slice(0, 20).map(function (e) {
-          return h("div", { key: e.id, className: "hermes-kanban-event" },
-            h("span", { className: "hermes-kanban-event-kind" }, e.kind),
-            h("span", { className: "hermes-kanban-event-ago" },
-              timeAgo ? timeAgo(e.created_at) : ""),
-            e.payload
+          const isDiag = isDiagnosticEvent(e.kind);
+          const phantoms = isDiag ? phantomIdsFromEvent(e) : [];
+          return h("div", {
+            key: e.id,
+            className: cn(
+              "hermes-kanban-event",
+              isDiag ? "hermes-kanban-event--hallucination" : "",
+            ),
+          },
+            isDiag
+              ? h("div", { className: "hermes-kanban-event-header" },
+                  h("span", { className: "hermes-kanban-event-warning-icon" }, "⚠"),
+                  h("span", { className: "hermes-kanban-event-warning-label" },
+                    DIAGNOSTIC_EVENT_LABELS[e.kind] || e.kind),
+                  h("span", { className: "hermes-kanban-event-ago" },
+                    timeAgo ? timeAgo(e.created_at) : ""),
+                )
+              : h("div", { className: "hermes-kanban-event-header-plain" },
+                  h("span", { className: "hermes-kanban-event-kind" }, e.kind),
+                  h("span", { className: "hermes-kanban-event-ago" },
+                    timeAgo ? timeAgo(e.created_at) : ""),
+                ),
+            isDiag && phantoms.length > 0
+              ? h("div", { className: "hermes-kanban-event-phantom-row" },
+                  h("span", { className: "hermes-kanban-event-phantom-label" },
+                    "Phantom ids:"),
+                  phantoms.map(function (pid) {
+                    return h("code", {
+                      key: pid,
+                      className: "hermes-kanban-event-phantom-chip",
+                    }, pid);
+                  }),
+                )
+              : null,
+            e.payload && !isDiag
               ? h("code", { className: "hermes-kanban-event-payload" },
                   JSON.stringify(e.payload))
               : null,
@@ -1863,11 +2512,10 @@
         ),
       ),
       h("div", { className: "hermes-kanban-deps-row" },
-        h(Select, {
+        h(Select, Object.assign({
           value: newParent,
-          onChange: function (e) { setNewParent(e.target.value); },
           className: "h-7 text-xs flex-1",
-        },
+        }, selectChangeHandler(setNewParent)),
           h(SelectOption, { value: "" }, "— add parent —"),
           candidatesFor(parentExclude).map(function (t) {
             return h(SelectOption, { key: t.id, value: t.id },
@@ -1902,11 +2550,10 @@
         ),
       ),
       h("div", { className: "hermes-kanban-deps-row" },
-        h(Select, {
+        h(Select, Object.assign({
           value: newChild,
-          onChange: function (e) { setNewChild(e.target.value); },
           className: "h-7 text-xs flex-1",
-        },
+        }, selectChangeHandler(setNewChild)),
           h(SelectOption, { value: "" }, "— add child —"),
           candidatesFor(childExclude).map(function (t) {
             return h(SelectOption, { key: t.id, value: t.id },
@@ -1927,6 +2574,8 @@
 
   function StatusActions(props) {
     const t = props.task;
+    const [specifyBusy, setSpecifyBusy] = useState(false);
+    const [specifyMsg, setSpecifyMsg] = useState(null);
     const b = function (label, patch, enabled, confirmMsg) {
       return h(Button, {
         onClick: function () { if (enabled !== false) props.onPatch(patch, { confirm: confirmMsg }); },
@@ -1934,19 +2583,104 @@
         size: "sm",
       }, label);
     };
-    return h("div", { className: "hermes-kanban-actions" },
-      b("→ triage",  { status: "triage" },   t.status !== "triage"),
-      b("→ ready",   { status: "ready" },    t.status !== "ready"),
-      b("→ running", { status: "running" },  t.status !== "running"),
-      b("Block",     { status: "blocked" },
-        t.status === "running" || t.status === "ready",
-        DESTRUCTIVE_TRANSITIONS.blocked),
-      b("Unblock",   { status: "ready" },    t.status === "blocked"),
-      b("Complete",  { status: "done" },
-        t.status === "running" || t.status === "ready" || t.status === "blocked",
-        DESTRUCTIVE_TRANSITIONS.done),
-      b("Archive",   { status: "archived" }, t.status !== "archived",
-        DESTRUCTIVE_TRANSITIONS.archived),
+
+    // "Specify" appears only when the task is in the Triage column — the
+    // one column where an auxiliary LLM pass is meaningful. Elsewhere
+    // the backend would return ok:false with "not in triage" anyway,
+    // so hiding the button keeps the action row uncluttered.
+    const specifyButton = (t.status === "triage" && props.onSpecify)
+      ? h(Button, {
+          onClick: function () {
+            if (specifyBusy) return;
+            setSpecifyBusy(true);
+            setSpecifyMsg(null);
+            props.onSpecify().then(function (res) {
+              if (res && res.ok) {
+                const suffix = res.new_title
+                  ? ` — retitled: ${res.new_title}`
+                  : "";
+                setSpecifyMsg({ ok: true, text: `Specified${suffix}` });
+              } else {
+                setSpecifyMsg({
+                  ok: false,
+                  text: "Specify failed: " + ((res && res.reason) || "unknown error"),
+                });
+              }
+            }).catch(function (err) {
+              setSpecifyMsg({
+                ok: false,
+                text: "Specify failed: " + (err.message || String(err)),
+              });
+            }).then(function () {
+              setSpecifyBusy(false);
+            });
+          },
+          disabled: specifyBusy,
+          size: "sm",
+        }, specifyBusy ? "Specifying…" : "✨ Specify")
+      : null;
+
+    return h("div", null,
+      h("div", { className: "hermes-kanban-actions" },
+        specifyButton,
+        b("→ triage",  { status: "triage" },   t.status !== "triage"),
+        b("→ ready",   { status: "ready" },    t.status !== "ready"),
+        // No direct → running button: /tasks/:id PATCH rejects status=running
+        // with 400 (issue #19535). Tasks enter running only through the
+        // dispatcher's claim_task path, which atomically creates the run row,
+        // claim lock, and worker process metadata.
+        b("Block",     { status: "blocked" },
+          t.status === "running" || t.status === "ready",
+          DESTRUCTIVE_TRANSITIONS.blocked),
+        b("Unblock",   { status: "ready" },    t.status === "blocked"),
+        b("Complete",  { status: "done" },
+          t.status === "running" || t.status === "ready" || t.status === "blocked",
+          DESTRUCTIVE_TRANSITIONS.done),
+        b("Archive",   { status: "archived" }, t.status !== "archived",
+          DESTRUCTIVE_TRANSITIONS.archived),
+      ),
+      specifyMsg ? h("div", {
+        className: specifyMsg.ok
+          ? "hermes-kanban-msg-ok"
+          : "hermes-kanban-msg-err",
+      }, specifyMsg.text) : null,
+    );
+  }
+
+
+  // One toggle per gateway platform the user has a home channel set on
+  // (telegram, discord, slack, etc.). Toggling on creates a kanban_notify_subs
+  // row routed to that platform's home; toggling off removes it. Nothing
+  // renders when no platforms have a home configured — this section stays
+  // invisible for users who haven't set one up.
+  function HomeSubsSection(props) {
+    const channels = props.homeChannels || [];
+    if (channels.length === 0) return null;
+    const busy = props.homeBusy || {};
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head" },
+        "Notify home channels"),
+      h("div", { className: "hermes-kanban-home-subs" },
+        channels.map(function (hc) {
+          const isBusy = !!busy[hc.platform];
+          const label = hc.subscribed ? "✓ " + hc.platform : hc.platform;
+          const title = hc.subscribed
+            ? `Sending updates to ${hc.name} (${hc.chat_id}${hc.thread_id ? " / " + hc.thread_id : ""}). Click to stop.`
+            : `Send completed / blocked / gave_up notifications to ${hc.name} (${hc.chat_id}${hc.thread_id ? " / " + hc.thread_id : ""}).`;
+          return h(Button, {
+            key: hc.platform,
+            size: "sm",
+            title: title,
+            disabled: isBusy || !props.onToggle,
+            onClick: function () {
+              if (props.onToggle) props.onToggle(hc.platform, hc.subscribed);
+            },
+            className: hc.subscribed
+              ? "hermes-kanban-home-sub hermes-kanban-home-sub--on"
+              : "hermes-kanban-home-sub",
+          }, label);
+        })
+      )
     );
   }
 

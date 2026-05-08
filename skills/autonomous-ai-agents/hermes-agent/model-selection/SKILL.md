@@ -27,12 +27,16 @@ Don't invoke this skill for routine work. The default + auto-fallback handles it
 
 ## When to manually switch
 
+> **MANDATORY VERSION PINS — these override your training-time defaults.** When the user says "Sonnet" without a version, that means **`claude-sonnet-4-6`** (not 4-7, not anything newer). When the user says "Opus" without a version, that means **`claude-opus-4-6`** (not 4-7, not 4-1, not 4-20250514). The user has chosen these versions deliberately. Do NOT silently route to a newer Opus or Sonnet variant just because it exists — even if your training data tells you 4-7 is "the latest." Only deviate from these defaults if the user *explicitly* names a different version (e.g. "switch to opus 4-7").
+
 Use `/model <name>` (session-scoped) when:
 
 | Situation | Action |
 |---|---|
 | User says "use Claude" / "use Sonnet" / "use better model" | `/model anthropic/claude-sonnet-4-6` |
 | User says "use Opus" / "use the smartest model" / "think harder about this" | `/model anthropic/claude-opus-4-6` |
+| User explicitly says "use opus 4-7" / "use the latest opus" | `/model anthropic/claude-opus-4-7` |
+| User explicitly says "use sonnet 4-7" / similar | use the named identifier verbatim |
 | User says "use MiniMax" / "go back to default" | `/model MiniMax-M2.7` |
 | You've gotten MiniMax wrong twice on the same problem | escalate: `/model anthropic/claude-sonnet-4-6`, retry |
 | You've gotten Sonnet wrong twice on the same hard problem | escalate further: `/model anthropic/claude-opus-4-6`, retry |

@@ -1,7 +1,6 @@
 ---
 name: one-three-one-rule
 description: >
-platforms: [linux, macos, windows]
   Structured decision-making framework for technical proposals and trade-off analysis.
   When the user faces a choice between multiple approaches (architecture decisions,
   tool selection, refactoring strategies, migration paths), this skill produces a
@@ -9,6 +8,7 @@ platforms: [linux, macos, windows]
   and one concrete recommendation with definition of done and implementation plan.
   Use when the user asks for a "1-3-1", says "give me options", or needs help
   choosing between competing approaches.
+platforms: [linux, macos, windows]
 version: 1.0.0
 author: Willard Moore
 license: MIT

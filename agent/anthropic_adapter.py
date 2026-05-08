@@ -1973,6 +1973,126 @@ def _relocate_orphaned_tool_search_results(messages: List[Dict[str, Any]]) -> No
                 break
 
 
+def _move_client_tool_use_blocks_to_end(messages: List[Dict[str, Any]]) -> None:
+    """Reorder assistant content so client ``tool_use`` blocks come AFTER
+    any server-side blocks (``server_tool_use`` / ``*_tool_result``) within
+    the same message.
+
+    Why this exists:
+
+    Anthropic's input validator requires that the next user message's
+    ``tool_result`` for a client ``tool_use`` be "immediately after" it
+    in the message list — and "immediately after" means the very next
+    message, with no intervening server-side blocks pushing the
+    client tool_use earlier in its own content array. When the model
+    emits a client tool_use BEFORE deciding to invoke server-side
+    tool_search, the captured response carries the order
+    ``[tool_use, server_tool_use, *_tool_result]``. Replaying that
+    verbatim trips the validator with HTTP 400:
+
+      "messages.N: ``tool_use`` ids were found without ``tool_result``
+       blocks immediately after: <client tool_use id>"
+
+    Even though the client tool_use IS followed (in the next message)
+    by its tool_result. The validator considers the trailing
+    server-side blocks an obstruction.
+
+    Fix: move all client ``tool_use`` blocks to the end of their
+    assistant message, preserving the relative order of server-side
+    blocks, thinking blocks, and text. The client tool_use blocks
+    themselves keep their relative order among each other.
+
+    Thinking-signature safety:
+
+    Anthropic signs thinking blocks against their position in the
+    response. ``context_management.clear_thinking_20251015`` enforces
+    that each block stays in place across turns. Moving a client
+    ``tool_use`` past server-side blocks doesn't relocate any thinking
+    block — they stay where the model emitted them. We only refuse to
+    reorder when a thinking block sits BETWEEN a client tool_use and
+    a trailing server-side block (because moving the tool_use past
+    the thinking would change the content stream the thinking signed
+    against). Those messages pass through unchanged and may still
+    400; loudly logging so we can diagnose if we ever see one.
+
+    Mutates ``messages`` in place. Idempotent — once the client
+    tool_use is at the end, repeated passes are no-ops.
+    """
+    for mi, m in enumerate(messages):
+        if m.get("role") != "assistant":
+            continue
+        content = m.get("content")
+        if not isinstance(content, list) or len(content) < 2:
+            continue
+
+        # Find client tool_use indices (not server_tool_use).
+        client_tu_indices = [
+            i for i, b in enumerate(content)
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+        if not client_tu_indices:
+            continue
+
+        # If every client tool_use is already at the tail, nothing to do.
+        last_idx = len(content) - 1
+        if all(i >= last_idx - len(client_tu_indices) + 1 for i in client_tu_indices):
+            # All client tool_use blocks are already in the final
+            # contiguous tail — verify it's actually a clean tail
+            # (no non-tool_use blocks intermixed at the end).
+            tail = content[last_idx - len(client_tu_indices) + 1:]
+            if all(
+                isinstance(b, dict) and b.get("type") == "tool_use"
+                for b in tail
+            ):
+                continue
+
+        # Detect the unsafe pattern: a thinking block between a client
+        # tool_use and a later server-side block. Don't reorder — log
+        # and skip.
+        SERVER_BLOCK_TYPES = {"server_tool_use"}
+        first_tu_idx = client_tu_indices[0]
+        has_trailing_server = any(
+            isinstance(content[i], dict)
+            and (
+                content[i].get("type") in SERVER_BLOCK_TYPES
+                or (
+                    isinstance(content[i].get("type"), str)
+                    and content[i]["type"].endswith("_tool_result")
+                    and content[i]["type"].startswith("tool_search_tool_")
+                )
+                or content[i].get("type") == "tool_search_tool_result"
+            )
+            for i in range(first_tu_idx + 1, len(content))
+        )
+        if not has_trailing_server:
+            continue  # Reorder unnecessary — no server-side block follows.
+
+        intervening_thinking = any(
+            isinstance(content[i], dict)
+            and content[i].get("type") in ("thinking", "redacted_thinking")
+            for i in range(first_tu_idx + 1, len(content))
+        )
+        if intervening_thinking:
+            logger.warning(
+                "anthropic adapter: assistant msg[%d] has client tool_use "
+                "followed by both a thinking block and a server-side block; "
+                "cannot reorder without invalidating thinking signature. "
+                "Anthropic may reject this request with a 400 about "
+                "tool_use ids without tool_result.",
+                mi,
+            )
+            continue
+
+        # Safe to reorder. Pull all client tool_use blocks out, then
+        # append them at the end in original order.
+        client_tu_blocks = [content[i] for i in client_tu_indices]
+        # Build a new content list dropping the client tool_use slots.
+        client_tu_set = set(client_tu_indices)
+        rebuilt = [b for i, b in enumerate(content) if i not in client_tu_set]
+        rebuilt.extend(client_tu_blocks)
+        m["content"] = rebuilt
+
+
 def _canonicalize_tool_search_result_types(content: Any) -> None:
     """Rewrite variant-suffixed ``tool_search_tool_<variant>_tool_result``
     block types to the bare canonical form ``tool_search_tool_result``.
@@ -2500,6 +2620,16 @@ def convert_messages_to_anthropic(
     # doesn't reject them with 400. Idempotent: bare canonical is the
     # fixed point.
     _canonicalize_tool_search_result_types(result)
+
+    # Reorder client tool_use blocks to the end of each assistant message
+    # when followed by server-side blocks. Anthropic's input validator
+    # demands the next message's tool_result be "immediately after" the
+    # client tool_use, with no intervening server-side blocks. The model
+    # sometimes emits tool_search AFTER deciding to call a client tool;
+    # the captured response carries that order verbatim and 400s on
+    # replay until we move the client tool_use past the server-side
+    # blocks. Idempotent: already-tail-positioned tool_use is skipped.
+    _move_client_tool_use_blocks_to_end(result)
 
     return system, result
 

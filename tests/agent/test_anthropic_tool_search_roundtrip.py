@@ -28,6 +28,7 @@ import pytest
 from agent.anthropic_adapter import (
     _normalize_tool_reference_for_input,
     _canonicalize_tool_search_result_types,
+    _move_client_tool_use_blocks_to_end,
     _normalize_tool_search_result_for_input,
     _normalize_tool_search_result_inner,
     _relocate_orphaned_tool_search_results,
@@ -918,3 +919,341 @@ class TestCanonicalizeToolSearchResultTypes:
         ]
         _canonicalize_tool_search_result_types(server_tool_blocks)
         assert server_tool_blocks[1]["type"] == "tool_search_tool_result"
+
+
+# ---------------------------------------------------------------------------
+# Client tool_use reorder (regression for HTTP 400 "tool_use ids were found
+# without tool_result blocks immediately after")
+# ---------------------------------------------------------------------------
+
+class TestMoveClientToolUseBlocksToEnd:
+    """Anthropic's input validator demands the next user message's
+    tool_result for a client tool_use be "immediately after" it, with no
+    intervening server-side blocks. The model sometimes emits
+    tool_search AFTER deciding to call a client tool, producing the
+    response order ``[tool_use(client), server_tool_use, *_tool_result]``.
+    Replaying that order verbatim 400s with a misleading "tool_use ids
+    were found without tool_result blocks immediately after" — even
+    though the next message DOES contain the tool_result.
+
+    Live evidence: subagent session 20260507_185238_9f2f5a, dump
+    20260507_185248_045545, request_id roughly contemporaneous with the
+    user's report (the validator only points at the leftmost orphan;
+    the actual obstruction was the trailing server-side blocks).
+
+    Fix: move all client tool_use blocks to the end of their assistant
+    message at request-build time, preserving server-side / thinking /
+    text relative order.
+    """
+
+    def test_client_tool_use_followed_by_server_blocks_is_reordered(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_x",
+                        "name": "terminal",
+                        "input": {"command": "echo hi"},
+                    },
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_y",
+                        "name": "tool_search_tool_regex",
+                        "input": {"pattern": ".*"},
+                    },
+                    {
+                        "type": "tool_search_tool_result",
+                        "tool_use_id": "srvtoolu_y",
+                        "content": {
+                            "type": "tool_search_tool_search_result",
+                            "tool_references": [],
+                        },
+                    },
+                ],
+            },
+        ]
+        _move_client_tool_use_blocks_to_end(msgs)
+        types = [b["type"] for b in msgs[1]["content"]]
+        # Client tool_use must be at the END now.
+        assert types == [
+            "server_tool_use",
+            "tool_search_tool_result",
+            "tool_use",
+        ], types
+        # And the tool_use block content survived the move intact.
+        last = msgs[1]["content"][-1]
+        assert last["id"] == "toolu_x"
+        assert last["name"] == "terminal"
+
+    def test_already_tail_positioned_tool_use_is_unchanged(self):
+        """Idempotent: client tool_use already at the end → no-op."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_y",
+                        "name": "tool_search_tool_regex",
+                        "input": {},
+                    },
+                    {
+                        "type": "tool_search_tool_result",
+                        "tool_use_id": "srvtoolu_y",
+                        "content": {
+                            "type": "tool_search_tool_search_result",
+                            "tool_references": [],
+                        },
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_x",
+                        "name": "terminal",
+                        "input": {},
+                    },
+                ],
+            },
+        ]
+        before = list(msgs[1]["content"])
+        _move_client_tool_use_blocks_to_end(msgs)
+        assert msgs[1]["content"] == before
+
+    def test_no_server_blocks_following_tool_use_is_unchanged(self):
+        """If there's no server-side block AFTER the client tool_use,
+        no reorder needed. Conservative — don't touch ordering needlessly."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_a",
+                        "name": "tool_search_tool_regex",
+                        "input": {},
+                    },
+                    {
+                        "type": "tool_search_tool_result",
+                        "tool_use_id": "srvtoolu_a",
+                        "content": {
+                            "type": "tool_search_tool_search_result",
+                            "tool_references": [],
+                        },
+                    },
+                    {"type": "text", "text": "preamble"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_x",
+                        "name": "terminal",
+                        "input": {},
+                    },
+                ],
+            },
+        ]
+        before = list(msgs[1]["content"])
+        _move_client_tool_use_blocks_to_end(msgs)
+        assert msgs[1]["content"] == before
+
+    def test_thinking_between_tool_use_and_server_block_is_skipped(self):
+        """When a thinking block sits between the client tool_use and a
+        trailing server-side block, reordering would push the tool_use
+        past the thinking and break its signature. Don't reorder; log
+        a warning."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_x",
+                        "name": "terminal",
+                        "input": {},
+                    },
+                    {
+                        "type": "thinking",
+                        "thinking": "hmm let me also search...",
+                        "signature": "sig_abc",
+                    },
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_y",
+                        "name": "tool_search_tool_regex",
+                        "input": {},
+                    },
+                ],
+            },
+        ]
+        before = list(msgs[1]["content"])
+        _move_client_tool_use_blocks_to_end(msgs)
+        # Unchanged.
+        assert msgs[1]["content"] == before
+
+    def test_thinking_before_tool_use_is_safe_to_reorder(self):
+        """Thinking BEFORE the client tool_use stays in place when we
+        move the tool_use to the end (the thinking signature signs
+        content prior to the thinking, which is unchanged)."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "let me try terminal",
+                        "signature": "sig_abc",
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_x",
+                        "name": "terminal",
+                        "input": {},
+                    },
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_y",
+                        "name": "tool_search_tool_regex",
+                        "input": {},
+                    },
+                ],
+            },
+        ]
+        _move_client_tool_use_blocks_to_end(msgs)
+        types = [b["type"] for b in msgs[1]["content"]]
+        # thinking and server_tool_use stay in their relative order;
+        # tool_use moves to the end.
+        assert types == ["thinking", "server_tool_use", "tool_use"], types
+        # Thinking signature preserved verbatim.
+        assert msgs[1]["content"][0]["signature"] == "sig_abc"
+
+    def test_multiple_client_tool_use_blocks_all_move_to_tail(self):
+        """If the model emits N client tool_use blocks interleaved with
+        server-side blocks, all N should end up at the tail in original
+        relative order."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_first",
+                        "name": "terminal",
+                        "input": {},
+                    },
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_a",
+                        "name": "tool_search_tool_regex",
+                        "input": {},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_second",
+                        "name": "read_file",
+                        "input": {},
+                    },
+                    {
+                        "type": "tool_search_tool_result",
+                        "tool_use_id": "srvtoolu_a",
+                        "content": {
+                            "type": "tool_search_tool_search_result",
+                            "tool_references": [],
+                        },
+                    },
+                ],
+            },
+        ]
+        _move_client_tool_use_blocks_to_end(msgs)
+        types = [b["type"] for b in msgs[1]["content"]]
+        ids = [
+            b.get("id") for b in msgs[1]["content"]
+            if b.get("type") == "tool_use"
+        ]
+        # Server-side blocks first, client tool_use blocks last in
+        # original order.
+        assert types == [
+            "server_tool_use",
+            "tool_search_tool_result",
+            "tool_use",
+            "tool_use",
+        ], types
+        assert ids == ["toolu_first", "toolu_second"]
+
+    def test_user_messages_are_left_alone(self):
+        """Reorder should only touch assistant messages."""
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_x",
+                        "content": "ok",
+                    },
+                ],
+            },
+        ]
+        before = list(msgs[0]["content"])
+        _move_client_tool_use_blocks_to_end(msgs)
+        assert msgs[0]["content"] == before
+
+    def test_end_to_end_via_convert_messages_to_anthropic(self):
+        """End-to-end through convert_messages_to_anthropic — feed the
+        EXACT shape of the failing payload (subagent session 9f2f5a,
+        dump 185248_045545) and verify the outbound payload has the
+        client tool_use at the end of msg[1]."""
+        anthropic_blocks = [
+            {
+                "type": "tool_use",
+                "id": "toolu_01SieFhMBR9aAzpN8FZvyiuq",
+                "name": "terminal",
+                "input": {"command": "gh pr view 271"},
+            },
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_01VYAew4zGfvDXCtdtF6WBRB",
+                "name": "tool_search_tool_regex",
+                "input": {"pattern": "skills_list|skill_view"},
+            },
+            {
+                "type": "tool_search_tool_result",
+                "tool_use_id": "srvtoolu_01VYAew4zGfvDXCtdtF6WBRB",
+                "content": {
+                    "type": "tool_search_tool_search_result",
+                    "tool_references": [],
+                },
+            },
+        ]
+        messages = [
+            {"role": "user", "content": "Review PR #271"},
+            {
+                "role": "assistant",
+                "content": "",
+                "anthropic_content_blocks": anthropic_blocks,
+                "tool_calls": [],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_01SieFhMBR9aAzpN8FZvyiuq",
+                "content": "ok",
+            },
+        ]
+        _, out_msgs = convert_messages_to_anthropic(messages)
+        asst = next(m for m in out_msgs if m["role"] == "assistant")
+        types = [b.get("type") for b in asst["content"]]
+        # Client tool_use must be at the END.
+        assert types[-1] == "tool_use", types
+        # And it's followed by the user tool_result message.
+        next_idx = out_msgs.index(asst) + 1
+        next_msg = out_msgs[next_idx]
+        assert next_msg["role"] == "user"
+        next_types = [
+            b.get("type") for b in next_msg["content"]
+            if isinstance(b, dict)
+        ]
+        assert "tool_result" in next_types

@@ -7299,9 +7299,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
+
+        # Ensure venv exists and is valid before installing dependencies
+        venv_path = PROJECT_ROOT / "venv"
+        venv_python = venv_path / "bin" / "python3"
+        if sys.platform == "win32":
+            venv_python = venv_path / "Scripts" / "python.exe"
+
+        if not venv_python.exists():
+            print(f"  ⚠ Virtual environment not found at {venv_path}")
+            print("  → Creating new virtual environment...")
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "venv", str(venv_path)],
+                    cwd=PROJECT_ROOT,
+                    check=True,
+                    capture_output=True,
+                )
+                print("  ✓ Virtual environment created")
+            except subprocess.CalledProcessError as e:
+                print(f"  ✗ Failed to create virtual environment: {e}")
+                sys.exit(1)
+
         uv_bin = shutil.which("uv")
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_path)}
             _install_python_dependencies_with_optional_fallback(
                 [uv_bin, "pip"], env=uv_env
             )
@@ -7310,7 +7332,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
             # Some environments lose pip inside the venv; bootstrap it back with
             # ensurepip before trying the editable install.
-            pip_cmd = [sys.executable, "-m", "pip"]
+            pip_cmd = [str(venv_python), "-m", "pip"]
             try:
                 subprocess.run(
                     pip_cmd + ["--version"],
@@ -7320,7 +7342,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             except subprocess.CalledProcessError:
                 subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                    [str(venv_python), "-m", "ensurepip", "--upgrade", "--default-pip"],
                     cwd=PROJECT_ROOT,
                     check=True,
                 )

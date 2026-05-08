@@ -191,6 +191,44 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+    def test_get_status_keeps_runtime_running_when_pid_file_missing(self, monkeypatch):
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as web_server
+
+        class _Platform:
+            def __init__(self, value):
+                self.value = value
+
+        class _GatewayConfig:
+            def get_connected_platforms(self):
+                return [_Platform("telegram")]
+
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "updated_at": "2026-04-12T00:00:00+00:00",
+                "platforms": {
+                    "telegram": {"state": "connected", "updated_at": "2026-04-12T00:00:00+00:00"},
+                    "whatsapp": {"state": "retrying", "updated_at": "2026-04-12T00:00:00+00:00"},
+                },
+            },
+        )
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: _GatewayConfig())
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["gateway_running"] is False
+        assert resp.json()["gateway_state"] == "running"
+        assert resp.json()["gateway_platforms"] == {
+            "telegram": {"state": "connected", "updated_at": "2026-04-12T00:00:00+00:00"},
+        }
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200

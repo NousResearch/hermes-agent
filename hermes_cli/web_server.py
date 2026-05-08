@@ -576,8 +576,12 @@ async def get_status():
         gateway_exit_reason = runtime.get("exit_reason")
         gateway_updated_at = runtime.get("updated_at")
         if not gateway_running:
-            gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
-            gateway_platforms = {}
+            # Trust an explicit runtime "running" state even when the local PID
+            # file is missing; the dashboard should not overwrite valid runtime
+            # status with "stopped" in that case.
+            if gateway_state not in ("running",):
+                gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
+                gateway_platforms = {}
         elif gateway_running and remote_health_body is not None:
             # The health probe confirmed the gateway is alive, but the local
             # runtime status file may be stale (cross-container).  Override

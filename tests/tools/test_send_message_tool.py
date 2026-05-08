@@ -2052,3 +2052,180 @@ class TestSendSignalChunking:
         # Only the existing file made it into the RPC
         params = fake.calls[0]["payload"]["params"]
         assert len(params["attachments"]) == 1
+
+
+# ── _send_via_adapter standalone fallback ────────────────────────────────
+
+
+class _FakePlatform:
+    """Stand-in for the gateway.config.Platform enum.  Holds the .value
+    attribute consulted by ``_send_via_adapter`` for registry lookups."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+class TestSendViaAdapterStandaloneFallback:
+    """Coverage for the out-of-process plugin-platform send path.
+
+    When the gateway runner is not in this process (e.g. ``hermes cron``
+    runs separately from ``hermes gateway``), ``_send_via_adapter`` should
+    fall through to the plugin's ``standalone_sender_fn`` registered on
+    its ``PlatformEntry``.  Without the hook, the existing error string
+    is returned (with a more helpful tail).
+    """
+
+    @staticmethod
+    def _make_entry(send_fn):
+        from gateway.platform_registry import PlatformEntry
+
+        return PlatformEntry(
+            name="fakeplatform",
+            label="Fake",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            standalone_sender_fn=send_fn,
+        )
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_called_when_no_adapter(self, monkeypatch):
+        """Registry has hook, runner ref returns None: the hook is awaited."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        recorded = {}
+
+        async def fake_send(pconfig, chat_id, message, **kwargs):
+            recorded["pconfig"] = pconfig
+            recorded["chat_id"] = chat_id
+            recorded["message"] = message
+            recorded["kwargs"] = kwargs
+            return {"success": True, "message_id": "msg-42"}
+
+        platform_registry.register(self._make_entry(fake_send))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            pconfig = SimpleNamespace(extra={})
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                pconfig,
+                "room/123",
+                "hello cron",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert result == {"success": True, "message_id": "msg-42"}
+        assert recorded["chat_id"] == "room/123"
+        assert recorded["message"] == "hello cron"
+        assert recorded["pconfig"] is pconfig
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_kwargs_forwarded(self, monkeypatch):
+        """thread_id, media_files, and force_document all reach the hook."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        recorded = {}
+
+        async def fake_send(pconfig, chat_id, message, *, thread_id=None,
+                            media_files=None, force_document=False):
+            recorded["thread_id"] = thread_id
+            recorded["media_files"] = media_files
+            recorded["force_document"] = force_document
+            return {"success": True, "message_id": "x"}
+
+        platform_registry.register(self._make_entry(fake_send))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+                thread_id="thread-7",
+                media_files=["/tmp/a.png"],
+                force_document=True,
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert recorded["thread_id"] == "thread-7"
+        assert recorded["media_files"] == ["/tmp/a.png"]
+        assert recorded["force_document"] is True
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_absent_returns_helpful_error(self, monkeypatch):
+        """Registry entry has no hook: the fall-through error explains both
+        options (gateway-running and standalone hook)."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        platform_registry.register(self._make_entry(None))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert "error" in result
+        assert "fakeplatform" in result["error"]
+        assert "standalone_sender_fn" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_raises_is_caught_and_formatted(self, monkeypatch):
+        """Hook raises: error dict has 'Plugin standalone send failed: ...'"""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        async def boom(pconfig, chat_id, message, **kwargs):
+            raise ValueError("boom!")
+
+        platform_registry.register(self._make_entry(boom))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert result == {"error": "Plugin standalone send failed: boom!"}
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_fn_return_shape_passed_through(self, monkeypatch):
+        """Hook returns success dict: passed through unchanged."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        async def fake_send(pconfig, chat_id, message, **kwargs):
+            return {"success": True, "message_id": "abc-123", "extra_field": "preserved"}
+
+        platform_registry.register(self._make_entry(fake_send))
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+            result = await _send_via_adapter(
+                _FakePlatform("fakeplatform"),
+                SimpleNamespace(extra={}),
+                "chat-1",
+                "hi",
+            )
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert result["success"] is True
+        assert result["message_id"] == "abc-123"
+        assert result["extra_field"] == "preserved"

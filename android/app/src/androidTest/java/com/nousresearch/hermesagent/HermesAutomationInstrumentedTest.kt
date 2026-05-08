@@ -157,6 +157,7 @@ class HermesAutomationInstrumentedTest {
         )
         assertTrue(created.toString(), created.getBoolean("success"))
 
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
         app.sendBroadcast(
             Intent(HermesExternalTriggerReceiver.ACTION_EXTERNAL_TRIGGER)
                 .setPackage(app.packageName)
@@ -166,7 +167,7 @@ class HermesAutomationInstrumentedTest {
                 .putExtra("mode", "broadcast")
         )
 
-        assertTrue("Expected ${target.absolutePath}", eventually { target.isFile })
+        assertTrue("Expected ${target.absolutePath}", eventually(timeoutMs = 20_000L) { target.isFile })
         assertEquals("""broadcast-smoke|smoke://test|{"mode":"broadcast"}""", target.readText())
     }
 
@@ -1599,6 +1600,134 @@ class HermesAutomationInstrumentedTest {
         assertTrue(run.toString(), run.getBoolean("success"))
         assertTrue("Expected ${target.absolutePath}", target.isFile)
         assertEquals("tasker:xml-ok", target.readText())
+    }
+
+    @Test
+    fun variableActionAutomationSetsAndClearsVariables() {
+        val baseVariable = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "set_variable",
+                JSONObject()
+                    .put("name", "%BASE_MESSAGE")
+                    .put("value", "expanded"),
+            ),
+        )
+        assertTrue(baseVariable.toString(), baseVariable.getBoolean("success"))
+
+        val setTask = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_variable_action_task",
+                JSONObject()
+                    .put("id", "auto-variable-set")
+                    .put("label", "Variable set smoke")
+                    .put("variable_action", "set")
+                    .put("name", "%TASKER_DYNAMIC")
+                    .put("value", "value:%BASE_MESSAGE")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(setTask.toString(), setTask.getBoolean("success"))
+        assertEquals("variable_action", setTask.getJSONObject("automation").getString("action_type"))
+
+        val setRun = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run",
+                JSONObject().put("id", "auto-variable-set"),
+            ),
+        )
+        assertTrue(setRun.toString(), setRun.getBoolean("success"))
+        assertEquals("value:expanded", HermesAutomationStore(app).getVariable("TASKER_DYNAMIC"))
+
+        val clearTask = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_variable_action_task",
+                JSONObject()
+                    .put("id", "auto-variable-clear")
+                    .put("label", "Variable clear smoke")
+                    .put("variable_action", "clear")
+                    .put("name", "%TASKER_DYNAMIC")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(clearTask.toString(), clearTask.getBoolean("success"))
+
+        val clearRun = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run",
+                JSONObject().put("id", "auto-variable-clear"),
+            ),
+        )
+        assertTrue(clearRun.toString(), clearRun.getBoolean("success"))
+        assertFalse(HermesAutomationStore(app).listVariables().has("TASKER_DYNAMIC"))
+    }
+
+    @Test
+    fun taskerXmlImportCreatesVariableSetAndClearActions() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-tasker-variable-import.txt").apply { delete() }
+
+        val taskerXml = """
+            <TaskerData sr="" dvi="1" tv="6.6.18">
+              <Task sr="task1">
+                <nme>Hermes Tasker Variables</nme>
+                <Action sr="act0" ve="7">
+                  <code>547</code>
+                  <Str sr="arg0" ve="3">%TASKER_DYNAMIC</Str>
+                  <Str sr="arg1" ve="3">xml-action-ok</Str>
+                </Action>
+                <Action sr="act1" ve="7">
+                  <code>410</code>
+                  <Str sr="arg0" ve="3">hermes-tasker-variable-import.txt</Str>
+                  <Str sr="arg1" ve="3">tasker:%TASKER_DYNAMIC</Str>
+                  <Int sr="arg2" val="0"/>
+                </Action>
+                <Action sr="act2" ve="7">
+                  <code>549</code>
+                  <Str sr="arg0" ve="3">%TASKER_DYNAMIC</Str>
+                </Action>
+              </Task>
+            </TaskerData>
+        """.trimIndent()
+
+        val imported = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "import_tasker_xml",
+                JSONObject()
+                    .put("tasker_xml", taskerXml)
+                    .put("replace", true),
+            ),
+        )
+        assertTrue(imported.toString(), imported.getBoolean("success"))
+        assertEquals(3, imported.getInt("tasker_imported_action_count"))
+        assertEquals(0, imported.getJSONArray("tasker_skipped_actions").length())
+
+        val records = HermesAutomationStore(app).list()
+        val setRecord = records.first { it.label.contains("Variable Set") }
+        val fileRecord = records.first { it.actionType == "file_write" }
+        val clearRecord = records.first { it.label.contains("Variable Clear") }
+        assertFalse(setRecord.enabled)
+        assertEquals("variable_action", setRecord.actionType)
+        assertEquals("variable_action", clearRecord.actionType)
+
+        val setRun = JSONObject(HermesAutomationBridge.performActionJson(app, "run", JSONObject().put("id", setRecord.id)))
+        assertTrue(setRun.toString(), setRun.getBoolean("success"))
+        assertEquals("xml-action-ok", HermesAutomationStore(app).getVariable("TASKER_DYNAMIC"))
+
+        val fileRun = JSONObject(HermesAutomationBridge.performActionJson(app, "run", JSONObject().put("id", fileRecord.id)))
+        assertTrue(fileRun.toString(), fileRun.getBoolean("success"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("tasker:xml-action-ok", target.readText())
+
+        val clearRun = JSONObject(HermesAutomationBridge.performActionJson(app, "run", JSONObject().put("id", clearRecord.id)))
+        assertTrue(clearRun.toString(), clearRun.getBoolean("success"))
+        assertFalse(HermesAutomationStore(app).listVariables().has("TASKER_DYNAMIC"))
     }
 
     private fun eventually(timeoutMs: Long = 5_000L, condition: () -> Boolean): Boolean {

@@ -63,6 +63,38 @@ def _write_model_config(provider, base_url="", model_name="test-model"):
     save_config(cfg)
 
 
+def _write_aux_config(task="compression", provider="gemini", model_name="gemini-2.5-flash"):
+    """Simulate the aux picker writing a task override to disk."""
+    cfg = load_config()
+    aux = cfg.setdefault("auxiliary", {})
+    entry = aux.setdefault(task, {})
+    entry["provider"] = provider
+    entry["model"] = model_name
+    save_config(cfg)
+
+
+def test_setup_model_provider_preserves_auxiliary_choices_written_by_picker(tmp_path, monkeypatch):
+    """Aux choices made inside hermes setup must survive the wizard's final save."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    config = load_config()
+    assert config["auxiliary"]["compression"]["provider"] == "auto"
+
+    def fake_select():
+        _write_aux_config("compression", "gemini", "gemini-2.5-flash")
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+
+    setup_model_provider(config, quick=True)
+    save_config(config)  # mirrors run_setup_wizard(section="model") final save
+
+    reloaded = load_config()
+    compression = reloaded["auxiliary"]["compression"]
+    assert compression["provider"] == "gemini"
+    assert compression["model"] == "gemini-2.5-flash"
+
+
 def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, monkeypatch):
     """Keep-current custom should not fall through to the generic model menu."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

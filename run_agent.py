@@ -3386,17 +3386,17 @@ class AIAgent:
         # instead of returning structured reasoning fields.  Only fall back
         # to inline extraction when no structured reasoning was found.
         content = getattr(assistant_message, "content", None)
-        if not reasoning_parts and isinstance(content, str) and content:
-            inline_patterns = (
-                r"<think>(.*?)</think>",
-                r"<thinking>(.*?)</thinking>",
-                r"<thought>(.*?)</thought>",
-                r"<reasoning>(.*?)</reasoning>",
-                r"<REASONING_SCRATCHPAD>(.*?)</REASONING_SCRATCHPAD>",
-            )
-            for pattern in inline_patterns:
+        if not reasoning_parts and isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "thinking":
+                    continue
+                cleaned = str(part.get("thinking") or part.get("content") or "").strip()
+                if cleaned and cleaned not in reasoning_parts:
+                    reasoning_parts.append(cleaned)
+        elif not reasoning_parts and isinstance(content, str) and content:
+            for tag in ("think", "thinking", "thought", "reasoning", "REASONING_SCRATCHPAD"):
                 flags = re.DOTALL | re.IGNORECASE
-                for block in re.findall(pattern, content, flags=flags):
+                for block in re.findall(rf"<{tag}>(.*?)</{tag}>", content, flags=flags):
                     cleaned = block.strip()
                     if cleaned and cleaned not in reasoning_parts:
                         reasoning_parts.append(cleaned)
@@ -9005,7 +9005,13 @@ class AIAgent:
         # Sanitize surrogates from API response — some models (e.g. Kimi/GLM via Ollama)
         # can return invalid surrogate code points that crash json.dumps() on persist.
         _raw_content = assistant_message.content or ""
-        _san_content = _sanitize_surrogates(_raw_content)
+        if isinstance(_raw_content, list):
+            _raw_content = "\n".join(
+                str(p.get("text", ""))
+                for p in _raw_content
+                if isinstance(p, dict) and p.get("type") == "text"
+            )
+        _san_content = _sanitize_surrogates(str(_raw_content))
         if reasoning_text:
             reasoning_text = _sanitize_surrogates(reasoning_text)
 

@@ -480,9 +480,20 @@ streaming:
 #
 skills:
   # Nudge the agent to create skills after complex tasks.
-  # Every N tool-calling iterations, remind the model to consider saving a skill.
+  # Phase 1-2 fallback only — primary triggers are signal-based (see below).
   # Set to 0 to disable.
   creation_nudge_interval: 15
+
+  # Skill index v2 — Tier 1 (system prompt) shows category + names only;
+  # descriptions are fetched on demand via skill_describe. Skills with
+  # `priority: critical` in their frontmatter keep descriptions in Tier 1.
+  # Default false until Phase 3 of the rollout.
+  index_v2: false
+
+  # Soft cap on the Tier 1 skill block (token estimate, len // 4). When
+  # exceeded, lowest-priority categories are folded behind a one-line hint
+  # that points the model at skill_describe.
+  index_token_budget: 2000
 
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})

@@ -318,8 +318,8 @@ class TestCompletionConsumed:
         # Now the completion is marked as consumed
         assert registry.is_completion_consumed("proc_wait")
 
-    def test_poll_marks_completion_consumed(self, registry):
-        """poll() returning exited status marks session as consumed."""
+    def test_poll_does_not_mark_completion_consumed(self, registry):
+        """poll() is a read-only query and must not mark completion as consumed."""
         s = _make_session(sid="proc_poll", notify_on_complete=True, output="done")
         s.exited = True
         s.exit_code = 0
@@ -327,7 +327,41 @@ class TestCompletionConsumed:
 
         result = registry.poll("proc_poll")
         assert result["status"] == "exited"
-        assert registry.is_completion_consumed("proc_poll")
+        assert not registry.is_completion_consumed("proc_poll")
+
+    def test_poll_then_wait_marks_consumed(self, registry):
+        """poll() must not consume; subsequent wait() must still mark consumed."""
+        s = _make_session(sid="proc_poll_then_wait", notify_on_complete=True, output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._finished[s.id] = s
+
+        # poll() — read-only, no side effect
+        poll_result = registry.poll("proc_poll_then_wait")
+        assert poll_result["status"] == "exited"
+        assert not registry.is_completion_consumed("proc_poll_then_wait")
+
+        # wait() — consumes
+        wait_result = registry.wait("proc_poll_then_wait", timeout=1)
+        assert wait_result["status"] == "exited"
+        assert registry.is_completion_consumed("proc_poll_then_wait")
+
+    def test_poll_then_read_log_marks_consumed(self, registry):
+        """poll() must not consume; subsequent read_log() must still mark consumed."""
+        s = _make_session(sid="proc_poll_then_log", notify_on_complete=True, output="line1\nline2")
+        s.exited = True
+        s.exit_code = 0
+        registry._finished[s.id] = s
+
+        # poll() — read-only, no side effect
+        poll_result = registry.poll("proc_poll_then_log")
+        assert poll_result["status"] == "exited"
+        assert not registry.is_completion_consumed("proc_poll_then_log")
+
+        # read_log() — consumes
+        log_result = registry.read_log("proc_poll_then_log")
+        assert log_result["status"] == "exited"
+        assert registry.is_completion_consumed("proc_poll_then_log")
 
     def test_log_marks_completion_consumed(self, registry):
         """read_log() on exited session marks as consumed."""

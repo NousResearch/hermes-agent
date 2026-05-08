@@ -3038,6 +3038,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_update(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/update", "Update initiated~")
 
+        @tree.command(name="goal", description="Create or manage a goal for this session")
+        async def slash_goal(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/goal")
+
         @tree.command(name="restart", description="Gracefully restart the Hermes gateway")
         async def slash_restart(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/restart", "Restart requested~")

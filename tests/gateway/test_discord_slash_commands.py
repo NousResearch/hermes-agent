@@ -142,6 +142,27 @@ async def test_registers_native_thread_slash_command(adapter):
 
 
 @pytest.mark.asyncio
+async def test_registers_native_goal_slash_command(adapter):
+    """Regression test: /goal slash command must be registered."""
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "goal" in adapter._client.tree.commands, (
+        "/goal not found in registered slash commands — issue #21589"
+    )
+
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(send_message=AsyncMock()),
+    )
+    await adapter._client.tree.commands["goal"](interaction)
+
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction,
+        "/goal",
+    )
+
+
+@pytest.mark.asyncio
 async def test_registers_native_restart_slash_command(adapter):
     adapter._run_simple_slash = AsyncMock()
     adapter._register_slash_commands()

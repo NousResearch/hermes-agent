@@ -12,10 +12,10 @@ RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --fix-missing \
         -o Acquire::Retries=3 \
         -o Acquire::http::Timeout=30 \
-        build-essential nodejs npm python3 git || \
+        build-essential nodejs npm python3 git unzip || \
     (apt-get update && apt-get install -f -y && \
      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        build-essential nodejs npm python3 git) && \
+        build-essential nodejs npm python3 git unzip) && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/hermes

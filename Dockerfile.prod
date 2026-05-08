@@ -12,7 +12,7 @@ RUN apt-get update && \
         -o Acquire::Retries=3 \
         -o Acquire::http::Timeout=30 \
         ripgrep ffmpeg gcc python3-dev libffi-dev procps openssh-client docker-cli tini \
-        libolm-dev curl fonts-noto-cjk && \
+        libolm-dev curl unzip fonts-noto-cjk && \
     curl -fsSL "https://github.com/tianon/gosu/releases/download/1.19/gosu-amd64" -o /usr/local/bin/gosu && \
     chmod +x /usr/local/bin/gosu && \
     rm -rf /var/lib/apt/lists/*

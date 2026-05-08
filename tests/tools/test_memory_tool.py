@@ -255,3 +255,74 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+    # ── Parameter alias resolution (issue #21844) ─────────────────
+
+    def test_replace_accepts_old_string_alias(self, store):
+        """Models sometimes use old_string (patch convention) instead of old_text."""
+        store.add("memory", "original entry")
+        result = json.loads(memory_tool(
+            action="replace", target="memory",
+            content="updated entry",
+            store=store,
+            _raw_args={"action": "replace", "target": "memory",
+                        "old_string": "original", "content": "updated entry"},
+        ))
+        assert result["success"] is True
+        assert any("updated entry" in e for e in store.memory_entries)
+
+    def test_replace_accepts_new_text_alias(self, store):
+        """Models sometimes use new_text instead of content."""
+        store.add("memory", "original entry")
+        result = json.loads(memory_tool(
+            action="replace", target="memory",
+            old_text="original",
+            store=store,
+            _raw_args={"action": "replace", "target": "memory",
+                        "old_text": "original", "new_text": "replaced via new_text"},
+        ))
+        assert result["success"] is True
+        assert any("replaced via new_text" in e for e in store.memory_entries)
+
+    def test_replace_accepts_new_string_alias(self, store):
+        """Models sometimes use new_string (patch convention) instead of content."""
+        store.add("memory", "original entry")
+        result = json.loads(memory_tool(
+            action="replace", target="memory",
+            old_text="original",
+            store=store,
+            _raw_args={"action": "replace", "target": "memory",
+                        "old_text": "original", "new_string": "replaced via new_string"},
+        ))
+        assert result["success"] is True
+        assert any("replaced via new_string" in e for e in store.memory_entries)
+
+    def test_remove_accepts_old_string_alias(self, store):
+        """Models sometimes use old_string instead of old_text for remove."""
+        store.add("memory", "entry to remove")
+        result = json.loads(memory_tool(
+            action="remove", target="memory",
+            store=store,
+            _raw_args={"action": "remove", "target": "memory",
+                        "old_string": "entry to remove"},
+        ))
+        assert result["success"] is True
+        assert not any("entry to remove" in e for e in store.memory_entries)
+
+    def test_explicit_old_text_takes_precedence_over_alias(self, store):
+        """When both old_text and old_string are provided, old_text wins."""
+        store.add("memory", "findme entry")
+        store.add("memory", "alias entry")
+        result = json.loads(memory_tool(
+            action="replace", target="memory",
+            old_text="findme",
+            content="found via explicit param",
+            store=store,
+            _raw_args={"action": "replace", "target": "memory",
+                        "old_text": "findme", "old_string": "alias",
+                        "content": "found via explicit param"},
+        ))
+        assert result["success"] is True
+        assert any("found via explicit param" in e for e in store.memory_entries)
+        # The alias entry should be untouched
+        assert any("alias entry" in e for e in store.memory_entries)

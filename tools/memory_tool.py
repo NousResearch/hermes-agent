@@ -466,12 +466,28 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    _raw_args: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
 
     Returns JSON string with results.
+
+    ``_raw_args`` is an internal escape hatch injected by the registry handler
+    so that parameter-name aliases (``old_string`` → ``old_text``,
+    ``new_text`` / ``new_string`` → ``content``) can be resolved even when
+    the LLM uses the wrong convention.  End-users should never pass this.
     """
+    # ── Alias resolution ──────────────────────────────────────────
+    # Models frequently confuse memory-tool params with patch-tool params
+    # (old_string/new_string) or use new_text instead of content.
+    # Resolve aliases from the raw args dict before validation.
+    raw = _raw_args or {}
+    if old_text is None:
+        old_text = raw.get("old_string") or raw.get("oldText")
+    if content is None:
+        content = raw.get("new_text") or raw.get("new_string") or raw.get("newText") or raw.get("newString")
+
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
@@ -574,7 +590,8 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+        _raw_args=args),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )

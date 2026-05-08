@@ -51,3 +51,41 @@ export function greatCircleWaypoints(
   }
   return out;
 }
+
+function distancePointToSegmentKm(
+  p: [number, number],
+  a: [number, number],
+  b: [number, number]
+): number {
+  // Approximate: project to local equirectangular plane near `a`, then point-to-segment distance.
+  const latRef = toRad((a[1] + b[1]) / 2);
+  const kx = Math.cos(latRef) * 111.32; // km per deg lng
+  const ky = 110.574; // km per deg lat
+  const ax = a[0] * kx;
+  const ay = a[1] * ky;
+  const bx = b[0] * kx;
+  const by = b[1] * ky;
+  const px = p[0] * kx;
+  const py = p[1] * ky;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx;
+  const cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+export function pointNearPolyline(
+  point: [number, number],
+  polyline: [number, number][],
+  thresholdKm: number
+): boolean {
+  for (let i = 0; i < polyline.length - 1; i++) {
+    const d = distancePointToSegmentKm(point, polyline[i], polyline[i + 1]);
+    if (d <= thresholdKm) return true;
+  }
+  return false;
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { haversineKm, greatCircleWaypoints } from "../src/geo.js";
+import { haversineKm, greatCircleWaypoints, pointNearPolyline } from "../src/geo.js";
 
 describe("haversineKm", () => {
   it("returns 0 for identical points", () => {
@@ -43,5 +43,25 @@ describe("greatCircleWaypoints", () => {
     const directMidLat = (33 + 41) / 2;
     expect(mid[1]).toBeGreaterThan(directMidLat - 1);
     expect(mid[1]).toBeLessThan(directMidLat + 5);
+  });
+});
+
+describe("pointNearPolyline", () => {
+  const phx: [number, number] = [-112.0078, 33.4343];
+  const jfk: [number, number] = [-73.7781, 40.6413];
+  const route: [number, number][] = [phx, [-90, 38], jfk];
+
+  it("returns true for a point exactly on a vertex", () => {
+    expect(pointNearPolyline([-90, 38], route, 50)).toBe(true);
+  });
+
+  it("returns true for a point within threshold", () => {
+    // ~80km north of midpoint
+    expect(pointNearPolyline([-90, 38.7], route, 200)).toBe(true);
+  });
+
+  it("returns false for a far-away point", () => {
+    // somewhere over Mexico
+    expect(pointNearPolyline([-100, 20], route, 200)).toBe(false);
   });
 });

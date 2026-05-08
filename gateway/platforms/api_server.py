@@ -924,7 +924,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if self._llm_proxy_client is not None:
             return self._llm_proxy_client
 
-        from openai import OpenAI
+        from openai import OpenAI  # type: ignore[unresolved-import]
         from gateway.run import _resolve_runtime_agent_kwargs
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()

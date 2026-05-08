@@ -14,7 +14,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _collect_media_tags_from_tool_results
 from gateway.session import SessionSource, build_session_key
 
 
@@ -59,6 +59,57 @@ def _event(thread_id=None):
         source=source,
         message_id="msg-1",
     )
+
+
+def test_tool_result_media_collection_ignores_napcat_history_media_examples():
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_napcat",
+                    "type": "function",
+                    "function": {"name": "napcat_call", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "napcat_call",
+            "tool_call_id": "call_napcat",
+            "content": (
+                '{"messages":[{"message":"old example MEDIA:https://example.com/meme.png '
+                '[[audio_as_voice]] MEDIA:/tmp/voice.ogg"}]}'
+            ),
+        },
+    ]
+
+    assert _collect_media_tags_from_tool_results(messages) == []
+
+
+def test_tool_result_media_collection_allows_text_to_speech_media_tags():
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_tts",
+                    "type": "function",
+                    "function": {"name": "text_to_speech", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_tts",
+            "content": '{"success":true,"media_tag":"[[audio_as_voice]]\\nMEDIA:/tmp/speech.ogg"}',
+        },
+    ]
+
+    assert _collect_media_tags_from_tool_results(messages) == [
+        "[[audio_as_voice]]",
+        "MEDIA:/tmp/speech.ogg",
+    ]
 
 
 @pytest.mark.asyncio

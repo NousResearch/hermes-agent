@@ -779,6 +779,37 @@ class AIAgent:
         if os.environ.get("HERMES_SKILL_NUDGE_DISABLE") == "1":
             self._nudge_disabled = True
 
+        from agent.skill_nudge_signals import SignalEvaluator
+        self._signal_evaluator = SignalEvaluator(
+            repeated_threshold=self._nudge_repeated_threshold,
+            error_threshold=self._nudge_error_threshold,
+            common_clis_suppressed=self._nudge_common_clis_suppressed,
+            cli_window_days=self._nudge_cli_window_days,
+            user_phrases=self._nudge_user_phrases,
+        )
+
+    def _observe_tool_activity(
+        self,
+        tool_name: str,
+        arguments: dict | None,
+        result_content: str | None,
+    ) -> None:
+        """Feed one completed tool call/result into the skill nudge evaluator."""
+        if not getattr(self, "_nudge_signals_enabled", False):
+            return
+        if getattr(self, "_nudge_disabled", False):
+            return
+        ev = getattr(self, "_signal_evaluator", None)
+        if ev is None:
+            return
+        try:
+            content = str(result_content) if result_content is not None else ""
+            is_error, _ = _detect_tool_failure(tool_name, content)
+            ev.observe_tool_call(tool_name, arguments or {}, success=not is_error)
+            ev.observe_tool_result(tool_name, error_text=content if is_error else None)
+        except Exception as exc:
+            logger.debug("Signal evaluator failed for tool=%s: %s", tool_name, exc)
+
     def __init__(
         self,
         base_url: str = None,
@@ -8331,6 +8362,12 @@ class AIAgent:
             if subdir_hints:
                 function_result += subdir_hints
 
+            self._observe_tool_activity(
+                tool_name=name,
+                arguments=args,
+                result_content=function_result,
+            )
+
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
@@ -8691,6 +8728,12 @@ class AIAgent:
             if subdir_hints:
                 function_result += subdir_hints
 
+            self._observe_tool_activity(
+                tool_name=function_name,
+                arguments=function_args,
+                result_content=function_result,
+            )
+
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
@@ -9044,6 +9087,11 @@ class AIAgent:
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+        if self._nudge_signals_enabled and not self._nudge_disabled:
+            try:
+                self._signal_evaluator.observe_user_message(original_user_message or "")
+            except Exception as exc:
+                logger.debug("Signal evaluator (user msg) failed: %s", exc)
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on

@@ -170,36 +170,43 @@ def _normalize_string_set(values) -> Set[str]:
 
 # ── External skills directories ──────────────────────────────────────────
 
+def _candidate_multica_agent_context_skill_dirs() -> List[Path]:
+    """Return Multica-provided ``.agent_context/skills`` dirs, if present.
+
+    Multica mounts task-specific skills into the worktree at
+    ``.agent_context/skills``.  Hermes treats that directory as a read-only
+    external skills root so Multica skills are available without requiring the
+    runner to mutate the user's profile config.
+    """
+    roots: list[Path] = []
+    for raw_root in (os.getenv("TERMINAL_CWD"), os.getcwd()):
+        if not raw_root:
+            continue
+        try:
+            root = Path(raw_root).expanduser().resolve()
+        except OSError:
+            continue
+        if root not in roots:
+            roots.append(root)
+
+    candidates: list[Path] = []
+    for root in roots:
+        candidate = root / ".agent_context" / "skills"
+        if candidate.is_dir():
+            candidates.append(candidate.resolve())
+    return candidates
+
 
 def get_external_skills_dirs() -> List[Path]:
-    """Read ``skills.external_dirs`` from config.yaml and return validated paths.
+    """Return validated external skills roots.
 
-    Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
-    path.  Only directories that actually exist are returned.  Duplicates and
-    paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
+    Includes directories configured via ``skills.external_dirs`` plus the
+    Multica fallback ``.agent_context/skills`` directory when present in the
+    active working directory.  Each configured entry is expanded (``~`` and
+    ``${VAR}``) and resolved to an absolute path.  Only directories that
+    actually exist are returned.  Duplicates and paths that resolve to the local
+    ``~/.hermes/skills/`` are silently skipped.
     """
-    config_path = get_config_path()
-    if not config_path.exists():
-        return []
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(parsed, dict):
-        return []
-
-    skills_cfg = parsed.get("skills")
-    if not isinstance(skills_cfg, dict):
-        return []
-
-    raw_dirs = skills_cfg.get("external_dirs")
-    if not raw_dirs:
-        return []
-    if isinstance(raw_dirs, str):
-        raw_dirs = [raw_dirs]
-    if not isinstance(raw_dirs, list):
-        return []
-
     from hermes_constants import get_hermes_home
 
     hermes_home = get_hermes_home()
@@ -207,27 +214,48 @@ def get_external_skills_dirs() -> List[Path]:
     seen: Set[Path] = set()
     result: List[Path] = []
 
-    for entry in raw_dirs:
-        entry = str(entry).strip()
-        if not entry:
-            continue
-        # Expand ~ and environment variables
-        expanded = os.path.expanduser(os.path.expandvars(entry))
-        p = Path(expanded)
-        # Resolve relative paths against HERMES_HOME, not cwd
-        if not p.is_absolute():
-            p = (hermes_home / p).resolve()
+    def _append_dir(path: Path, *, debug_label: str) -> None:
+        if path == local_skills:
+            return
+        if path in seen:
+            return
+        if path.is_dir():
+            seen.add(path)
+            result.append(path)
         else:
-            p = p.resolve()
-        if p == local_skills:
-            continue
-        if p in seen:
-            continue
-        if p.is_dir():
-            seen.add(p)
-            result.append(p)
-        else:
-            logger.debug("External skills dir does not exist, skipping: %s", p)
+            logger.debug("%s skills dir does not exist, skipping: %s", debug_label, path)
+
+    config_path = get_config_path()
+    raw_dirs: Any = []
+    if config_path.exists():
+        try:
+            parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            skills_cfg = parsed.get("skills")
+            if isinstance(skills_cfg, dict):
+                raw_dirs = skills_cfg.get("external_dirs") or []
+
+    if isinstance(raw_dirs, str):
+        raw_dirs = [raw_dirs]
+    if isinstance(raw_dirs, list):
+        for entry in raw_dirs:
+            entry = str(entry).strip()
+            if not entry:
+                continue
+            # Expand ~ and environment variables
+            expanded = os.path.expanduser(os.path.expandvars(entry))
+            p = Path(expanded)
+            # Resolve relative paths against HERMES_HOME, not cwd
+            if not p.is_absolute():
+                p = (hermes_home / p).resolve()
+            else:
+                p = p.resolve()
+            _append_dir(p, debug_label="External")
+
+    for p in _candidate_multica_agent_context_skill_dirs():
+        _append_dir(p, debug_label="Multica .agent_context")
 
     return result
 

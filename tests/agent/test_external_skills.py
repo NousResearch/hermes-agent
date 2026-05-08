@@ -91,6 +91,32 @@ class TestGetExternalSkillsDirs:
             result = get_external_skills_dirs()
         assert len(result) == 1
 
+    def test_multica_agent_context_skills_in_cwd_added_without_config(self, hermes_home, tmp_path, monkeypatch):
+        multica_skills = tmp_path / ".agent_context" / "skills"
+        multica_skills.mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}, clear=True):
+            from agent.skill_utils import get_external_skills_dirs
+            result = get_external_skills_dirs()
+
+        assert result == [multica_skills.resolve()]
+
+    def test_multica_agent_context_skills_uses_terminal_cwd(self, hermes_home, tmp_path):
+        terminal_cwd = tmp_path / "workdir"
+        multica_skills = terminal_cwd / ".agent_context" / "skills"
+        multica_skills.mkdir(parents=True)
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(hermes_home), "TERMINAL_CWD": str(terminal_cwd)},
+            clear=True,
+        ):
+            from agent.skill_utils import get_external_skills_dirs
+            result = get_external_skills_dirs()
+
+        assert multica_skills.resolve() in result
+
 
 class TestGetAllSkillsDirs:
     def test_local_always_first(self, hermes_home, external_skills_dir):
@@ -155,3 +181,28 @@ class TestExternalSkillView:
             result = json.loads(skill_view("my-external-skill"))
         assert result["success"] is True
         assert "external things" in result["content"]
+
+    def test_skill_view_finds_multica_agent_context_skill(self, hermes_home, tmp_path, monkeypatch):
+        multica_skill = tmp_path / ".agent_context" / "skills" / "multica-skill"
+        multica_skill.mkdir(parents=True)
+        (multica_skill / "SKILL.md").write_text(
+            "---\n"
+            "name: multica-skill\n"
+            "description: Skill supplied by Multica\n"
+            "---\n\n"
+            "# Multica Skill\n\n"
+            "Follow Multica handoff instructions.\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        local_skills = hermes_home / "skills"
+
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}, clear=True),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+        ):
+            from tools.skills_tool import skill_view
+            result = json.loads(skill_view("multica-skill"))
+
+        assert result["success"] is True
+        assert "Multica handoff instructions" in result["content"]
+        assert result["skill_dir"] == str(multica_skill)

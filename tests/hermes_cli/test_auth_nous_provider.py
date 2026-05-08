@@ -1,7 +1,6 @@
 """Regression tests for Nous OAuth refresh + agent-key mint interactions."""
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -860,6 +859,46 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
     # Must still be classified as invalid_grant + relogin_required.
     assert exc_info.value.code == "invalid_grant"
     assert exc_info.value.relogin_required is True
+
+
+def test_refresh_token_exchange_sends_refresh_token_header():
+    """Nous refresh tokens must be sent in a header so sandbox proxies can
+    substitute placeholder credentials without parsing form bodies.
+    """
+    from hermes_cli.auth import _refresh_access_token
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "access-2", "refresh_token": "refresh-2"}
+
+    class _FakeClient:
+        def __init__(self):
+            self.kwargs = None
+
+        def post(self, *args, **kwargs):
+            del args
+            self.kwargs = kwargs
+            return _FakeResponse()
+
+    client = _FakeClient()
+
+    payload = _refresh_access_token(
+        client=client,
+        portal_base_url="https://portal.nousresearch.com",
+        client_id="hermes-cli",
+        refresh_token="refresh-1",
+    )
+
+    assert payload["access_token"] == "access-2"
+    assert payload["refresh_token"] == "refresh-2"
+    assert client.kwargs is not None
+    assert client.kwargs["headers"]["x-nous-refresh-token"] == "refresh-1"
+    assert client.kwargs["data"] == {
+        "grant_type": "refresh_token",
+        "client_id": "hermes-cli",
+    }
 
 
 def test_refresh_non_reuse_error_keeps_original_description():

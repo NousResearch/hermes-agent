@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import os
 import time
 import pytest
 from pathlib import Path
@@ -1401,6 +1402,22 @@ class TestSchemaInit:
     def test_foreign_keys_enabled(self, db):
         cursor = db._conn.execute("PRAGMA foreign_keys")
         assert cursor.fetchone()[0] == 1
+
+    def test_database_config_applies_sqlite_pragmas(self, tmp_path):
+        hermes_home = Path(os.environ["HERMES_HOME"])
+        (hermes_home / "config.yaml").write_text(
+            "database:\n"
+            "  wal_autocheckpoint: 200\n"
+            "  journal_size_limit: 10485760\n",
+            encoding="utf-8",
+        )
+
+        db = SessionDB(db_path=tmp_path / "configured_state.db")
+        try:
+            assert db._conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 200
+            assert db._conn.execute("PRAGMA journal_size_limit").fetchone()[0] == 10485760
+        finally:
+            db.close()
 
     def test_tables_exist(self, db):
         cursor = db._conn.execute(
@@ -2909,4 +2926,3 @@ class TestFTS5ToolCallMigration:
             assert version == 11
         finally:
             session_db.close()
-

@@ -198,10 +198,36 @@ class SessionDB:
             isolation_level=None,
         )
         self._conn.row_factory = sqlite3.Row
+        self._apply_connection_pragmas()
+
+        self._init_schema()
+
+    def _apply_connection_pragmas(self) -> None:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
-        self._init_schema()
+        try:
+            from hermes_cli.config import load_config
+
+            database_cfg = load_config().get("database") or {}
+        except Exception as exc:
+            logger.debug("SessionDB: failed to load database config: %s", exc)
+            return
+
+        for pragma_name in ("journal_size_limit", "wal_autocheckpoint"):
+            raw_value = database_cfg.get(pragma_name)
+            if raw_value is None:
+                continue
+            try:
+                value = int(raw_value)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "SessionDB: ignoring non-integer database.%s=%r",
+                    pragma_name,
+                    raw_value,
+                )
+                continue
+            self._conn.execute(f"PRAGMA {pragma_name}={value}")
 
     # ── Core write helper ──
 
@@ -2671,4 +2697,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

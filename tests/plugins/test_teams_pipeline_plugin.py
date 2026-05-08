@@ -98,7 +98,10 @@ def test_build_pipeline_runtime_reuses_existing_teams_adapter_surface(monkeypatc
             platforms={
                 Platform("teams"): PlatformConfig(
                     enabled=True,
-                    extra={"delivery_mode": "incoming_webhook"},
+                    extra={
+                        "delivery_mode": "incoming_webhook",
+                        "incoming_webhook_url": "https://example.com/hook",
+                    },
                 )
             }
         )

@@ -249,6 +249,27 @@ def _handle_complete(args: dict, **kw) -> str:
         kb, conn = _connect()
         try:
             try:
+                # Non-blocking completion lint: surface weak handoffs before
+                # persisting them. The board-level `hermes kanban validate`
+                # command is the hard non-zero gate for operators/CI.
+                validation_warnings = []
+                try:
+                    from hermes_cli import kanban_validation as kv
+                    task = kb.get_task(conn, tid)
+                    if task is not None:
+                        class _PendingRun:
+                            def __init__(self, summary, metadata):
+                                self.summary = summary
+                                self.metadata = metadata
+                        pending = _PendingRun(summary if summary is not None else result, metadata)
+                        validation_warnings = [
+                            f.to_dict()
+                            for f in kv.validate_tasks([task], {tid: [pending]})
+                            if f.severity == "error"
+                        ]
+                except Exception:
+                    validation_warnings = []
+
                 ok = kb.complete_task(
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
@@ -271,7 +292,10 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            payload = {"task_id": tid, "run_id": run.id if run else None}
+            if validation_warnings:
+                payload["validation_warnings"] = validation_warnings
+            return _ok(**payload)
         finally:
             conn.close()
     except Exception as e:
@@ -306,7 +330,10 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            payload = {"task_id": tid, "run_id": run.id if run else None}
+            if validation_warnings:
+                payload["validation_warnings"] = validation_warnings
+            return _ok(**payload)
         finally:
             conn.close()
     except Exception as e:

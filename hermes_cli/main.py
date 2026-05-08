@@ -11471,7 +11471,9 @@ Examples:
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
+        rc = args.func(args)
+        if isinstance(rc, int):
+            sys.exit(rc)
     else:
         parser.print_help()
 

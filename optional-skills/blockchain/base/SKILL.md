@@ -4,6 +4,7 @@ description: Query Base (Ethereum L2) blockchain data with USD pricing — walle
 version: 0.1.0
 author: youssefea
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Base, Blockchain, Crypto, Web3, RPC, DeFi, EVM, L2, Ethereum]

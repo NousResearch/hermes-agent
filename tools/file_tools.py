@@ -1055,18 +1055,18 @@ WRITE_FILE_SCHEMA = {
 
 PATCH_SCHEMA = {
     "name": "patch",
-    "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
+    "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nIMPORTANT: Parameters are mode-specific:\n- For mode='replace': provide path, old_string, new_string (optionally replace_all)\n- For mode='patch': provide patch content",
     "parameters": {
         "type": "object",
         "properties": {
             "mode": {"type": "string", "enum": ["replace", "patch"], "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches", "default": "replace"},
-            "path": {"type": "string", "description": "File path to edit (required for 'replace' mode)"},
-            "old_string": {"type": "string", "description": "Text to find in the file (required for 'replace' mode). Must be unique in the file unless replace_all=true. Include enough surrounding context to ensure uniqueness."},
-            "new_string": {"type": "string", "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text."},
+            "path": {"type": "string", "description": "File path to edit (required when mode='replace')"},
+            "old_string": {"type": "string", "description": "Text to find in file (required when mode='replace'). Must be unique in file unless replace_all=true. Include enough surrounding context to ensure uniqueness."},
+            "new_string": {"type": "string", "description": "Replacement text (required when mode='replace'). Can be empty string to delete the matched text."},
             "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring a unique match (default: false)", "default": False},
-            "patch": {"type": "string", "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"}
+            "patch": {"type": "string", "description": "V4A format patch content (required when mode='patch'). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"}
         },
-        "required": ["mode"]
+        "required": ["mode", "path", "old_string", "new_string", "patch"]
     }
 }
 

@@ -510,6 +510,40 @@ class TestStreamingFallback:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_empty_stream_sets_disable_streaming(self, mock_close, mock_create):
+        """Stream yielding zero content/tool-call chunks sets _disable_streaming.
+
+        This covers the case where a custom provider returns plain JSON
+        instead of SSE — the SDK's Stream iterator yields nothing, so we
+        detect it and switch to non-streaming on the next attempt.
+        """
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        # Simulate a non-SSE provider: the stream iterator yields zero chunks
+        mock_client.chat.completions.create.return_value = iter([])
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://custom-proxy.example.com/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        result = agent._interruptible_streaming_api_call({})
+
+        # Flag should be set so the main retry loop switches to non-streaming
+        assert agent._disable_streaming is True
+        # Result should have empty content (will be treated as empty response)
+        assert result.choices[0].message.content is None
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_non_transport_error_propagates(self, mock_close, mock_create):
         """Non-transport streaming errors propagate to the main retry loop."""
         from run_agent import AIAgent

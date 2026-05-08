@@ -361,4 +361,41 @@ class TestSearchHints:
         assert "offset=100" in raw
 
 
+class TestPatchSchema:
+    """Tests for PATCH_SCHEMA to ensure required parameters are properly declared."""
+    
+    def test_patch_schema_includes_all_required_params(self):
+        """PATCH_SCHEMA should include all parameters that are conditionally required."""
+        from tools.file_tools import PATCH_SCHEMA
+        
+        # Verify schema structure
+        assert "parameters" in PATCH_SCHEMA
+        assert "required" in PATCH_SCHEMA["parameters"]
+        
+        # All parameters that are mode-specific should be in required list
+        required = PATCH_SCHEMA["parameters"]["required"]
+        assert "mode" in required
+        assert "path" in required
+        assert "old_string" in required
+        assert "new_string" in required
+        assert "patch" in required
+        
+        # replace_all is optional (has default), so it should NOT be in required
+        assert "replace_all" not in required
+        
+    def test_patch_schema_description_mentions_mode_specific_requirements(self):
+        """PATCH_SCHEMA description should explain mode-specific requirements."""
+        from tools.file_tools import PATCH_SCHEMA
+        
+        description = PATCH_SCHEMA.get("description", "")
+        
+        # Description should mention mode-specific requirements
+        assert "mode-specific" in description.lower() or "IMPORTANT:" in description
+        
+        # Should mention both modes
+        assert "mode='replace'" in description
+        assert "mode='patch'" in description
+
+
+
 

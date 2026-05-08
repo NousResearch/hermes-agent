@@ -506,10 +506,14 @@ class HermesACPAgent(acp.Agent):
 
     # ---- Connection lifecycle -----------------------------------------------
 
-    def on_connect(self, conn: acp.Client) -> None:
+    def on_connect(self, conn: ClientConnection):
         """Store the client connection for sending session updates."""
         self._conn = conn
         logger.info("ACP client connected")
+
+    def shutdown(self) -> None:
+        """Flush per-session resources before the ACP process exits."""
+        self.session_manager.shutdown_sessions()
 
     @staticmethod
     def _encode_model_choice(provider: str | None, model: str | None) -> str:

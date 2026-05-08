@@ -459,7 +459,7 @@ export class GatewayClient extends EventEmitter {
 
         this.ws = null
         this.wsConnectPromise = null
-        this.handleTransportExit(ev.code)
+        this.handleTransportExit(ev.code, `gateway websocket closed${ev.code ? ` (${ev.code})` : ''}`)
       })
       ws.addEventListener('error', () => {
         const line = '[gateway] websocket transport error'

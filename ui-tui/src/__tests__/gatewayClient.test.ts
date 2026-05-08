@@ -195,6 +195,24 @@ describe('GatewayClient websocket attach mode', () => {
     expect(exits).toEqual([1011])
   })
 
+  it('rejects pending RPCs with websocket wording when the attached socket closes', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    gw.start()
+    const gatewaySocket = FakeWebSocket.instances[0]!
+
+    gatewaySocket.open()
+    gw.drain()
+
+    const req = gw.request('session.create', {})
+    await vi.waitFor(() => expect(gatewaySocket.sent.length).toBeGreaterThan(0))
+
+    gatewaySocket.close(1011)
+
+    await expect(req).rejects.toThrow(/gateway websocket closed \(1011\)/)
+  })
+
   it('rejects pending RPCs when kill() closes the attached websocket', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     const gw = new GatewayClient()

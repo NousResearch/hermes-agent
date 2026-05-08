@@ -1296,6 +1296,70 @@ class TestResponsesEndpoint:
             assert len(call_kwargs["conversation_history"]) == 1
 
     @pytest.mark.asyncio
+    async def test_responses_input_skips_function_call_items(self, adapter):
+        """Open WebUI Responses mode forwards prior assistant turns as a
+        sequence of typed Responses items: user message, function_call,
+        function_call_output, assistant message, then the new user message.
+
+        function_call/function_call_output items must NOT become user-shaped
+        history entries — only ``type=message`` items (and the assistant's
+        ``output_text`` reply) belong in conversation_history.  The latest
+        user message becomes ``user_message``.
+        """
+        mock_result = {"final_response": "Sure.", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "What time is it?"}],
+                            },
+                            {
+                                "type": "function_call",
+                                "name": "get_time",
+                                "arguments": "{}",
+                                "call_id": "call_1",
+                            },
+                            {
+                                "type": "function_call_output",
+                                "call_id": "call_1",
+                                "output": "HUGE_TOOL_OUTPUT_THAT_MUST_NOT_LEAK_INTO_HISTORY",
+                            },
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "It is noon."}],
+                            },
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "Thanks, what about tomorrow?"}],
+                            },
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == "Thanks, what about tomorrow?"
+            history = call_kwargs["conversation_history"]
+            assert history == [
+                {"role": "user", "content": "What time is it?"},
+                {"role": "assistant", "content": "It is noon."},
+            ]
+            # Sanity: tool output text never leaked into history.
+            for entry in history:
+                assert "HUGE_TOOL_OUTPUT_THAT_MUST_NOT_LEAK_INTO_HISTORY" not in str(entry.get("content", ""))
+
+    @pytest.mark.asyncio
     async def test_instructions_as_ephemeral_prompt(self, adapter):
         """The instructions field maps to ephemeral_system_prompt."""
         mock_result = {"final_response": "Ahoy!", "messages": [], "api_calls": 1}

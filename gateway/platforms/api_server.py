@@ -2020,7 +2020,19 @@ class APIServerAdapter(BasePlatformAdapter):
             previous_response_id = self._response_store.get_conversation(conversation)
             # No error if conversation doesn't exist yet — it's a new conversation
 
-        # Normalize input to message list
+        # Normalize input to message list.
+        # Responses API input arrays may contain typed items (function_call,
+        # function_call_output, reasoning, message, …) representing the prior
+        # turn's structured output.  Open WebUI Responses mode forwards these
+        # verbatim when chaining without ``previous_response_id``.  Treating
+        # every dict as a {role, content} message turns prior tool calls and
+        # tool outputs into spurious user-shaped history, which bloats context
+        # and causes the agent to re-address old user questions.
+        # We parse Responses item types explicitly: only ``message`` items
+        # (and untyped role/content dicts, for chat-style callers) become
+        # conversation messages.  Other typed items are dropped here — the
+        # agent reconstructs tool flow from ``previous_response_id`` chaining
+        # when callers want stateful tool replay.
         input_messages: List[Dict[str, Any]] = []
         if isinstance(raw_input, str):
             input_messages = [{"role": "user", "content": raw_input}]
@@ -2029,6 +2041,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 if isinstance(item, str):
                     input_messages.append({"role": "user", "content": item})
                 elif isinstance(item, dict):
+                    item_type = str(item.get("type") or "").strip().lower()
+                    if item_type and item_type != "message":
+                        # function_call / function_call_output / reasoning /
+                        # other built-in tool items — not user-visible turns.
+                        continue
                     role = item.get("role", "user")
                     try:
                         content = _normalize_multimodal_content(item.get("content", ""))

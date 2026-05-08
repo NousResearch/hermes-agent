@@ -12573,5 +12573,22 @@ def main(
     cli.run()
 
 
+def _run_direct_cli_startup() -> None:
+    """Initialize direct ``cli.py`` invocations to match wrapper MCP behavior."""
+    try:
+        # ``hermes_cli/main.py`` does this before delegating to ``cli.main()``.
+        # Direct ``python cli.py`` / ``python -m cli`` invocations bypass that
+        # wrapper, so perform the same MCP discovery here.
+        from tools.mcp_tool import discover_mcp_tools
+
+        discover_mcp_tools()
+    except Exception:
+        logger.debug(
+            "MCP tool discovery failed at direct CLI startup",
+            exc_info=True,
+        )
+
+
 if __name__ == "__main__":
+    _run_direct_cli_startup()
     fire.Fire(main)

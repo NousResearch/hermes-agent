@@ -25,7 +25,7 @@ Language resolution order:
     3. ``display.language`` from config.yaml
     4. ``"en"`` (baseline)
 
-Supported languages: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
+Supported languages: en, zh, ja, de, es, fr, tr, uk, af.  Unknown values fall back to en.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_LANGUAGES: tuple[str, ...] = ("en", "zh", "ja", "de", "es", "fr", "tr", "uk")
+SUPPORTED_LANGUAGES: tuple[str, ...] = ("en", "zh", "ja", "de", "es", "fr", "tr", "uk", "af")
 DEFAULT_LANGUAGE = "en"
 
 # Accept a few natural aliases so users who type "chinese" / "zh-CN" / "jp"
@@ -53,6 +53,7 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "french": "fr", "français": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
     "ukrainian": "uk", "ukrainisch": "uk", "українська": "uk", "uk-ua": "uk", "ua": "uk",
     "turkish": "tr", "türkçe": "tr", "tr-tr": "tr",
+    "afrikaans": "af", "af-za": "af",
 }
 
 _catalog_cache: dict[str, dict[str, str]] = {}

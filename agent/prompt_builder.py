@@ -513,6 +513,20 @@ PLATFORM_HINTS = {
         "image and is the WRONG path. Bare Unicode emoji in text is also not a substitute "
         "— when a sticker is the right response, use yb_send_sticker."
     ),
+    "webui": (
+        "You are responding through the Hermes local web dashboard (WebUI). "
+        "The WebUI renders standard Markdown — headings, bold, italic, code blocks, "
+        "and tables all work. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.png, .jpg, .gif, .svg, .avif) render inline, "
+        "audio gets an inline player with speed controls, video plays inline, "
+        "and PDF/HTML/CSV/diff files get rich previews. "
+        "Local file paths must be absolute. "
+        "You can also use MEDIA:https://... for remote images. "
+        "Do NOT use Markdown image syntax like ![alt](/path) for local files — "
+        "it will not render. Always use MEDIA:/path for local and "
+        "MEDIA:https://... for remote media."
+    ),
     "api_server": (
         "You're responding through an API server. The rendering layer is unknown — "
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "

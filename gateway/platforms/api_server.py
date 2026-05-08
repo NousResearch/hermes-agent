@@ -592,6 +592,8 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        self._tool_progress_events: bool = bool(extra.get("tool_progress_events", True))
+        self._show_reasoning: bool = bool(extra.get("show_reasoning", False))
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1150,8 +1152,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
-                tool_start_callback=_on_tool_start,
-                tool_complete_callback=_on_tool_complete,
+                tool_start_callback=_on_tool_start if self._tool_progress_events else None,
+                tool_complete_callback=_on_tool_complete if self._tool_progress_events else None,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
@@ -1197,6 +1199,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if not final_response:
             final_response = result.get("error", "(No response generated)")
 
+        message = {
+            "role": "assistant",
+            "content": final_response,
+        }
+        last_reasoning = result.get("last_reasoning", "")
+        if self._show_reasoning and last_reasoning:
+            message["reasoning_content"] = last_reasoning
+
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
@@ -1205,10 +1215,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "choices": [
                 {
                     "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": final_response,
-                    },
+                    "message": message,
                     "finish_reason": "stop",
                 }
             ],
@@ -1281,6 +1288,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
+                    if not self._tool_progress_events:
+                        return time.monotonic()
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
@@ -1323,11 +1332,25 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            result = {}
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
+
+            if self._show_reasoning:
+                try:
+                    reasoning = result.get("last_reasoning", "") if isinstance(result, dict) else ""
+                    if reasoning:
+                        reasoning_chunk = {
+                            "id": completion_id, "object": "chat.completion.chunk",
+                            "created": created, "model": model,
+                            "choices": [{"index": 0, "delta": {"reasoning_content": reasoning}, "finish_reason": None}],
+                        }
+                        await response.write(f"data: {json.dumps(reasoning_chunk)}\n\n".encode())
+                except Exception:
+                    pass
 
             # Finish chunk
             finish_chunk = {
@@ -2132,9 +2155,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
-                tool_progress_callback=_on_tool_progress,
-                tool_start_callback=_on_tool_start,
-                tool_complete_callback=_on_tool_complete,
+                tool_progress_callback=_on_tool_progress if self._tool_progress_events else None,
+                tool_start_callback=_on_tool_start if self._tool_progress_events else None,
+                tool_complete_callback=_on_tool_complete if self._tool_progress_events else None,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))

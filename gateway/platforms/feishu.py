@@ -2376,7 +2376,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
 
+        plugin_response = self._build_plugin_card_action_response(event=event, action_value=action_value)
         self._submit_on_loop(loop, self._handle_card_action_event(data))
+        if plugin_response is not None:
+            return plugin_response
         if P2CardActionTriggerResponse is None:
             return None
         return P2CardActionTriggerResponse()
@@ -2414,6 +2417,45 @@ class FeishuAdapter(BasePlatformAdapter):
             card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
             response.card = card
         return response
+
+    def _build_plugin_card_action_response(self, *, event: Any, action_value: Dict[str, Any]) -> Any:
+        """Let plugins provide an inline Feishu card response for custom card actions."""
+        if P2CardActionTriggerResponse is None:
+            return None
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+            context = getattr(event, "context", None)
+            operator = getattr(event, "operator", None)
+            open_id = str(getattr(operator, "open_id", "") or "")
+            results = _invoke_hook(
+                "feishu_card_action_response",
+                adapter=self,
+                event=event,
+                action=getattr(event, "action", None),
+                action_value=action_value,
+                chat_id=str(getattr(context, "open_chat_id", "") or ""),
+                operator_open_id=open_id,
+                operator_name=self._get_cached_sender_name(open_id) or open_id,
+            )
+        except Exception:
+            logger.debug("[Feishu] Plugin card action response hook failed", exc_info=True)
+            return None
+
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            card_data = result.get("card") or result.get("callback_card")
+            if not isinstance(card_data, dict):
+                continue
+            response = P2CardActionTriggerResponse()
+            if CallBackCard is not None:
+                card = CallBackCard()
+                card.type = "raw"
+                card.data = card_data
+                response.card = card
+            return response
+        return None
 
     async def _resolve_approval(self, approval_id: Any, choice: str, user_name: str) -> None:
         """Pop approval state and unblock the waiting agent thread."""

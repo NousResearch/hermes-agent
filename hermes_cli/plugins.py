@@ -101,6 +101,13 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Feishu card-action callback hook. Fired synchronously by the Feishu
+    # adapter before custom card actions are routed as synthetic commands.
+    # Plugins may return {"card": <raw Feishu card dict>} to replace the
+    # clicked card inline while the synthetic command continues processing.
+    # Kwargs: adapter, event, action, action_value, chat_id, operator_open_id,
+    # operator_name.
+    "feishu_card_action_response",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

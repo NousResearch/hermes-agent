@@ -411,6 +411,39 @@ class TestCardActionCallbackResponse:
         assert response is not None
         assert response.card is None
 
+    def test_returns_plugin_inline_card_for_custom_action(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        data = _make_card_action_data(
+            {"custom_action": "approve", "task_id": "queued_1"},
+            open_id="ou_bob",
+        )
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+        plugin_card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": "green",
+                "title": {"tag": "plain_text", "content": "Custom action handled"},
+            },
+            "elements": [{"tag": "markdown", "content": "queued_1"}],
+        }
+
+        with (
+            patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as mock_submit,
+            patch("hermes_cli.plugins.invoke_hook", return_value=[{"card": plugin_card}]) as mock_hook,
+        ):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.type == "raw"
+        assert response.card.data is plugin_card
+        mock_submit.assert_called_once()
+        mock_hook.assert_called_once()
+        assert mock_hook.call_args.kwargs["action_value"]["task_id"] == "queued_1"
+        assert mock_hook.call_args.kwargs["operator_name"] == "Bob"
+
     def test_falls_back_to_open_id_when_name_not_cached(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()

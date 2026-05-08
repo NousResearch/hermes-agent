@@ -274,6 +274,7 @@ class TestMemoryToolDispatcher:
     def test_registry_handler_forwards_memory_aliases(self, store):
         store.add("memory", "remove me")
         entry = registry.get_entry("memory")
+        assert entry is not None
         result = json.loads(
             entry.handler(
                 {"action": "remove", "target": "memory", "old_string": "remove me"},

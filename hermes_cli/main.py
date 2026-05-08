@@ -972,7 +972,11 @@ def _tui_build_needed(tui_dir: Path) -> bool:
 
 def _hermes_ink_bundle_stale(tui_dir: Path) -> bool:
     ink_root = tui_dir / "packages" / "hermes-ink"
-    bundle = ink_root / "dist" / "ink-bundle.js"
+    # The hermes-ink build script produces entry-exports.js (not ink-bundle.js).
+    # Check entry-exports.js first; fall back to ink-bundle.js for older builds.
+    bundle = ink_root / "dist" / "entry-exports.js"
+    if not bundle.exists():
+        bundle = ink_root / "dist" / "ink-bundle.js"
     if not bundle.exists():
         return True
     bm = bundle.stat().st_mtime

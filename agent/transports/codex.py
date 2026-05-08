@@ -142,6 +142,10 @@ class ResponsesApiTransport(ProviderTransport):
         if max_tokens is not None and not is_codex_backend:
             kwargs["max_output_tokens"] = max_tokens
 
+        timeout = params.get("timeout")
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+
         if is_xai_responses and session_id:
             existing_extra_headers = kwargs.get("extra_headers")
             merged_extra_headers: Dict[str, str] = {}

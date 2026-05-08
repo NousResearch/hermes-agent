@@ -8690,6 +8690,7 @@ class AIAgent:
                 is_codex_backend=is_codex_backend,
                 is_xai_responses=is_xai_responses,
                 github_reasoning_extra=self._github_models_reasoning_extra_body() if is_github_responses else None,
+                timeout=self._resolved_api_call_timeout(),
             )
 
         # ── chat_completions (default) ─────────────────────────────────────

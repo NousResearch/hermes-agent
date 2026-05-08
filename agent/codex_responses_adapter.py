@@ -675,7 +675,7 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
-        "extra_headers",
+        "extra_headers", "timeout",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -724,6 +724,10 @@ def _preflight_codex_api_kwargs(
             normalized_headers[key.strip()] = str(value)
         if normalized_headers:
             normalized["extra_headers"] = normalized_headers
+
+    timeout = api_kwargs.get("timeout")
+    if isinstance(timeout, (int, float)) and timeout > 0:
+        normalized["timeout"] = float(timeout)
 
     if allow_stream:
         stream = api_kwargs.get("stream")

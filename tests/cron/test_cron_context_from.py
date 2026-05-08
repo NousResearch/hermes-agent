@@ -97,7 +97,7 @@ class TestBuildJobPromptContextFrom:
             context_from=job_a["id"],
         )
 
-        prompt = _build_job_prompt(job_b)
+        prompt, _ = _build_job_prompt(job_b)
         assert "Today's top story: AI is everywhere." in prompt
         assert f"Output from job '{job_a['id']}'" in prompt
 
@@ -119,7 +119,7 @@ class TestBuildJobPromptContextFrom:
         job_b = create_job(
             prompt="Summarize", schedule="every 2h", context_from=job_a["id"]
         )
-        prompt = _build_job_prompt(job_b)
+        prompt, _ = _build_job_prompt(job_b)
         assert "New output" in prompt
         assert "Old output" not in prompt
 
@@ -134,7 +134,7 @@ class TestBuildJobPromptContextFrom:
 
         # job_a never ran — output dir does not exist
         # expect silent skip: no placeholder injected, base prompt intact
-        prompt = _build_job_prompt(job_b)
+        prompt, _ = _build_job_prompt(job_b)
         assert "no output" not in prompt.lower()
         assert "not found" not in prompt.lower()
         assert "Summarize" in prompt
@@ -156,7 +156,7 @@ class TestBuildJobPromptContextFrom:
             schedule="every 2h",
             context_from=[job_a["id"], job_b["id"]],
         )
-        prompt = _build_job_prompt(job_c)
+        prompt, _ = _build_job_prompt(job_c)
         assert "News: AI boom" in prompt
         assert "Weather: Sunny" in prompt
 
@@ -175,7 +175,7 @@ class TestBuildJobPromptContextFrom:
             schedule="every 2h",
             context_from=job_a["id"],
         )
-        prompt = _build_job_prompt(job_b)
+        prompt, _ = _build_job_prompt(job_b)
         context_pos = prompt.find("Context data")
         prompt_pos = prompt.find("Process the data above")
         assert context_pos < prompt_pos
@@ -194,7 +194,7 @@ class TestBuildJobPromptContextFrom:
         job_b = create_job(
             prompt="Process", schedule="every 2h", context_from=job_a["id"]
         )
-        prompt = _build_job_prompt(job_b)
+        prompt, _ = _build_job_prompt(job_b)
         assert "truncated" in prompt
         assert "x" * 10000 not in prompt
 
@@ -221,7 +221,7 @@ class TestBuildJobPromptContextFrom:
             return original_read(self, *args, **kwargs)
 
         with patch.object(Path, "read_text", mock_read_text):
-            prompt = _build_job_prompt(job_b)
+            prompt, _ = _build_job_prompt(job_b)
 
         # Job should not crash, prompt should still contain the base prompt
         assert "Process" in prompt
@@ -249,7 +249,7 @@ class TestBuildJobPromptContextFrom:
             return original_read(self, *args, **kwargs)
 
         with patch.object(Path, "read_text", mock_read_text):
-            prompt = _build_job_prompt(job_b)
+            prompt, _ = _build_job_prompt(job_b)
 
         # Job should not crash, prompt should still contain the base prompt
         assert "Process" in prompt
@@ -262,7 +262,7 @@ class TestBuildJobPromptContextFrom:
         job = create_job(prompt="Process", schedule="every 2h")
         # Manually inject invalid context_from (simulating tampered jobs.json)
         job["context_from"] = ["../../../etc/passwd"]
-        prompt = _build_job_prompt(job)
+        prompt, _ = _build_job_prompt(job)
         # Should not crash and should not inject anything malicious
         assert "Process" in prompt
         assert "etc/passwd" not in prompt

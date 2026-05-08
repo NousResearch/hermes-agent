@@ -188,7 +188,7 @@ class TestBuildJobPromptWithScript:
             "prompt": "Report any notable changes.",
             "script": str(script),
         }
-        prompt = _build_job_prompt(job)
+        prompt, _ = _build_job_prompt(job)
         assert "## Script Output" in prompt
         assert "new PR: #123 fix typo" in prompt
         assert "Report any notable changes." in prompt
@@ -200,7 +200,7 @@ class TestBuildJobPromptWithScript:
             "prompt": "Report status.",
             "script": "nonexistent_monitor.py",
         }
-        prompt = _build_job_prompt(job)
+        prompt, _ = _build_job_prompt(job)
         assert "## Script Error" in prompt
         assert "not found" in prompt.lower()
         assert "Report status." in prompt
@@ -209,11 +209,14 @@ class TestBuildJobPromptWithScript:
         from cron.scheduler import _build_job_prompt
 
         job = {"prompt": "Simple job."}
-        prompt = _build_job_prompt(job)
+        prompt, _ = _build_job_prompt(job)
         assert "## Script Output" not in prompt
         assert "Simple job." in prompt
 
-    def test_script_empty_output_noted(self, cron_env):
+    def test_script_empty_output_returns_none(self, cron_env):
+        """When the data-collection script ran successfully but produced no
+        output, _build_job_prompt returns None so the caller can skip the
+        AI call entirely (no LLM tokens, no hallucinated help-requests)."""
         from cron.scheduler import _build_job_prompt
 
         script = cron_env / "scripts" / "noop.py"
@@ -223,9 +226,8 @@ class TestBuildJobPromptWithScript:
             "prompt": "Check status.",
             "script": str(script),
         }
-        prompt = _build_job_prompt(job)
-        assert "no output" in prompt.lower()
-        assert "Check status." in prompt
+        result = _build_job_prompt(job)
+        assert result is None
 
 
 class TestCronjobToolScript:

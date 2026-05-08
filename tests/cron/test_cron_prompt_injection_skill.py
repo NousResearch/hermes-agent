@@ -123,7 +123,7 @@ class TestBuildJobPromptScansSkillContent:
             "prompt": "run the digest",
             "skills": ["news-digest"],
         }
-        prompt = scheduler._build_job_prompt(job)
+        prompt, _ = scheduler._build_job_prompt(job)
         assert prompt is not None
         assert "news-digest" in prompt
         assert "Fetch the top 5 headlines" in prompt
@@ -212,6 +212,6 @@ class TestBuildJobPromptScansSkillContent:
             "skills": ["does-not-exist"],
         }
         # Should not raise — missing skills are skipped with a notice.
-        prompt = scheduler._build_job_prompt(job)
+        prompt, _ = scheduler._build_job_prompt(job)
         assert prompt is not None
         assert "could not be found" in prompt

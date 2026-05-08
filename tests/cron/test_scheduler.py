@@ -1422,7 +1422,7 @@ class TestRunJobSkillBacked:
             register_env_passthrough(["NOTION_API_KEY"])
             return json.dumps({"success": True, "content": "# notion\nUse Notion."})
 
-        def _run_conversation(prompt):
+        def _run_conversation(prompt, system_message=None):
             from tools.env_passthrough import get_all_passthrough
 
             assert "NOTION_API_KEY" in get_all_passthrough()
@@ -1479,7 +1479,7 @@ class TestRunJobSkillBacked:
             register_credential_file("credentials/google_token.json")
             return json.dumps({"success": True, "content": "# google-workspace\nUse Google."})
 
-        def _run_conversation(prompt):
+        def _run_conversation(prompt, system_message=None):
             from tools.credential_files import _get_registered
 
             registered = _get_registered()
@@ -1684,35 +1684,94 @@ class TestSilentDelivery:
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
 
+    def test_hallucinated_help_request_suppressed(self, caplog):
+        """Defensive backstop: when a model ignores the [SILENT] directive
+        and replies with a chatty 'I don't have access to the script
+        output, could you provide…' instead, the tick-level guard must
+        suppress delivery so the bogus question doesn't leak into the
+        chat where the cron is configured to deliver."""
+        bogus = (
+            "I don't have access to the script output from your previous "
+            "execution. Could you provide:\n- The script path or name\n"
+            "- Where the output is being logged"
+        )
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", bogus, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                tick(verbose=False)
+        deliver_mock.assert_not_called()
+        assert any("hallucination" in r.message.lower() for r in caplog.records)
+
+    def test_legit_response_mentioning_access_still_delivers(self):
+        """The hallucination guard is narrow — it sniffs only the OPENING
+        of the response. A legitimate report that happens to contain the
+        word 'access' later in its body must still go through."""
+        legit = (
+            "**MSFT** earnings beat Q1 by 4%. Discussion of Azure access "
+            "controls headlined the call — no margin impact flagged."
+        )
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", legit, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+
 
 class TestBuildJobPromptSilentHint:
-    """Verify _build_job_prompt always injects [SILENT] guidance."""
+    """Verify _build_job_prompt routes cron execution guidance via the
+    system_hint tuple element rather than prepending it to the user
+    message. The hint must NOT appear in the prompt itself."""
 
-    def test_hint_always_present(self):
+    def test_returns_tuple(self):
         job = {"prompt": "Check for updates"}
         result = _build_job_prompt(job)
-        assert "[SILENT]" in result
-        assert "Check for updates" in result
+        assert isinstance(result, tuple) and len(result) == 2
 
-    def test_hint_present_even_without_prompt(self):
+    def test_user_prompt_in_first_element(self):
+        job = {"prompt": "Check for updates"}
+        prompt, _hint = _build_job_prompt(job)
+        assert "Check for updates" in prompt
+
+    def test_silent_guidance_in_system_hint(self):
+        job = {"prompt": "Check for updates"}
+        _prompt, system_hint = _build_job_prompt(job)
+        assert "[SILENT]" in system_hint
+
+    def test_silent_guidance_present_even_without_prompt(self):
         job = {"prompt": ""}
-        result = _build_job_prompt(job)
-        assert "[SILENT]" in result
+        _prompt, system_hint = _build_job_prompt(job)
+        assert "[SILENT]" in system_hint
 
-    def test_delivery_guidance_present(self):
+    def test_delivery_guidance_in_system_hint(self):
         """Cron hint tells agents their final response is auto-delivered."""
         job = {"prompt": "Generate a report"}
-        result = _build_job_prompt(job)
-        assert "do NOT use send_message" in result
-        assert "automatically delivered" in result
+        _prompt, system_hint = _build_job_prompt(job)
+        assert "Do NOT use send_message" in system_hint
+        assert "delivered verbatim" in system_hint
 
-    def test_delivery_guidance_precedes_user_prompt(self):
-        """System guidance appears before the user's prompt text."""
+    def test_output_discipline_guidance_in_system_hint(self):
+        """The hint forbids preamble/postamble — root cause of leak."""
+        job = {"prompt": "Generate a report"}
+        _prompt, system_hint = _build_job_prompt(job)
+        assert "OUTPUT DISCIPLINE" in system_hint
+        assert "preamble" in system_hint.lower()
+
+    def test_hint_not_prepended_to_user_prompt(self):
+        """The fix: cron guidance must NOT live in the user message
+        anymore — that was what made models acknowledge/narrate it as
+        chat preamble. It belongs in the system slot."""
         job = {"prompt": "My custom prompt"}
-        result = _build_job_prompt(job)
-        system_pos = result.index("do NOT use send_message")
-        prompt_pos = result.index("My custom prompt")
-        assert system_pos < prompt_pos
+        prompt, _hint = _build_job_prompt(job)
+        assert "Do NOT use send_message" not in prompt
+        assert "[SILENT]" not in prompt
+        assert "OUTPUT DISCIPLINE" not in prompt
 
 
 class TestParseWakeGate:
@@ -1922,14 +1981,14 @@ class TestBuildJobPromptMissingSkill:
     def test_missing_skill_does_not_raise(self):
         """Job should run even when a referenced skill is not installed."""
         with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
-            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
+            result, _ = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
         # prompt is preserved even though skill was skipped
         assert "do something" in result
 
     def test_missing_skill_injects_user_notice_into_prompt(self):
         """A system notice about the missing skill is injected into the prompt."""
         with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
-            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
+            result, _ = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
         assert "ghost-skill" in result
         assert "not found" in result.lower() or "skipped" in result.lower()
 
@@ -1949,7 +2008,7 @@ class TestBuildJobPromptMissingSkill:
             return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
 
         with patch("tools.skills_tool.skill_view", side_effect=_mixed_skill_view):
-            result = _build_job_prompt({"skills": ["ghost-skill", "real-skill"], "prompt": "go"})
+            result, _ = _build_job_prompt({"skills": ["ghost-skill", "real-skill"], "prompt": "go"})
         assert "Real skill content." in result
         assert "go" in result
 
@@ -1993,7 +2052,7 @@ class TestBuildJobPromptBumpUse:
         with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
              patch("tools.skill_usage.bump_use", side_effect=RuntimeError("boom")), \
              caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
-            result = _build_job_prompt({"skills": ["good-skill"], "prompt": "go"})
+            result, _ = _build_job_prompt({"skills": ["good-skill"], "prompt": "go"})
 
         # Prompt should still contain the skill content and original instruction
         assert "Works." in result

@@ -779,8 +779,8 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
-def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
-    """Build the effective prompt for a cron job, optionally loading one or more skills first.
+def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> Optional[tuple[str, str]]:
+    """Build the effective prompt and system hint for a cron job.
 
     Args:
         job: The cron job dict.
@@ -789,6 +789,17 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             When provided, the script is not re-executed and the cached
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
+
+    Returns:
+        ``None`` when the data-collection script ran successfully but
+        produced no output (caller should skip the AI call). Otherwise a
+        ``(prompt, cron_system_hint)`` tuple, where ``prompt`` is the
+        user message and ``cron_system_hint`` is the cron execution
+        guidance to pass as ``system_message`` so models treat it as
+        behavioral instruction rather than content to acknowledge or
+        narrate. Without this split, models (especially Haiku) tend to
+        echo the hint back as preamble like "I'll produce the report
+        now" before the actual artifact.
     """
     prompt = job.get("prompt", "")
     skills = job.get("skills")
@@ -861,27 +872,38 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
                 # silent skip — do not pollute the prompt with error messages
 
-    # Always prepend cron execution guidance so the agent knows how
-    # delivery works and can suppress delivery when appropriate.
-    cron_hint = (
-        "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+    # Cron execution guidance is returned separately so the caller can
+    # pass it as ``system_message`` to ``run_conversation`` rather than
+    # prepending it to the user message. Models (especially Haiku) tend
+    # to acknowledge/narrate user-message instructions in their reply,
+    # which leaks preamble into the chat. Routing the same guidance via
+    # the system slot avoids that.
+    cron_system_hint = (
+        "You are running as a scheduled cron job. "
+        "DELIVERY: Your final response is delivered verbatim to the user. "
+        "Do NOT use send_message or try to deliver the output yourself — "
+        "just produce your report/output as your final response and the "
+        "system handles the rest. "
+        "OUTPUT DISCIPLINE: No preamble (\"Here's the report\", \"All "
+        "tasks completed\", \"I'll now produce…\"), no postamble "
+        "(\"Status: ✅ done\", \"Let me know if…\"), no title headers "
+        "unless the task asks for one, no horizontal rules. Ship the "
+        "artifact only — your response IS the message the user sees. "
+        "SILENT: If there is genuinely nothing new to report — including "
+        "when the pre-run script produced no output — respond with "
+        "exactly \"[SILENT]\" (nothing else) to suppress delivery. Do "
+        "NOT ask the user for context, do NOT offer to search logs, do "
+        "NOT narrate what you would do: just say [SILENT] and stop. "
         "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "findings normally, or say [SILENT] and nothing more."
     )
-    prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []
 
     skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
-        return _scan_assembled_cron_prompt(prompt, job)
+        return _scan_assembled_cron_prompt(prompt, job), cron_system_hint
 
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
@@ -924,7 +946,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
-    return _scan_assembled_cron_prompt("\n".join(parts), job)
+    return _scan_assembled_cron_prompt("\n".join(parts), job), cron_system_hint
 
 
 def _scan_assembled_cron_prompt(assembled: str, job: dict) -> str:
@@ -1105,7 +1127,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             return True, silent_doc, SILENT_MARKER, None
 
     try:
-        prompt = _build_job_prompt(job, prerun_script=prerun_script)
+        _built = _build_job_prompt(job, prerun_script=prerun_script)
     except CronPromptInjectionBlocked as block_exc:
         # Assembled prompt (user prompt + loaded skill content) tripped the
         # injection scanner. Refuse to run the agent this tick and surface
@@ -1129,9 +1151,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
         return False, blocked_doc, "", str(block_exc)
-    if prompt is None:
+    if _built is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
+    prompt, cron_system_hint = _built
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -1403,7 +1426,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _cron_future = _cron_pool.submit(
+            _cron_context.run,
+            agent.run_conversation,
+            prompt,
+            system_message=cron_system_hint,
+        )
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
@@ -1663,9 +1691,36 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
                 should_deliver = bool(deliver_content)
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
+                if should_deliver and success:
+                    if SILENT_MARKER in deliver_content.strip().upper():
+                        logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                        should_deliver = False
+                    else:
+                        # Defensive backstop: some models (notably Haiku) ignore
+                        # the [SILENT] instruction when the script produced no
+                        # output and instead reply with a chatty "I don't have
+                        # access to the script output, could you provide…".
+                        # Cron jobs should never ask the user questions — sniff
+                        # the opening of the response for these patterns and
+                        # suppress delivery so they don't leak into chats.
+                        _sniff = deliver_content.strip().lower()[:400]
+                        _hallucination_markers = (
+                            "i don't have access to",
+                            "i do not have access to",
+                            "could you provide",
+                            "please provide the script",
+                            "please share the script",
+                            "can you share the script",
+                            "to retrieve and report",
+                        )
+                        if any(m in _sniff for m in _hallucination_markers):
+                            logger.warning(
+                                "Job '%s': suppressing delivery — response looks "
+                                "like a model hallucination asking for context "
+                                "(should have been [SILENT])",
+                                job["id"],
+                            )
+                            should_deliver = False
 
                 delivery_error = None
                 if should_deliver:

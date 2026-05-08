@@ -53,6 +53,15 @@ def test_run_job_calls_discover_mcp_tools_before_agent_construction():
             }
 
     with patch("tools.mcp_tool.discover_mcp_tools", side_effect=fake_discover), \
+         patch(
+             "hermes_cli.runtime_provider.resolve_runtime_provider",
+             return_value={
+                 "provider": "custom",
+                 "api_mode": "chat_completions",
+                 "base_url": "https://custom.example/v1",
+                 "api_key": "test-key",
+             },
+         ), \
          patch("run_agent.AIAgent", _FakeAgent), \
          patch("cron.scheduler._resolve_cron_enabled_toolsets", return_value=None):
         scheduler.run_job(job)
@@ -138,3 +147,40 @@ def test_no_agent_cron_job_does_not_initialize_mcp():
         "discover_mcp_tools was called for a no_agent job — wasted MCP init "
         "for a script-only cron tick"
     )
+
+
+def test_run_job_passes_runtime_max_output_tokens_to_agent():
+    """Cron AIAgent construction should honor runtime max_output_tokens."""
+    from cron import scheduler
+
+    job = {
+        "id": "max-output-cron-test",
+        "name": "max-output-cron-test",
+        "prompt": "test",
+    }
+
+    captured = {}
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            self._interrupt_requested = False
+            self.quiet_mode = True
+
+        def run_conversation(self, *args, **kwargs):
+            return {"final_response": "ok", "messages": []}
+
+    with patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value={
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://custom.example/v1",
+            "api_key": "test-key",
+            "max_output_tokens": 64000,
+        },
+    ), patch("run_agent.AIAgent", _FakeAgent), \
+         patch("cron.scheduler._resolve_cron_enabled_toolsets", return_value=None):
+        scheduler.run_job(job)
+
+    assert captured.get("max_tokens") == 64000

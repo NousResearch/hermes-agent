@@ -1654,6 +1654,34 @@ def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
     assert resolved["api_key"] == "pool-key", "pool credentials should be used"
 
 
+def test_named_custom_runtime_propagates_max_output_tokens_pool_path(monkeypatch):
+    """max_output_tokens should survive the custom credential-pool path."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "qwen3.6-plus",
+            "max_output_tokens": 64000,
+        },
+    )
+    monkeypatch.setattr(
+        rp, "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "pool-key",
+            "source": "pool:custom:my-server",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+    assert resolved["max_output_tokens"] == 64000
+
+
 def test_named_custom_runtime_no_model_when_absent(monkeypatch):
     """When custom_providers entry has no model field, runtime should not either."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
@@ -2140,6 +2168,17 @@ class TestProviderEntryApiKeyEnvAlias:
         key_env so the set stays in sync with what the runtime actually reads."""
         from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
         assert "key_env" in _VALID_CUSTOM_PROVIDER_FIELDS
+
+    def test_preserves_max_output_tokens(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "vendor",
+            "base_url": "https://api.vendor.example.com/v1",
+            "max_output_tokens": 64000,
+        }
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+        assert normalized is not None
+        assert normalized.get("max_output_tokens") == 64000
 # =============================================================================
 # Tencent TokenHub — API-key provider runtime resolution
 # =============================================================================

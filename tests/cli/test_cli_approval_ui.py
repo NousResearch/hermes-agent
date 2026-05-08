@@ -337,6 +337,47 @@ class TestCliApprovalUi:
         assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback
         assert not cli._background_tasks
 
+    def test_background_task_propagates_runtime_max_output_tokens(self):
+        cli = _make_background_cli_stub()
+        cli._resolve_turn_agent_config = MagicMock(return_value={
+            "model": "test-model",
+            "runtime": {
+                "api_key": "test-key",
+                "base_url": "https://example.test/v1",
+                "provider": "test",
+                "api_mode": "chat_completions",
+                "max_output_tokens": 64000,
+            },
+            "request_overrides": None,
+        })
+        seen = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+                self._print_fn = None
+                self.thinking_callback = None
+
+            def run_conversation(self, **kwargs):
+                return {
+                    "final_response": "done",
+                    "messages": [],
+                    "completed": True,
+                    "failed": False,
+                }
+
+        with patch.object(cli_module, "AIAgent", FakeAgent), \
+             patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "ChatConsole") as chat_console:
+            chat_console.return_value.print = MagicMock()
+            cli._handle_background_command("/btw check weather")
+
+            deadline = time.time() + 2
+            while cli._background_tasks and time.time() < deadline:
+                time.sleep(0.01)
+
+        assert seen["max_tokens"] == 64000
+
 
 class TestApprovalCallbackThreadLocalWiring:
     """Regression guard for the thread-local callback freeze (#13617 / #13618).

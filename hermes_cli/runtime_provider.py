@@ -529,6 +529,9 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        max_output_tokens = custom_provider.get("max_output_tokens")
+        if isinstance(max_output_tokens, int) and max_output_tokens > 0:
+            pool_result["max_output_tokens"] = max_output_tokens
         return pool_result
 
     api_key_candidates = [
@@ -553,6 +556,9 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    max_output_tokens = custom_provider.get("max_output_tokens")
+    if isinstance(max_output_tokens, int) and max_output_tokens > 0:
+        result["max_output_tokens"] = max_output_tokens
     return result
 
 

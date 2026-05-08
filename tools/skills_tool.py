@@ -1334,10 +1334,105 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         if isinstance(metadata, dict):
             result["metadata"] = metadata
 
+        try:
+            from agent import skill_usage_tracker
+            from agent.skill_inventory import load_inventory
+
+            inventory = load_inventory()
+            for entry in inventory.entries:
+                if entry.name == skill_name or entry.skill_name == name:
+                    skill_usage_tracker.record_category_use(entry.category)
+                    break
+        except Exception:
+            pass
+
         return json.dumps(result, ensure_ascii=False)
 
     except Exception as e:
         return tool_error(str(e), success=False)
+
+
+def skill_describe(
+    category: str | None = None,
+    names: List[str] | None = None,
+    task_id: str | None = None,
+) -> Dict[str, Any]:
+    """Return one-line descriptions for skills by category or name."""
+    if not category and not names:
+        return {
+            "success": False,
+            "error": "Provide either category=<name> or names=[...].",
+        }
+
+    try:
+        from agent.skill_inventory import load_inventory
+
+        inventory = load_inventory()
+        by_category: Dict[str, List[Any]] = {}
+        by_name: Dict[str, Any] = {}
+        by_skill_name: Dict[str, Any] = {}
+        for entry in inventory.entries:
+            by_category.setdefault(entry.category, []).append(entry)
+            by_name[entry.name] = entry
+            by_skill_name[entry.skill_name] = entry
+
+        described: List[Dict[str, Any]] = []
+        touched_categories: Set[str] = set()
+
+        if category:
+            entries = by_category.get(category)
+            if entries is None:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Unknown category {category!r}. Categories: "
+                        + ", ".join(sorted(by_category.keys()))
+                    ),
+                }
+            for entry in sorted(entries, key=lambda item: item.name):
+                described.append(
+                    {
+                        "name": entry.name,
+                        "category": entry.category,
+                        "description": entry.description,
+                        "priority": entry.priority,
+                    }
+                )
+                touched_categories.add(entry.category)
+
+        if names:
+            missing: List[str] = []
+            for name in names:
+                entry = by_name.get(name) or by_skill_name.get(name)
+                if entry is None:
+                    missing.append(name)
+                    continue
+                described.append(
+                    {
+                        "name": entry.name,
+                        "category": entry.category,
+                        "description": entry.description,
+                        "priority": entry.priority,
+                    }
+                )
+                touched_categories.add(entry.category)
+            if missing:
+                return {
+                    "success": False,
+                    "error": f"Unknown skill name(s): {', '.join(missing)}.",
+                }
+
+        try:
+            from agent import skill_usage_tracker
+
+            for touched_category in touched_categories:
+                skill_usage_tracker.record_category_use(touched_category)
+        except Exception:
+            pass
+
+        return {"success": True, "skills": described}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 
@@ -1423,6 +1518,30 @@ SKILL_VIEW_SCHEMA = {
     },
 }
 
+SKILL_DESCRIBE_SCHEMA = {
+    "name": "skill_describe",
+    "description": (
+        "Return one-line descriptions for skills. Use category=<name> to expand "
+        "a category from the system-prompt index, or names=[...] for specific "
+        "skills. Then call skill_view(name) to load full content."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "description": "Category to expand.",
+            },
+            "names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Specific skill names to describe.",
+            },
+        },
+        "required": [],
+    },
+}
+
 registry.register(
     name="skills_list",
     toolset="skills",
@@ -1439,6 +1558,18 @@ registry.register(
     schema=SKILL_VIEW_SCHEMA,
     handler=lambda args, **kw: skill_view(
         args.get("name", ""), file_path=args.get("file_path"), task_id=kw.get("task_id")
+    ),
+    check_fn=check_skills_requirements,
+    emoji="📚",
+)
+registry.register(
+    name="skill_describe",
+    toolset="skills",
+    schema=SKILL_DESCRIBE_SCHEMA,
+    handler=lambda args, **kw: skill_describe(
+        category=args.get("category"),
+        names=args.get("names"),
+        task_id=kw.get("task_id"),
     ),
     check_fn=check_skills_requirements,
     emoji="📚",

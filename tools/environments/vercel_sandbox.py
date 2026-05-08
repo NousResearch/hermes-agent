@@ -28,6 +28,7 @@ from tools.environments.base import (
     _ThreadedProcessHandle,
     _load_json_store,
     _save_json_store,
+    _update_json_store,
 )
 from tools.environments.file_sync import (
     FileSyncManager,
@@ -161,22 +162,30 @@ def _get_snapshot_id(task_id: str) -> str | None:
 def _store_snapshot(task_id: str, snapshot_id: str) -> None:
     if not task_id or not snapshot_id:
         return
-    snapshots = _load_snapshots()
-    snapshots[task_id] = snapshot_id
-    _save_snapshots(snapshots)
+
+    def _mutate(snapshots: dict) -> bool:
+        if snapshots.get(task_id) == snapshot_id:
+            return False
+        snapshots[task_id] = snapshot_id
+        return True
+
+    _update_json_store(_snapshot_store_path(), _mutate)
 
 
 def _delete_snapshot(task_id: str, snapshot_id: str | None = None) -> None:
     if not task_id:
         return
-    snapshots = _load_snapshots()
-    existing = snapshots.get(task_id)
-    if existing is None:
-        return
-    if snapshot_id is not None and existing != snapshot_id:
-        return
-    snapshots.pop(task_id, None)
-    _save_snapshots(snapshots)
+
+    def _mutate(snapshots: dict) -> bool:
+        existing = snapshots.get(task_id)
+        if existing is None:
+            return False
+        if snapshot_id is not None and existing != snapshot_id:
+            return False
+        snapshots.pop(task_id, None)
+        return True
+
+    _update_json_store(_snapshot_store_path(), _mutate)
 
 
 def _extract_snapshot_id(snapshot: Any) -> str | None:

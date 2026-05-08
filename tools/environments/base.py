@@ -22,6 +22,7 @@ from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
 from tools.interrupt import is_interrupted
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,8 @@ if _DEBUG_INTERRUPT:
 # Thread-local activity callback.  The agent sets this before a tool call so
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
+_json_store_locks_guard = threading.Lock()
+_json_store_locks: dict[str, threading.Lock] = {}
 
 
 def set_activity_callback(cb: Callable[[str], None] | None) -> None:
@@ -145,8 +148,32 @@ def _load_json_store(path: Path) -> dict:
 
 def _save_json_store(path: Path, data: dict) -> None:
     """Write *data* as pretty-printed JSON to *path*."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
+    atomic_json_write(path, data, indent=2)
+
+
+def _get_json_store_lock(path: Path) -> threading.Lock:
+    """Return a stable per-store lock for read-modify-write JSON updates."""
+    key = os.path.normcase(os.path.abspath(os.fspath(path)))
+    with _json_store_locks_guard:
+        lock = _json_store_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _json_store_locks[key] = lock
+        return lock
+
+
+def _update_json_store(path: Path, update_fn: Callable[[dict], bool]) -> bool:
+    """Apply a read-modify-write update to *path* under a per-store lock.
+
+    ``update_fn`` receives the loaded dict and must return ``True`` when the
+    caller mutated the data and it should be persisted.
+    """
+    with _get_json_store_lock(path):
+        data = _load_json_store(path)
+        changed = update_fn(data)
+        if changed:
+            _save_json_store(path, data)
+        return changed
 
 
 def _file_mtime_key(host_path: str) -> tuple[float, int] | None:

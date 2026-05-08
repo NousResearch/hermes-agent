@@ -75,6 +75,87 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
+# ---------------------------------------------------------------------------
+# identifierPolicy: patterns for "important symbols" that must not be silently
+# dropped by head+tail truncation.  Covers file paths, URLs, variable/function
+# names, and structured identifiers.
+# ---------------------------------------------------------------------------
+_IDENTIFIER_PATTERNS = [
+    # File paths: /home/user/file.py, ./foo, C:\path\to\file
+    re.compile(r'(?:[/\.][\w\.\-]+){2,}'),
+    # URLs: http://..., https://..., ftp://...
+    re.compile(r'https?://[^\s\'"<>]+'),
+    # Variable / function names: snake_case or camelCase, >= 3 chars
+    re.compile(r'\b[a-zA-Z_][a-zA-Z0-9_]{2,}\b'),
+    # Imports: from X import Y, import X
+    re.compile(r'(?:from|import)\s+[a-zA-Z0-9_\.]+'),
+    # Shell variables: $VAR, ${VAR}
+    re.compile(r'\$[{]?[a-zA-Z_][a-zA-Z0-9_]*[}]?'),
+    # Line-numbered references: file.py:123
+    re.compile(r'[^\s:]+:\d+'),
+    # Bracketed keys: [key] in INI/JSON-like contexts
+    re.compile(r'\[[a-zA-Z0-9_\-\.]+\]'),
+]
+
+
+def _extract_identifiers(content: str) -> List[str]:
+    """Return ordered list of unique identifiers found in *content*."""
+    seen = []
+    for pat in _IDENTIFIER_PATTERNS:
+        for m in pat.finditer(content):
+            val = m.group()
+            if val not in seen:
+                seen.append(val)
+
+    # Post-process: merge adjacent dotted segments (e.g. "agent" + "context_compressor"
+    # → "agent.context_compressor") so module paths are preserved as single tokens.
+    merged = []
+    i = 0
+    while i < len(seen):
+        val = seen[i]
+        # Consume following dotted segments that immediately follow this one
+        while (
+            i + 1 < len(seen)
+            and seen[i + 1]
+            and seen[i + 1][0].isidentifier()
+            and (val + "." + seen[i + 1]) not in seen
+        ):
+            combined = val + "." + seen[i + 1]
+            # Only merge if the combined form also appears contiguously in content
+            if combined in content:
+                val = combined
+                i += 1
+            else:
+                break
+        if val not in merged:
+            merged.append(val)
+        i += 1
+    return merged
+
+
+def _safe_truncate(content: str, head: int, tail: int) -> str:
+    """Truncate *content* to head+tail, preserving identifiers from the middle.
+
+    Unlike the plain head+tail slice, this function scans the discarded middle
+    for identifiers (file paths, URLs, variable names, etc.) and appends them
+    inside ``[Identifiers preserved from middle]`` so they are not silently lost.
+    """
+    # If content fits entirely within head+tail, no truncation needed.
+    if len(content) <= head + tail:
+        return content
+
+    middle = content[head:-tail] if tail > 0 else content[head:]
+    identifiers = _extract_identifiers(middle)
+    marker = "\n...[truncated]"
+    if identifiers:
+        # Show up to 20 preserved identifiers to avoid bloating the context
+        kept = identifiers[:20]
+        marker += f" | preserved identifiers: {', '.join(kept)}"
+        if len(identifiers) > 20:
+            marker += f" ... +{len(identifiers) - 20} more"
+    marker += "...\n"
+    return content[:head] + marker + content[-tail:]
+
 
 def _content_length_for_budget(raw_content: Any) -> int:
     """Return the effective char-length of a message's content for token budgeting.
@@ -390,6 +471,11 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        # Serialization truncation limits — user-configurable to allow
+        # larger head/tail budgets for code-heavy or log-heavy workflows.
+        content_max_chars: int | None = None,
+        content_head_chars: int | None = None,
+        content_tail_chars: int | None = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -446,6 +532,14 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+
+        # Serialization truncation limits — fall back to class-level defaults.
+        # Subclasses or parametric callers can override these per-instance.
+        self._CONTENT_MAX = content_max_chars if content_max_chars is not None else ContextCompressor._CONTENT_MAX
+        self._CONTENT_HEAD = content_head_chars if content_head_chars is not None else ContextCompressor._CONTENT_HEAD
+        self._CONTENT_TAIL = content_tail_chars if content_tail_chars is not None else ContextCompressor._CONTENT_TAIL
+        self._TOOL_ARGS_MAX = ContextCompressor._TOOL_ARGS_MAX
+        self._TOOL_ARGS_HEAD = ContextCompressor._TOOL_ARGS_HEAD
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -663,9 +757,11 @@ class ContextCompressor(ContextEngine):
     # Truncation limits for the summarizer input.  These bound how much of
     # each message the summary model sees — the budget is the *summary*
     # model's context window, not the main model's.
-    _CONTENT_MAX = 10000      # total chars per message body (up from 6000)
-    _CONTENT_HEAD = 6000      # chars kept from the start (up from 4000)
-    _CONTENT_TAIL = 3000      # chars kept from the end (up from 1500)
+    # NOTE: instance-level overrides (via __init__ params) take precedence.
+    # These class-level defaults are the fallback.
+    _CONTENT_MAX = 10000      # total chars per message body
+    _CONTENT_HEAD = 6000      # chars kept from the start
+    _CONTENT_TAIL = 3000      # chars kept from the end
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
 
@@ -689,14 +785,14 @@ class ContextCompressor(ContextEngine):
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
                 if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                    content = _safe_truncate(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
                 parts.append(f"[TOOL RESULT {tool_id}]: {content}")
                 continue
 
             # Assistant messages: include tool call names AND arguments
             if role == "assistant":
                 if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                    content = _safe_truncate(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
                     tc_parts = []
@@ -719,7 +815,7 @@ class ContextCompressor(ContextEngine):
 
             # User and other roles
             if len(content) > self._CONTENT_MAX:
-                content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                content = _safe_truncate(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
             parts.append(f"[{role.upper()}]: {content}")
 
         return "\n\n".join(parts)

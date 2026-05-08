@@ -142,8 +142,48 @@ def relaunch(
     preserve_inherited: bool = True,
     original_argv: Optional[Sequence[str]] = None,
 ) -> None:
-    """Replace the current process with a fresh hermes invocation."""
+    """Replace the current process with a fresh hermes invocation.
+
+    On POSIX we use ``os.execvp`` which replaces the running process with
+    the new one in place — same PID, no double-fork.  That's what the
+    relaunch contract wants: "run hermes again as if the user had typed
+    the new argv".
+
+    Windows has no native exec semantics — ``os.execvp`` on Windows
+    *emulates* exec by spawning the child and exiting the parent, but
+    only works when the target is a real Win32 executable.  Our target
+    is usually ``hermes.exe`` (a Python console-script shim that wraps
+    ``python -m hermes_cli.main``) or a ``.cmd`` batch file, and both
+    raise ``OSError(8, "Exec format error")`` on Windows' execvp.
+
+    The Windows-correct pattern is: spawn the child with ``subprocess.run``
+    (which routes through ``cmd.exe`` via ``shell=False`` + PATHEXT resolution),
+    wait for it to exit, then propagate its exit code via ``sys.exit``.
+    That's functionally equivalent — the user sees "hermes exited, then
+    new hermes started" — just with two PIDs in play instead of one.
+    """
     new_argv = build_relaunch_argv(
         extra_args, preserve_inherited=preserve_inherited, original_argv=original_argv
     )
-    os.execvp(new_argv[0], new_argv)
+    if sys.platform == "win32":
+        # Windows: subprocess + exit, because execvp can't swap to .cmd/.exe shims.
+        import subprocess
+        try:
+            result = subprocess.run(new_argv)
+            sys.exit(result.returncode)
+        except KeyboardInterrupt:
+            sys.exit(130)
+        except OSError as exc:
+            # Surface a helpful error rather than the raw OSError — the
+            # caller used to see ``[Errno 8] Exec format error`` which is
+            # cryptic.  Common causes: ``hermes`` not on PATH yet (install
+            # hasn't propagated User PATH into this shell) or a stale shim.
+            print(
+                f"\nHermes relaunch failed: {exc}\n"
+                f"Command: {' '.join(new_argv)}\n"
+                f"Fix: open a new terminal so PATH picks up, then re-run hermes.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        os.execvp(new_argv[0], new_argv)

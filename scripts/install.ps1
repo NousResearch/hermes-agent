@@ -200,10 +200,18 @@ function Install-Git {
     Priority order (deliberately simple — no winget, no registry, no system
     package manager):
       1. Existing ``git`` on PATH — use it as-is (the common fast path).
-      2. Download portable **MinGit** from the official git-for-windows GitHub
-         release and unpack it to ``%LOCALAPPDATA%\hermes\git`` — never touches
-         system Git, never requires admin, works even on locked-down machines
-         and machines with a broken system Git install.
+      2. Download **PortableGit** from the official git-for-windows GitHub
+         release (self-extracting 7z.exe) and unpack it to
+         ``%LOCALAPPDATA%\hermes\git`` — never touches system Git, never
+         requires admin, works even on locked-down machines and machines
+         with a broken system Git install.
+
+    **Why PortableGit, not MinGit:**  MinGit is the minimal-automation
+    distribution and ships ONLY ``git.exe`` — no bash, no POSIX utilities.
+    Hermes needs ``bash.exe`` to run shell commands.  PortableGit is the
+    full Git for Windows distribution without the installer UI; it ships
+    ``git.exe`` + ``bash.exe`` + ``sh``, ``awk``, ``sed``, ``grep``, ``curl``,
+    ``ssh``, etc. in ``usr\bin\``.
 
     We deliberately skip winget because it fails badly when the system Git
     install is in a half-installed state (partially registered, or uninstall-
@@ -224,61 +232,95 @@ function Install-Git {
         return $true
     }
 
-    # Download portable MinGit into $HermesHome\git.  This always works as
-    # long as we can reach github.com — no admin, no winget, no reliance on
-    # the user's possibly-broken system Git install.
-    Write-Info "Git not found — downloading portable MinGit to $HermesHome\git\ ..."
+    # Download PortableGit into $HermesHome\git.  Always works as long as
+    # we can reach github.com — no admin, no winget, no reliance on the
+    # user's possibly-broken system Git install.
+    Write-Info "Git not found — downloading PortableGit to $HermesHome\git\ ..."
     Write-Info "(no admin rights required; isolated from any system Git install)"
 
     try {
-        $arch = if ([Environment]::Is64BitOperatingSystem) { "64-bit" } else { "32-bit" }
-        # Query the GitHub API for the latest git-for-windows release and pick
-        # the MinGit zip for our architecture.
+        $arch = if ([Environment]::Is64BitOperatingSystem) {
+            # Detect ARM64 vs x64 explicitly; PortableGit ships separate assets.
+            if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
+                "arm64"
+            } else {
+                "64-bit"
+            }
+        } else {
+            # PortableGit does not ship a 32-bit build — fall back to MinGit 32-bit
+            # with a warning that bash-based features will be unavailable.
+            "32-bit-mingit"
+        }
+
         $releaseApi = "https://api.github.com/repos/git-for-windows/git/releases/latest"
         $release = Invoke-RestMethod -Uri $releaseApi -UseBasicParsing -Headers @{ "User-Agent" = "hermes-installer" }
-        $assetPattern = if ($arch -eq "64-bit") { "MinGit-*-64-bit.zip" } else { "MinGit-*-32-bit.zip" }
-        # Prefer the non-busybox MinGit — it ships the real bash.exe which is
-        # what Hermes' _find_bash() looks for.  Busybox MinGit replaces bash
-        # with busybox.exe (ash), which Hermes is NOT tested against.
-        $asset = $release.assets | Where-Object { $_.name -like $assetPattern -and $_.name -notlike "*busybox*" } | Select-Object -First 1
+
+        if ($arch -eq "32-bit-mingit") {
+            Write-Warn "32-bit Windows detected — PortableGit is 64-bit only.  Installing MinGit 32-bit as a last resort; bash-dependent Hermes features (terminal tool, agent-browser) will not work on this machine."
+            $assetPattern = "MinGit-*-32-bit.zip"
+            $downloadIsZip = $true
+        } elseif ($arch -eq "arm64") {
+            $assetPattern = "PortableGit-*-arm64.7z.exe"
+            $downloadIsZip = $false
+        } else {
+            $assetPattern = "PortableGit-*-64-bit.7z.exe"
+            $downloadIsZip = $false
+        }
+
+        $asset = $release.assets | Where-Object { $_.name -like $assetPattern } | Select-Object -First 1
 
         if (-not $asset) {
-            throw "Could not find MinGit zip in latest git-for-windows release"
+            throw "Could not find $assetPattern in latest git-for-windows release"
         }
 
         $downloadUrl = $asset.browser_download_url
-        $tmpZip = "$env:TEMP\$($asset.name)"
+        $downloadExt = if ($downloadIsZip) { "zip" } else { "7z.exe" }
+        $tmpFile = "$env:TEMP\$($asset.name)"
         $gitDir = "$HermesHome\git"
 
         Write-Info "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB, 1)) MB)..."
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpZip -UseBasicParsing
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpFile -UseBasicParsing
 
         if (Test-Path $gitDir) {
-            Write-Info "Removing previous MinGit install at $gitDir ..."
+            Write-Info "Removing previous Git install at $gitDir ..."
             Remove-Item -Recurse -Force $gitDir
         }
         New-Item -ItemType Directory -Path $gitDir -Force | Out-Null
-        Expand-Archive -Path $tmpZip -DestinationPath $gitDir -Force
-        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
 
-        # MinGit layout: cmd\git.exe + mingw64\bin\git.exe + usr\bin\bash.exe.
-        # (Note: MinGit puts bash under usr\bin, NOT bin like the full
-        # Git for Windows installer does.  Our _find_bash() in
-        # tools/environments/local.py checks both locations.)
+        if ($downloadIsZip) {
+            Expand-Archive -Path $tmpFile -DestinationPath $gitDir -Force
+        } else {
+            # PortableGit is a self-extracting 7z archive.  Invoke it with
+            # `-o<target> -y` (silent) to extract to $gitDir.  No 7z install
+            # required; it's fully self-contained.
+            Write-Info "Extracting PortableGit to $gitDir ..."
+            $extractProc = Start-Process -FilePath $tmpFile `
+                -ArgumentList "-o`"$gitDir`"", "-y" `
+                -NoNewWindow -Wait -PassThru
+            if ($extractProc.ExitCode -ne 0) {
+                throw "PortableGit extraction failed (exit code $($extractProc.ExitCode))"
+            }
+        }
+        Remove-Item -Force $tmpFile -ErrorAction SilentlyContinue
+
+        # PortableGit layout: cmd\git.exe + bin\bash.exe + usr\bin\ (coreutils)
+        # MinGit layout:      cmd\git.exe + usr\bin\bash.exe (if present)
         $gitExe = "$gitDir\cmd\git.exe"
         if (-not (Test-Path $gitExe)) {
-            throw "MinGit extraction did not produce git.exe at $gitExe"
+            throw "Git extraction did not produce git.exe at $gitExe"
         }
 
-        # Add cmd\ to session PATH so the rest of this install run (which
-        # needs git clone) can see the new git.exe.
+        # Add to session PATH so the rest of this install run can use git.
         $env:Path = "$gitDir\cmd;$env:Path"
 
-        # Also add to persisted User PATH so fresh shells see it.  We add
-        # cmd\ (for git) and usr\bin\ (for bash + coreutils) — without usr\bin,
-        # bash-launched commands like `which`, `env`, `grep` etc. that Hermes
-        # tools call would be missing.
-        $newPathEntries = @("$gitDir\cmd", "$gitDir\usr\bin")
+        # Persist to User PATH so fresh shells see it.  PortableGit needs
+        # cmd\ (for git.exe), bin\ (for bash.exe + core tools), and
+        # usr\bin\ (for perl, ssh, curl, and other POSIX coreutils).
+        $newPathEntries = @(
+            "$gitDir\cmd",
+            "$gitDir\bin",
+            "$gitDir\usr\bin"
+        )
         $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
         $userPathItems = if ($userPath) { $userPath -split ";" } else { @() }
         $changed = $false
@@ -297,7 +339,7 @@ function Install-Git {
         Set-GitBashEnvVar
         return $true
     } catch {
-        Write-Err "Could not install MinGit portable: $_"
+        Write-Err "Could not install portable Git: $_"
         Write-Info ""
         Write-Info "Fallback: install Git manually from https://git-scm.com/download/win"
         Write-Info "then re-run this installer.  Hermes needs Git Bash on Windows to run"
@@ -315,12 +357,16 @@ function Set-GitBashEnvVar {
     #>
     $candidates = @()
 
-    # Our own portable MinGit install is ALWAYS checked first, so a broken
+    # Our own portable Git install is ALWAYS checked first, so a broken
     # system Git doesn't hijack us.  If the user had a working system Git
     # we'd have returned early from Install-Git's fast path and never called
     # this with a system-Git-only installation anyway.
-    $candidates += "$HermesHome\git\usr\bin\bash.exe"   # MinGit layout
-    $candidates += "$HermesHome\git\bin\bash.exe"       # safety — non-MinGit portable layouts
+    #
+    # Layouts:
+    #   PortableGit (our default): $HermesHome\git\bin\bash.exe
+    #   MinGit (32-bit fallback):  $HermesHome\git\usr\bin\bash.exe
+    $candidates += "$HermesHome\git\bin\bash.exe"       # PortableGit layout (primary)
+    $candidates += "$HermesHome\git\usr\bin\bash.exe"   # MinGit / PortableGit usr\bin fallback
 
     # git.exe on PATH can tell us where the install root is
     $gitCmd = Get-Command git -ErrorAction SilentlyContinue
@@ -856,35 +902,94 @@ function Install-NodeDeps {
         Write-Info "Skipping Node.js dependencies (Node not installed)"
         return
     }
-    
+
+    # Resolve npm.cmd to an absolute path so PATHEXT doesn't bite us when
+    # the installer runs in a session that hasn't refreshed PATH since the
+    # Node.js install.  Get-Command respects PATHEXT.
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npmCmd) {
+        Write-Warn "npm not found on PATH — skipping Node.js dependencies."
+        Write-Info "Open a new PowerShell window and re-run 'hermes setup tools' later."
+        return
+    }
+    $npmExe = $npmCmd.Source
+
     Push-Location $InstallDir
-    
+
     if (Test-Path "package.json") {
         Write-Info "Installing Node.js dependencies (browser tools)..."
+        # Use Start-Process so we can capture the real exit code.  PowerShell's
+        # try/catch doesn't trigger on npm's non-zero exit — only on an unhandled
+        # .NET exception (e.g. npm.cmd missing).  Capturing stderr to a file
+        # lets us surface the actual failure reason instead of a generic
+        # "npm install failed" that hides what went wrong.
+        $browserLog = "$env:TEMP\hermes-npm-browser-$(Get-Random).log"
         try {
-            npm install --silent 2>&1 | Out-Null
-            Write-Success "Node.js dependencies installed"
+            $proc = Start-Process -FilePath $npmExe `
+                -ArgumentList "install", "--silent" `
+                -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput "NUL" `
+                -RedirectStandardError $browserLog
+            if ($proc.ExitCode -eq 0) {
+                Write-Success "Node.js dependencies installed"
+                Remove-Item -Force $browserLog -ErrorAction SilentlyContinue
+            } else {
+                Write-Warn "npm install failed (browser tools may not work) — exit code $($proc.ExitCode)"
+                if (Test-Path $browserLog) {
+                    $errText = (Get-Content $browserLog -Raw -ErrorAction SilentlyContinue)
+                    if ($errText) {
+                        # Show first ~800 chars — enough to see the real cause.
+                        $snippet = if ($errText.Length -gt 800) { $errText.Substring(0, 800) + "..." } else { $errText }
+                        Write-Info "  npm stderr:"
+                        foreach ($line in $snippet -split "`n") {
+                            Write-Host "    $line" -ForegroundColor DarkGray
+                        }
+                        Write-Info "  Full log: $browserLog"
+                    }
+                }
+                Write-Info "Run manually later: cd `"$InstallDir`"; npm install"
+            }
         } catch {
-            Write-Warn "npm install failed (browser tools may not work)"
+            Write-Warn "npm install could not be launched: $_"
         }
     }
-    
+
     # Install TUI dependencies
     $tuiDir = "$InstallDir\ui-tui"
     if (Test-Path "$tuiDir\package.json") {
         Write-Info "Installing TUI dependencies..."
         Push-Location $tuiDir
+        $tuiLog = "$env:TEMP\hermes-npm-tui-$(Get-Random).log"
         try {
-            npm install --silent 2>&1 | Out-Null
-            Write-Success "TUI dependencies installed"
+            $proc = Start-Process -FilePath $npmExe `
+                -ArgumentList "install", "--silent" `
+                -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput "NUL" `
+                -RedirectStandardError $tuiLog
+            if ($proc.ExitCode -eq 0) {
+                Write-Success "TUI dependencies installed"
+                Remove-Item -Force $tuiLog -ErrorAction SilentlyContinue
+            } else {
+                Write-Warn "TUI npm install failed (hermes --tui may not work) — exit code $($proc.ExitCode)"
+                if (Test-Path $tuiLog) {
+                    $errText = (Get-Content $tuiLog -Raw -ErrorAction SilentlyContinue)
+                    if ($errText) {
+                        $snippet = if ($errText.Length -gt 800) { $errText.Substring(0, 800) + "..." } else { $errText }
+                        Write-Info "  npm stderr:"
+                        foreach ($line in $snippet -split "`n") {
+                            Write-Host "    $line" -ForegroundColor DarkGray
+                        }
+                        Write-Info "  Full log: $tuiLog"
+                    }
+                }
+                Write-Info "Run manually later: cd `"$tuiDir`"; npm install"
+            }
         } catch {
-            Write-Warn "TUI npm install failed (hermes --tui may not work)"
+            Write-Warn "TUI npm install could not be launched: $_"
         }
         Pop-Location
     }
 
-
-    
     Pop-Location
 }
 
@@ -1038,7 +1143,11 @@ function Main {
     if (-not (Install-Uv)) { throw "uv installation failed — cannot continue" }
     if (-not (Test-Python)) { throw "Python $PythonVersion not available — cannot continue" }
     if (-not (Install-Git)) { throw "Git not available and auto-install failed — install from https://git-scm.com/download/win then re-run" }
-    Test-Node              # Auto-installs if missing
+    # Test-Node always returns $true (sets $script:HasNode on success, emits a
+    # warning on failure and continues so non-browser installs still work).
+    # Cast to [void] so the bare return value doesn't print "True" to the
+    # console between the "Node found" line and the next installer step.
+    [void](Test-Node)
     Install-SystemPackages  # ripgrep + ffmpeg in one step
     
     Install-Repository

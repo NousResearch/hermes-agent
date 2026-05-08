@@ -1,0 +1,7 @@
+name: lancedb
+version: "1.0.0"
+description: "本地 LanceDB 记忆库（向量 + BM25 混合检索），无需外部向量 API。"
+pip_dependencies:
+  - lancedb
+  - pyarrow
+  - sentence-transformers

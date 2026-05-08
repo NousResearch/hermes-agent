@@ -245,6 +245,10 @@ hermes profile import ./work-2026-03-29.tar.gz --name work-restored
 
 ## Distribution commands
 
+:::tip
+**New to distributions?** Start with the [Profile Distributions user guide](../user-guide/profile-distributions.md) — it covers the why, when, and how with full examples. The sections below are a dry CLI reference for when you know what you want.
+:::
+
 Distributions turn a profile into a shareable, versioned artifact published
 as a **git repository**. A recipient installs the distribution with a single
 command and can update it in place later without touching their local

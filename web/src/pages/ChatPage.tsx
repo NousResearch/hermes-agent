@@ -296,7 +296,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     // --- Clipboard integration ---------------------------------------
     //
-    // Three independent paths all route to the system clipboard:
+    // Four independent paths all route to the system clipboard:
     //
     //   1. **Selection → Ctrl+C (or Cmd+C on macOS).**  Ink's own handler
     //      in useInputHandlers.ts turns Ctrl+C into a copy when the
@@ -305,12 +305,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     //      browser clipboard — so the flow works just like it does in
     //      `hermes --tui`.
     //
-    //   2. **Ctrl/Cmd+Shift+C.**  Belt-and-suspenders shortcut that
+    //   2. **Native browser copy event.**  Context-menu Copy and browser /
+    //      system-menu Copy do not go through xterm's custom key handler.
+    //      They fire a DOM copy event instead, so we synchronously write
+    //      xterm's current selection to ClipboardEvent.clipboardData.
+    //
+    //   3. **Ctrl/Cmd+Shift+C.**  Belt-and-suspenders shortcut that
     //      operates directly on xterm's selection, useful if the TUI
     //      ever stops listening (e.g. overlays / pickers) or if the user
     //      has selected with the mouse outside of Ink's selection model.
     //
-    //   3. **Ctrl/Cmd+Shift+V.**  Reads the system clipboard and feeds
+    //   4. **Ctrl/Cmd+Shift+V.**  Reads the system clipboard and feeds
     //      it to the terminal as keyboard input.  xterm's paste() wraps
     //      it with bracketed-paste if the host has that mode enabled.
     //
@@ -333,7 +338,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -341,6 +346,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     const isMac =
       typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
+
+    const handleCopyEvent = (ev: ClipboardEvent) => {
+      const sel = term.getSelection();
+      if (!sel || !ev.clipboardData) {
+        return;
+      }
+
+      ev.clipboardData?.setData("text/plain", sel);
+      ev.preventDefault();
+      term.clearSelection();
+    };
+
+    host.addEventListener("copy", handleCopyEvent);
 
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
@@ -637,6 +655,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       syncMetricsRef.current = null;
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
+      host.removeEventListener("copy", handleCopyEvent);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(

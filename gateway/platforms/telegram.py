@@ -939,6 +939,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+                # PTB applies media_write_timeout (not write_timeout) to multipart
+                # uploads — send_video, send_document, etc. The library default of
+                # 20s is too short for media of any meaningful size on real-world
+                # uplinks, so default to 5 minutes and let users tune higher.
+                "media_write_timeout": _env_float("HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", 300.0),
             }
 
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in ("1", "true", "yes", "on"))

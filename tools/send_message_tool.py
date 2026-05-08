@@ -686,6 +686,24 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     try:
         from telegram import Bot
         from telegram.constants import ParseMode
+        from telegram.request import HTTPXRequest
+
+        # Honor the same HTTP timeout env vars the gateway adapter uses so
+        # large-media sends (videos, documents) don't hit PTB's 20s
+        # media_write_timeout default. See gateway/platforms/telegram.py.
+        def _env_float(name: str, default: float) -> float:
+            try:
+                return float(os.environ.get(name, default))
+            except (ValueError, TypeError):
+                return default
+
+        _request = HTTPXRequest(
+            connect_timeout=_env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
+            read_timeout=_env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+            write_timeout=_env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+            pool_timeout=_env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
+            media_write_timeout=_env_float("HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", 300.0),
+        )
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
         # Inspired by github.com/ashaney — PR #1568.
@@ -705,7 +723,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
-        bot = Bot(token=token)
+        bot = Bot(token=token, request=_request)
         int_chat_id = int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}

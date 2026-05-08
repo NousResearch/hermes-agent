@@ -45,12 +45,25 @@ def _make_config():
     ), telegram_cfg
 
 
-def _install_telegram_mock(monkeypatch, bot):
+def _install_telegram_mock(monkeypatch, bot, *, capture=None):
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
-    telegram_mod = SimpleNamespace(Bot=lambda token: bot, constants=constants_mod)
+
+    # Capture HTTPXRequest construction kwargs when a list is passed in.
+    def _httpx_request(**kwargs):
+        if capture is not None:
+            capture.append(kwargs)
+        return MagicMock()
+
+    request_mod = SimpleNamespace(HTTPXRequest=_httpx_request)
+    telegram_mod = SimpleNamespace(
+        Bot=lambda token, request=None: bot,
+        constants=constants_mod,
+        request=request_mod,
+    )
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
+    monkeypatch.setitem(sys.modules, "telegram.request", request_mod)
 
 
 def _ensure_slack_mock(monkeypatch):
@@ -1994,3 +2007,61 @@ class TestSendSignalChunking:
         # Only the existing file made it into the RPC
         params = fake.calls[0]["payload"]["params"]
         assert len(params["attachments"]) == 1
+
+
+class TestSendTelegramTimeoutWiring:
+    """Verify that ``_send_telegram`` honors HERMES_TELEGRAM_HTTP_* env vars.
+
+    Without these, large-media sends (videos, documents) hit PTB's 20s
+    ``media_write_timeout`` default and fail. The tool path must mirror
+    the gateway adapter's behavior — same env vars, same defaults.
+    """
+
+    def _make_bot(self):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        return bot
+
+    def test_default_media_write_timeout_is_300s(self, monkeypatch):
+        """No env override → media_write_timeout defaults to 300s, not PTB's 20s."""
+        monkeypatch.delenv("HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", raising=False)
+        capture = []
+        _install_telegram_mock(monkeypatch, self._make_bot(), capture=capture)
+
+        result = asyncio.run(_send_telegram("token", "12345", "hi"))
+
+        assert result["success"] is True
+        assert capture, "HTTPXRequest was never constructed"
+        kwargs = capture[0]
+        assert kwargs["media_write_timeout"] == 300.0
+        assert kwargs["write_timeout"] == 20.0
+        assert kwargs["read_timeout"] == 20.0
+        assert kwargs["connect_timeout"] == 10.0
+        assert kwargs["pool_timeout"] == 8.0
+
+    def test_env_override_propagates(self, monkeypatch):
+        """HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT must be honored."""
+        monkeypatch.setenv("HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", "600")
+        capture = []
+        _install_telegram_mock(monkeypatch, self._make_bot(), capture=capture)
+
+        result = asyncio.run(_send_telegram("token", "12345", "hi"))
+
+        assert result["success"] is True
+        assert capture[0]["media_write_timeout"] == 600.0
+
+    def test_invalid_env_value_falls_back_to_default(self, monkeypatch):
+        """Bogus env value must not crash; the default is used instead."""
+        monkeypatch.setenv("HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", "not-a-number")
+        capture = []
+        _install_telegram_mock(monkeypatch, self._make_bot(), capture=capture)
+
+        result = asyncio.run(_send_telegram("token", "12345", "hi"))
+
+        assert result["success"] is True
+        assert capture[0]["media_write_timeout"] == 300.0

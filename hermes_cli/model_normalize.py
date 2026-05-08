@@ -155,7 +155,7 @@ def _normalize_for_deepseek(model_name: str) -> str:
       (covers future ``deepseek-v5-*`` and dated variants without a release).
     - Contains a reasoner keyword (r1, think, reasoning, cot, reasoner)
       -> ``deepseek-reasoner``.
-    - Everything else -> ``deepseek-chat``.
+    - Everything else -> ``deepseek-v4-pro``.
 
     Args:
         model_name: The bare model name (vendor prefix already stripped).
@@ -177,7 +177,7 @@ def _normalize_for_deepseek(model_name: str) -> str:
         if keyword in bare:
             return "deepseek-reasoner"
 
-    return "deepseek-chat"
+    return "deepseek-v4-pro"
 
 
 # ---------------------------------------------------------------------------

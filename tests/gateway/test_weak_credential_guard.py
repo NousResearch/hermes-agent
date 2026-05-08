@@ -129,6 +129,18 @@ class TestAPIServerPlaceholderKeyGuard:
         result = await adapter.connect()
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_refusal_does_not_leave_background_tasks(self):
+        """Startup guard failures must not leak long-lived background tasks."""
+        from gateway.platforms.api_server import APIServerAdapter
+
+        adapter = APIServerAdapter(
+            PlatformConfig(enabled=True, extra={"host": "0.0.0.0", "key": "***"})
+        )
+        result = await adapter.connect()
+        assert result is False
+        assert adapter._background_tasks == set()
+
     def test_allows_loopback_with_placeholder_key(self):
         """Loopback with a placeholder key is fine — not network-exposed."""
         from gateway.platforms.api_server import APIServerAdapter

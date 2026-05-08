@@ -3137,14 +3137,6 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
-            # Start background sweep to clean up orphaned (unconsumed) run streams
-            sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
-            try:
-                self._background_tasks.add(sweep_task)
-            except TypeError:
-                pass
-            if hasattr(sweep_task, "add_done_callback"):
-                sweep_task.add_done_callback(self._background_tasks.discard)
 
             # Refuse to start network-accessible without authentication
             if is_network_accessible(self._host) and not self._api_key:
@@ -3186,6 +3178,17 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.setup()
             self._site = web.TCPSite(self._runner, self._host, self._port)
             await self._site.start()
+
+            # Start background sweep only after startup guards and bind succeed.
+            # Creating this infinite task before an early ``return False`` leaks
+            # a live task when startup is refused (e.g. placeholder key/port conflict).
+            sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
+            try:
+                self._background_tasks.add(sweep_task)
+            except TypeError:
+                pass
+            if hasattr(sweep_task, "add_done_callback"):
+                sweep_task.add_done_callback(self._background_tasks.discard)
 
             self._mark_connected()
             if not self._api_key:

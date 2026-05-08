@@ -28,6 +28,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/configuring-models',
         'user-guide/sessions',
         'user-guide/profiles',
+        'user-guide/profile-distributions',
         'user-guide/git-worktrees',
         'user-guide/docker',
         'user-guide/security',

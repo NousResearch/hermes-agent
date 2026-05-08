@@ -524,6 +524,15 @@ def _print_setup_summary(config: dict, hermes_home):
     except Exception:
         pass
 
+    # Jira (API token via hermes auth jira — check auth.json, not env vars)
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+        _jira_state = get_provider_auth_state("jira") or {}
+        if _jira_state.get("basic_token"):
+            tool_status.append(("Jira Cloud (API token)", True, None))
+    except Exception:
+        pass
+
     # Skills Hub
     if get_env_value("GITHUB_TOKEN"):
         tool_status.append(("Skills Hub (GitHub)", True, None))

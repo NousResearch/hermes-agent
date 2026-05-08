@@ -72,6 +72,7 @@ CONFIGURABLE_TOOLSETS = [
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
+    ("jira",             "🎫 Jira",                     "create, search, update, and transition issues"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
@@ -81,7 +82,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "jira", "discord", "discord_admin", "video"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -444,6 +445,18 @@ TOOL_CATEGORIES = {
                 "tag": "PKCE OAuth — opens the setup wizard",
                 "env_vars": [],
                 "post_setup": "spotify",
+            },
+        ],
+    },
+    "jira": {
+        "name": "Jira",
+        "icon": "🎫",
+        "providers": [
+            {
+                "name": "Jira Cloud (API token)",
+                "tag": "API token auth — runs hermes auth jira",
+                "env_vars": [],
+                "post_setup": "jira",
             },
         ],
     },
@@ -816,6 +829,28 @@ def _run_post_setup(post_setup_key: str):
         except Exception as exc:
             _print_warning(f"    Spotify login failed: {exc}")
             _print_info("    Run manually: hermes auth spotify")
+
+    elif post_setup_key == "jira":
+        # Run the full `hermes auth jira` flow — prompts for domain, email,
+        # and API token, validates against /rest/api/3/myself, then persists
+        # credentials to auth.json. Users can retry with `hermes auth jira`.
+        from types import SimpleNamespace
+        try:
+            from hermes_cli.auth import login_jira_command
+        except Exception as exc:
+            _print_warning(f"    Could not load Jira auth: {exc}")
+            _print_info("    Run manually: hermes auth jira")
+            return
+        _print_info("    Starting Jira authentication...")
+        try:
+            login_jira_command(SimpleNamespace(domain=None, email=None, token=None))
+            _print_success("    Jira authenticated")
+        except SystemExit as exc:
+            _print_warning(f"    Jira login did not complete: {exc}")
+            _print_info("    Run later: hermes auth jira")
+        except Exception as exc:
+            _print_warning(f"    Jira login failed: {exc}")
+            _print_info("    Run manually: hermes auth jira")
 
     elif post_setup_key == "rl_training":
         try:

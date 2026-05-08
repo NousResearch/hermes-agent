@@ -1334,7 +1334,14 @@ def get_model_context_length(
     # /models endpoint may report a provider-imposed limit (e.g. Copilot
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+    #
+    # Only probe unknown custom endpoints when the provider is generic/unspecified.
+    # When the user explicitly declares a known provider (e.g., "anthropic"),
+    # the base_url is just transport routing (e.g., a local proxy). Skip the
+    # probe-down path and trust the models.dev / hardcoded resolution at steps 5+.
+    GENERIC_PROVIDERS_FOR_CUSTOM_PROBE = {"", "openrouter", "custom", None}
+    if provider in GENERIC_PROVIDERS_FOR_CUSTOM_PROBE and \
+       _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
             return context_length

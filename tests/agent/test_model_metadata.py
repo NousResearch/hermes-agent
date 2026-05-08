@@ -1022,3 +1022,95 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+# =========================================================================
+# Provider context resolution - custom endpoint probe skip logic
+# =========================================================================
+
+class TestExplicitProviderSkipsCustomProbe:
+    """Tests for the fix: explicit known provider should skip custom endpoint probe."""
+
+    def test_anthropic_provider_localhost_proxy_resolves_via_models_dev(self):
+        """Explicit anthropic provider with localhost proxy should resolve via models.dev."""
+        with patch("agent.models_dev.lookup_models_dev_context") as mock_lookup:
+            mock_lookup.return_value = 1_000_000
+            result = get_model_context_length(
+                model="claude-opus-4-7",
+                provider="anthropic",
+                base_url="http://127.0.0.1:8319",
+                api_key="sk-dummy",
+            )
+            assert result == 1_000_000
+            # Verify that models.dev lookup was called (via step 5b)
+            mock_lookup.assert_called_once_with("anthropic", "claude-opus-4-7")
+
+    def test_unknown_provider_localhost_still_probes_local(self):
+        """Generic/custom provider with localhost should still trigger local probe."""
+        with patch("agent.model_metadata._query_local_context_length") as mock_query:
+            # Local probe succeeds
+            mock_query.return_value = 8192
+            result = get_model_context_length(
+                model="some-model",
+                provider="custom",
+                base_url="http://127.0.0.1:11434",
+                api_key="sk-dummy",
+            )
+            # Should get the probed value, not fallback
+            assert result == 8192
+            mock_query.assert_called_once()
+
+    def test_openrouter_provider_localhost_still_probes_local(self):
+        """openrouter provider with localhost should still trigger local probe."""
+        with patch("agent.model_metadata._query_local_context_length") as mock_query:
+            mock_query.return_value = 4096
+            result = get_model_context_length(
+                model="some-model",
+                provider="openrouter",
+                base_url="http://127.0.0.1:8080",
+                api_key="sk-dummy",
+            )
+            assert result == 4096
+            mock_query.assert_called_once()
+
+    def test_empty_provider_localhost_still_probes_local(self):
+        """Empty provider with localhost should still trigger local probe."""
+        with patch("agent.model_metadata._query_local_context_length") as mock_query:
+            mock_query.return_value = 16384
+            result = get_model_context_length(
+                model="llama3",
+                provider="",
+                base_url="http://127.0.0.1:11434",
+                api_key=None,
+            )
+            assert result == 16384
+            mock_query.assert_called_once()
+
+    def test_explicit_anthropic_provider_does_not_probe_local(self):
+        """Explicit anthropic provider should NOT call _query_local_context_length."""
+        with patch("agent.model_metadata._query_local_context_length") as mock_query:
+            with patch("agent.models_dev.lookup_models_dev_context") as mock_lookup:
+                mock_lookup.return_value = 1_000_000
+                result = get_model_context_length(
+                    model="claude-opus-4-7",
+                    provider="anthropic",
+                    base_url="http://127.0.0.1:8319",
+                    api_key="sk-dummy",
+                )
+                assert result == 1_000_000
+                # Local probe should NOT have been called
+                mock_query.assert_not_called()
+                mock_lookup.assert_called_once_with("anthropic", "claude-opus-4-7")
+
+    def test_none_provider_localhost_still_probes_local(self):
+        """None provider with localhost should still trigger local probe."""
+        with patch("agent.model_metadata._query_local_context_length") as mock_query:
+            mock_query.return_value = 8192
+            result = get_model_context_length(
+                model="some-model",
+                provider=None,
+                base_url="http://127.0.0.1:11434",
+                api_key="sk-dummy",
+            )
+            assert result == 8192
+            mock_query.assert_called_once()

@@ -83,7 +83,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     captured = {}
 
     async def fake_start_polling(**kwargs):
-        captured["error_callback"] = kwargs["error_callback"]
+        captured.update(kwargs)
 
     updater = SimpleNamespace(
         start_polling=AsyncMock(side_effect=fake_start_polling),
@@ -111,7 +111,9 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     ok = await adapter.connect()
 
     assert ok is True
-    bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+    bot.delete_webhook.assert_not_awaited()
+    assert captured["bootstrap_retries"] == 3
+    assert captured["timeout"] == 15
     assert callable(captured["error_callback"])
 
     conflict = type("Conflict", (Exception,), {})
@@ -243,7 +245,7 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
 
 
 @pytest.mark.asyncio
-async def test_connect_clears_webhook_before_polling(monkeypatch):
+async def test_connect_lets_start_polling_bootstrap_clear_webhook(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
 
     monkeypatch.setattr(
@@ -284,7 +286,12 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
     ok = await adapter.connect()
 
     assert ok is True
-    bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+    bot.delete_webhook.assert_not_awaited()
+    updater.start_polling.assert_awaited_once()
+    kwargs = updater.start_polling.await_args.kwargs
+    assert kwargs["drop_pending_updates"] is True
+    assert kwargs["bootstrap_retries"] == 3
+    assert kwargs["timeout"] == 15
 
 
 @pytest.mark.asyncio

@@ -329,6 +329,16 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_duplicate_media_tags_are_deduplicated(self):
+        content = "MEDIA:/tmp/test.png\nMEDIA:/tmp/test.png\nMEDIA:/tmp/other.png"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("/tmp/test.png", False),
+            ("/tmp/other.png", False),
+        ]
+        assert cleaned == ""
+
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the

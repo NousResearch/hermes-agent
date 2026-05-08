@@ -1074,11 +1074,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             else:
                 # ── Polling mode (default) ───────────────────────────
-                # Clear any stale webhook first so polling doesn't inherit a
-                # previous webhook registration and silently stop receiving updates.
-                delete_webhook = getattr(self._bot, "delete_webhook", None)
-                if callable(delete_webhook):
-                    await delete_webhook(drop_pending_updates=False)
+                # PTB start_polling() already clears stale webhooks during its
+                # bootstrap phase. Avoid a redundant pre-flight delete_webhook()
+                # call here so transient Telegram API hiccups only go through
+                # one retry path.
 
                 loop = asyncio.get_running_loop()
 
@@ -1099,6 +1098,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=True,
+                    timeout=15,
+                    bootstrap_retries=3,
                     error_callback=_polling_error_callback,
                 )
             

@@ -4131,6 +4131,10 @@ class GatewayRunner:
                         except Exception:
                             pass
                     else:
+                        # Defensive cleanup: a failed reconnect() may
+                        # have allocated resources before giving up.
+                        # See startup-path comment for rationale.
+                        await self._safe_adapter_disconnect(adapter, platform)
                         # Check if the failure is non-retryable
                         if adapter.has_fatal_error and not adapter.fatal_error_retryable:
                             self._update_platform_runtime_status(
@@ -4159,6 +4163,9 @@ class GatewayRunner:
                                 platform.value, backoff,
                             )
                 except Exception as e:
+                    # Defensive cleanup: an adapter that raised mid-reconnect
+                    # may still hold a live ClientSession or child subprocess.
+                    await self._safe_adapter_disconnect(adapter, platform)
                     self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",

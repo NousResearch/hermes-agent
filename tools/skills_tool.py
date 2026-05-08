@@ -100,7 +100,7 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
+_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive", ".pending"))
 _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
 )
@@ -1530,4 +1530,3 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
-

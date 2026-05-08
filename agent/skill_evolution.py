@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -29,6 +30,7 @@ except ImportError:  # pragma: no cover - platform-specific fallback
 
 VALID_EVOLUTION_MODES = {"auto", "confirm", "readonly"}
 _LOCAL_QUEUE_LOCK = threading.RLock()
+_SAFE_CHANGE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def normalize_evolution_mode(value: Any) -> str:
@@ -130,6 +132,15 @@ def _write_json_file(path: Path, data: Any) -> None:
         raise
 
 
+def _is_safe_change_id(value: Any) -> bool:
+    change_id = str(value) if value is not None else ""
+    if not change_id or change_id in {".", ".."}:
+        return False
+    if "/" in change_id or "\\" in change_id:
+        return False
+    return bool(_SAFE_CHANGE_ID_RE.fullmatch(change_id))
+
+
 def _normalize_change(change: dict[str, Any]) -> dict[str, Any]:
     payload = change.get("payload")
     if not isinstance(payload, dict):
@@ -153,7 +164,10 @@ def _normalize_change(change: dict[str, Any]) -> dict[str, Any]:
 def _artifact_path(change_id: str, value: Any) -> Path | None:
     if not value:
         return None
-    base = _pending_artifact_dir(change_id)
+    try:
+        base = _pending_artifact_dir(change_id)
+    except ValueError:
+        return None
     path = Path(str(value))
     if not path.is_absolute():
         path = base / path
@@ -168,6 +182,8 @@ def _artifact_path(change_id: str, value: Any) -> Path | None:
 def _normalize_stored_change(change: dict[str, Any]) -> dict[str, Any] | None:
     normalized = _normalize_change(change)
     change_id = normalized.get("id", "")
+    if not _is_safe_change_id(change_id):
+        return None
     for key in ("manifest_path", "snapshot_path", "diff_path"):
         if key not in normalized:
             continue
@@ -211,14 +227,16 @@ def _strip_artifact_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _pending_artifact_dir(change_id: str) -> Path:
-    return pending_changes_dir() / change_id
+    if not _is_safe_change_id(change_id):
+        raise ValueError("Unsafe pending change id")
+    return pending_changes_dir() / str(change_id)
 
 
 def _safe_remove_pending_artifacts(change_id: str) -> None:
     if not change_id:
         return
-    target = _pending_artifact_dir(change_id)
     try:
+        target = _pending_artifact_dir(change_id)
         root = pending_changes_dir().resolve()
         resolved = target.resolve()
         resolved.relative_to(root)
@@ -269,6 +287,8 @@ def _read_manifest_change(manifest_path: Path) -> dict[str, Any] | None:
 
     base = manifest_path.parent
     change_id = str(data.get("id", ""))
+    if not _is_safe_change_id(change_id):
+        return None
     if change_id != base.name:
         return None
     change = dict(data)
@@ -356,6 +376,9 @@ def list_pending_changes() -> list[dict]:
 
 def approve_pending_change(change_id: str, apply_func: Callable[[dict], dict]) -> dict:
     """Apply and remove a pending change only when the apply callback succeeds."""
+    if not _is_safe_change_id(change_id):
+        return {"success": False, "error": f"Pending change not found: {change_id}"}
+
     with _queue_lock():
         queue = {"changes": _list_pending_changes_unlocked()}
         for index, change in enumerate(queue["changes"]):
@@ -407,6 +430,9 @@ def approve_pending_change(change_id: str, apply_func: Callable[[dict], dict]) -
 
 def reject_pending_change(change_id: str) -> dict:
     """Remove a pending change without applying it."""
+    if not _is_safe_change_id(change_id):
+        return {"success": False, "error": f"Pending change not found: {change_id}"}
+
     with _queue_lock():
         queue = {"changes": _list_pending_changes_unlocked()}
         for index, change in enumerate(queue["changes"]):

@@ -99,6 +99,63 @@ def test_queue_pending_change_writes_pending_manifest_snapshot_and_diff(tmp_path
     assert skill_evolution.list_pending_changes()[0]["diff_path"] == str(diff_path)
 
 
+def test_pending_snapshot_is_not_discovered_as_skill_or_prompt_entry(tmp_path, monkeypatch):
+    from agent import prompt_builder, skill_evolution
+    from tools import skills_tool
+
+    hermes_home = tmp_path / "profile"
+    skills_dir = hermes_home / "skills"
+    live_skill = skills_dir / "daily-review"
+    live_skill.mkdir(parents=True)
+    (live_skill / "SKILL.md").write_text(
+        """\
+---
+name: daily-review
+description: Live approved skill.
+---
+
+# Daily Review
+
+Use the approved instructions.
+"""
+    )
+    monkeypatch.setattr(skill_evolution, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(prompt_builder, "get_skills_dir", lambda: skills_dir)
+    monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [skills_dir])
+    prompt_builder.clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    queued = skill_evolution.queue_pending_change(
+        "edit",
+        "daily-review",
+        {
+            "content": "new",
+            "snapshot": """\
+---
+name: pending-review
+description: Unapproved pending snapshot.
+---
+
+# Pending Snapshot
+
+This must not enter skill discovery.
+""",
+            "diff": "--- old\n+++ new\n@@\n-old\n+new\n",
+        },
+    )
+
+    listed = json.loads(skills_tool.skills_list())
+    assert listed["success"] is True
+    assert [skill["name"] for skill in listed["skills"]] == ["daily-review"]
+
+    prompt = prompt_builder.build_skills_system_prompt()
+    assert "daily-review" in prompt
+    assert "Live approved skill." in prompt
+    assert "pending-review" not in prompt
+    assert "Unapproved pending snapshot" not in prompt
+    assert (hermes_home / "skills" / ".pending" / queued["id"] / "snapshot" / "SKILL.md").exists()
+
+
 def test_list_pending_changes_rejects_manifest_paths_outside_change_dir(tmp_path, monkeypatch):
     from agent import skill_evolution
 
@@ -154,6 +211,60 @@ def test_list_pending_changes_rejects_queue_artifact_paths_outside_change_dir(tm
     )
 
     assert skill_evolution.list_pending_changes() == []
+
+
+def test_list_pending_changes_rejects_unsafe_queue_ids(tmp_path, monkeypatch):
+    from agent import skill_evolution
+
+    hermes_home = tmp_path / "profile"
+    monkeypatch.setattr(skill_evolution, "get_hermes_home", lambda: hermes_home)
+
+    queue_path = skill_evolution.pending_queue_path()
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def write_tampered_queue():
+        queue_path.write_text(
+            json.dumps(
+                {
+                    "changes": [
+                        {
+                            "id": "../../outside",
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "action": "edit",
+                            "name": "daily-review",
+                            "payload": {
+                                "content": "new",
+                                "snapshot": "old",
+                                "diff": "--- old\n+++ new\n",
+                            },
+                            "origin": "background_review",
+                            "status": "pending",
+                        }
+                    ]
+                }
+            )
+        )
+
+    write_tampered_queue()
+    assert skill_evolution.list_pending_changes() == []
+    assert not (hermes_home / "outside").exists()
+
+    write_tampered_queue()
+    result = skill_evolution.approve_pending_change(
+        "../../outside",
+        lambda change: {"success": True},
+    )
+    assert result["success"] is False
+    assert not (hermes_home / "outside").exists()
+
+    write_tampered_queue()
+    result = skill_evolution.reject_pending_change("../../outside")
+    assert result["success"] is False
+    assert not (hermes_home / "outside").exists()
+
+    write_tampered_queue()
+    assert skill_evolution.cleanup_expired_pending_changes(ttl_days=1) == []
+    assert not (hermes_home / "outside").exists()
 
 
 def test_list_pending_changes_rejects_manifest_id_mismatch(tmp_path, monkeypatch):

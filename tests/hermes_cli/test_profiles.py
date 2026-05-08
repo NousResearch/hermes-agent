@@ -414,6 +414,30 @@ class TestListProfiles:
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
 
+    def test_skill_count_excludes_internal_skill_artifacts(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+
+        live_skill = default_home / "skills" / "custom" / "live-skill"
+        live_skill.mkdir(parents=True)
+        (live_skill / "SKILL.md").write_text("---\nname: live-skill\n---\n")
+
+        internal_skill_paths = [
+            default_home / "skills" / ".pending" / "change-1" / "snapshot",
+            default_home / "skills" / ".archive" / "old-skill",
+            default_home / "skills" / ".hub" / "hub-skill",
+            default_home / "skills" / ".github" / "workflow-skill",
+            default_home / "skills" / ".git" / "hooks" / "git-skill",
+        ]
+        for internal_dir in internal_skill_paths:
+            internal_dir.mkdir(parents=True)
+            (internal_dir / "SKILL.md").write_text(
+                f"---\nname: {internal_dir.name}\n---\n"
+            )
+
+        default = next(profile for profile in list_profiles() if profile.name == "default")
+        assert default.skill_count == 1
+
 
 # ===================================================================
 # TestActiveProfile

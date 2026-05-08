@@ -1,6 +1,7 @@
 ---
 name: neuroskill-bci
 description: >
+platforms: [linux, macos, windows]
   Connect to a running NeuroSkill instance and incorporate the user's real-time
   cognitive and emotional state (focus, relaxation, mood, cognitive load, drowsiness,
   heart rate, HRV, sleep staging, and 40+ derived EXG scores) into responses.

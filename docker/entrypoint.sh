@@ -94,6 +94,12 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
+# Download Agent Toolkit skills and generate SOUL.md
+if [ -n "$AGENT_TOOLKIT_SERVER" ] && [ -f "$INSTALL_DIR/docker/setup_skills.sh" ]; then
+    echo "Running setup_skills.sh (AGENT_TOOLKIT_SERVER=$AGENT_TOOLKIT_SERVER)"
+    bash "$INSTALL_DIR/docker/setup_skills.sh"
+fi
+
 # Final exec: two supported invocation patterns.
 #
 #   docker run <image>                 -> exec `hermes` with no args (legacy default)

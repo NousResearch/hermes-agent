@@ -2916,16 +2916,25 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.info("Cron 开始发送回调: name=%s url=%s status=%d", name, callback_url, status_code)
             try:
                 import aiohttp
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-                    await session.post(callback_url, json={
+                timeout = aiohttp.ClientTimeout(total=30)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    resp = await session.post(callback_url, json={
                         "task_id": task_id,
                         "status": status_code,
                         "messages": message,
                         "content": content,
                     })
-                logger.info("Cron 回调发送成功: name=%s", name)
+                    if resp.status != 200:
+                        body = await resp.text()
+                        logger.error("Cron 回调返回错误: name=%s http_status=%d body=%s", name, resp.status, body[:500])
+                    else:
+                        logger.info("Cron 回调发送成功: name=%s http_status=%d", name, resp.status)
+            except asyncio.TimeoutError:
+                logger.error("Cron 回调超时(30s): name=%s url=%s", name, callback_url)
             except Exception as exc:
-                logger.error("Cron 回调发送失败: name=%s url=%s error=%s", name, callback_url, exc)
+                exc_name = type(exc).__name__
+                exc_msg = str(exc) or "(无详细信息)"
+                logger.error("Cron 回调发送失败: name=%s url=%s error_type=%s error=%s", name, callback_url, exc_name, exc_msg)
 
     # ------------------------------------------------------------------
     # Output extraction helper

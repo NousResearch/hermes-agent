@@ -777,8 +777,10 @@ platform_toolsets:
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
-# Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
-# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
+# Providers: local (free, faster-whisper) | groq (free tier) | openrouter (unified)
+#          | openai (Whisper API) | mistral (Voxtral Transcribe) | xai (Grok STT)
+# Set the corresponding API key in .env:
+#   GROQ_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, XAI_API_KEY
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
@@ -787,6 +789,11 @@ stt:
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+  # openrouter:
+  #   model: "openai/whisper-large-v3"   # any STT slug OpenRouter routes; query
+  #                                      # the Models API with output_modalities=
+  #                                      # transcription to discover the full set.
+  #   # base_url: "https://openrouter.ai/api/v1"  # override for self-hosted/proxy
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
 

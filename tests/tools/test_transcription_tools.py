@@ -1346,3 +1346,303 @@ class TestTranscribeAudioXAIDispatch:
             transcribe_audio(sample_ogg, model="custom-stt")
 
         assert mock_xai.call_args[0][1] == "custom-stt"
+
+
+# ============================================================================
+# _transcribe_openrouter — JSON+base64 protocol via requests.post
+# ============================================================================
+
+class TestTranscribeOpenRouter:
+    def test_no_key(self, monkeypatch):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        from tools.transcription_tools import _transcribe_openrouter
+        result = _transcribe_openrouter("/tmp/test.mp3", "openai/whisper-large-v3")
+        assert result["success"] is False
+        assert "OPENROUTER_API_KEY" in result["error"]
+
+    def test_successful_transcription(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "text": "hello world",
+            "usage": {"seconds": 1.0, "cost": 0.0001},
+        }
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_openrouter
+            result = _transcribe_openrouter(sample_wav, "openai/whisper-large-v3")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello world"
+        assert result["provider"] == "openrouter"
+
+    def test_whitespace_stripped(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "  hello  \n"}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_openrouter
+            result = _transcribe_openrouter(sample_wav, "openai/whisper-large-v3")
+
+        assert result["transcript"] == "hello"
+
+    def test_api_error_returns_failure(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.json.return_value = {"error": {"message": "No auth credentials found"}}
+        mock_response.text = '{"error":{"message":"No auth credentials found"}}'
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_openrouter
+            result = _transcribe_openrouter(sample_wav, "openai/whisper-large-v3")
+
+        assert result["success"] is False
+        assert "HTTP 401" in result["error"]
+        assert "No auth credentials found" in result["error"]
+
+    def test_empty_transcript_returns_failure(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "   "}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_openrouter
+            result = _transcribe_openrouter(sample_wav, "openai/whisper-large-v3")
+
+        assert result["success"] is False
+        assert "empty transcript" in result["error"]
+
+    def test_permission_error(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("builtins.open", side_effect=PermissionError("denied")):
+            from tools.transcription_tools import _transcribe_openrouter
+            result = _transcribe_openrouter(sample_wav, "openai/whisper-large-v3")
+
+        assert result["success"] is False
+        assert "Permission denied" in result["error"]
+
+    def test_unsupported_format_rejected(self, monkeypatch, tmp_path):
+        """OR's STT only accepts a fixed set of formats — reject others early."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+        bogus = tmp_path / "test.exotic"
+        bogus.write_bytes(b"\x00\x01\x02")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}):
+            from tools.transcription_tools import _transcribe_openrouter
+            result = _transcribe_openrouter(str(bogus), "openai/whisper-large-v3")
+
+        assert result["success"] is False
+        assert "format" in result["error"].lower()
+
+    def test_format_aliases_normalized(self, monkeypatch, tmp_path):
+        """`.oga`/`.opus` map to `ogg`; `.mpeg` maps to `mp3`."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+        for ext in ("oga", "opus", "mpeg"):
+            f = tmp_path / f"test.{ext}"
+            f.write_bytes(b"\x00\x01\x02")
+
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"text": "ok"}
+
+            with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+                 patch("requests.post", return_value=mock_response) as mock_post:
+                from tools.transcription_tools import _transcribe_openrouter
+                _transcribe_openrouter(str(f), "openai/whisper-large-v3")
+
+            body = mock_post.call_args.kwargs.get("json", {})
+            audio_format = body.get("input_audio", {}).get("format")
+            expected = "ogg" if ext in ("oga", "opus") else "mp3"
+            assert audio_format == expected, f"expected {expected} for .{ext}, got {audio_format}"
+
+    def test_sends_json_with_base64_audio(self, monkeypatch, sample_wav):
+        """Sends JSON (not multipart) with base64-encoded `input_audio.data`."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "ok"}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_openrouter
+            _transcribe_openrouter(sample_wav, "openai/whisper-large-v3")
+
+        kwargs = mock_post.call_args.kwargs
+        # JSON body, not multipart
+        assert "json" in kwargs and "files" not in kwargs and "data" not in kwargs
+        body = kwargs["json"]
+        assert body["model"] == "openai/whisper-large-v3"
+        assert body["input_audio"]["format"] == "wav"
+        encoded = body["input_audio"]["data"]
+        assert isinstance(encoded, str) and len(encoded) > 0
+        # base64 alphabet only — round-trip must succeed
+        import base64
+        base64.b64decode(encoded, validate=True)
+
+    def test_uses_openrouter_base_url(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "ok"}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_openrouter
+            _transcribe_openrouter(sample_wav, "openai/whisper-large-v3")
+
+        url = mock_post.call_args[0][0] if mock_post.call_args[0] else mock_post.call_args.kwargs.get("url", "")
+        assert "openrouter.ai/api/v1/audio/transcriptions" in url
+
+    def test_custom_base_url_via_config(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "ok"}
+
+        with patch("tools.transcription_tools._load_stt_config",
+                   return_value={"openrouter": {"base_url": "https://or.example.com/v1"}}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_openrouter
+            _transcribe_openrouter(sample_wav, "openai/whisper-large-v3")
+
+        url = mock_post.call_args[0][0] if mock_post.call_args[0] else mock_post.call_args.kwargs.get("url", "")
+        assert "or.example.com" in url
+
+    def test_sends_correct_headers(self, monkeypatch, sample_wav):
+        """Authorization bearer + Content-Type JSON."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "ok"}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_openrouter
+            _transcribe_openrouter(sample_wav, "openai/whisper-large-v3")
+
+        headers = mock_post.call_args.kwargs.get("headers", {})
+        assert headers.get("Authorization") == "Bearer or-test-key"
+        assert headers.get("Content-Type") == "application/json"
+
+    def test_connection_error(self, monkeypatch, sample_wav):
+        """Network failures surface as a clean failure result, not a traceback."""
+        import requests as _requests
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", side_effect=_requests.exceptions.ConnectionError("dns failure")):
+            from tools.transcription_tools import _transcribe_openrouter
+            result = _transcribe_openrouter(sample_wav, "openai/whisper-large-v3")
+
+        assert result["success"] is False
+        assert "error" in result
+        assert result["error"]  # non-empty
+
+
+# ============================================================================
+# _get_provider — openrouter routing
+# ============================================================================
+
+class TestGetProviderOpenRouter:
+    def test_explicit_openrouter_with_key(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "openrouter"}) == "openrouter"
+
+    def test_explicit_openrouter_no_key(self, monkeypatch):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "openrouter"}) == "none"
+
+    def test_auto_detect_openrouter(self, monkeypatch):
+        """Auto-detect picks openrouter when local + groq are unavailable but OR key set."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "openrouter"
+
+    def test_auto_detect_groq_preferred_over_openrouter(self, monkeypatch):
+        """Free Groq tier wins over OR in auto-detect (cost preference)."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+        monkeypatch.setenv("GROQ_API_KEY", "groq-test-key")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "groq"
+
+
+# ============================================================================
+# transcribe_audio — openrouter dispatch
+# ============================================================================
+
+class TestTranscribeAudioOpenRouterDispatch:
+    def test_dispatches_to_openrouter(self, sample_wav):
+        with patch("tools.transcription_tools._load_stt_config",
+                   return_value={"provider": "openrouter"}), \
+             patch("tools.transcription_tools._get_provider", return_value="openrouter"), \
+             patch("tools.transcription_tools._transcribe_openrouter",
+                   return_value={"success": True, "transcript": "hi", "provider": "openrouter"}) as mock_or:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_wav)
+
+        assert result["success"] is True
+        assert result["provider"] == "openrouter"
+        mock_or.assert_called_once()
+
+    def test_model_default_from_constant(self, sample_wav):
+        from tools.transcription_tools import DEFAULT_OPENROUTER_STT_MODEL
+        with patch("tools.transcription_tools._load_stt_config",
+                   return_value={"provider": "openrouter"}), \
+             patch("tools.transcription_tools._get_provider", return_value="openrouter"), \
+             patch("tools.transcription_tools._transcribe_openrouter",
+                   return_value={"success": True, "transcript": "hi"}) as mock_or:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_wav, model=None)
+
+        assert mock_or.call_args[0][1] == DEFAULT_OPENROUTER_STT_MODEL
+
+    def test_model_from_config_overrides_default(self, sample_wav):
+        with patch("tools.transcription_tools._load_stt_config",
+                   return_value={"provider": "openrouter",
+                                 "openrouter": {"model": "groq/whisper-large-v3-turbo"}}), \
+             patch("tools.transcription_tools._get_provider", return_value="openrouter"), \
+             patch("tools.transcription_tools._transcribe_openrouter",
+                   return_value={"success": True, "transcript": "hi"}) as mock_or:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_wav, model=None)
+
+        assert mock_or.call_args[0][1] == "groq/whisper-large-v3-turbo"
+
+    def test_explicit_model_argument_wins(self, sample_wav):
+        with patch("tools.transcription_tools._load_stt_config",
+                   return_value={"provider": "openrouter",
+                                 "openrouter": {"model": "openai/whisper-1"}}), \
+             patch("tools.transcription_tools._get_provider", return_value="openrouter"), \
+             patch("tools.transcription_tools._transcribe_openrouter",
+                   return_value={"success": True, "transcript": "hi"}) as mock_or:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_wav, model="openai/whisper-large-v3")
+
+        assert mock_or.call_args[0][1] == "openai/whisper-large-v3"

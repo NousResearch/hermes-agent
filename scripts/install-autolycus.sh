@@ -122,7 +122,7 @@ check_prerequisites
 # ============================================================================
 
 install_uv() {
-    echo -e "${CYAN}→${NC} Installing uv via cargo..."
+    echo -e "${CYAN}→${NC} Installing uv..."
 
     # Check if uv is already available
     if command -v uv &> /dev/null; then
@@ -146,7 +146,24 @@ install_uv() {
         return 0
     fi
 
-    # Install via cargo
+    # Prefer pre-built binary installer (much faster, no Rust toolchain needed)
+    echo -e "${CYAN}→${NC} Installing uv via official installer (pre-built binary)..."
+    if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+        if [ -x "$HOME/.local/bin/uv" ]; then
+            UV_CMD="$HOME/.local/bin/uv"
+        elif command -v uv &> /dev/null; then
+            UV_CMD="uv"
+        else
+            echo -e "${RED}✗${NC} uv installed but not found on PATH"
+            exit 1
+        fi
+        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        echo -e "${GREEN}✓${NC} uv installed ($UV_VERSION)"
+        return 0
+    fi
+
+    # Fallback: install via cargo (requires Rust toolchain)
+    echo -e "${YELLOW}⚠${NC} Pre-built installer failed, falling back to cargo install (slower)..."
     if cargo install uv; then
         if [ -x "$HOME/.cargo/bin/uv" ]; then
             UV_CMD="$HOME/.cargo/bin/uv"
@@ -161,12 +178,13 @@ install_uv() {
         fi
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         echo -e "${GREEN}✓${NC} uv installed ($UV_VERSION)"
+        return 0
     else
-        echo -e "${RED}✗${NC} Failed to install uv via cargo."
+        echo -e "${RED}✗${NC} Failed to install uv."
         echo ""
         echo "Possible causes:"
         echo "  - Rust/Cargo not installed"
-        echo "  - make not installed (required for FreeBSD)"
+        echo "  - Disk space / tmpfs quota exceeded"
         echo "  - Network issues"
         echo ""
         echo "Try installing uv manually: https://docs.astral.sh/uv/"

@@ -222,6 +222,7 @@ class TestGatewayCleanupWiring:
         runner._agent_cache_lock = threading.Lock()
         runner._shutdown_all_gateway_honcho = lambda: None
         runner._update_runtime_status = MagicMock()
+        runner._restart_caller_key = None
 
         mock_agent_1 = MagicMock()
         mock_agent_2 = MagicMock()

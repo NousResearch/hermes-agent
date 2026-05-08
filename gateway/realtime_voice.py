@@ -27,6 +27,45 @@ class _RealtimeWebSocket(Protocol):
 WebSocketFactory = Callable[..., Awaitable[_RealtimeWebSocket]]
 
 
+def normalize_realtime_tool_schemas(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert Hermes/OpenAI Chat tool schemas to Realtime session tools.
+
+    Hermes' model tool registry returns Chat Completions style schemas:
+    ``{"type": "function", "function": {"name": ..., "parameters": ...}}``.
+    The Realtime API expects the flattened shape in ``session.tools``:
+    ``{"type": "function", "name": ..., "parameters": ...}``.
+    Already-flattened tool schemas pass through unchanged.
+    """
+    normalized: list[dict[str, Any]] = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+
+        function = tool.get("function")
+        if tool.get("type") == "function" and isinstance(function, dict):
+            name = function.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            realtime_tool: dict[str, Any] = {
+                "type": "function",
+                "name": name,
+                "parameters": function.get("parameters") or {"type": "object", "properties": {}},
+            }
+            for key in ("description", "strict"):
+                if key in function:
+                    realtime_tool[key] = function[key]
+            normalized.append(realtime_tool)
+            continue
+
+        name = tool.get("name")
+        if tool.get("type") == "function" and isinstance(name, str) and name:
+            realtime_tool = dict(tool)
+            realtime_tool.setdefault("parameters", {"type": "object", "properties": {}})
+            normalized.append(realtime_tool)
+
+    return normalized
+
+
 @dataclass
 class RealtimeVoiceConfig:
     api_key: str
@@ -136,7 +175,11 @@ class RealtimeVoiceSession:
         return cast(_RealtimeWebSocket, await self._client_session.ws_connect(url, headers=headers))
 
     def _session_update_event(self) -> dict[str, Any]:
-        tools = self.config.tools if self.config.tools_enabled else []
+        tools = (
+            normalize_realtime_tool_schemas(self.config.tools)
+            if self.config.tools_enabled
+            else []
+        )
         return {
             "type": "session.update",
             "session": {
@@ -208,6 +251,16 @@ class RealtimeVoiceSession:
                 await self._handle_output_item_done(item)
             return
 
+        if event_type == "response.function_call_arguments.done":
+            item = {
+                "type": "function_call",
+                "name": event.get("name"),
+                "call_id": event.get("call_id"),
+                "arguments": event.get("arguments") or "{}",
+            }
+            await self._handle_output_item_done(item)
+            return
+
         if event_type == "error":
             error = event.get("error")
             self._logger.warning("OpenAI Realtime voice error: %s", error)
@@ -238,7 +291,11 @@ class RealtimeVoiceSession:
         else:
             arguments = {}
 
-        output = await self._tool_executor(name, arguments)
+        try:
+            output = await self._tool_executor(name, arguments)
+        except Exception as exc:
+            self._logger.exception("Realtime tool call %s failed", name)
+            output = json.dumps({"error": f"Error executing {name}: {exc}"}, ensure_ascii=False)
         await self._send_json({
             "type": "conversation.item.create",
             "item": {

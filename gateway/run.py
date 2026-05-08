@@ -8858,6 +8858,54 @@ class GatewayRunner:
         output_rate = int(realtime_cfg.get("output_rate") or 24_000)
         turn_detection = str(realtime_cfg.get("turn_detection") or "semantic_vad")
         tools_enabled = bool(realtime_cfg.get("tools_enabled", False))
+
+        voice_key = self._voice_key(event.source.platform, event.source.chat_id)
+        try:
+            session_entry = self.session_store.get_or_create_session(event.source)
+        except Exception:
+            logger.debug("Failed to get realtime voice session entry", exc_info=True)
+            session_entry = SimpleNamespace(session_key=voice_key, session_id=voice_key)
+        session_key_value = getattr(session_entry, "session_key", "")
+        session_key = session_key_value if isinstance(session_key_value, str) and session_key_value else voice_key
+        session_id_value = getattr(session_entry, "session_id", "")
+        session_id = session_id_value if isinstance(session_id_value, str) and session_id_value else session_key
+
+        def _str_list(value: Any) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return [part.strip() for part in re.split(r"[,\s]+", value) if part.strip()]
+            if isinstance(value, (list, tuple, set)):
+                return [str(part).strip() for part in value if str(part).strip()]
+            return []
+
+        realtime_tools: list[dict[str, Any]] = []
+        realtime_tool_names: list[str] = []
+        if tools_enabled:
+            try:
+                from hermes_cli.tools_config import _get_platform_tools
+                from model_tools import get_tool_definitions
+
+                enabled_toolsets = _str_list(
+                    realtime_cfg.get("toolsets")
+                    or realtime_cfg.get("enabled_toolsets")
+                )
+                if not enabled_toolsets:
+                    enabled_toolsets = sorted(_get_platform_tools(full_cfg, "discord"))
+                disabled_toolsets = _str_list(realtime_cfg.get("disabled_toolsets"))
+                realtime_tools = get_tool_definitions(
+                    enabled_toolsets=enabled_toolsets,
+                    disabled_toolsets=disabled_toolsets,
+                    quiet_mode=True,
+                )
+                realtime_tool_names = [
+                    str(tool.get("function", {}).get("name"))
+                    for tool in realtime_tools
+                    if isinstance(tool, dict) and tool.get("function", {}).get("name")
+                ]
+            except Exception as exc:
+                logger.warning("Failed to prepare realtime voice tools: %s", exc, exc_info=True)
+                return f"Realtime voice tools are enabled, but tool schema setup failed: {exc}"
         stable_user_id = f"discord:{event.source.user_id}"
         safety_identifier = hashlib.sha256(stable_user_id.encode("utf-8")).hexdigest()
         audit_enabled = bool(realtime_cfg.get("audit_log", False) or realtime_cfg.get("debug_log", False))
@@ -8874,8 +8922,7 @@ class GatewayRunner:
         recent_context = ""
         if bool(realtime_cfg.get("include_recent_text_context", True)):
             try:
-                entry = self.session_store.get_or_create_session(event.source)
-                transcript = self.session_store.load_transcript(entry.session_id)
+                transcript = self.session_store.load_transcript(session_id)
                 recent_lines = []
                 for msg in transcript[-12:]:
                     if not isinstance(msg, dict):
@@ -8898,15 +8945,24 @@ class GatewayRunner:
             except Exception:
                 logger.debug("Failed to build realtime voice recent context", exc_info=True)
 
+        tool_instruction = (
+            "Hermes tools are available in this realtime session. Use them when "
+            "they materially help; dangerous terminal commands still go through "
+            "Hermes approval prompts in Discord. For external messages, purchases, "
+            "calendar changes, or other commitments, get explicit confirmation first."
+            if tools_enabled and realtime_tools
+            else
+            "Tools are unavailable in this realtime session. If asked to do "
+            "internet/system/file work, summarize the intended action and ask Hákon "
+            "to send it as text or approve handoff to the normal Hermes tool loop."
+        )
         instructions = (
             "You are Ariadne, Hákon's operational AI assistant. This is a live "
             "voice conversation. Be brief, direct, and conversational. Do not "
             "narrate tool use. Ask at most one clarifying question when needed. "
             "For external side effects or risky operations, say you need explicit "
-            "approval and wait. If asked to do internet/system/file work that "
-            "requires tools unavailable in this realtime session, summarize the "
-            "intended action and ask Hákon to send it as text or approve handoff "
-            "to the normal Hermes tool loop."
+            "approval and wait. "
+            + tool_instruction
             + recent_context
         )
         config = RealtimeVoiceConfig(
@@ -8915,14 +8971,93 @@ class GatewayRunner:
             voice=voice,
             instructions=instructions,
             safety_identifier=safety_identifier,
-            tools_enabled=tools_enabled,
+            tools=realtime_tools,
+            tools_enabled=tools_enabled and bool(realtime_tools),
             input_rate=input_rate,
             output_rate=output_rate,
             turn_detection=turn_detection,
             audit_log_path=audit_log_path,
             audit_include_text=audit_include_text,
         )
-        realtime_context = SimpleNamespace(config=config)
+        loop = asyncio.get_running_loop()
+        approval_metadata = getattr(event, "metadata", None)
+
+        def _approval_notify_sync(approval_data: dict) -> None:
+            cmd = approval_data.get("command", "")
+            desc = approval_data.get("description", "dangerous command")
+            pause = getattr(adapter, "pause_typing_for_chat", None)
+            if callable(pause):
+                try:
+                    pause(event.source.chat_id)
+                except Exception:
+                    pass
+
+            if getattr(type(adapter), "send_exec_approval", None) is not None:
+                try:
+                    result = asyncio.run_coroutine_threadsafe(
+                        adapter.send_exec_approval(
+                            chat_id=event.source.chat_id,
+                            command=cmd,
+                            session_key=session_key,
+                            description=desc,
+                            metadata=approval_metadata,
+                        ),
+                        loop,
+                    ).result(timeout=15)
+                    if getattr(result, "success", False):
+                        return
+                    logger.warning(
+                        "Realtime voice button approval failed, falling back to text: %s",
+                        getattr(result, "error", None),
+                    )
+                except Exception as exc:
+                    logger.warning("Realtime voice button approval failed: %s", exc)
+
+            cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+            msg = (
+                "⚠️ **Realtime voice tool command requires approval:**\n"
+                f"```\n{cmd_preview}\n```\n"
+                f"Reason: {desc}\n\n"
+                "Reply `/approve` to execute, `/approve session` to approve this pattern "
+                "for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+            )
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    adapter.send(event.source.chat_id, msg, metadata=approval_metadata),
+                    loop,
+                ).result(timeout=15)
+            except Exception as exc:
+                logger.error("Failed to send realtime voice approval request: %s", exc)
+
+        async def _execute_realtime_tool(name: str, arguments: dict[str, Any]) -> str:
+            if name not in realtime_tool_names:
+                return json.dumps({"error": f"Tool not enabled in realtime voice session: {name}"}, ensure_ascii=False)
+
+            from model_tools import handle_function_call
+            from tools.approval import register_gateway_notify, reset_current_session_key, set_current_session_key
+
+            def _call_tool() -> str:
+                register_gateway_notify(session_key, _approval_notify_sync)
+                token = set_current_session_key(session_key)
+                try:
+                    result = handle_function_call(
+                        name,
+                        arguments,
+                        task_id=session_id,
+                        session_id=session_id,
+                        user_task="Realtime Discord voice tool call",
+                        enabled_tools=realtime_tool_names,
+                    )
+                    return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+                finally:
+                    reset_current_session_key(token)
+
+            return await self._run_in_executor_with_context(_call_tool)
+
+        realtime_context = SimpleNamespace(
+            config=config,
+            tool_executor=_execute_realtime_tool if config.tools_enabled else None,
+        )
 
         if hasattr(adapter, "_on_voice_disconnect"):
             adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup

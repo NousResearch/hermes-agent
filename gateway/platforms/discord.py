@@ -1305,8 +1305,19 @@ class DiscordAdapter(BasePlatformAdapter):
             mutation_count += 1
             return result
 
+        # Delete commands Hermes no longer wants before creating any new ones.
+        # Discord caps global application commands at 100; if the app is already
+        # full of stale commands, create-first reconciliation fails with
+        # "Maximum number of application commands reached" before the cleanup
+        # pass can free slots.
+        stale_keys = [key for key in existing_by_key.keys() if key not in desired_by_key]
+        for key in stale_keys:
+            current = existing_by_key.pop(key)
+            await mutate(http.delete_global_command, app_id, current.id)
+            deleted += 1
+
         for key, desired in desired_by_key.items():
-            current = existing_by_key.pop(key, None)
+            current = existing_by_key.get(key)
             if current is None:
                 await mutate(http.upsert_global_command, app_id, desired)
                 created += 1
@@ -1327,10 +1338,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
             await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
-
-        for current in existing_by_key.values():
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
 
         return {
             "total": len(desired_payloads),
@@ -1977,6 +1984,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 config=realtime_context.config,
                 audio_sink=source.push_pcm_24k_mono,
                 on_barge_in=source.clear,
+                tool_executor=getattr(realtime_context, "tool_executor", None),
                 logger=logger,
             )
             try:

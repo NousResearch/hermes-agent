@@ -737,9 +737,45 @@ def _run_chrome_fallback_command(
         stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
+            # On Windows, launch the child in a new process group so parent
+            # console Ctrl+C doesn't kill it with STATUS_CONTROL_C_EXIT
+            # (0xC000013A = rc 3221225786), AND insulate its stdio + handle
+            # inheritance from the parent.
+            #
+            # Additional Windows hardening beyond CREATE_NEW_PROCESS_GROUP:
+            # * STARTF_USESTDHANDLES + explicit handles → CreateProcess hands
+            #   the child ONLY our three chosen handles (DEVNULL stdin +
+            #   temp-file stdout/stderr). Without this, some parents leak
+            #   console handles that break downstream grandchild spawns — the
+            #   agent-browser Rust binary spawns a detached daemon grandchild,
+            #   and that grandchild's CreateProcess dies silently
+            #   ("Daemon process exited during startup with no error output")
+            #   when inherited parent handles are in a weird state. Observed
+            #   in the Hermes CLI where sys.stdout and sys.stderr both report
+            #   fileno=1 (stderr dup'd onto stdout at the OS level).
+            # * close_fds=True → block inheritance of every other handle.
+            #   (Default on POSIX; must be explicit on Windows for stdio.)
+            _popen_extra: dict = {}
+            if os.name == "nt":
+                # CREATE_NO_WINDOW → don't attach a console (cmd.exe would
+                # otherwise briefly allocate one for the .cmd shim).
+                # Do NOT add CREATE_NEW_PROCESS_GROUP: on Python 3.11 Windows
+                # it interacts with asyncio's ProactorEventLoop such that the
+                # subprocess creation cancels the running loop task, which
+                # surfaces as KeyboardInterrupt in app.run() and tears down
+                # the CLI mid-turn. The agent thread's subprocess spawn
+                # unwound MainThread's prompt_toolkit loop that way — see
+                # diag log: "asyncio.CancelledError → KeyboardInterrupt".
+                _CREATE_NO_WINDOW = 0x08000000
+                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
+                _popen_extra["close_fds"] = True
+                _si = subprocess.STARTUPINFO()
+                _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
+                _popen_extra["startupinfo"] = _si
             proc = subprocess.Popen(
                 full, stdout=stdout_fd, stderr=stderr_fd,
                 stdin=subprocess.DEVNULL, env=browser_env,
+                **_popen_extra,
             )
         finally:
             os.close(stdout_fd)
@@ -1637,13 +1673,22 @@ def _find_agent_browser() -> str:
             _agent_browser_resolved = True
             return which_result
 
-    # Check local node_modules/.bin/ (npm install in repo root)
+    # Check local node_modules/.bin/ (npm install in repo root).
+    # On Windows, npm drops three shims in .bin: an extensionless POSIX shell
+    # script (for Git Bash / WSL), `agent-browser.cmd` (for cmd/PowerShell),
+    # and `agent-browser.ps1` (for PowerShell). CreateProcess (used by Python's
+    # subprocess on Windows) cannot execute the extensionless shim — it raises
+    # WinError 193 "%1 is not a valid Win32 application". We must resolve to the
+    # `.cmd` shim instead. `shutil.which` consults PATHEXT, so we delegate to it
+    # with an explicit path so POSIX hosts still pick the extensionless shim.
     repo_root = Path(__file__).parent.parent
-    local_bin = repo_root / "node_modules" / ".bin" / "agent-browser"
-    if local_bin.exists():
-        _cached_agent_browser = str(local_bin)
-        _agent_browser_resolved = True
-        return _cached_agent_browser
+    local_bin_dir = repo_root / "node_modules" / ".bin"
+    if local_bin_dir.is_dir():
+        local_which = shutil.which("agent-browser", path=str(local_bin_dir))
+        if local_which:
+            _cached_agent_browser = local_which
+            _agent_browser_resolved = True
+            return _cached_agent_browser
 
     # Check common npx locations (also search the extended fallback PATH)
     npx_path = shutil.which("npx")
@@ -1858,12 +1903,30 @@ def _run_browser_command(
         stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
+            # See matching comment at the other Popen site above — on
+            # Windows we put agent-browser in its own process group, force
+            # STARTF_USESTDHANDLES so CreateProcess hands the child ONLY our
+            # three explicit handles (no leaked parent-console handles to
+            # confuse the Rust binary's daemon-spawn), and close_fds=True to
+            # block inheritance of everything else.
+            _popen_extra: dict = {}
+            if os.name == "nt":
+                # See matching block at the other Popen site — CREATE_NO_WINDOW
+                # only, NO CREATE_NEW_PROCESS_GROUP (cancels asyncio loop task
+                # on Python 3.11 Windows → KeyboardInterrupt in CLI MainThread).
+                _CREATE_NO_WINDOW = 0x08000000
+                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
+                _popen_extra["close_fds"] = True
+                _si = subprocess.STARTUPINFO()
+                _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
+                _popen_extra["startupinfo"] = _si
             proc = subprocess.Popen(
                 cmd_parts,
                 stdout=stdout_fd,
                 stderr=stderr_fd,
                 stdin=subprocess.DEVNULL,
                 env=browser_env,
+                **_popen_extra,
             )
         finally:
             os.close(stdout_fd)

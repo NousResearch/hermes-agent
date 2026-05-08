@@ -135,6 +135,111 @@ class TestMicrosoftGraphClient:
         assert result["content_type"] == "video/mp4"
         assert result["size_bytes"] == len(b"meeting-recording")
 
+    async def test_download_to_file_streams_large_payload_in_chunks(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Recordings can be hundreds of MB; verify the body is streamed.
+
+        Uses a payload larger than the chunk size and counts how many
+        ``aiter_bytes`` iterations the download loop performs. If the
+        response were buffered in memory before the loop ran, only one
+        non-empty chunk would be yielded.
+        """
+        payload = b"x" * (512 * 1024)  # 512 KiB
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=payload,
+                headers={"content-type": "video/mp4"},
+            )
+
+        chunk_calls: list[int] = []
+        original_aiter_bytes = httpx.Response.aiter_bytes
+
+        async def counting_aiter_bytes(self, chunk_size: int | None = None):
+            async for chunk in original_aiter_bytes(self, chunk_size):
+                chunk_calls.append(len(chunk))
+                yield chunk
+
+        monkeypatch.setattr(httpx.Response, "aiter_bytes", counting_aiter_bytes)
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+        )
+        destination = tmp_path / "big-recording.mp4"
+        result = await client.download_to_file(
+            "/drive/item/content", destination, chunk_size=65536
+        )
+
+        assert destination.read_bytes() == payload
+        assert result["size_bytes"] == len(payload)
+        assert len(chunk_calls) >= 2, (
+            "Expected multiple chunks; got a single chunk "
+            f"which suggests the body was buffered: {chunk_calls}"
+        )
+        assert not (tmp_path / "big-recording.mp4.part").exists()
+
+    async def test_download_to_file_retries_on_transient_server_error(
+        self, tmp_path: Path
+    ):
+        calls: list[int] = []
+        sleeps: list[float] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(1)
+            if len(calls) == 1:
+                return httpx.Response(
+                    503, json={"error": {"message": "unavailable"}}
+                )
+            return httpx.Response(
+                200,
+                content=b"payload",
+                headers={"content-type": "application/octet-stream"},
+            )
+
+        async def fake_sleep(delay: float) -> None:
+            sleeps.append(delay)
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+            sleep=fake_sleep,
+            max_retries=2,
+        )
+        destination = tmp_path / "artifact.bin"
+        result = await client.download_to_file("/drive/item/content", destination)
+
+        assert destination.read_bytes() == b"payload"
+        assert result["size_bytes"] == len(b"payload")
+        assert len(calls) == 2
+        assert sleeps == [0.5]
+        assert not (tmp_path / "artifact.bin.part").exists()
+
+    async def test_download_to_file_cleans_partial_file_on_exhausted_retries(
+        self, tmp_path: Path
+    ):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, json={"error": {"message": "unavailable"}})
+
+        async def fake_sleep(delay: float) -> None:
+            return None
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+            sleep=fake_sleep,
+            max_retries=1,
+        )
+        destination = tmp_path / "artifact.bin"
+
+        with pytest.raises(MicrosoftGraphAPIError):
+            await client.download_to_file("/drive/item/content", destination)
+
+        assert not destination.exists()
+        assert not (tmp_path / "artifact.bin.part").exists()
+
     async def test_invalid_json_response_raises_client_error(self):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(

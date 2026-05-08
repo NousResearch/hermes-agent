@@ -22,6 +22,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -575,9 +576,32 @@ async def get_status():
             }
         gateway_exit_reason = runtime.get("exit_reason")
         gateway_updated_at = runtime.get("updated_at")
+
+        # Cross-container detection: if local PID/lock check failed but we have
+        # a recent runtime status indicating the gateway is running, treat it as
+        # alive. This covers multi-container Docker setups where the lock file
+        # isn't shared but the runtime status file is.
         if not gateway_running:
-            gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
-            gateway_platforms = {}
+            # Check if gateway_state.json shows running with a recent timestamp
+            is_recently_running = False
+            if gateway_state == "running" and gateway_updated_at:
+                try:
+                    updated_dt = datetime.fromisoformat(gateway_updated_at)
+                    now_dt = datetime.now(timezone.utc)
+                    age_seconds = (now_dt - updated_dt).total_seconds()
+                    # Consider it alive if the status was updated within the last 30 seconds
+                    is_recently_running = age_seconds <= 30
+                except (ValueError, TypeError):
+                    pass
+
+            if is_recently_running:
+                # Treat as running despite missing local lock file
+                gateway_running = True
+                # Don't overwrite gateway_state (keep it as "running")
+            else:
+                # No evidence of running state; mark as stopped
+                gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
+                gateway_platforms = {}
         elif gateway_running and remote_health_body is not None:
             # The health probe confirmed the gateway is alive, but the local
             # runtime status file may be stale (cross-container).  Override

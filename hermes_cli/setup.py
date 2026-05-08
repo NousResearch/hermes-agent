@@ -3240,22 +3240,23 @@ def _offer_launch_chat():
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
-    """Streamlined first-time setup: provider + model only.
+    """Streamlined first-time setup: provider, model, terminal & messaging.
 
-    Applies sensible defaults for TTS (Edge), terminal (local), agent
-    settings, and tools — the user can customize later via
-    ``hermes setup <section>``.
+    Applies sensible defaults for TTS (Edge), agent settings, and tools —
+    the user can customize later via ``hermes setup <section>``.
     """
     # Step 1: Model & Provider (essential — skips rotation/vision/TTS)
     setup_model_provider(config, quick=True)
 
-    # Step 2: Apply defaults for everything else
+    # Step 2: Terminal Backend — where commands run is a core decision
+    setup_terminal_backend(config)
+
+    # Step 3: Apply defaults for everything else
     _apply_default_agent_settings(config)
-    config.setdefault("terminal", {}).setdefault("backend", "local")
 
     save_config(config)
 
-    # Step 3: Offer messaging gateway setup
+    # Step 4: Offer messaging gateway setup
     print()
     gateway_choice = prompt_choice(
         "Connect a messaging platform? (Telegram, Discord, etc.)",

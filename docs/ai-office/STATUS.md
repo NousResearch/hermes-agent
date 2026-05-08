@@ -1,14 +1,80 @@
 # Hermes AI Office — STATUS
 
-Last updated: 2026-05-08 17:14 KST
+Last updated: 2026-05-08 23:06 KST
 
 ## Current phase
 
-Stage 7 — Review/polish after Stage 6 read-only MVP: completed with final verification.
+Stage 8-A final density polish, Stage 8-B topic/provenance read-only depth, and Stage 8-C frontend tests/fixtures completed and verified on the Mac-local dashboard.
 
-Next phase: manual browser smoke test or Stage 8 visual/renderer review only after user approval.
+Next phase: keep the page read-only and localhost-first; recommended next work is either Stage 8-D fixture expansion/visual regression or a separate pixel/renderer research stage after dependency/licensing/security review.
 
-Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. The user also approved installing missing test/runtime extras as needed. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, or memory/skill update has been performed.
+Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
+
+## Stage 8-A final density polish, Stage 8-B provenance depth, and Stage 8-C tests completed
+
+The user requested options 1 through 3 to run automatically in order after the second Stage 8-A slice.
+
+Implemented files/changes:
+
+- `web/src/pages/OfficePage.tsx`
+  - Added capped long-list rendering with `show N more` / `show fewer` behavior.
+  - Applied the cap to attention rail, rooms, sessions/agents, work groups, automation groups, topic rows, and safe events.
+  - Kept the UI non-pixel, read-only, and metadata-only.
+- `web/src/pages/officeView.ts`
+  - Extracted pure view helpers for grouping, list-capping, and attention-item derivation.
+- `web/src/pages/OfficePage.test.ts`
+  - Added Vitest coverage for grouping unknown status, capped list behavior, and attention rail derivation from safe DTO fields.
+- `web/package.json` and `web/package-lock.json`
+  - Added `vitest` and `npm test` for frontend unit tests.
+- `hermes_cli/office_adapters.py`
+  - Added read-only optional topic registry projection from existing `~/.hermes/office/topics.json` only.
+  - The adapter never creates the registry path/file and ignores raw chat/thread fields.
+  - Cron explicit Telegram delivery targets now project safe opaque `topic_ref` hashes, hidden chat/thread display, derived topic label, and `delivered_to` provenance records.
+  - If the registry is missing but cron delivery produced derived topics, source health is marked `partial` instead of pretending a connected registry exists.
+- `hermes_cli/office_state.py`
+  - Merges topic registry output and refreshes topic/provenance source-health status based on safe topic/provenance records.
+- `tests/hermes_cli/test_office_state_adapters.py`
+  - Added tests for missing topic registry read-only behavior, safe registry projection, cron delivery topic/provenance projection, and merged OfficeState source-health behavior.
+
+Verification performed on Mac:
+
+```text
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 0.99s
+
+cd /Users/lidises/dev/hermes-agent/web
+npm test
+# 1 passed, 3 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed: 0 errors
+
+npm run build
+# passed: tsc -b && vite build
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office
+# loaded with title: Hermes Agent - Dashboard
+# visible/interactable: HERMES AI OFFICE, focus chips, Source health, Safe inspector, Topic routing, Provenance/Redaction, capped sessions list with show-more control
+# console: no messages, no JS errors
+```
+
+TDD note:
+
+- The first new frontend test run failed before helper extraction because importing the full `OfficePage` pulled in `@nous-research/ui` ESM directory imports under Vitest.
+- Fix: extracted pure Office view helpers into `officeView.ts` and tested those directly, avoiding UI package/module-resolution coupling.
+
+Safety notes:
+
+- No mutation controls were added.
+- No Kanban/cron/gateway/NAS/Obsidian data was mutated.
+- No topic registry file was created or edited; the new adapter only reads an existing local registry if present.
+- Raw prompts, transcripts, task bodies, cron scripts, logs, auth, secrets, raw chat ids, and raw Telegram messages remain omitted from browser DTOs.
+- Pixel/renderer dependencies were not added.
 
 ## Working name
 
@@ -777,6 +843,97 @@ Notes:
 - No gateway/dashboard/service/cron restart was performed. No Kanban, cron, NAS, Obsidian, systemd, or runtime config mutation was performed.
 
 
+## Stage 8-A first non-pixel UI polish slice completed
+
+The user approved proceeding in order from the Stage 8 decision point. This slice stayed deliberately non-pixel and read-only.
+
+Implemented file:
+
+- `web/src/pages/OfficePage.tsx`
+
+Changes:
+
+1. Reworked the `/office` page hierarchy into a clearer operational map without adding any mutation controls.
+2. Added a stronger header and safe-mode panel showing generated timestamp, display mode, remote mode, and explicit `Mutations: absent` state.
+3. Added an attention rail near the top so blocked work, failed automations, and source warnings are visually separated from normal empty states.
+4. Improved source-health cards with status labels, item counts, warning counts, and clearer ready/partial/not-connected/error summary chips.
+5. Added first-class non-pixel sections for `Topic routing` and `Provenance / redaction`, including explicit empty states when those sources are missing.
+6. Improved loading and error states so `/office` should no longer appear as an ambiguous blank screen during fetch/failure cases.
+
+Verification:
+
+```text
+cd web && ./node_modules/.bin/eslint src/pages/OfficePage.tsx
+# passed: 0 errors
+
+cd web && npm run build
+# passed: tsc -b && vite build
+
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 13 passed in 1.04s
+```
+
+Browser smoke on Mac-local dashboard:
+
+```text
+http://127.0.0.1:8765/office
+# loaded with title: Hermes Agent - Dashboard
+# visible sections: HERMES AI OFFICE, Safe mode, Source health, Attention rail, Topic routing, Provenance / Redaction, Recent safe events
+# browser console: no messages, no JS errors
+```
+
+Notes:
+
+- This was a frontend-only polish slice. No backend schema, API auth, data-source adapter, secrets, gateway, cron, Kanban, NAS, Obsidian, config, or service state was changed.
+- Existing source gaps remain explicit: `topics` and `provenance` can still be missing/not connected depending on local data, but the UI now shows those as named sections instead of silently omitting them.
+
+
+## Stage 8-A second non-pixel UI polish slice completed
+
+The user approved continuing option 1 from the Stage 8-A next-step list. This slice remained frontend-only, non-pixel, read-only, and localhost-first.
+
+Implemented file:
+
+- `web/src/pages/OfficePage.tsx`
+
+Changes:
+
+1. Added focus chips for `overview`, `work`, `automation`, and `routing` so the operator can reduce page density without changing data or routing.
+2. Added a sticky Safe inspector panel that shows selected DTO metadata only.
+3. Added read-only `Inspect` affordances for source cards, rooms, sessions/agents, work items, automations, topics, redaction report, and safe events.
+4. Grouped work items by safe status and automations by job state, preserving the non-pixel operational-map model.
+5. Improved empty-state copy so missing rooms, sessions, topic routing, provenance, automations, work items, and events explain whether the source is absent, redacted, or not connected.
+6. Added explicit inspector safety copy: raw prompts, transcripts, task bodies, cron scripts, logs, auth, and secrets remain omitted.
+
+Verification:
+
+```text
+cd web && ./node_modules/.bin/eslint src/pages/OfficePage.tsx
+# passed: 0 errors
+
+cd web && npm run build
+# passed: tsc -b && vite build
+
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 13 passed in 0.98s
+```
+
+Browser smoke on Mac-local dashboard:
+
+```text
+http://127.0.0.1:8765/office
+# loaded with title: Hermes Agent - Dashboard
+# visible/interactable: overview/work/automation/routing focus chips, Inspect buttons, Safe inspector, grouped Automations, Topic routing, Provenance / Redaction
+# console: no messages, no JS errors
+# inspected source metadata rendered in Safe inspector without raw sensitive payloads
+```
+
+Notes:
+
+- This was still a UI-only slice. No backend schema, API auth, adapter, topic-registry storage, secrets, gateway, cron, Kanban, NAS, Obsidian, config, or service state was changed.
+- Focus chips and Inspect buttons are read-only browser-local UI state, not Hermes control actions.
+
+
 ## Decisions made so far
 
 See `DECISIONS.md` for the canonical decision log.
@@ -808,7 +965,7 @@ See `OPEN-QUESTIONS.md` for canonical list.
 Most important open questions now:
 
 1. Final product name.
-2. Whether Stage 8 should remain non-pixel visual polish or begin pixel/renderer research with explicit dependency review.
+2. Whether Stage 8 should continue non-pixel visual polish, add topic/provenance data-source depth, or begin pixel/renderer research with explicit dependency review.
 3. Whether a future stage may read an existing optional `~/.hermes/office/topics.json` seed registry if present, while still performing no writes.
 4. Whether localhost mode should show raw internal chat ids by default or hide/hash them behind a debug/internal toggle.
 5. Whether session titles/previews should remain hidden-by-default or be allowed after stronger redaction tests.
@@ -831,15 +988,12 @@ Do not perform these without explicit approval:
 
 ## Next step
 
-Stage 7 review/polish, local dashboard smoke, web lint cleanup, ACP import-error cleanup, optional dependency/snapshot cleanup, changed call-signature/expectation cleanup, update-test isolation cleanup, Bedrock/provider cleanup, retry/small-tail cleanup, Google Chat/DingTalk cleanup, cron cleanup, CLI/model/Kanban cleanup, run_agent interrupt cleanup, gateway tail cleanup, MCP EventBridge cleanup, i18n cache isolation, and curator temp-file cleanup are completed. `npm run lint` passes with warnings only, `npm run build` passes, and the full Python suite is green: `20886 passed, 125 skipped, 232 warnings in 389.83s`.
+Stage 8-A second non-pixel `/office` UI polish slice is completed on the Mac-local checkout. The page now has a clearer safe-mode header, focus chips, attention rail, improved source-health cards, read-only Inspect affordances, a sticky Safe inspector, grouped work/automation sections, and explicit Topic routing plus Provenance/Redaction sections while remaining read-only and localhost-first.
 
 Recommended next stage options:
 
-1. Triage the remaining 16 full-suite failures by cluster.
-2. Continue with the cron scheduler/script/MCP-init cluster.
-3. Then CLI/model persistence and model validation cluster.
-4. Then run_agent concurrent interrupt cluster.
-5. Then smaller gateway/kanban tail failures: Discord free response, restart drain, agent cache spillover, Feishu bot admission, and Kanban boards create/switch.
-5. Separate warning-only React Compiler migration cleanup if/when the dashboard is ready to be compiler-gated.
-6. Stage 8 non-pixel visual polish after seeing the page in-browser.
-7. Pixel/renderer review only after explicit dependency/licensing/security approval.
+1. Continue Stage 8-A polish only if the current page still feels too dense: cap long lists, add collapsible sections, or add a compact “top N + show more” pattern without changing data.
+2. Stage 8-B topic/provenance depth: implement/read an approved local topic registry seed and improve topic/provenance adapter coverage, still read-only and no writes.
+3. Stage 8-C product hardening: add frontend tests for the `/office` focus chips, inspector, empty/loading/error/attention states, and document acceptance criteria for the polished operational map.
+4. Pixel/renderer review only after explicit dependency/licensing/security approval.
+5. Do not add mutation controls, restart services, expose dashboard remotely, add Pixi/Phaser, or create/modify Kanban/Cron state without separate approval.

@@ -1,6 +1,6 @@
 # Hermes AI Office — NEXT
 
-Last updated: 2026-05-08 17:14 KST
+Last updated: 2026-05-08 23:06 KST
 
 ## Start here after `/new`
 
@@ -45,7 +45,7 @@ Default planning-mode goal:
 Stage 8/manual smoke goal suggestion, use only after explicit approval:
 
 ```text
-/goal Hermes AI Office next stage를 승인된 범위 안에서 진행한다. 우선 Stage 7까지 완료된 read-only MVP diff와 /office 화면을 수동 smoke test하거나 비픽셀 시각 polish를 한다. mutation controls, service restart, config/systemd change, Kanban/cron mutation, topic registry write, pixel renderer/dependency 추가는 하지 않는다. 검증 결과와 남은 open question을 STATUS/NEXT에 갱신한다.
+/goal Hermes AI Office next stage를 승인된 범위 안에서 진행한다. 우선 Stage 8-A까지 완료된 read-only MVP diff와 /office 화면을 수동 smoke test하거나 다음 비픽셀 시각 polish를 한다. mutation controls, service restart, config/systemd change, Kanban/cron mutation, topic registry write, pixel renderer/dependency 추가는 하지 않는다. 검증 결과와 남은 open question을 STATUS/NEXT에 갱신한다.
 ```
 
 When `/goal` is most useful:
@@ -64,34 +64,60 @@ When not to rely on `/goal` alone:
 
 ## Current next stage
 
-Stage 7 — Review/polish, broad tests, local dashboard smoke, and full-suite test-debt cleanup after Stage 6 read-only MVP: completed. Full Python suite is green under `scripts/run_tests.sh`.
+Stage 8-A final density polish, Stage 8-B topic/provenance read-only depth, and Stage 8-C frontend tests/fixtures are completed and verified on the Mac-local dashboard.
 
-Mac handoff/setup docs were added so the fork branch can be reused on macOS while keeping runtime state machine-local:
+Completed in this Stage 8 continuation:
 
-- `docs/ai-office/MAC_START_HERE.md`
-- `docs/ai-office/mac-env.template`
+- `web/src/pages/OfficePage.tsx` now caps dense lists and exposes browser-local `show N more` / `show fewer` controls.
+- The cap applies to attention rail, rooms, sessions/agents, work groups, automation groups, topic rows, and safe events without changing the underlying DTO.
+- `web/src/pages/officeView.ts` holds pure view helpers for grouping, visible-row capping, and attention-item derivation.
+- `web/src/pages/OfficePage.test.ts` adds Vitest coverage for unknown-status grouping, capped list behavior, and attention rail derivation from safe DTO fields.
+- `web/package.json` now has `npm test`; `web/package-lock.json` records the Vitest dev dependency.
+- `hermes_cli/office_adapters.py` now has a read-only optional topic registry adapter for an existing `~/.hermes/office/topics.json`; it never creates or edits the file.
+- Cron explicit Telegram delivery targets now project safe topic/provenance hints: hidden chat/thread display, opaque `topic_ref` hashes, derived topic label, and `delivered_to` provenance records.
+- `hermes_cli/office_state.py` merges the topic registry adapter and refreshes topic/provenance source health from safe topic/provenance records.
+- `tests/hermes_cli/test_office_state_adapters.py` covers missing registry no-write behavior, safe topic projection, cron topic/provenance projection, and merged OfficeState source-health behavior.
 
-Completed cleanup batches now include: web lint errors, ACP import errors, optional dependency/snapshot-style failures, changed call-signature/expectation failures, update-test isolation flake, Bedrock/provider expectations, unsupported-parameter retry phrasing, skill provenance/credential small-tail items, Google Chat platform/config expectations, DingTalk card lifecycle optional-SDK handling, cron scheduler/script/MCP init expectations, CLI model/provider/Kanban expectations, run_agent concurrent interrupt stubs, gateway Discord/Feishu/cache tail items, MCP EventBridge mtime detection, i18n cache isolation, and curator atomic-write temp cleanup.
-
-Latest full Python suite result:
+Verification for this Stage 8 continuation:
 
 ```text
-scripts/run_tests.sh -q --tb=short
-# 20886 passed, 125 skipped, 232 warnings in 389.83s
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 0.99s
+
+cd /Users/lidises/dev/hermes-agent/web
+npm test
+# 1 test file passed, 3 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed: 0 errors
+
+npm run build
+# passed: tsc -b && vite build
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office
+# loaded with title: Hermes Agent - Dashboard
+# visible/interactable: HERMES AI OFFICE, Source health, Attention rail, focus chips, Safe inspector, Topic routing, Provenance/Redaction, capped sessions list with show-more control
+# console: no messages, no JS errors
 ```
 
-No Python test failures remain in the latest full-suite run. Remaining work is product/UX next-stage work plus warning-only cleanup if desired.
+TDD note:
+
+- The first frontend test attempt failed because importing the full `OfficePage` pulled `@nous-research/ui` ESM directory imports into Vitest.
+- The fix was to extract pure helpers into `officeView.ts` and test those helpers directly.
 
 ## Immediate next action
 
-Immediate next action should be a decision point, not more test-debt cleanup:
+Immediate next action should remain a product/UX decision point, not a control-plane expansion:
 
-1. Review/commit the completed Stage 6/7 + test-debt cleanup diff.
-2. Optional: run another localhost-only `/office` browser smoke test before merge/ship.
-3. Optional: warning-only cleanup for existing async-mock, aiohttp `NotAppKeyWarning`, PTY `forkpty()` deprecation, and browser cleanup logging noise.
-4. Optional: non-pixel UI polish after visual smoke review.
-5. Pixel/renderer review only after explicit dependency/licensing/security approval.
-6. Do not add mutation controls, restart services, expose dashboard remotely, add Pixi/Phaser, or create/modify Kanban/Cron state without separate approval.
+1. Stage 8-D hardening: add more frontend fixtures for empty/error/loading/source-health states and consider lightweight visual regression for `/office`.
+2. Or review the new topic registry read path against real local registry data if the user explicitly approves reading/creating a local seed registry.
+3. Or separately approve pixel/renderer research after dependency/licensing/security review.
+4. Do not add mutation controls, expose dashboard remotely, add Pixi/Phaser, create/edit topic registry data, or create/modify Kanban/Cron state without separate approval.
 
 Completed Stage 6 files:
 

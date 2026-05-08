@@ -153,12 +153,55 @@ def _compute_summary(state: OfficeState) -> dict[str, object]:
     }
 
 
+def _merge_adapter_result(state: OfficeState, result: object) -> None:
+    state.data_sources = _replace_source(state.data_sources, result.source)
+    state.rooms.extend(result.rooms)
+    state.agents.extend(result.agents)
+    state.work_items.extend(result.work_items)
+    state.automations.extend(result.automations)
+    state.topics.extend(result.topics)
+    state.events.extend(result.events)
+    state.provenance.extend(result.provenance)
+    state.redactions.merge(result.redactions)
+
+
+def _refresh_topic_source(state: OfficeState) -> None:
+    current = next((source for source in state.data_sources if source.id == "topics"), None)
+    if not state.topics or current is None or current.status != "missing":
+        return
+    state.data_sources = _replace_source(
+        state.data_sources,
+        OfficeDataSource(
+            id="topics",
+            status="partial",
+            checked_at=current.checked_at,
+            item_count=len(state.topics),
+            warning_count=1,
+            error_summary="topic registry missing; showing derived delivery topics only",
+        ),
+    )
+
+
+def _refresh_provenance_source(state: OfficeState) -> None:
+    checked_at = state.generated_at
+    state.data_sources = _replace_source(
+        state.data_sources,
+        OfficeDataSource(
+            id="provenance",
+            status="ok" if state.provenance else "missing",
+            checked_at=checked_at,
+            item_count=len(state.provenance),
+        ),
+    )
+
+
 def build_office_state(
     *,
     display_mode: str = "localhost",
     include_kanban: bool = True,
     include_cron: bool = True,
     include_sessions: bool = True,
+    include_topics: bool = True,
 ) -> OfficeState:
     """Build the read-only OfficeState projection from approved adapters."""
 
@@ -166,41 +209,20 @@ def build_office_state(
     if include_kanban:
         from hermes_cli.office_adapters import collect_kanban_office_state
 
-        kanban = collect_kanban_office_state()
-        state.data_sources = _replace_source(state.data_sources, kanban.source)
-        state.rooms.extend(kanban.rooms)
-        state.agents.extend(kanban.agents)
-        state.work_items.extend(kanban.work_items)
-        state.automations.extend(kanban.automations)
-        state.topics.extend(kanban.topics)
-        state.events.extend(kanban.events)
-        state.provenance.extend(kanban.provenance)
-        state.redactions.merge(kanban.redactions)
+        _merge_adapter_result(state, collect_kanban_office_state())
     if include_cron:
         from hermes_cli.office_adapters import collect_cron_office_state
 
-        cron = collect_cron_office_state()
-        state.data_sources = _replace_source(state.data_sources, cron.source)
-        state.rooms.extend(cron.rooms)
-        state.agents.extend(cron.agents)
-        state.work_items.extend(cron.work_items)
-        state.automations.extend(cron.automations)
-        state.topics.extend(cron.topics)
-        state.events.extend(cron.events)
-        state.provenance.extend(cron.provenance)
-        state.redactions.merge(cron.redactions)
+        _merge_adapter_result(state, collect_cron_office_state())
     if include_sessions:
         from hermes_cli.office_adapters import collect_session_office_state
 
-        sessions = collect_session_office_state()
-        state.data_sources = _replace_source(state.data_sources, sessions.source)
-        state.rooms.extend(sessions.rooms)
-        state.agents.extend(sessions.agents)
-        state.work_items.extend(sessions.work_items)
-        state.automations.extend(sessions.automations)
-        state.topics.extend(sessions.topics)
-        state.events.extend(sessions.events)
-        state.provenance.extend(sessions.provenance)
-        state.redactions.merge(sessions.redactions)
+        _merge_adapter_result(state, collect_session_office_state())
+    if include_topics:
+        from hermes_cli.office_adapters import collect_topic_registry_office_state
+
+        _merge_adapter_result(state, collect_topic_registry_office_state())
+    _refresh_topic_source(state)
+    _refresh_provenance_source(state)
     state.summary = _compute_summary(state)
     return state

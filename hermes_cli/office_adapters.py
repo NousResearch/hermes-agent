@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any
 
@@ -20,6 +22,10 @@ _MAX_KANBAN_WORK_ITEMS = 200
 _MAX_EVENTS_PER_BOARD = 50
 _MAX_CRON_JOBS = 100
 _MAX_SESSIONS = 50
+_MAX_TOPIC_REGISTRY_ENTRIES = 100
+_ALLOWED_TOPIC_PURPOSES = {"operations", "automation", "project", "content", "runtime", "unknown"}
+_ALLOWED_TOPIC_CONFIDENCE = {"observed", "manual", "derived", "unknown"}
+_ID_LIKE_DISPLAY_RE = re.compile(r"^-?\d{2,}$")
 
 
 @dataclass
@@ -319,15 +325,114 @@ def _parse_delivery_targets(deliver: object) -> list[dict[str, object]]:
             continue
         parts = target.split(":")
         platform = parts[0] if parts else "unknown"
-        targets.append(
-            {
-                "kind": "explicit",
-                "platform": platform or "unknown",
-                "has_chat": len(parts) >= 2 and bool(parts[1]),
-                "has_thread": len(parts) >= 3 and bool(parts[2]),
-            }
-        )
+        projected: dict[str, object] = {
+            "kind": "explicit",
+            "platform": platform or "unknown",
+            "has_chat": len(parts) >= 2 and bool(parts[1]),
+            "has_thread": len(parts) >= 3 and bool(parts[2]),
+        }
+        if platform == "telegram" and len(parts) >= 3 and parts[2]:
+            topic_ref = _derived_topic_id(platform, parts[1] if len(parts) >= 2 else "", parts[2])
+            projected.update(
+                {
+                    "topic_ref": topic_ref,
+                    "chat_id_display": "hidden",
+                    "thread_id_display": "hidden",
+                    "display_name": "Telegram topic (derived)",
+                    "confidence": "derived",
+                }
+            )
+        targets.append(projected)
     return targets
+
+
+def _safe_topic_key(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "unknown"
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:10]
+    return f"ref-{digest}"
+
+
+def _safe_topic_display_alias(value: object, report: RedactionReport, *, fallback: str = "hidden") -> str:
+    text = _safe_display(value, report).strip()
+    if not text or text == "—":
+        return fallback
+    compact = text.replace(" ", "")
+    if _ID_LIKE_DISPLAY_RE.match(compact) or compact.startswith("-100"):
+        return fallback
+    return text
+
+
+def _safe_topic_id_from_parts(platform: str, display_or_raw_ref: object) -> str:
+    return f"topic:{platform or 'unknown'}:hidden:{_safe_topic_key(display_or_raw_ref)}"
+
+
+def _derived_topic_id(platform: str, chat_id: str, thread_id: str) -> str:
+    return _safe_topic_id_from_parts(platform, f"{platform}:{chat_id}:{thread_id}")
+
+
+def _cron_delivery_topics(automations: list[dict[str, object]]) -> list[dict[str, object]]:
+    topics: dict[str, dict[str, object]] = {}
+    for automation in automations:
+        targets = automation.get("delivery_targets")
+        if not isinstance(targets, list):
+            continue
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            topic_ref = target.get("topic_ref")
+            platform = str(target.get("platform") or "unknown")
+            thread = str(target.get("thread_id_display") or "hidden")
+            if not isinstance(topic_ref, str) or not topic_ref:
+                continue
+            topics.setdefault(
+                topic_ref,
+                {
+                    "id": topic_ref,
+                    "platform": platform,
+                    "display_name": str(target.get("display_name") or "Telegram topic (derived)"),
+                    "purpose": "unknown",
+                    "source": "cron_delivery",
+                    "confidence": "derived",
+                    "chat_id_display": "hidden",
+                    "thread_id_display": thread,
+                },
+            )
+    return list(topics.values())
+
+
+def _cron_delivery_provenance(automations: list[dict[str, object]]) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for automation in automations:
+        source_id = str(automation.get("source_id") or "unknown")
+        targets = automation.get("delivery_targets")
+        if not isinstance(targets, list):
+            continue
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            topic_ref = target.get("topic_ref")
+            if not isinstance(topic_ref, str) or not topic_ref:
+                continue
+            suffix = topic_ref.removeprefix("topic:")
+            record_id = f"prov:cron:{source_id}:delivered_to:{suffix}"
+            if record_id in seen:
+                continue
+            seen.add(record_id)
+            records.append(
+                {
+                    "id": record_id,
+                    "subject_kind": "cron_job",
+                    "subject_id": f"cron:{source_id}",
+                    "relation": "delivered_to",
+                    "source": "cron_delivery",
+                    "target_ref": topic_ref,
+                    "confidence": "derived",
+                }
+            )
+    return records
 
 
 def _output_artifact_count(output_dir: Path, job_id: str) -> int:
@@ -413,6 +518,8 @@ def collect_cron_office_state() -> OfficeAdapterResult:
             )
         )
     warnings = 1 if len(jobs) > _MAX_CRON_JOBS else 0
+    topics = _cron_delivery_topics(automations)
+    provenance = _cron_delivery_provenance(automations)
     return OfficeAdapterResult(
         source=OfficeDataSource(
             id="cron",
@@ -423,6 +530,102 @@ def collect_cron_office_state() -> OfficeAdapterResult:
             error_summary="cron job list truncated" if warnings else None,
         ),
         automations=automations,
+        topics=topics,
+        provenance=provenance,
+        redactions=redactions,
+    )
+
+
+def _topic_registry_path() -> Path:
+    return get_hermes_home() / "office" / "topics.json"
+
+
+def _read_topic_registry_file(registry_file: Path) -> list[dict[str, Any]]:
+    raw = registry_file.read_text(encoding="utf-8")
+    data = json.loads(raw)
+    if isinstance(data, list):
+        records = data
+    else:
+        records = data.get("topics", []) if isinstance(data, dict) else []
+    if not isinstance(records, list):
+        raise ValueError("topic registry has non-list topics field")
+    return [record for record in records if isinstance(record, dict)]
+
+
+def _safe_enum(value: object, allowed: set[str], fallback: str) -> str:
+    text = str(value or fallback)
+    return text if text in allowed else fallback
+
+
+def _safe_topic_record(record: dict[str, Any], report: RedactionReport) -> dict[str, object]:
+    platform = _safe_display(record.get("platform") or "unknown", report)
+    chat_display = _safe_topic_display_alias(record.get("chat_id_display"), report, fallback="hidden")
+    thread_display = _safe_topic_display_alias(record.get("thread_id_display"), report, fallback="hidden")
+    display_seed = record.get("id") or record.get("display_name") or platform
+    topic_id = _safe_topic_id_from_parts(platform, display_seed)
+    return {
+        "id": topic_id,
+        "platform": platform,
+        "display_name": _safe_topic_display_alias(record.get("display_name"), report, fallback=f"{platform} topic"),
+        "purpose": _safe_enum(record.get("purpose"), _ALLOWED_TOPIC_PURPOSES, "unknown"),
+        "source": _safe_display(record.get("source") or "unknown", report),
+        "confidence": _safe_enum(record.get("confidence"), _ALLOWED_TOPIC_CONFIDENCE, "unknown"),
+        "chat_id_display": chat_display,
+        "thread_id_display": thread_display,
+        "last_observed_at": _safe_display(record.get("last_observed_at"), report),
+    }
+
+
+def collect_topic_registry_office_state() -> OfficeAdapterResult:
+    """Project an optional profile-local topic registry into safe Office topics.
+
+    The adapter is strictly read-only: it never creates ``~/.hermes/office`` or
+    ``topics.json``. Raw chat/thread fields are ignored; only safe display fields
+    are projected to the browser DTO.
+    """
+
+    checked_at = _utc_now_iso()
+    registry_file = _topic_registry_path()
+    if not registry_file.exists():
+        return OfficeAdapterResult(
+            source=OfficeDataSource(id="topics", status="missing", checked_at=checked_at)
+        )
+    redactions = RedactionReport()
+    try:
+        records = _read_topic_registry_file(registry_file)
+        topics = [_safe_topic_record(record, redactions) for record in records[:_MAX_TOPIC_REGISTRY_ENTRIES]]
+    except Exception as exc:
+        return OfficeAdapterResult(
+            source=OfficeDataSource(
+                id="topics",
+                status="error",
+                checked_at=checked_at,
+                error_summary=_safe_error_summary(exc),
+            )
+        )
+    warnings = 1 if len(records) > _MAX_TOPIC_REGISTRY_ENTRIES else 0
+    rooms = [
+        {
+            "id": f"room:{topic['id']}",
+            "kind": "telegram_topic" if topic.get("platform") == "telegram" else "topic",
+            "source": "topics",
+            "topic_id": topic["id"],
+            "display_name": topic["display_name"],
+            "purpose": topic.get("purpose", "unknown"),
+        }
+        for topic in topics
+    ]
+    return OfficeAdapterResult(
+        source=OfficeDataSource(
+            id="topics",
+            status="ok",
+            checked_at=checked_at,
+            item_count=len(topics),
+            warning_count=warnings,
+            error_summary="topic registry truncated" if warnings else None,
+        ),
+        rooms=rooms,
+        topics=topics,
         redactions=redactions,
     )
 

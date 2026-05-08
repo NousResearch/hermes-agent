@@ -3387,20 +3387,16 @@ class AIAgent:
         # to inline extraction when no structured reasoning was found.
         content = getattr(assistant_message, "content", None)
         if not reasoning_parts and isinstance(content, list):
-            text_parts = []
+            assistant_message.content = ""
             for part in content:
-                # Persist only visible text; thinking blocks are stored separately.
-                if isinstance(part, dict) and part.get("type") == "text":
-                    text_parts.append(str(part.get("text", "")))
-                if isinstance(part, dict) and part.get("type") == "thinking":
-                    cleaned = str(part.get("thinking") or part.get("content") or "").strip()
-                    if cleaned and cleaned not in reasoning_parts:
-                        reasoning_parts.append(cleaned)
-            assistant_message.content = "\n".join(text_parts)
+                if not isinstance(part, dict) or part.get("type") != "thinking":
+                    continue
+                cleaned = str(part.get("thinking") or part.get("content") or "").strip()
+                if cleaned and cleaned not in reasoning_parts:
+                    reasoning_parts.append(cleaned)
         elif not reasoning_parts and isinstance(content, str) and content:
             for tag in ("think", "thinking", "thought", "reasoning", "REASONING_SCRATCHPAD"):
-                flags = re.DOTALL | re.IGNORECASE
-                for block in re.findall(rf"<{tag}>(.*?)</{tag}>", content, flags=flags):
+                for block in re.findall(rf"<{tag}>(.*?)</{tag}>", content, flags=re.DOTALL | re.IGNORECASE):
                     cleaned = block.strip()
                     if cleaned and cleaned not in reasoning_parts:
                         reasoning_parts.append(cleaned)
@@ -9017,6 +9013,10 @@ class AIAgent:
         # assistant content.  Reasoning was already captured into
         # ``reasoning_text`` above (either from structured fields or the
         # inline-block fallback), so the raw tags in content are redundant.
+        # Leaving them in place caused reasoning to leak to messaging
+        # platforms (#8878, #9568), inflate context on subsequent turns
+        # (#9306 observed 16% content-size reduction on a real MiniMax
+        # session), and pollute generated session titles.  One strip at the
         # storage boundary cleans content for every downstream consumer:
         # API replay, session transcript, gateway delivery, CLI display,
         # compression, title generation.

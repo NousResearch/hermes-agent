@@ -1,14 +1,14 @@
 ---
-title: "Notion — Notion API for creating and managing pages, databases, and blocks via curl"
+title: "Notion — Notion API via curl: pages, databases, blocks, search"
 sidebar_label: "Notion"
-description: "Notion API for creating and managing pages, databases, and blocks via curl"
+description: "Notion API via curl: pages, databases, blocks, search"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Notion
 
-Notion API for creating and managing pages, databases, and blocks via curl. Search, create, update, and query Notion workspaces directly from the terminal.
+Notion API via curl: pages, databases, blocks, search.
 
 ## Skill metadata
 

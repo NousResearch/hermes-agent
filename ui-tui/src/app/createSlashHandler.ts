@@ -47,23 +47,30 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
     if (catalog?.canon) {
       const needle = `/${parsed.name}`.toLowerCase()
+      const exact = Object.entries(catalog.canon).find(([alias]) => alias.toLowerCase() === needle)?.[1]
 
-      const matches = [
-        ...new Set(
-          Object.entries(catalog.canon)
-            .filter(([alias]) => alias.startsWith(needle))
-            .map(([, canon]) => canon)
-        )
-      ]
+      if (exact) {
+        if (exact.toLowerCase() !== needle) {
+          return handler(`${exact}${argTail}`)
+        }
+      } else {
+        const matches = [
+          ...new Set(
+            Object.entries(catalog.canon)
+              .filter(([alias]) => alias.startsWith(needle))
+              .map(([, canon]) => canon)
+          )
+        ]
 
-      if (matches.length === 1 && matches[0]!.toLowerCase() !== needle) {
-        return handler(`${matches[0]}${argTail}`)
-      }
+        if (matches.length === 1 && matches[0]!.toLowerCase() !== needle) {
+          return handler(`${matches[0]}${argTail}`)
+        }
 
-      if (matches.length > 1) {
-        sys(`ambiguous command: ${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`)
+        if (matches.length > 1) {
+          sys(`ambiguous command: ${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`)
 
-        return true
+          return true
+        }
       }
     }
 
@@ -107,6 +114,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
             }
 
             if (d.type === 'send') {
+              if (d.notice?.trim()) {
+                sys(d.notice)
+              }
               return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: empty message`)
             }
           })

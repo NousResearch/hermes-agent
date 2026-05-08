@@ -15,6 +15,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from hermes_cli.profiles import (
+    normalize_profile_name,
     validate_profile_name,
     get_profile_dir,
     create_profile,
@@ -32,6 +33,9 @@ from hermes_cli.profiles import (
     generate_zsh_completion,
     _get_profiles_root,
     _get_default_hermes_home,
+    seed_profile_skills,
+    has_bundled_skills_opt_out,
+    NO_BUNDLED_SKILLS_MARKER,
 )
 
 
@@ -58,6 +62,24 @@ def profile_env(tmp_path, monkeypatch):
 # TestValidateProfileName
 # ===================================================================
 
+class TestNormalizeProfileName:
+    """Tests for normalize_profile_name()."""
+
+    def test_title_case_normalized(self):
+        assert normalize_profile_name("Jules") == "jules"
+        assert normalize_profile_name("  Librarian ") == "librarian"
+
+    def test_default_case_insensitive(self):
+        assert normalize_profile_name("Default") == "default"
+        assert normalize_profile_name("DEFAULT") == "default"
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            normalize_profile_name("")
+        with pytest.raises(ValueError, match="cannot be empty"):
+            normalize_profile_name("   ")
+
+
 class TestValidateProfileName:
     """Tests for validate_profile_name()."""
 
@@ -65,6 +87,11 @@ class TestValidateProfileName:
     def test_valid_names_accepted(self, name):
         # Should not raise
         validate_profile_name(name)
+
+    def test_uppercase_rejected(self):
+        # validate_profile_name is strict — callers normalize first, then validate.
+        with pytest.raises(ValueError):
+            validate_profile_name("Jules")
 
     @pytest.mark.parametrize("name", ["UPPER", "has space", ".hidden", "-leading"])
     def test_invalid_names_rejected(self, name):
@@ -106,6 +133,10 @@ class TestGetProfileDir:
         tmp_path = profile_env
         result = get_profile_dir("coder")
         assert result == tmp_path / ".hermes" / "profiles" / "coder"
+
+    def test_named_profile_matching_is_case_insensitive(self, profile_env):
+        tmp_path = profile_env
+        assert get_profile_dir("Coder") == tmp_path / ".hermes" / "profiles" / "coder"
 
 
 # ===================================================================
@@ -149,6 +180,23 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
+    def test_clone_config_copies_source_skills(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skill_dir = default_home / "skills" / "custom" / "installed-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: installed-skill\n---\n")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (
+            profile_dir
+            / "skills"
+            / "custom"
+            / "installed-skill"
+            / "SKILL.md"
+        ).read_text() == "---\nname: installed-skill\n---\n"
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
@@ -171,6 +219,23 @@ class TestCreateProfile:
         assert not (profile_dir / "gateway_state.json").exists()
         assert not (profile_dir / "processes.json").exists()
 
+    def test_clone_all_excludes_sibling_profiles_tree(self, profile_env):
+        """--clone-all from default ~/.hermes must not copy profiles/* (nested explosion)."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        profiles_root = default_home / "profiles"
+        profiles_root.mkdir(exist_ok=True)
+        (profiles_root / "other").mkdir(parents=True, exist_ok=True)
+        (profiles_root / "other" / "marker.txt").write_text("sibling data")
+
+        (default_home / "memories").mkdir(exist_ok=True)
+        (default_home / "memories" / "note.md").write_text("remember this")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert (profile_dir / "memories" / "note.md").read_text() == "remember this"
+        assert not (profile_dir / "profiles").exists()
+
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
@@ -179,6 +244,116 @@ class TestCreateProfile:
         assert not (profile_dir / ".env").exists()
         # SOUL.md is always seeded with the default even when clone source lacks it
         assert (profile_dir / "SOUL.md").exists()
+
+
+# ===================================================================
+# TestNoSkillsOptOut
+# ===================================================================
+
+class TestNoSkillsOptOut:
+    """Tests for `hermes profile create --no-skills` and the opt-out marker."""
+
+    def test_no_skills_writes_marker_and_skips_seeding(self, profile_env):
+        profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
+
+        # Marker file is present
+        marker = profile_dir / NO_BUNDLED_SKILLS_MARKER
+        assert marker.is_file(), "expected .no-bundled-skills marker in profile root"
+        assert "--no-skills" in marker.read_text()
+
+        # has_bundled_skills_opt_out() agrees
+        assert has_bundled_skills_opt_out(profile_dir) is True
+
+        # skills/ dir exists (profile bootstrapping still creates the dir) but
+        # contains nothing yet because create_profile itself doesn't seed.
+        assert (profile_dir / "skills").is_dir()
+        assert list((profile_dir / "skills").iterdir()) == []
+
+    def test_no_skills_conflicts_with_clone(self, profile_env):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            create_profile(
+                "orchestrator",
+                no_alias=True,
+                no_skills=True,
+                clone_config=True,
+            )
+
+    def test_no_skills_conflicts_with_clone_all(self, profile_env):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            create_profile(
+                "orchestrator",
+                no_alias=True,
+                no_skills=True,
+                clone_all=True,
+            )
+
+    def test_seed_profile_skills_respects_marker(self, profile_env):
+        """seed_profile_skills() must no-op on opted-out profiles even when
+        called directly (e.g. by `hermes update`'s all-profile sync loop)."""
+        profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
+
+        # Call seed_profile_skills() directly — it should NOT invoke subprocess,
+        # NOT modify the skills/ dir, and return a dict with skipped_opt_out=True.
+        result = seed_profile_skills(profile_dir, quiet=True)
+
+        assert result is not None
+        assert result.get("skipped_opt_out") is True
+        assert result.get("copied") == []
+        # skills/ stays empty — no subprocess ran
+        assert list((profile_dir / "skills").iterdir()) == []
+
+    def test_default_profile_gets_skills_seeded(self, profile_env, monkeypatch):
+        """Sanity: without --no-skills, seed_profile_skills() runs the real
+        subprocess path. Mock the subprocess so the test is hermetic, and
+        just confirm the marker is NOT checked in the non-opt-out case."""
+        import subprocess as _sp
+
+        profile_dir = create_profile("coder", no_alias=True)
+        # No marker — not opted out
+        assert not (profile_dir / NO_BUNDLED_SKILLS_MARKER).exists()
+        assert has_bundled_skills_opt_out(profile_dir) is False
+
+        # Mock subprocess.run to avoid actually running skill sync in tests
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            calls.append(args)
+            return _sp.CompletedProcess(
+                args=args, returncode=0, stdout='{"copied": ["x"]}', stderr=""
+            )
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        result = seed_profile_skills(profile_dir, quiet=True)
+
+        # Subprocess was invoked (the opt-out branch did NOT short-circuit)
+        assert len(calls) == 1
+        assert result == {"copied": ["x"]}
+
+    def test_delete_marker_re_enables_seeding(self, profile_env, monkeypatch):
+        """Deleting .no-bundled-skills opts the profile back in."""
+        import subprocess as _sp
+
+        profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
+        assert has_bundled_skills_opt_out(profile_dir) is True
+
+        # First call: opted out, returns skipped dict without touching subprocess
+        called = []
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: (called.append(a), _sp.CompletedProcess(
+                args=a, returncode=0, stdout='{"copied": []}', stderr=""
+            ))[1],
+        )
+        r1 = seed_profile_skills(profile_dir, quiet=True)
+        assert r1.get("skipped_opt_out") is True
+        assert called == []
+
+        # Delete marker → next call runs the real path
+        (profile_dir / NO_BUNDLED_SKILLS_MARKER).unlink()
+        assert has_bundled_skills_opt_out(profile_dir) is False
+        r2 = seed_profile_skills(profile_dir, quiet=True)
+        assert r2 == {"copied": []}
+        assert len(called) == 1
 
 
 # ===================================================================
@@ -383,6 +558,69 @@ class TestRenameProfile:
         assert not old_dir.is_dir()
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
+
+    def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
+        tmp_path = profile_env
+        create_profile("ssi_health", no_alias=True)
+        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path.write_text(json.dumps({
+            "hosts": {
+                "hermes.ssi_health": {
+                    "recallMode": "hybrid",
+                    "writeFrequency": "async",
+                    "sessionStrategy": "per-session",
+                    "saveMessages": True,
+                    "peerName": "user-peer",
+                    "aiPeer": "ssi_health",
+                    "workspace": "hermes",
+                    "enabled": True,
+                }
+            }
+        }))
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("ssi_health", "heimdall")
+
+        cfg = json.loads(honcho_path.read_text())
+        assert "hermes.ssi_health" not in cfg["hosts"]
+        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["hermes.heimdall"]["peerName"] == "user-peer"
+
+    def test_pins_ai_peer_when_absent_on_honcho_host_rename(self, profile_env):
+        tmp_path = profile_env
+        create_profile("ssi_health", no_alias=True)
+        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path.write_text(json.dumps({
+            "hosts": {
+                "hermes.ssi_health": {"workspace": "hermes", "enabled": True}
+            }
+        }))
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("ssi_health", "heimdall")
+
+        cfg = json.loads(honcho_path.read_text())
+        assert "hermes.ssi_health" not in cfg["hosts"]
+        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["hermes.heimdall"]["workspace"] == "hermes"
+
+    def test_does_not_overwrite_existing_honcho_host_on_rename(self, profile_env):
+        tmp_path = profile_env
+        create_profile("ssi_health", no_alias=True)
+        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path.write_text(json.dumps({
+            "hosts": {
+                "hermes.ssi_health": {"aiPeer": "ssi_health"},
+                "hermes.heimdall": {"aiPeer": "heimdall"},
+            }
+        }))
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("ssi_health", "heimdall")
+
+        cfg = json.loads(honcho_path.read_text())
+        assert cfg["hosts"]["hermes.ssi_health"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "heimdall"
 
     def test_default_raises_value_error(self, profile_env):
         with pytest.raises(ValueError, match="default"):

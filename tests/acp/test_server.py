@@ -11,6 +11,7 @@ import acp
 from acp.agent.router import build_agent_router
 from acp.schema import (
     AgentCapabilities,
+    AgentMessageChunk,
     AuthenticateResponse,
     AvailableCommandsUpdate,
     Implementation,
@@ -26,7 +27,11 @@ from acp.schema import (
     SetSessionModeResponse,
     SessionInfo,
     TextContentBlock,
+    ToolCallProgress,
+    ToolCallStart,
     Usage,
+    UsageUpdate,
+    UserMessageChunk,
 )
 from acp_adapter.server import HermesACPAgent, HERMES_VERSION
 from acp_adapter.session import SessionManager
@@ -198,6 +203,8 @@ class TestSessionOps:
             "context",
             "reset",
             "compact",
+            "steer",
+            "queue",
             "version",
         ]
         model_cmd = next(
@@ -205,6 +212,46 @@ class TestSessionOps:
         )
         assert model_cmd.input is not None
         assert model_cmd.input.root.hint == "model name to switch to"
+
+    def test_build_usage_update_for_zed_context_indicator(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.history = [{"role": "user", "content": "hello"}]
+        state.agent.context_compressor = MagicMock(context_length=100_000)
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = [{"type": "function", "function": {"name": "demo"}}]
+
+        with patch(
+            "agent.model_metadata.estimate_request_tokens_rough",
+            return_value=25_000,
+        ):
+            update = agent._build_usage_update(state)
+
+        assert isinstance(update, UsageUpdate)
+        assert update.session_update == "usage_update"
+        assert update.size == 100_000
+        assert update.used == 25_000
+
+    @pytest.mark.asyncio
+    async def test_send_usage_update_to_client(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.context_compressor = MagicMock(context_length=100_000)
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        with patch(
+            "agent.model_metadata.estimate_request_tokens_rough",
+            return_value=25_000,
+        ):
+            await agent._send_usage_update(state)
+
+        mock_conn.session_update.assert_awaited_once()
+        call = mock_conn.session_update.await_args
+        assert call.kwargs["session_id"] == state.session_id
+        update = call.kwargs["update"]
+        assert isinstance(update, UsageUpdate)
+        assert update.size == 100_000
+        assert update.used == 25_000
 
     @pytest.mark.asyncio
     async def test_cancel_sets_event(self, agent):
@@ -223,6 +270,116 @@ class TestSessionOps:
     async def test_load_session_not_found_returns_none(self, agent):
         resp = await agent.load_session(cwd="/tmp", session_id="bogus")
         assert resp is None
+
+    @pytest.mark.asyncio
+    async def test_load_session_replays_persisted_history_to_client(self, agent):
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {"role": "system", "content": "hidden system"},
+            {"role": "user", "content": "what controls the / slash commands?"},
+            {"role": "assistant", "content": "HermesACPAgent._ADVERTISED_COMMANDS controls them."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_search_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_files",
+                            "arguments": '{"pattern":"slash commands","path":"."}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_search_1",
+                "content": '{"total_count":1,"matches":[{"path":"cli.py","line":42,"content":"slash commands"}]}',
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert isinstance(resp, LoadSessionResponse)
+        calls = mock_conn.session_update.await_args_list
+        replay_calls = [
+            call for call in calls
+            if getattr(call.kwargs.get("update"), "session_update", None)
+            in {"user_message_chunk", "agent_message_chunk"}
+        ]
+        assert len(replay_calls) == 2
+        assert isinstance(replay_calls[0].kwargs["update"], UserMessageChunk)
+        assert replay_calls[0].kwargs["update"].content.text == "what controls the / slash commands?"
+        assert isinstance(replay_calls[1].kwargs["update"], AgentMessageChunk)
+        assert replay_calls[1].kwargs["update"].content.text.startswith("HermesACPAgent")
+
+        tool_updates = [
+            call.kwargs["update"]
+            for call in calls
+            if getattr(call.kwargs.get("update"), "session_update", None)
+            in {"tool_call", "tool_call_update"}
+        ]
+        assert len(tool_updates) == 2
+        assert isinstance(tool_updates[0], ToolCallStart)
+        assert tool_updates[0].tool_call_id == "call_search_1"
+        assert tool_updates[0].title == "search: slash commands"
+        assert isinstance(tool_updates[1], ToolCallProgress)
+        assert tool_updates[1].tool_call_id == "call_search_1"
+        assert "Search results" in tool_updates[1].content[0].content.text
+        assert "cli.py:42" in tool_updates[1].content[0].content.text
+
+    @pytest.mark.asyncio
+    async def test_resume_session_replays_persisted_history_to_client(self, agent):
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [{"role": "user", "content": "So tell me the current state"}]
+
+        mock_conn.session_update.reset_mock()
+        resp = await agent.resume_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert isinstance(resp, ResumeSessionResponse)
+        updates = [call.kwargs["update"] for call in mock_conn.session_update.await_args_list]
+        assert any(
+            isinstance(update, UserMessageChunk)
+            and update.content.text == "So tell me the current state"
+            for update in updates
+        )
+
+    @pytest.mark.asyncio
+    async def test_load_session_schedules_history_replay_after_response(self, agent):
+        """Zed only attaches replayed updates after session/load has completed."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [{"role": "user", "content": "hello from history"}]
+        events = []
+
+        async def replay_after_response(_state):
+            events.append("replay")
+
+        with patch.object(agent, "_replay_session_history", side_effect=replay_after_response):
+            resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+            events.append("returned")
+
+        assert isinstance(resp, LoadSessionResponse)
+        assert events == ["returned"]
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert events == ["returned", "replay"]
 
     @pytest.mark.asyncio
     async def test_resume_session_creates_new_if_missing(self, agent):
@@ -468,6 +625,11 @@ class TestPrompt:
         assert isinstance(resp, PromptResponse)
         assert resp.stop_reason == "end_turn"
         state.agent.run_conversation.assert_called_once()
+        assert state.agent.tool_progress_callback is not None
+        assert state.agent.step_callback is not None
+        assert state.agent.stream_delta_callback is not None
+        assert state.agent.reasoning_callback is not None
+        assert state.agent.thinking_callback is None
 
     @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):
@@ -511,12 +673,40 @@ class TestPrompt:
         prompt = [TextContentBlock(type="text", text="help me")]
         await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
 
-        # session_update should have been called with the final message
+        # session_update should include the final message (usage_update may follow it)
         mock_conn.session_update.assert_called()
-        # Get the last call's update argument
-        last_call = mock_conn.session_update.call_args_list[-1]
-        update = last_call[1].get("update") or last_call[0][1]
-        assert update.session_update == "agent_message_chunk"
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        assert any(update.session_update == "agent_message_chunk" for update in updates)
+
+    @pytest.mark.asyncio
+    async def test_prompt_does_not_duplicate_streamed_final_message(self, agent):
+        """If ACP already streamed response chunks, final_response should not be sent again."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            state.agent.stream_delta_callback("streamed answer")
+            return {"final_response": "streamed answer", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hello")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        agent_chunks = [update for update in updates if update.session_update == "agent_message_chunk"]
+        assert len(agent_chunks) == 1
+        assert agent_chunks[0].content.text == "streamed answer"
 
     @pytest.mark.asyncio
     async def test_prompt_auto_titles_session(self, agent):
@@ -654,6 +844,43 @@ class TestSlashCommands:
         assert "2 messages" in result
         assert "user: 1" in result
 
+    def test_context_shows_usage_and_compression_threshold(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = [{"role": "user", "content": "hello"}]
+        state.agent.context_compressor = MagicMock(
+            context_length=100_000,
+            threshold_tokens=80_000,
+        )
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = [{"type": "function", "function": {"name": "demo"}}]
+
+        with patch(
+            "agent.model_metadata.estimate_request_tokens_rough",
+            return_value=25_000,
+        ):
+            result = agent._handle_slash_command("/context", state)
+
+        assert "Context usage: ~25,000 / 100,000 tokens (25.0%)" in result
+        assert "Compression: ~55,000 tokens until threshold (~80,000, 80%)" in result
+        assert "Tip: run /compact" in result
+
+    def test_context_says_compression_due_when_past_threshold(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = [{"role": "user", "content": "hello"}]
+        state.agent.context_compressor = MagicMock(
+            context_length=100_000,
+            threshold_tokens=80_000,
+        )
+
+        with patch(
+            "agent.model_metadata.estimate_request_tokens_rough",
+            return_value=82_000,
+        ):
+            result = agent._handle_slash_command("/context", state)
+
+        assert "Context usage: ~82,000 / 100,000 tokens (82.0%)" in result
+        assert "Compression: due now (threshold ~80,000, 80%). Run /compact." in result
+
     def test_reset_clears_history(self, agent, mock_manager):
         state = self._make_state(mock_manager)
         state.history = [{"role": "user", "content": "hello"}]
@@ -676,6 +903,7 @@ class TestSlashCommands:
         ]
         state.agent.compression_enabled = True
         state.agent._cached_system_prompt = "system"
+        state.agent.tools = None
         original_session_db = object()
         state.agent._session_db = original_session_db
 
@@ -692,7 +920,7 @@ class TestSlashCommands:
         with (
             patch.object(agent.session_manager, "save_session") as mock_save,
             patch(
-                "agent.model_metadata.estimate_messages_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 side_effect=[40, 12],
             ),
         ):
@@ -732,7 +960,12 @@ class TestSlashCommands:
         resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
 
         assert resp.stop_reason == "end_turn"
-        mock_conn.session_update.assert_called_once()
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        assert any(update.session_update == "agent_message_chunk" for update in updates)
+        assert any(update.session_update == "usage_update" for update in updates)
 
     @pytest.mark.asyncio
     async def test_unknown_slash_falls_through_to_llm(self, agent, mock_manager):
@@ -904,9 +1137,15 @@ class TestRegisterSessionMcpServers:
         ]
 
         with patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]), \
-             patch("model_tools.get_tool_definitions", return_value=fake_tools):
+             patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
             await agent._register_session_mcp_servers(state, [server])
 
+        mock_defs.assert_called_once_with(
+            enabled_toolsets=["hermes-acp", "mcp-srv"],
+            disabled_toolsets=None,
+            quiet_mode=True,
+        )
+        assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
         assert state.agent.tools == fake_tools
         assert state.agent.valid_tool_names == {"mcp_srv_search", "terminal"}
         # _invalidate_system_prompt should have been called

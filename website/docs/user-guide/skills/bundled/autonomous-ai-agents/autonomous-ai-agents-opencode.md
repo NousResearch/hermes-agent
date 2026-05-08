@@ -1,14 +1,14 @@
 ---
-title: "Opencode"
+title: "Opencode — Delegate coding to OpenCode CLI (features, PR review)"
 sidebar_label: "Opencode"
-description: "Delegate coding tasks to OpenCode CLI agent for feature implementation, refactoring, PR review, and long-running autonomous sessions"
+description: "Delegate coding to OpenCode CLI (features, PR review)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Opencode
 
-Delegate coding tasks to OpenCode CLI agent for feature implementation, refactoring, PR review, and long-running autonomous sessions. Requires the opencode CLI installed and authenticated.
+Delegate coding to OpenCode CLI (features, PR review).
 
 ## Skill metadata
 

@@ -44,6 +44,97 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     return not normalized.endswith("/openai")
 
 
+def probe_gemini_tier(
+    api_key: str,
+    base_url: str = DEFAULT_GEMINI_BASE_URL,
+    *,
+    model: str = "gemini-2.5-flash",
+    timeout: float = 10.0,
+) -> str:
+    """Probe a Google AI Studio API key and return its tier.
+
+    Returns one of:
+
+    - ``"free"``    -- key is on the free tier (unusable with Hermes)
+    - ``"paid"``    -- key is on a paid tier
+    - ``"unknown"`` -- probe failed; callers should proceed without blocking.
+    """
+    key = (api_key or "").strip()
+    if not key:
+        return "unknown"
+
+    normalized_base = str(base_url or DEFAULT_GEMINI_BASE_URL).strip().rstrip("/")
+    if not normalized_base:
+        normalized_base = DEFAULT_GEMINI_BASE_URL
+    if normalized_base.lower().endswith("/openai"):
+        normalized_base = normalized_base[: -len("/openai")]
+
+    url = f"{normalized_base}/models/{model}:generateContent"
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"maxOutputTokens": 1},
+    }
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(
+                url,
+                params={"key": key},
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+    except Exception as exc:
+        logger.debug("probe_gemini_tier: network error: %s", exc)
+        return "unknown"
+
+    headers_lower = {k.lower(): v for k, v in resp.headers.items()}
+    rpd_header = headers_lower.get("x-ratelimit-limit-requests-per-day")
+    if rpd_header:
+        try:
+            rpd_val = int(rpd_header)
+        except (TypeError, ValueError):
+            rpd_val = None
+        # Published free-tier daily caps (Dec 2025):
+        #   gemini-2.5-pro: 100, gemini-2.5-flash: 250, flash-lite: 1000
+        # Tier 1 starts at ~1500+ for Flash. We treat <= 1000 as free.
+        if rpd_val is not None and rpd_val <= 1000:
+            return "free"
+        if rpd_val is not None and rpd_val > 1000:
+            return "paid"
+
+    if resp.status_code == 429:
+        body_text = ""
+        try:
+            body_text = resp.text or ""
+        except Exception:
+            body_text = ""
+        if "free_tier" in body_text.lower():
+            return "free"
+        return "paid"
+
+    if 200 <= resp.status_code < 300:
+        return "paid"
+
+    return "unknown"
+
+
+def is_free_tier_quota_error(error_message: str) -> bool:
+    """Return True when a Gemini 429 message indicates free-tier exhaustion."""
+    if not error_message:
+        return False
+    return "free_tier" in error_message.lower()
+
+
+_FREE_TIER_GUIDANCE = (
+    "\n\nYour Google API key is on the free tier (<= 250 requests/day for "
+    "gemini-2.5-flash). Hermes typically makes 3-10 API calls per user turn, "
+    "so the free tier is exhausted in a handful of messages and cannot sustain "
+    "an agent session. Enable billing on your Google Cloud project and "
+    "regenerate the key in a billing-enabled project: "
+    "https://aistudio.google.com/apikey"
+)
+
+
 class GeminiAPIError(Exception):
     """Error shape compatible with Hermes retry/error classification."""
 
@@ -588,7 +679,21 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
     finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:
         mapped = "tool_calls" if tool_call_indices else _map_gemini_finish_reason(finish_reason_raw)
-        chunks.append(_make_stream_chunk(model=model, finish_reason=mapped))
+        finish_chunk = _make_stream_chunk(model=model, finish_reason=mapped)
+        # Attach usage from this event's usageMetadata so the streaming
+        # loop in run_agent.py can record token counts (mirrors the
+        # non-streaming path in translate_gemini_response).
+        usage_meta = event.get("usageMetadata") or {}
+        if usage_meta:
+            finish_chunk.usage = SimpleNamespace(
+                prompt_tokens=int(usage_meta.get("promptTokenCount") or 0),
+                completion_tokens=int(usage_meta.get("candidatesTokenCount") or 0),
+                total_tokens=int(usage_meta.get("totalTokenCount") or 0),
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=int(usage_meta.get("cachedContentTokenCount") or 0),
+                ),
+            )
+        chunks.append(finish_chunk)
     return chunks
 
 
@@ -650,6 +755,12 @@ def gemini_http_error(response: httpx.Response) -> GeminiAPIError:
     else:
         message = f"Gemini returned HTTP {status}: {body_text[:500]}"
 
+    # Free-tier quota exhaustion -> append actionable guidance so users who
+    # bypassed the setup wizard (direct GOOGLE_API_KEY in .env) still learn
+    # that the free tier cannot sustain an agent session.
+    if status == 429 and is_free_tier_quota_error(err_message or body_text):
+        message = message + _FREE_TIER_GUIDANCE
+
     return GeminiAPIError(
         message,
         code=code,
@@ -704,6 +815,13 @@ class GeminiNativeClient:
         http_client: Optional[httpx.Client] = None,
         **_: Any,
     ) -> None:
+        if not (api_key or "").strip():
+            raise RuntimeError(
+                "Gemini native client requires an API key, but none was provided. "
+                "Set GOOGLE_API_KEY or GEMINI_API_KEY in your environment / ~/.hermes/.env "
+                "(get one at https://aistudio.google.com/app/apikey), or run `hermes setup` "
+                "to configure the Google provider."
+            )
         self.api_key = api_key
         normalized_base = (base_url or DEFAULT_GEMINI_BASE_URL).rstrip("/")
         if normalized_base.endswith("/openai"):

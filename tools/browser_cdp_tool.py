@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
@@ -477,6 +476,7 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
                     "Method-specific parameters as a JSON object. Omit or "
                     "pass {} for methods that take no parameters."
                 ),
+                "properties": {},
                 "additionalProperties": True,
             },
             "target_id": {

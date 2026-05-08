@@ -29,7 +29,7 @@ class TestReloadEnv:
         """reload_env() adds vars from .env that are not in os.environ."""
         env_file = tmp_path / ".env"
         env_file.write_text("TEST_RELOAD_VAR=hello123\n")
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
+        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
             os.environ.pop("TEST_RELOAD_VAR", None)
             count = reload_env()
             assert count >= 1
@@ -40,7 +40,7 @@ class TestReloadEnv:
         """reload_env() updates vars whose value changed on disk."""
         env_file = tmp_path / ".env"
         env_file.write_text("TEST_RELOAD_VAR=old_value\n")
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
+        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
             os.environ["TEST_RELOAD_VAR"] = "old_value"
             # Now change the file
             env_file.write_text("TEST_RELOAD_VAR=new_value\n")
@@ -55,7 +55,7 @@ class TestReloadEnv:
         env_file.write_text("")  # empty .env
         # Pick a known key from OPTIONAL_ENV_VARS
         known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
+        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
             os.environ[known_key] = "stale_value"
             count = reload_env()
             assert known_key not in os.environ
@@ -65,7 +65,7 @@ class TestReloadEnv:
         """reload_env() preserves non-Hermes env vars even when absent from .env."""
         env_file = tmp_path / ".env"
         env_file.write_text("")
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
+        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
             os.environ["MY_CUSTOM_UNRELATED_VAR"] = "keep_me"
             reload_env()
             assert os.environ.get("MY_CUSTOM_UNRELATED_VAR") == "keep_me"
@@ -371,6 +371,12 @@ class TestBuildSchemaFromConfig:
             assert entry["type"] == "select"
             assert "options" in entry
             assert "local" in entry["options"]
+            assert "vercel_sandbox" in entry["options"]
+        runtime_entry = CONFIG_SCHEMA["terminal.vercel_runtime"]
+        assert runtime_entry["type"] == "select"
+        assert "node24" in runtime_entry["options"]
+        assert "python3.13" in runtime_entry["options"]
+        assert len(runtime_entry["options"]) >= 3
 
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config
@@ -583,6 +589,222 @@ class TestNewEndpoints:
 
     def test_cron_job_not_found(self):
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
+        assert resp.status_code == 404
+
+    # --- Profiles ---
+
+    def test_profiles_list_includes_default(self):
+        from hermes_constants import get_hermes_home
+        get_hermes_home().mkdir(parents=True, exist_ok=True)
+
+        resp = self.client.get("/api/profiles")
+        assert resp.status_code == 200
+        names = [p["name"] for p in resp.json()["profiles"]]
+        assert "default" in names
+
+    def test_profiles_list_falls_back_when_profile_listing_fails(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        hermes_home = get_hermes_home()
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n  name: anthropic/claude-sonnet-4.6\n",
+            encoding="utf-8",
+        )
+        named = hermes_home / "profiles" / "multi-agent"
+        named.mkdir(parents=True)
+        (named / ".env").write_text("EXAMPLE=1\n", encoding="utf-8")
+        (named / "skills" / "demo").mkdir(parents=True)
+        (named / "skills" / "demo" / "SKILL.md").write_text("---\nname: demo\n---\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        resp = self.client.get("/api/profiles")
+
+        assert resp.status_code == 200
+        profiles = {p["name"]: p for p in resp.json()["profiles"]}
+        assert profiles["default"]["is_default"] is True
+        assert profiles["default"]["provider"] == "openrouter"
+        assert profiles["multi-agent"]["has_env"] is True
+        assert profiles["multi-agent"]["skill_count"] == 1
+
+    def test_profiles_create_rename_delete_round_trip(self, monkeypatch):
+        # Stub gateway service teardown so the test doesn't shell out to
+        # launchctl/systemctl on the host.
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        created = self.client.post("/api/profiles", json={"name": "test-prof"})
+        assert created.status_code == 200
+
+        renamed = self.client.patch(
+            "/api/profiles/test-prof",
+            json={"new_name": "test-prof-2"},
+        )
+        assert renamed.status_code == 200
+
+        names = [p["name"] for p in self.client.get("/api/profiles").json()["profiles"]]
+        assert "test-prof" not in names
+        assert "test-prof-2" in names
+
+        deleted = self.client.delete("/api/profiles/test-prof-2")
+        assert deleted.status_code == 200
+        names = [p["name"] for p in self.client.get("/api/profiles").json()["profiles"]]
+        assert "test-prof-2" not in names
+
+    def test_profile_setup_command_uses_named_profile_wrapper(self):
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "profiles" / "coder").mkdir(parents=True)
+
+        resp = self.client.get("/api/profiles/coder/setup-command")
+
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "coder setup"
+
+    def test_profile_setup_command_uses_hermes_for_default_profile(self):
+        from hermes_constants import get_hermes_home
+
+        get_hermes_home().mkdir(parents=True, exist_ok=True)
+
+        resp = self.client.get("/api/profiles/default/setup-command")
+
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "hermes setup"
+
+    def test_profiles_create_creates_wrapper_alias_when_safe(self, monkeypatch, tmp_path):
+        import hermes_cli.profiles as profiles_mod
+
+        wrapper_dir = tmp_path / "bin"
+        wrapper_dir.mkdir()
+        monkeypatch.setattr(profiles_mod, "_get_wrapper_dir", lambda: wrapper_dir)
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "writer", "clone_from_default": False},
+        )
+
+        assert resp.status_code == 200
+        wrapper_path = wrapper_dir / "writer"
+        assert wrapper_path.exists()
+        assert wrapper_path.read_text() == '#!/bin/sh\nexec hermes -p writer "$@"\n'
+
+    def test_profiles_create_with_clone_from_default_copies_default_skills(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+        default_skill = get_hermes_home() / "skills" / "custom" / "new-skill"
+        default_skill.mkdir(parents=True)
+        (default_skill / "SKILL.md").write_text("---\nname: new-skill\n---\n", encoding="utf-8")
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "cloned", "clone_from_default": True},
+        )
+
+        assert resp.status_code == 200
+        cloned_skill = get_hermes_home() / "profiles" / "cloned" / "skills" / "custom" / "new-skill" / "SKILL.md"
+        assert cloned_skill.exists()
+        profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
+        assert profiles["cloned"]["skill_count"] == 1
+
+    def test_profiles_create_without_clone_seeds_bundled_skills(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        def fake_seed(profile_dir, quiet=False):
+            skill_dir = profile_dir / "skills" / "software-development" / "plan"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text("---\nname: plan\n---\n", encoding="utf-8")
+            return {"copied": ["plan"]}
+
+        monkeypatch.setattr(profiles_mod, "seed_profile_skills", fake_seed)
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "fresh", "clone_from_default": False},
+        )
+
+        assert resp.status_code == 200
+        seeded_skill = get_hermes_home() / "profiles" / "fresh" / "skills" / "software-development" / "plan" / "SKILL.md"
+        assert seeded_skill.exists()
+        profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
+        assert profiles["fresh"]["skill_count"] == 1
+
+    def test_profile_open_terminal_uses_macos_terminal(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
+
+        (get_hermes_home() / "profiles" / "coder").mkdir(parents=True)
+        calls = []
+        monkeypatch.setattr(web_server.sys, "platform", "darwin")
+        monkeypatch.setattr(web_server.subprocess, "Popen", lambda args, **kwargs: calls.append(args))
+
+        resp = self.client.post("/api/profiles/coder/open-terminal")
+
+        assert resp.status_code == 200
+        assert calls
+        assert calls[0][0] == "osascript"
+        assert "coder setup" in " ".join(calls[0])
+
+    def test_profile_open_terminal_uses_windows_cmd(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
+
+        (get_hermes_home() / "profiles" / "coder").mkdir(parents=True)
+        calls = []
+        monkeypatch.setattr(web_server.sys, "platform", "win32")
+        monkeypatch.setattr(web_server.subprocess, "Popen", lambda args, **kwargs: calls.append(args))
+
+        resp = self.client.post("/api/profiles/coder/open-terminal")
+
+        assert resp.status_code == 200
+        assert calls
+        assert calls[0][:4] == ["cmd.exe", "/c", "start", ""]
+        assert calls[0][-1] == "coder setup"
+
+    def test_profiles_create_rejects_invalid_name(self):
+        resp = self.client.post("/api/profiles", json={"name": "Has Spaces"})
+        assert resp.status_code == 400
+
+    def test_profiles_delete_default_forbidden(self):
+        resp = self.client.delete("/api/profiles/default")
+        assert resp.status_code == 400
+
+    def test_profiles_delete_not_found(self):
+        resp = self.client.delete("/api/profiles/does-not-exist")
+        assert resp.status_code == 404
+
+    def test_profile_soul_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "soul-prof"})
+        get1 = self.client.get("/api/profiles/soul-prof/soul")
+        assert get1.status_code == 200
+        assert get1.json()["exists"] is True
+
+        put = self.client.put(
+            "/api/profiles/soul-prof/soul",
+            json={"content": "# Edited soul"},
+        )
+        assert put.status_code == 200
+
+        got = self.client.get("/api/profiles/soul-prof/soul").json()
+        assert got["content"] == "# Edited soul"
+
+        self.client.delete("/api/profiles/soul-prof")
+
+    def test_profile_soul_unknown_profile_404(self):
+        resp = self.client.get("/api/profiles/nonexistent/soul")
         assert resp.status_code == 404
 
     def test_skills_list(self):
@@ -1677,3 +1899,317 @@ class TestDashboardPluginManifestExtensions:
         plugins = web_server._get_dashboard_plugins(force_rescan=True)
         entry = next(p for p in plugins if p["name"] == "mixed-slots")
         assert entry["slots"] == ["sidebar", "header-right"]
+
+    def test_page_scoped_slots_preserved(self, tmp_path, monkeypatch):
+        """Page-scoped slot names (e.g. ``sessions:top``) round-trip through
+        the manifest loader untouched.  The backend has no allowlist — the
+        frontend ``<PluginSlot name="...">`` placements decide what actually
+        renders — but the loader must not mangle colons in slot names."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "page-slots", {
+            "name": "page-slots",
+            "label": "Page Slots",
+            "tab": {"path": "/page-slots", "hidden": True},
+            "slots": [
+                "sessions:top",
+                "analytics:bottom",
+                "logs:top",
+                "skills:bottom",
+                "config:top",
+                "env:bottom",
+                "docs:top",
+                "cron:bottom",
+                "chat:top",
+            ],
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "page-slots")
+        assert entry["slots"] == [
+            "sessions:top",
+            "analytics:bottom",
+            "logs:top",
+            "skills:bottom",
+            "config:top",
+            "env:bottom",
+            "docs:top",
+            "cron:bottom",
+            "chat:top",
+        ]
+
+
+# ---------------------------------------------------------------------------
+# /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.
+#
+# These tests drive the endpoint with a tiny fake command (typically ``cat``
+# or ``sh -c 'printf …'``) instead of the real ``hermes --tui`` binary.  The
+# endpoint resolves its argv through ``_resolve_chat_argv``, so tests
+# monkeypatch that hook.
+# ---------------------------------------------------------------------------
+
+import sys
+
+
+skip_on_windows = pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
+)
+
+
+@skip_on_windows
+class TestPtyWebSocket:
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, _isolate_hermes_home):
+        from starlette.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        # Avoid exec'ing the actual TUI in tests: every test below installs
+        # its own fake argv via ``ws._resolve_chat_argv``.
+        self.ws_module = ws
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        self.token = ws._SESSION_TOKEN
+        self.client = TestClient(ws.app)
+
+    def _url(self, token: str | None = None, **params: str) -> str:
+        tok = token if token is not None else self.token
+        # TestClient.websocket_connect takes the path; it reconstructs the
+        # query string, so we pass it inline.
+        from urllib.parse import urlencode
+
+        q = {"token": tok, **params}
+        return f"/api/pty?{urlencode(q)}"
+
+    def test_rejects_when_embedded_chat_disabled(self, monkeypatch):
+        monkeypatch.setattr(self.ws_module, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)
+        from starlette.websockets import WebSocketDisconnect
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with self.client.websocket_connect(self._url()):
+                pass
+        assert exc.value.code == 4403
+
+    def test_rejects_missing_token(self, monkeypatch):
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+        )
+        from starlette.websockets import WebSocketDisconnect
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with self.client.websocket_connect("/api/pty"):
+                pass
+        assert exc.value.code == 4401
+
+    def test_rejects_bad_token(self, monkeypatch):
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+        )
+        from starlette.websockets import WebSocketDisconnect
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with self.client.websocket_connect(self._url(token="wrong")):
+                pass
+        assert exc.value.code == 4401
+
+    def test_streams_child_stdout_to_client(self, monkeypatch):
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (
+                ["/bin/sh", "-c", "printf hermes-ws-ok"],
+                None,
+                None,
+            ),
+        )
+        with self.client.websocket_connect(self._url()) as conn:
+            # Drain frames until we see the needle or time out.  TestClient's
+            # recv_bytes blocks; loop until we have the signal byte string.
+            buf = b""
+            import time
+
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                try:
+                    frame = conn.receive_bytes()
+                except Exception:
+                    break
+                if frame:
+                    buf += frame
+                if b"hermes-ws-ok" in buf:
+                    break
+            assert b"hermes-ws-ok" in buf
+
+    def test_client_input_reaches_child_stdin(self, monkeypatch):
+        # ``cat`` echoes stdin back, so a write → read round-trip proves
+        # the full duplex path.
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+        )
+        with self.client.websocket_connect(self._url()) as conn:
+            conn.send_bytes(b"round-trip-payload\n")
+            buf = b""
+            import time
+
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                frame = conn.receive_bytes()
+                if frame:
+                    buf += frame
+                if b"round-trip-payload" in buf:
+                    break
+            assert b"round-trip-payload" in buf
+
+    def test_resize_escape_is_forwarded(self, monkeypatch):
+        # Resize escape gets intercepted and applied via TIOCSWINSZ, then the
+        # child reads the TTY ioctl directly. Avoid tput because CI may not set
+        # TERM for non-interactive shells.
+        import sys
+
+        winsize_script = (
+            "import fcntl, struct, termios, time; "
+            "time.sleep(0.15); "
+            "rows, cols, *_ = struct.unpack('HHHH', "
+            "fcntl.ioctl(0, termios.TIOCGWINSZ, b'\\0' * 8)); "
+            "print(cols); print(rows)"
+        )
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            # sleep gives the test time to push the resize before the child reads the ioctl.
+            lambda resume=None, sidecar_url=None: (
+                [sys.executable, "-c", winsize_script],
+                None,
+                None,
+            ),
+        )
+        with self.client.websocket_connect(self._url()) as conn:
+            conn.send_text("\x1b[RESIZE:99;41]")
+            buf = b""
+            import time
+
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                frame = conn.receive_bytes()
+                if frame:
+                    buf += frame
+                if b"99" in buf and b"41" in buf:
+                    break
+            assert b"99" in buf and b"41" in buf
+
+    def test_unavailable_platform_closes_with_message(self, monkeypatch):
+        from hermes_cli.pty_bridge import PtyUnavailableError
+
+        def _raise(argv, **kwargs):
+            raise PtyUnavailableError("pty missing for tests")
+
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+        )
+        # Patch PtyBridge.spawn at the web_server module's binding.
+        import hermes_cli.web_server as ws_mod
+
+        monkeypatch.setattr(ws_mod.PtyBridge, "spawn", classmethod(lambda cls, *a, **k: _raise(*a, **k)))
+
+        with self.client.websocket_connect(self._url()) as conn:
+            # Expect a final text frame with the error message, then close.
+            msg = conn.receive_text()
+            assert "pty missing" in msg or "unavailable" in msg.lower() or "pty" in msg.lower()
+
+    def test_resume_parameter_is_forwarded_to_argv(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_resolve(resume=None, sidecar_url=None):
+            captured["resume"] = resume
+            return (["/bin/sh", "-c", "printf resume-arg-ok"], None, None)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+
+        with self.client.websocket_connect(self._url(resume="sess-42")) as conn:
+            # Drain briefly so the handler actually invokes the resolver.
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+        assert captured.get("resume") == "sess-42"
+
+    def test_channel_param_propagates_sidecar_url(self, monkeypatch):
+        """When /api/pty is opened with ?channel=, the PTY child gets a
+        HERMES_TUI_SIDECAR_URL env var pointing back at /api/pub on the
+        same channel — which is how tool events reach the dashboard sidebar."""
+        captured: dict = {}
+
+        def fake_resolve(resume=None, sidecar_url=None):
+            captured["sidecar_url"] = sidecar_url
+            return (["/bin/sh", "-c", "printf sidecar-ok"], None, None)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+        monkeypatch.setattr(
+            self.ws_module.app.state, "bound_host", "127.0.0.1", raising=False
+        )
+        monkeypatch.setattr(
+            self.ws_module.app.state, "bound_port", 9119, raising=False
+        )
+
+        with self.client.websocket_connect(self._url(channel="abc-123")) as conn:
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+
+        url = captured.get("sidecar_url") or ""
+        assert url.startswith("ws://127.0.0.1:9119/api/pub?")
+        assert "channel=abc-123" in url
+        assert "token=" in url
+
+    def test_pub_broadcasts_to_events_subscribers(self, monkeypatch):
+        """Frame written to /api/pub is rebroadcast verbatim to every
+        /api/events subscriber on the same channel."""
+        import time
+        from urllib.parse import urlencode
+        from hermes_cli import web_server as ws_mod
+
+        qs = urlencode({"token": self.token, "channel": "broadcast-test"})
+        pub_path = f"/api/pub?{qs}"
+        sub_path = f"/api/events?{qs}"
+
+        with self.client.websocket_connect(sub_path) as sub:
+            # Wait for the subscriber to be registered on the server side.
+            # websocket_connect returns when ws.accept() completes, but the
+            # server adds us to ``_event_channels`` in a follow-up await,
+            # so a publish immediately after connect can race ahead of the
+            # subscriber registration and the message is dropped.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if ws_mod._event_channels.get("broadcast-test"):
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError(
+                    "subscriber did not register on channel within 5s"
+                )
+
+            with self.client.websocket_connect(pub_path) as pub:
+                pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
+                received = sub.receive_text()
+
+        assert "tool.start" in received
+        assert '"tool_id":"t1"' in received
+
+    def test_events_rejects_missing_channel(self):
+        from starlette.websockets import WebSocketDisconnect
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with self.client.websocket_connect(
+                f"/api/events?token={self.token}"
+            ):
+                pass
+        assert exc.value.code == 4400

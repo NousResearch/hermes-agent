@@ -335,6 +335,10 @@ class BaseEnvironment(ABC):
         instead of running with ``bash -l``.
         """
         # Full capture: env vars, functions (filtered), aliases, shell options.
+        # Restore configured cwd after login shell profile scripts, which may
+        # change the working directory (e.g. bashrc `cd ~`).  Without this,
+        # pwd -P captures the profile's directory, not terminal.cwd.
+        _quoted_cwd = shlex.quote(self.cwd)
         bootstrap = (
             f"export -p > {self._snapshot_path}\n"
             f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
@@ -342,6 +346,7 @@ class BaseEnvironment(ABC):
             f"echo 'shopt -s expand_aliases' >> {self._snapshot_path}\n"
             f"echo 'set +e' >> {self._snapshot_path}\n"
             f"echo 'set +u' >> {self._snapshot_path}\n"
+            f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
             f"pwd -P > {self._cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
@@ -368,6 +373,17 @@ class BaseEnvironment(ABC):
     # Command wrapping
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _quote_cwd_for_cd(cwd: str) -> str:
+        """Quote a ``cd`` target while preserving ``~`` expansion."""
+        if cwd == "~":
+            return cwd
+        if cwd == "~/":
+            return "$HOME"
+        if cwd.startswith("~/"):
+            return f"$HOME/{shlex.quote(cwd[2:])}"
+        return shlex.quote(cwd)
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
@@ -375,15 +391,22 @@ class BaseEnvironment(ABC):
 
         parts = []
 
-        # Source snapshot (env vars from previous commands)
+        # Source snapshot (env vars from previous commands).
+        # Redirect stdout to /dev/null: on macOS (bash 3.2 and certain
+        # Homebrew bash builds) sourcing a file containing ``declare -x``
+        # can emit the declarations to stdout, leaking ~60 lines of env
+        # vars into every tool response (issue #15459).  Linux bash is
+        # silent here, but the redirect is harmless.
         if self._snapshot_ready:
-            parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
+            parts.append(
+                f"source {self._snapshot_path} >/dev/null 2>&1 || true"
+            )
 
-        # cd to working directory — let bash expand ~ natively
-        quoted_cwd = (
-            shlex.quote(cwd) if cwd != "~" and not cwd.startswith("~/") else cwd
-        )
-        parts.append(f"builtin cd {quoted_cwd} || exit 126")
+        # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
+        # ``$HOME`` so suffixes with spaces remain a single shell word.
+        quoted_cwd = self._quote_cwd_for_cd(cwd)
+        # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
+        parts.append(f"builtin cd -- {quoted_cwd} || exit 126")
 
         # Run the actual command
         parts.append(f"eval '{escaped}'")
@@ -466,6 +489,26 @@ class BaseEnvironment(ABC):
 
         def _drain():
             fd = proc.stdout.fileno()
+            # select.select does NOT work on pipe fds on Windows (only sockets).
+            # Use blocking os.read in a daemon thread instead — safe because
+            # EOF arrives promptly when bash exits.
+            if os.name == "nt":
+                try:
+                    while True:
+                        chunk = os.read(fd, 4096)
+                        if not chunk:
+                            break
+                        output_chunks.append(decoder.decode(chunk))
+                except (ValueError, OSError):
+                    pass
+                finally:
+                    try:
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            output_chunks.append(tail)
+                    except Exception:
+                        pass
+                return
             idle_after_exit = 0
             try:
                 while True:

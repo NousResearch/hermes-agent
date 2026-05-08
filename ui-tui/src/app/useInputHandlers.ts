@@ -1,6 +1,8 @@
-import { useInput } from '@hermes/ink'
+import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
+import { useEffect, useRef } from 'react'
 
+import { TYPING_IDLE_MS } from '../config/timing.js'
 import type {
   ApprovalRespondResponse,
   ConfigSetResponse,
@@ -8,16 +10,38 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
+import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
-import { getUiState, patchUiState } from './uiStore.js'
+import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
+
+export function applyVoiceRecordResponse(
+  response: null | VoiceRecordResponse,
+  starting: boolean,
+  voice: Pick<InputHandlerContext['voice'], 'setProcessing' | 'setRecording'>,
+  sys: (text: string) => void
+) {
+  if (!starting || response?.status === 'recording') {
+    return
+  }
+
+  voice.setRecording(false)
+
+  if (response?.status === 'busy') {
+    voice.setProcessing(true)
+    sys('voice: still transcribing; try again shortly')
+  } else {
+    voice.setProcessing(false)
+  }
+}
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
@@ -26,15 +50,34 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const overlay = useStore($overlayState)
   const isBlocked = useStore($isBlocked)
   const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
+  const scrollIdleTimer = useRef<null | ReturnType<typeof setTimeout>>(null)
+
+  // Wheel accel ported from claude-code: inter-event timing drives step size,
+  // direction flips reset. wheelStep (WHEEL_SCROLL_STEP) is the base; final
+  // rows = wheelStep × accelMult. State mutates in place across renders.
+  const wheelAccelRef = useRef(initWheelAccelForHost())
+
+  const precisionWheelRef = useRef(initPrecisionWheel())
+
+  useEffect(() => () => clearTimeout(scrollIdleTimer.current ?? undefined), [])
+
+  const scrollTranscript = (delta: number) => {
+    if (getUiState().busy) {
+      turnController.boostStreamingForScroll()
+      clearTimeout(scrollIdleTimer.current ?? undefined)
+      scrollIdleTimer.current = setTimeout(() => {
+        scrollIdleTimer.current = null
+        turnController.relaxStreaming()
+      }, TYPING_IDLE_MS)
+    }
+
+    terminal.scrollWithSelection(delta)
+  }
 
   const copySelection = () => {
     // ink's copySelection() already calls setClipboard() which handles
     // pbcopy (macOS), wl-copy/xclip (Linux), tmux, and OSC 52 fallback.
-    const text = terminal.selection.copySelection()
-
-    if (text) {
-      actions.sys(`copied ${text.length} chars`)
-    }
+    terminal.selection.copySelection()
   }
 
   const clearSelection = () => {
@@ -134,11 +177,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
   }
 
-  // CLI parity: Ctrl+B toggles the VAD-driven continuous recording loop
+  // CLI parity: Ctrl+B toggles a VAD-bounded push-to-talk capture
   // (NOT the voice-mode umbrella bit). The mode is enabled via /voice on;
   // Ctrl+B while the mode is off sys-nudges the user. While the mode is
-  // on, the first press starts a continuous loop (gateway → start_continuous,
-  // VAD auto-stop → transcribe → auto-restart), a subsequent press stops it.
+  // on, the first press starts a single VAD-bounded capture
+  // (gateway -> start_continuous(auto_restart=false), VAD auto-stop ->
+  // transcribe -> idle), a subsequent press stops and transcribes it.
   // The gateway publishes voice.status + voice.transcript events that
   // createGatewayEventHandler turns into UI badges and composer injection.
   const voiceRecordToggle = () => {
@@ -160,7 +204,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     gateway
-      .rpc<VoiceRecordResponse>('voice.record', { action })
+      .rpc<VoiceRecordResponse>('voice.record', { action, session_id: getUiState().sid })
+      .then(r => applyVoiceRecordResponse(r, starting, voice, actions.sys))
       .catch((e: Error) => {
         // Revert optimistic UI on failure.
         if (starting) {
@@ -264,27 +309,65 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (key.wheelUp) {
-      return terminal.scrollWithSelection(-wheelStep)
-    }
+    if (key.wheelUp || key.wheelDown) {
+      const dir: -1 | 1 = key.wheelUp ? -1 : 1
+      const now = Date.now()
+      // Modifier-held wheel = precision mode: one row per frame, no accel.
+      // Smooth mice / trackpads emit tiny same-frame bursts; coalesce those
+      // without the old 80ms throttle that made opt-scroll feel stepped.
+      // SGR/X10 mouse encoding only carries shift/meta/ctrl bits; Cmd on
+      // macOS is intercepted by the terminal, so we honor Option (meta) on
+      // Mac / Alt (meta) on Win+Linux / Ctrl as a portable fallback. Shift
+      // is reserved for selection extension.
+      const hasModifier = key.meta || key.ctrl
+      const precision = computePrecisionWheelStep(precisionWheelRef.current, dir, hasModifier, now)
 
-    if (key.wheelDown) {
-      return terminal.scrollWithSelection(wheelStep)
+      if (precision.active) {
+        // Entering precision mode must discard any accelerated wheel state;
+        // otherwise the next normal wheel event inherits stale momentum.
+        if (precision.entered) {
+          wheelAccelRef.current = initWheelAccelForHost()
+        }
+
+        return precision.rows ? scrollTranscript(dir * wheelStep) : undefined
+      }
+
+      // 0 = direction-flip bounce deferred; skip the no-op scroll.
+      const rows = computeWheelStep(wheelAccelRef.current, dir, now)
+
+      return rows ? scrollTranscript(dir * rows * wheelStep) : undefined
     }
 
     if (key.shift && key.upArrow) {
-      return terminal.scrollWithSelection(-1)
+      return scrollTranscript(-1)
     }
 
     if (key.shift && key.downArrow) {
-      return terminal.scrollWithSelection(1)
+      return scrollTranscript(1)
     }
 
     if (key.pageUp || key.pageDown) {
+      // Half-viewport keeps 50% continuity and stays under Ink's
+      // `delta < innerHeight` DECSTBM fast-path threshold.
       const viewport = terminal.scrollRef.current?.getViewportHeight() ?? Math.max(6, (terminal.stdout?.rows ?? 24) - 8)
-      const step = Math.max(4, viewport - 2)
+      const step = Math.max(4, Math.floor(viewport / 2))
 
-      return terminal.scrollWithSelection(key.pageUp ? -step : step)
+      return scrollTranscript(key.pageUp ? -step : step)
+    }
+
+    // Escape-based voice bindings (ctrl/alt/super+escape) must win before the
+    // generic Esc handlers below; otherwise queue-edit cancel / selection-clear
+    // would swallow the chord and /voice would advertise a shortcut that never
+    // actually toggles recording in those UI states.
+    if (key.escape && isVoiceToggleKey(key, ch, voice.recordKey)) {
+      return voiceRecordToggle()
+    }
+
+    // Queue-edit cancel beats selection-clear for plain Esc: the queue header
+    // explicitly promises "Esc cancel", so honoring it takes priority over the
+    // implicit selection-dismissal convention. Without an active edit, fall through.
+    if (key.escape && cState.queueEditIdx !== null) {
+      return cActions.clearIn()
     }
 
     if (key.escape && terminal.hasSelection) {
@@ -317,7 +400,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-    if (isAction(key, ch, 'c')) {
+    if (isCopyShortcut(key, ch)) {
       if (terminal.hasSelection) {
         return copySelection()
       }
@@ -335,6 +418,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (isMac) {
         return
       }
+    }
+
+    if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
+      cActions.removeQueue(cState.queueEditIdx)
+
+      return cActions.clearIn()
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {
@@ -359,21 +448,23 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isAction(key, ch, 'l')) {
-      if (actions.guardBusySessionSwitch()) {
-        return
-      }
+      clearSelection()
+      forceRedraw(terminal.stdout ?? process.stdout)
 
-      patchUiState({ status: 'forging session…' })
-
-      return actions.newSession()
+      return
     }
 
-    if (isVoiceToggleKey(key, ch)) {
+    if (isVoiceToggleKey(key, ch, voice.recordKey)) {
       return voiceRecordToggle()
     }
 
-    if (isAction(key, ch, 'g')) {
-      return cActions.openEditor()
+    // Cmd/Ctrl+G, plus Alt+G fallback for VSCode/Cursor (they bind the
+    // primary keystroke to "Find Next" before the TUI sees it; Alt+G
+    // arrives as meta+g across platforms).
+    if (ch.toLowerCase() === 'g' && (isAction(key, ch, 'g') || key.meta)) {
+      return void cActions.openEditor().catch((err: unknown) => {
+        actions.sys(err instanceof Error ? `failed to open editor: ${err.message}` : 'failed to open editor')
+      })
     }
 
     // shift-tab flips yolo without spending a turn (claude-code parity)

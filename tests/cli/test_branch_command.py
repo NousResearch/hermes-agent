@@ -160,6 +160,30 @@ class TestBranchCommandCLI:
         assert agent.reset_session_state.called
         assert agent._last_flushed_db_idx == 4  # len(conversation_history)
 
+    def test_branch_updates_agent_session_log_file(self, cli_instance, session_db, tmp_path):
+        """Branching must redirect the agent's session_log_file to the new session's path."""
+        from cli import HermesCLI
+        from pathlib import Path
+
+        logs_dir = tmp_path / "sessions"
+        logs_dir.mkdir()
+
+        agent = MagicMock()
+        agent._last_flushed_db_idx = 0
+        agent.logs_dir = logs_dir
+        agent.session_log_file = logs_dir / f"session_{cli_instance.session_id}.json"
+        cli_instance.agent = agent
+
+        old_log_file = agent.session_log_file
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        new_session_id = cli_instance.session_id
+        expected_log = logs_dir / f"session_{new_session_id}.json"
+        assert agent.session_log_file == expected_log, (
+            "session_log_file must point to the branch session, not the original"
+        )
+        assert agent.session_log_file != old_log_file
+
     def test_branch_sets_resumed_flag(self, cli_instance, session_db):
         """Branch should set _resumed=True to prevent auto-title generation."""
         from cli import HermesCLI
@@ -167,6 +191,33 @@ class TestBranchCommandCLI:
         HermesCLI._handle_branch_command(cli_instance, "/branch")
 
         assert cli_instance._resumed is True
+
+    def test_branch_fires_on_session_switch_hook(self, cli_instance, session_db):
+        """The /branch command must notify memory providers of the rotation.
+
+        Without this, providers that cache per-session state in
+        initialize() keep writing under the old session_id. See #6672.
+        """
+        from cli import HermesCLI
+
+        # Wire a real-ish agent object with a MagicMock memory_manager
+        agent = MagicMock()
+        mm = MagicMock()
+        agent._memory_manager = mm
+        cli_instance.agent = agent
+        original_id = cli_instance.session_id
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        # Hook must have been called exactly once with the new session_id,
+        # parent pointing at the branched-from session, reset=False, and
+        # reason="branch" for diagnostics.
+        assert mm.on_session_switch.call_count == 1
+        _, kwargs = mm.on_session_switch.call_args
+        assert mm.on_session_switch.call_args.args[0] == cli_instance.session_id
+        assert kwargs["parent_session_id"] == original_id
+        assert kwargs["reset"] is False
+        assert kwargs["reason"] == "branch"
 
     def test_fork_alias(self):
         """The /fork alias should resolve to 'branch'."""

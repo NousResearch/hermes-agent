@@ -414,6 +414,10 @@ class TestTranscribeLocalCommand:
 # _transcribe_local — additional tests
 # ============================================================================
 
+@pytest.mark.skipif(
+    not __import__("importlib").util.find_spec("faster_whisper"),
+    reason="faster_whisper not installed",
+)
 class TestTranscribeLocalExtended:
     def test_model_reuse_on_second_call(self, tmp_path):
         """Second call with same model should NOT reload the model."""
@@ -504,6 +508,101 @@ class TestTranscribeLocalExtended:
 
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
+
+    def test_load_time_cuda_lib_failure_falls_back_to_cpu(self, tmp_path):
+        """Missing libcublas at load time → reload on CPU, succeed."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "hi"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+
+        call_args = []
+
+        def fake_whisper(model_name, device, compute_type):
+            call_args.append((device, compute_type))
+            if device == "auto":
+                raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+            return cpu_model
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hi"
+        assert call_args == [("auto", "auto"), ("cpu", "int8")]
+
+    def test_runtime_cuda_lib_failure_evicts_cache_and_retries_on_cpu(self, tmp_path):
+        """libcublas dlopen fails at transcribe() → evict cache, reload CPU, retry."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "recovered"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        # First model loads fine (auto), but transcribe() blows up on dlopen
+        gpu_model = MagicMock()
+        gpu_model.transcribe.side_effect = RuntimeError(
+            "Library libcublas.so.12 is not found or cannot be loaded"
+        )
+        # Second model (forced CPU) works
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+
+        models = [gpu_model, cpu_model]
+        call_args = []
+
+        def fake_whisper(model_name, device, compute_type):
+            call_args.append((device, compute_type))
+            return models.pop(0)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "recovered"
+        # First load is auto, retry forces CPU.
+        assert call_args == [("auto", "auto"), ("cpu", "int8")]
+        # Cached-bad-model eviction: the broken GPU model was called once,
+        # then discarded; the CPU model served the retry.
+        assert gpu_model.transcribe.call_count == 1
+        assert cpu_model.transcribe.call_count == 1
+
+    def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):
+        """'CUDA out of memory' is a real error, not a missing lib — surface it."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_whisper_cls = MagicMock(side_effect=RuntimeError("CUDA out of memory"))
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        # Single call — no CPU retry, because OOM isn't a missing-lib symptom.
+        assert mock_whisper_cls.call_count == 1
+        assert result["success"] is False
+        assert "CUDA out of memory" in result["error"]
 
 
 # ============================================================================
@@ -663,19 +762,12 @@ class TestValidateAudioFileEdgeCases:
         f = tmp_path / "test.ogg"
         f.write_bytes(b"data")
         from tools.transcription_tools import _validate_audio_file
-        real_stat = f.stat()
-        call_count = 0
 
-        def stat_side_effect(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            # First calls are from exists() and is_file(), let them pass
-            if call_count <= 2:
-                return real_stat
-            raise OSError("disk error")
-
-        with patch("pathlib.Path.stat", side_effect=stat_side_effect):
+        with patch("pathlib.Path.exists", return_value=True), \
+             patch("pathlib.Path.is_file", return_value=True), \
+             patch("pathlib.Path.stat", side_effect=OSError("disk error")):
             result = _validate_audio_file(str(f))
+
         assert result is not None
         assert "Failed to access" in result["error"]
 

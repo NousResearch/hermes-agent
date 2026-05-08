@@ -10,6 +10,8 @@ Uses discord.py library for:
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import struct
@@ -18,12 +20,16 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from typing import Callable, Dict, Optional, Any
+from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
+_DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
+_DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
+_DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
+_DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 
 try:
     import discord
@@ -45,6 +51,7 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from utils import atomic_json_write
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -305,7 +312,7 @@ class VoiceReceiver:
         encrypted = bytes(payload_with_nonce[:-4])
 
         try:
-            import nacl.secret  # noqa: delayed import – only in voice path
+            import nacl.secret  # noqa: E402 — delayed import, only in voice path
             box = nacl.secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
@@ -470,6 +477,34 @@ class VoiceReceiver:
                 pass
 
 
+def _read_dm_role_auth_guild() -> Optional[int]:
+    """Return the guild ID opted-in for DM role-based auth, or None.
+
+    Reads ``discord.dm_role_auth_guild`` from config.yaml. This is
+    deliberately a config.yaml-only setting (not an env var): per repo
+    policy, ``~/.hermes/.env`` is for secrets only, and this is a
+    behavioral setting. Guild IDs aren't secrets.
+
+    Accepts ints or numeric strings in the config. Anything else
+    (empty, malformed, None) returns None, which keeps the secure
+    default (DM role-auth disabled).
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config() or {}
+        discord_cfg = cfg.get("discord", {}) or {}
+        raw = discord_cfg.get("dm_role_auth_guild")
+    except Exception:
+        return None
+    if raw is None or raw == "":
+        return None
+    try:
+        guild_id = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return guild_id if guild_id > 0 else None
+
+
 class DiscordAdapter(BasePlatformAdapter):
     """
     Discord bot adapter.
@@ -497,6 +532,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
+        self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
@@ -613,6 +649,21 @@ class DiscordAdapter(BasePlatformAdapter):
             # so LLM output or echoed user content can't ping the whole
             # server; override per DISCORD_ALLOW_MENTION_* env vars or the
             # discord.allow_mentions.* block in config.yaml.
+
+            # Close any existing client to prevent zombie websocket connections
+            # on reconnect (see #18187). Without this, the old client remains
+            # connected to Discord gateway and both fire on_message, causing
+            # double responses.
+            if self._client is not None:
+                try:
+                    if not self._client.is_closed():
+                        await self._client.close()
+                except Exception:
+                    logger.debug("[%s] Failed to close previous Discord client", self.name)
+                finally:
+                    self._client = None
+                    self._ready_event.clear()
+
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
@@ -678,7 +729,17 @@ class DiscordAdapter(BasePlatformAdapter):
                     # human-user allowlist below (bots aren't in it).
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
-                    if not self._is_allowed_user(str(message.author.id), message.author):
+                    # Pass guild + is_dm so role checks are scoped to the
+                    # originating guild (prevents cross-guild DM bypass, see
+                    # _is_allowed_user docstring).
+                    _msg_guild = getattr(message, "guild", None)
+                    _is_dm = isinstance(message.channel, discord.DMChannel) or _msg_guild is None
+                    if not self._is_allowed_user(
+                        str(message.author.id),
+                        message.author,
+                        guild=_msg_guild,
+                        is_dm=_is_dm,
+                    ):
                         return
                 
                 # Multi-agent filtering: if the message mentions specific bots
@@ -704,11 +765,22 @@ class DiscordAdapter(BasePlatformAdapter):
                         return
                     # If humans are mentioned but we're not → not for us
                     # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
+                    # EXCEPT in free-response channels where the bot should
+                    # answer regardless of who is mentioned.
                     _ignore_no_mention = os.getenv(
                         "DISCORD_IGNORE_NO_MENTION", "true"
                     ).lower() in ("true", "1", "yes")
                     if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        return
+                        _channel_id = str(message.channel.id)
+                        _parent_id = None
+                        if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                            _parent_id = str(message.channel.parent_id)
+                        _free_channels = adapter_self._discord_free_response_channels()
+                        _channel_ids = {_channel_id}
+                        if _parent_id:
+                            _channel_ids.add(_parent_id)
+                        if "*" not in _free_channels and not (_channel_ids & _free_channels):
+                            return
 
                 await self._handle_message(message)
 
@@ -798,6 +870,167 @@ class DiscordAdapter(BasePlatformAdapter):
 
         logger.info("[%s] Disconnected", self.name)
 
+    def _command_sync_state_path(self) -> _Path:
+        from hermes_constants import get_hermes_home
+
+        directory = get_hermes_home() / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return directory / _DISCORD_COMMAND_SYNC_STATE_FILENAME
+
+    def _read_command_sync_state(self) -> dict:
+        try:
+            path = self._command_sync_state_path()
+            if not path.exists():
+                return {}
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write_command_sync_state(self, state: dict) -> None:
+        atomic_json_write(
+            self._command_sync_state_path(),
+            state,
+            indent=None,
+            separators=(",", ":"),
+        )
+
+    def _command_sync_state_key(self, app_id: Any) -> str:
+        return str(app_id or "unknown")
+
+    def _desired_command_sync_fingerprint(self) -> str:
+        tree = self._client.tree if self._client else None
+        desired = []
+        if tree is not None:
+            desired = [
+                self._canonicalize_app_command_payload(command.to_dict(tree))
+                for command in tree.get_commands()
+            ]
+        desired.sort(key=lambda item: (item.get("type", 1), item.get("name", "")))
+        payload = json.dumps(desired, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _command_sync_skip_reason(self, app_id: Any, fingerprint: str) -> Optional[str]:
+        entry = self._read_command_sync_state().get(self._command_sync_state_key(app_id))
+        if not isinstance(entry, dict):
+            return None
+        now = time.time()
+        retry_after_until = float(entry.get("retry_after_until") or 0)
+        if retry_after_until > now:
+            remaining = max(1, int(retry_after_until - now))
+            return f"Discord asked us to wait before syncing slash commands; retry in {remaining}s"
+        if entry.get("fingerprint") == fingerprint and entry.get("last_success_at"):
+            return "same slash-command fingerprint already synced"
+        return None
+
+    def _record_command_sync_attempt(self, app_id: Any, fingerprint: str) -> None:
+        state = self._read_command_sync_state()
+        state[self._command_sync_state_key(app_id)] = {
+            **(
+                state.get(self._command_sync_state_key(app_id))
+                if isinstance(state.get(self._command_sync_state_key(app_id)), dict)
+                else {}
+            ),
+            "fingerprint": fingerprint,
+            "last_attempt_at": time.time(),
+        }
+        self._write_command_sync_state(state)
+
+    def _record_command_sync_rate_limit(self, app_id: Any, fingerprint: str, retry_after: float) -> None:
+        retry_after = max(1.0, float(retry_after))
+        state = self._read_command_sync_state()
+        state[self._command_sync_state_key(app_id)] = {
+            **(
+                state.get(self._command_sync_state_key(app_id))
+                if isinstance(state.get(self._command_sync_state_key(app_id)), dict)
+                else {}
+            ),
+            "fingerprint": fingerprint,
+            "last_attempt_at": time.time(),
+            "retry_after_until": time.time() + retry_after,
+            "retry_after": retry_after,
+        }
+        self._write_command_sync_state(state)
+
+    def _record_command_sync_success(self, app_id: Any, fingerprint: str, summary: dict) -> None:
+        state = self._read_command_sync_state()
+        state[self._command_sync_state_key(app_id)] = {
+            "fingerprint": fingerprint,
+            "last_attempt_at": time.time(),
+            "last_success_at": time.time(),
+            "summary": summary,
+        }
+        self._write_command_sync_state(state)
+
+    @staticmethod
+    def _extract_discord_retry_after(exc: BaseException) -> Optional[float]:
+        value = getattr(exc, "retry_after", None)
+        if value is not None:
+            try:
+                return max(1.0, float(value))
+            except (TypeError, ValueError):
+                return None
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers:
+            for key in ("Retry-After", "X-RateLimit-Reset-After"):
+                try:
+                    raw = headers.get(key)
+                except Exception:
+                    raw = None
+                if raw is None:
+                    continue
+                try:
+                    return max(1.0, float(raw))
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    @staticmethod
+    def _is_discord_rate_limit(exc: BaseException) -> bool:
+        """True only for exceptions that look like Discord 429 rate limits.
+
+        Narrower than ``hasattr(exc, 'retry_after')``: discord.py's own
+        ``RateLimited`` exception and any HTTPException with status 429
+        qualify. This prevents suppressing unrelated failures that happen
+        to expose a ``retry_after`` attribute."""
+        # discord.py emits RateLimited / HTTPException subclasses for 429s.
+        # Guard with isinstance-of-class so a mocked ``discord`` module
+        # (where attrs are MagicMocks, not types) doesn't trip isinstance.
+        if DISCORD_AVAILABLE and discord is not None:
+            for attr_name in ("RateLimited", "HTTPException"):
+                cls = getattr(discord, attr_name, None)
+                if not isinstance(cls, type):
+                    continue
+                if isinstance(exc, cls):
+                    if attr_name == "RateLimited":
+                        return True
+                    status = getattr(exc, "status", None)
+                    if status == 429:
+                        return True
+        # Fallback duck-type: something named like a rate-limit with a
+        # numeric retry_after. Covers mocked clients in tests and exotic
+        # transports, without swallowing arbitrary exceptions.
+        name = type(exc).__name__.lower()
+        if ("ratelimit" in name or "rate_limit" in name) and getattr(exc, "retry_after", None) is not None:
+            return True
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status", None) or getattr(response, "status_code", None)
+        if status == 429:
+            return True
+        return False
+
+    def _command_sync_mutation_interval_seconds(self) -> float:
+        return _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS
+
+    async def _sleep_between_command_sync_mutations(self) -> None:
+        interval = self._command_sync_mutation_interval_seconds()
+        if interval > 0:
+            await asyncio.sleep(interval)
+
     async def _run_post_connect_initialization(self) -> None:
         """Finish non-critical startup work after Discord is connected."""
         if not self._client:
@@ -813,7 +1046,46 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
                 return
 
-            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=30)
+            app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
+            fingerprint = self._desired_command_sync_fingerprint()
+            skip_reason = self._command_sync_skip_reason(app_id, fingerprint)
+            if skip_reason:
+                logger.info("[%s] Skipping Discord slash command sync: %s", self.name, skip_reason)
+                return
+            self._record_command_sync_attempt(app_id, fingerprint)
+
+            http = getattr(self._client, "http", None)
+            has_ratelimit_timeout = http is not None and hasattr(http, "max_ratelimit_timeout")
+            previous_ratelimit_timeout = getattr(http, "max_ratelimit_timeout", None) if has_ratelimit_timeout else None
+            if has_ratelimit_timeout:
+                http.max_ratelimit_timeout = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
+
+            try:
+                # Discord's per-app command-management bucket is small, and
+                # discord.py can otherwise sit inside one long retry sleep
+                # before surfacing the 429. Keep the whole sync bounded and
+                # persist Discord's retry-after when it refuses the batch.
+                summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
+            except Exception as e:
+                if not self._is_discord_rate_limit(e):
+                    raise
+                retry_after = self._extract_discord_retry_after(e)
+                if retry_after is None:
+                    # Rate-limited but no retry-after signal — back off for a
+                    # conservative default so we don't slam the bucket again.
+                    retry_after = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
+                self._record_command_sync_rate_limit(app_id, fingerprint, retry_after)
+                logger.warning(
+                    "[%s] Discord rate-limited slash command sync; retrying after %.0fs",
+                    self.name,
+                    retry_after,
+                )
+                return
+            finally:
+                if has_ratelimit_timeout:
+                    http.max_ratelimit_timeout = previous_ratelimit_timeout
+
+            self._record_command_sync_success(app_id, fingerprint, summary)
             logger.info(
                 "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
                 self.name,
@@ -825,7 +1097,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 summary["deleted"],
             )
         except asyncio.TimeoutError:
-            logger.warning("[%s] Slash command sync timed out after 30s", self.name)
+            logger.warning(
+                "[%s] Slash command sync timed out — Discord rate-limit bucket "
+                "may be saturated; will retry on next reconnect",
+                self.name,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as e:  # pragma: no cover - defensive logging
@@ -971,11 +1247,20 @@ class DiscordAdapter(BasePlatformAdapter):
         created = 0
         deleted = 0
         http = self._client.http
+        mutation_count = 0
+
+        async def mutate(call, *args):
+            nonlocal mutation_count
+            if mutation_count:
+                await self._sleep_between_command_sync_mutations()
+            result = await call(*args)
+            mutation_count += 1
+            return result
 
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
-                await http.upsert_global_command(app_id, desired)
+                await mutate(http.upsert_global_command, app_id, desired)
                 created += 1
                 continue
 
@@ -987,16 +1272,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 continue
 
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await http.delete_global_command(app_id, current.id)
-                await http.upsert_global_command(app_id, desired)
+                await mutate(http.delete_global_command, app_id, current.id)
+                await mutate(http.upsert_global_command, app_id, desired)
                 recreated += 1
                 continue
 
-            await http.edit_global_command(app_id, current.id, desired)
+            await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
 
         for current in existing_by_key.values():
-            await http.delete_global_command(app_id, current.id)
+            await mutate(http.delete_global_command, app_id, current.id)
             deleted += 1
 
         return {
@@ -1331,6 +1616,134 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
             msg = await channel.send(content=caption if caption else None, file=file)
         return SendResult(success=True, message_id=str(msg.id))
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images as a single Discord message with multiple attachments.
+
+        Discord permits up to 10 file attachments per message. Batches are
+        chunked accordingly. URL images are downloaded into memory and
+        uploaded as inline attachments (same pattern as ``send_image`` so
+        they render inline, not as bare links). Local files are opened
+        directly. On per-chunk failure the remaining images in that chunk
+        fall back to the base per-image loop.
+        """
+        if not self._client:
+            return
+        if not images:
+            return
+
+        try:
+            import discord as _discord_mod
+            import io as _io
+            from urllib.parse import unquote as _unquote
+        except Exception:  # pragma: no cover
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return
+
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
+                return
+        except Exception as e:
+            logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return
+
+        CHUNK = 10
+        chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
+
+        for chunk_idx, chunk in enumerate(chunks):
+            if human_delay > 0 and chunk_idx > 0:
+                await asyncio.sleep(human_delay)
+
+            files: List[Any] = []
+            captions: List[str] = []
+            aiohttp_session = None
+            try:
+                for image_url, alt_text in chunk:
+                    if alt_text:
+                        captions.append(alt_text)
+                    if image_url.startswith("file://"):
+                        local_path = _unquote(image_url[7:])
+                        if not os.path.exists(local_path):
+                            logger.warning("[%s] Skipping missing image: %s", self.name, local_path)
+                            continue
+                        files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
+                    else:
+                        if not is_safe_url(image_url):
+                            logger.warning("[%s] Blocked unsafe image URL in batch", self.name)
+                            continue
+                        # Download to BytesIO so it renders inline
+                        try:
+                            import aiohttp as _aiohttp
+                            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+                            _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+                            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+                            if aiohttp_session is None:
+                                aiohttp_session = _aiohttp.ClientSession(**_sess_kw)
+                            async with aiohttp_session.get(
+                                image_url, timeout=_aiohttp.ClientTimeout(total=30), **_req_kw,
+                            ) as resp:
+                                if resp.status != 200:
+                                    logger.warning(
+                                        "[%s] Failed to download image (HTTP %d) in batch: %s",
+                                        self.name, resp.status, image_url[:80],
+                                    )
+                                    continue
+                                data = await resp.read()
+                                ct = resp.headers.get("content-type", "image/png")
+                                ext = "png"
+                                if "jpeg" in ct or "jpg" in ct:
+                                    ext = "jpg"
+                                elif "gif" in ct:
+                                    ext = "gif"
+                                elif "webp" in ct:
+                                    ext = "webp"
+                                files.append(_discord_mod.File(_io.BytesIO(data), filename=f"image_{len(files)}.{ext}"))
+                        except Exception as dl_err:
+                            logger.warning("[%s] Download failed for %s: %s", self.name, image_url[:80], dl_err)
+                            continue
+
+                if not files:
+                    continue
+
+                # Use the first caption if any (Discord only has one message body for the group)
+                content = captions[0] if captions else None
+                logger.info(
+                    "[%s] Sending %d image(s) as single Discord message (chunk %d/%d)",
+                    self.name, len(files), chunk_idx + 1, len(chunks),
+                )
+
+                if self._is_forum_parent(channel):
+                    await self._forum_post_file(
+                        channel,
+                        content=(content or "").strip(),
+                        files=files,
+                    )
+                else:
+                    await channel.send(content=content, files=files)
+            except Exception as e:
+                logger.warning(
+                    "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
+                    self.name, chunk_idx + 1, len(chunks), e,
+                    exc_info=True,
+                )
+                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+            finally:
+                if aiohttp_session is not None:
+                    try:
+                        await aiohttp_session.close()
+                    except Exception:
+                        pass
 
     async def play_tts(
         self,
@@ -1688,8 +2101,16 @@ class DiscordAdapter(BasePlatformAdapter):
                         pass
 
                 completed = receiver.check_silence()
+                # Voice inputs always originate from a specific guild
+                # (guild_id is in scope). Pass it so role checks are
+                # guild-scoped and not cross-guild.
+                _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None
                 for user_id, pcm_data in completed:
-                    if not self._is_allowed_user(str(user_id)):
+                    if not self._is_allowed_user(
+                        str(user_id),
+                        guild=_vc_guild,
+                        is_dm=False,
+                    ):
                         continue
                     await self._process_voice_input(guild_id, user_id, pcm_data)
         except asyncio.CancelledError:
@@ -1732,13 +2153,32 @@ class DiscordAdapter(BasePlatformAdapter):
             except OSError:
                 pass
 
-    def _is_allowed_user(self, user_id: str, author=None) -> bool:
+    def _is_allowed_user(
+        self,
+        user_id: str,
+        author=None,
+        *,
+        guild=None,
+        is_dm: bool = False,
+    ) -> bool:
         """Check if user is allowed via DISCORD_ALLOWED_USERS or DISCORD_ALLOWED_ROLES.
 
         Uses OR semantics: if the user matches EITHER allowlist, they're allowed.
         If both allowlists are empty, everyone is allowed (backwards compatible).
-        When author is a Member, checks .roles directly; otherwise falls back
-        to scanning the bot's mutual guilds for a Member record.
+
+        Role checks are **scoped to the guild the message originated from**.
+        For DMs (no guild context), role-based auth is disabled by default and
+        only user-ID allowlist applies. Set ``discord.dm_role_auth_guild``
+        in config.yaml to a specific guild ID to opt-in: role membership in
+        that one guild will authorize DMs. This prevents cross-guild
+        privilege escalation where a user with the configured role in any
+        shared public server could DM the bot and pass the allowlist.
+
+        Args:
+            user_id: Author ID as a string.
+            author: Optional Member/User object for in-guild role lookup.
+            guild: The guild the message arrived in (None for DMs).
+            is_dm: True if the message came from a DM channel.
         """
         # ``getattr`` fallbacks here guard against test fixtures that build
         # an adapter via ``object.__new__(DiscordAdapter)`` and skip __init__
@@ -1749,31 +2189,282 @@ class DiscordAdapter(BasePlatformAdapter):
         has_roles = bool(allowed_roles)
         if not has_users and not has_roles:
             return True
-        # Check user ID allowlist
+        # Check user ID allowlist (works for both DMs and guild messages)
         if has_users and user_id in allowed_users:
             return True
-        # Check role allowlist
-        if has_roles:
-            # Try direct role check from Member object
-            direct_roles = getattr(author, "roles", None) if author is not None else None
-            if direct_roles:
-                if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
-                    return True
-            # Fallback: scan mutual guilds for member's roles
-            if self._client is not None:
-                try:
-                    uid_int = int(user_id)
-                except (TypeError, ValueError):
-                    uid_int = None
-                if uid_int is not None:
-                    for guild in self._client.guilds:
-                        m = guild.get_member(uid_int)
-                        if m is None:
-                            continue
-                        m_roles = getattr(m, "roles", None) or []
-                        if any(getattr(r, "id", None) in allowed_roles for r in m_roles):
-                            return True
+        # Role allowlist is only consulted when configured.
+        if not has_roles:
+            return False
+
+        # DM path: roles require explicit opt-in via
+        # ``discord.dm_role_auth_guild`` in config.yaml. Without this, a
+        # user with the configured role in ANY mutual guild could DM the
+        # bot and bypass the allowlist (cross-guild leakage).
+        if is_dm or guild is None:
+            dm_guild_id = _read_dm_role_auth_guild()
+            if dm_guild_id is None:
+                return False
+            if self._client is None:
+                return False
+            dm_guild = self._client.get_guild(dm_guild_id)
+            if dm_guild is None:
+                return False
+            try:
+                uid_int = int(user_id)
+            except (TypeError, ValueError):
+                return False
+            m = dm_guild.get_member(uid_int)
+            if m is None:
+                return False
+            m_roles = getattr(m, "roles", None) or []
+            return any(getattr(r, "id", None) in allowed_roles for r in m_roles)
+
+        # Guild path: role check is scoped to THIS guild only.
+        # 1) Prefer the direct Member object passed in (correct guild by construction).
+        direct_roles = getattr(author, "roles", None) if author is not None else None
+        author_guild = getattr(author, "guild", None)
+        if direct_roles and (author_guild is None or author_guild.id == guild.id):
+            if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
+                return True
+        # 2) Fallback: resolve the Member in the message's guild only — NEVER
+        #    scan other mutual guilds (that is the cross-guild bypass bug).
+        try:
+            uid_int = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        m = guild.get_member(uid_int)
+        if m is None:
+            return False
+        m_roles = getattr(m, "roles", None) or []
+        return any(getattr(r, "id", None) in allowed_roles for r in m_roles)
+
+    # ── Slash command authorization ─────────────────────────────────────
+    # Slash commands (``_run_simple_slash`` and ``_handle_thread_create_slash``)
+    # are a separate Discord interaction surface from regular messages and
+    # historically ran with NO authorization check — bypassing every gate
+    # ``on_message`` enforces (DISCORD_ALLOWED_USERS, DISCORD_ALLOWED_ROLES,
+    # DISCORD_ALLOWED_CHANNELS, DISCORD_IGNORED_CHANNELS). Any guild member
+    # could invoke ``/background``, ``/restart``, ``/sethome``, etc. as the
+    # operator. ``_check_slash_authorization`` mirrors the on_message gates
+    # one-for-one so the slash surface honors the same trust boundary.
+    #
+    # By design, this is a no-op for deployments with no allowlist env vars
+    # set — ``_is_allowed_user`` returns True and the channel checks early-out
+    # — preserving the existing "single-tenant, all guild members trusted"
+    # default. Deployments that DO set any DISCORD_ALLOWED_* var get slash
+    # parity with on_message.
+
+    def _evaluate_slash_authorization(
+        self, interaction: "discord.Interaction",
+    ) -> Tuple[bool, Optional[str]]:
+        """Evaluate slash authorization without producing any response.
+
+        Returns ``(allowed, reason)``. ``reason`` is populated only when
+        ``allowed`` is False. This is the shared core used by both the
+        responding wrapper (``_check_slash_authorization``) and side-effect-
+        free callers like the ``/skill`` autocomplete callback, which must
+        return an empty list for unauthorized users instead of leaking an
+        ephemeral rejection per-keystroke.
+
+        Fail-closed semantics for malformed payloads: when an allowlist is
+        configured but the interaction is missing the data needed to
+        evaluate it (no channel id with channel policy active, no user
+        with user/role policy active), the gate REJECTS rather than
+        falling through. Without these guards a guild interaction that
+        happens to deserialize without a channel id would silently bypass
+        ``DISCORD_ALLOWED_CHANNELS`` and a payload missing ``user`` would
+        raise ``AttributeError`` in the user check below, surfacing as
+        an opaque interaction failure rather than a clean rejection.
+        """
+        chan_obj = getattr(interaction, "channel", None)
+        in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
+
+        # ── Channel scope (mirrors on_message lines 3374-3388) ──
+        # DMs aren't channel-gated — DMs follow on_message's DM lockdown
+        # path which has its own user-allowlist enforcement.
+        if not in_dm:
+            chan_id_raw = getattr(interaction, "channel_id", None) or getattr(
+                chan_obj, "id", None,
+            )
+            channel_ids: set = set()
+            if chan_id_raw is not None:
+                channel_ids.add(str(chan_id_raw))
+                # Mirror on_message: also test the parent channel for threads
+                # so per-channel allow/deny lists work consistently.
+                if isinstance(chan_obj, discord.Thread):
+                    parent_id = self._get_parent_channel_id(chan_obj)
+                    if parent_id:
+                        channel_ids.add(str(parent_id))
+
+            allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+            if allowed_raw:
+                allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
+                if "*" not in allowed:
+                    if not channel_ids:
+                        # Channel policy is configured but the interaction
+                        # has no resolvable channel id. Fail closed.
+                        return (
+                            False,
+                            "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
+                        )
+                    if not (channel_ids & allowed):
+                        return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
+
+            # Ignored beats allowed: even when a thread's parent channel
+            # is on the allowlist, an explicit DISCORD_IGNORED_CHANNELS
+            # entry on the thread or its parent rejects the interaction.
+            ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+            if ignored_raw and channel_ids:
+                ignored = {c.strip() for c in ignored_raw.split(",") if c.strip()}
+                if "*" in ignored or (channel_ids & ignored):
+                    return (False, "channel in DISCORD_IGNORED_CHANNELS")
+
+        # ── User / role allowlist (mirrors on_message line 681) ──
+        user = getattr(interaction, "user", None)
+        allowed_users = getattr(self, "_allowed_user_ids", set()) or set()
+        allowed_roles = getattr(self, "_allowed_role_ids", set()) or set()
+        if user is None or getattr(user, "id", None) is None:
+            # No identifiable user. With any user/role allowlist
+            # configured, fail closed rather than raise AttributeError
+            # on ``interaction.user.id`` below. With no allowlist this
+            # is the existing "no allowlist = everyone" backwards-compat.
+            if allowed_users or allowed_roles:
+                return (False, "missing interaction.user with allowlist configured")
+            return (True, None)
+
+        user_id = str(user.id)
+        # Pass guild + is_dm so role check is scoped to the originating
+        # guild and cross-guild DM bypass (#12136) can't land via the
+        # slash surface either.
+        interaction_guild = getattr(interaction, "guild", None)
+        if not self._is_allowed_user(
+            user_id,
+            author=user,
+            guild=interaction_guild,
+            is_dm=in_dm,
+        ):
+            return (
+                False,
+                "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES",
+            )
+
+        return (True, None)
+
+    async def _check_slash_authorization(
+        self, interaction: "discord.Interaction", command_text: str,
+    ) -> bool:
+        """Mirror on_message's user/role/channel gates onto a slash invocation.
+
+        Returns True to proceed. Returns False *after* sending an ephemeral
+        rejection, logging a warning, and scheduling a cross-platform admin
+        alert — the caller must stop on False (the interaction has already
+        been responded to).
+        """
+        allowed, reason = self._evaluate_slash_authorization(interaction)
+        if allowed:
+            return True
+        return await self._reject_slash(
+            interaction, command_text, reason=reason or "unauthorized",
+        )
+
+    async def _reject_slash(
+        self, interaction: "discord.Interaction", command_text: str, *, reason: str,
+    ) -> bool:
+        """Send ephemeral reject + log warning + schedule admin alert. Returns False.
+
+        Tolerates a missing ``interaction.user`` -- the fail-closed branch
+        in ``_evaluate_slash_authorization`` deliberately routes here for
+        malformed payloads (no user) when an allowlist is configured, and
+        ``str(interaction.user.id)`` would raise AttributeError before the
+        ephemeral rejection could be sent.
+        """
+        user = getattr(interaction, "user", None)
+        if user is not None:
+            user_id = str(getattr(user, "id", "?"))
+            user_name = getattr(user, "name", "?")
+        else:
+            user_id = "?"
+            user_name = "?"
+        chan_id = getattr(interaction, "channel_id", None) or getattr(
+            getattr(interaction, "channel", None), "id", None,
+        )
+        guild_id = getattr(interaction, "guild_id", None)
+
+        logger.warning(
+            "[Discord] Unauthorized slash attempt: user=%s id=%s channel=%s "
+            "guild=%s cmd=%r reason=%r",
+            user_name, user_id, chan_id, guild_id, command_text, reason,
+        )
+
+        try:
+            await interaction.response.send_message(
+                "You're not authorized to use this command.",
+                ephemeral=True,
+            )
+        except Exception as e:
+            # Interaction may already be responded to (e.g. caller deferred
+            # before the auth check, or Discord retried). Best-effort only.
+            logger.debug("[Discord] Could not send unauthorized ephemeral: %s", e)
+
+        # Fire-and-forget: don't block the interaction handler on Telegram I/O.
+        try:
+            asyncio.create_task(self._notify_unauthorized_slash(
+                user_name, user_id, chan_id, guild_id, command_text, reason,
+            ))
+        except Exception as e:
+            logger.debug("[Discord] Could not schedule admin notify task: %s", e)
+
         return False
+
+    async def _notify_unauthorized_slash(
+        self, user_name: str, user_id: str, chan_id, guild_id,
+        command_text: str, reason: str,
+    ) -> None:
+        """Best-effort cross-platform alert to the gateway operator.
+
+        Tries TELEGRAM first (most operators set TELEGRAM_HOME_CHANNEL),
+        then SLACK. Silently no-ops if no other platform is configured
+        with a home channel.
+
+        A soft send failure -- adapter.send() returning a result with
+        ``success=False`` rather than raising -- continues the fallback
+        chain. Treating a SendResult(success=False) as delivered would
+        mean a Telegram outage that the adapter politely surfaces (e.g.
+        rate-limit, auth failure) silently swallows the alert without
+        attempting Slack. Hard exceptions still take the same path via
+        the except branch below.
+        """
+        runner = getattr(self, "gateway_runner", None)
+        if not runner:
+            return
+        for target in (Platform.TELEGRAM, Platform.SLACK):
+            try:
+                adapter = runner.adapters.get(target)
+                if not adapter:
+                    continue
+                home = runner.config.get_home_channel(target)
+                if not home or not getattr(home, "chat_id", None):
+                    continue
+                msg = (
+                    "⚠️ Unauthorized Discord slash attempt\n"
+                    f"User: {user_name} ({user_id})\n"
+                    f"Channel: {chan_id} (guild {guild_id})\n"
+                    f"Command: {command_text}\n"
+                    f"Reason: {reason}"
+                )
+                result = await adapter.send(str(home.chat_id), msg)
+                # Only return on confirmed delivery. SendResult(success=False)
+                # -> continue to the next platform.
+                if getattr(result, "success", None) is False:
+                    logger.debug(
+                        "[Discord] Admin notify via %s returned success=False"
+                        " (error=%r); falling through",
+                        target, getattr(result, "error", None),
+                    )
+                    continue
+                return
+            except Exception as e:
+                logger.debug("[Discord] Admin notify via %s failed: %s", target, e)
 
     async def send_image_file(
         self,
@@ -2162,6 +2853,11 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception:
             pass  # logging must never block command dispatch
 
+        # Auth gate — must run before defer() so an ephemeral rejection can
+        # be delivered on the still-unresponded interaction.
+        if not await self._check_slash_authorization(interaction, command_text):
+            return
+
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
@@ -2246,10 +2942,6 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_usage(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/usage")
 
-        @tree.command(name="provider", description="Show available providers")
-        async def slash_provider(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/provider")
-
         @tree.command(name="help", description="Show available commands")
         async def slash_help(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/help")
@@ -2263,10 +2955,19 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_reload_mcp(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-mcp")
 
+        @tree.command(name="reload-skills", description="Re-scan ~/.hermes/skills/ for new or removed skills")
+        async def slash_reload_skills(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/reload-skills")
+
         @tree.command(name="voice", description="Toggle voice reply mode")
-        @discord.app_commands.describe(mode="Voice mode: on, off, tts, channel, leave, or status")
+        @discord.app_commands.describe(mode="Voice mode: join, channel, leave, on, tts, off, or status")
         @discord.app_commands.choices(mode=[
-            discord.app_commands.Choice(name="channel — join your voice channel", value="channel"),
+            # `join` and `channel` both route to _handle_voice_channel_join in
+            # gateway/run.py — expose both in the slash UI so autocomplete
+            # matches what the docs advertise and what the runner accepts when
+            # the command is typed as plain text.
+            discord.app_commands.Choice(name="join — join your voice channel", value="join"),
+            discord.app_commands.Choice(name="channel — join your voice channel (alias)", value="channel"),
             discord.app_commands.Choice(name="leave — leave voice channel", value="leave"),
             discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),
             discord.app_commands.Choice(name="tts — voice reply to all messages", value="tts"),
@@ -2306,7 +3007,8 @@ class DiscordAdapter(BasePlatformAdapter):
             message: str = "",
             auto_archive_duration: int = 1440,
         ):
-            await interaction.response.defer(ephemeral=True)
+            # defer() is performed inside the handler *after* the auth gate
+            # so a rejected invoker can receive an ephemeral rejection.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
@@ -2318,11 +3020,6 @@ class DiscordAdapter(BasePlatformAdapter):
         @discord.app_commands.describe(prompt="The prompt to run in the background")
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
-
-        @tree.command(name="btw", description="Ephemeral side question using session context")
-        @discord.app_commands.describe(question="Your side question (no tools, not persisted)")
-        async def slash_btw(interaction: discord.Interaction, question: str):
-            await self._run_simple_slash(interaction, f"/btw {question}")
 
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
@@ -2432,6 +3129,54 @@ class DiscordAdapter(BasePlatformAdapter):
         # supporting up to 25 categories × 25 skills = 625 skills.
         self._register_skill_group(tree)
 
+        # Optional defense-in-depth: hide every slash command from non-admin
+        # guild members in Discord's slash picker. Server-side authorization
+        # (``_check_slash_authorization``) is the actual gate; this is purely
+        # UX so users don't see commands they can't invoke. Off by default
+        # to preserve the slash UX for deployments that intentionally allow
+        # everyone in the guild.
+        if os.getenv("DISCORD_HIDE_SLASH_COMMANDS", "false").strip().lower() in (
+            "true", "1", "yes", "on",
+        ):
+            self._apply_owner_only_visibility(tree)
+
+    def _apply_owner_only_visibility(self, tree) -> None:
+        """Set default_member_permissions=0 on every registered slash command.
+
+        Discord interprets ``Permissions(0)`` as "requires no permissions",
+        which paradoxically means the command is hidden from every guild
+        member except those with the Administrator permission. Server admins
+        can re-grant per user/role via Server Settings → Integrations →
+        <bot> → Permissions.
+
+        Authoritative gate is ``_check_slash_authorization`` on every
+        invocation, which catches stale clients, role grants made by
+        mistake, and direct API calls bypassing Discord's UI hide.
+        """
+        try:
+            no_perms = discord.Permissions(0)
+        except Exception as e:
+            logger.warning(
+                "[Discord] _apply_owner_only_visibility: cannot build Permissions(0): %s",
+                e,
+            )
+            return
+        applied = 0
+        for cmd in tree.get_commands():
+            try:
+                cmd.default_permissions = no_perms
+                applied += 1
+            except Exception as e:
+                logger.debug(
+                    "[Discord] Could not set default_permissions on %r: %s",
+                    getattr(cmd, "name", "?"), e,
+                )
+        logger.info(
+            "[Discord] Hid %d slash command(s) from non-admin guild members "
+            "(opt-in defense in depth via DISCORD_HIDE_SLASH_COMMANDS).",
+            applied,
+        )
+
     def _register_skill_group(self, tree) -> None:
         """Register a single ``/skill`` command with autocomplete on the name.
 
@@ -2450,39 +3195,31 @@ class DiscordAdapter(BasePlatformAdapter):
         hidden skills. The slash picker also becomes more discoverable —
         Discord live-filters by the user's typed prefix against both the
         skill name and its description.
+
+        The entries list and lookup dict are stored on ``self`` rather
+        than captured in closure variables so :meth:`refresh_skill_group`
+        can repopulate them when the user runs ``/reload-skills`` without
+        needing to touch the Discord slash-command tree or trigger a
+        ``tree.sync()`` call.
         """
         try:
-            from hermes_cli.commands import discord_skill_commands_by_category
-
             existing_names = set()
             try:
                 existing_names = {cmd.name for cmd in tree.get_commands()}
             except Exception:
                 pass
 
-            # Reuse the existing collector for consistent filtering
-            # (per-platform disabled, hub-excluded, name clamping), then
-            # flatten — the category grouping was only useful for the
-            # nested layout.
-            categories, uncategorized, hidden = discord_skill_commands_by_category(
-                reserved_names=existing_names,
-            )
-            entries: list[tuple[str, str, str]] = list(uncategorized)
-            for cat_skills in categories.values():
-                entries.extend(cat_skills)
+            # Populate the instance-level entries/lookup so the
+            # autocomplete + handler callbacks below always read the
+            # freshest state. refresh_skill_group() re-runs the same
+            # collector and mutates these two attributes in place.
+            self._skill_entries: list[tuple[str, str, str]] = []
+            self._skill_lookup: dict[str, tuple[str, str]] = {}
+            self._skill_group_reserved_names: set[str] = set(existing_names)
+            self._refresh_skill_catalog_state()
 
-            if not entries:
+            if not self._skill_entries:
                 return
-
-            # Stable alphabetical order so the autocomplete suggestion
-            # list is predictable across restarts.
-            entries.sort(key=lambda t: t[0])
-
-            # name -> (description, cmd_key) — used by both the autocomplete
-            # callback and the handler for O(1) dispatch.
-            skill_lookup: dict[str, tuple[str, str]] = {
-                n: (d, k) for n, d, k in entries
-            }
 
             async def _autocomplete_name(
                 interaction: "discord.Interaction", current: str,
@@ -2493,10 +3230,29 @@ class DiscordAdapter(BasePlatformAdapter):
                 "/skill pdf" surfaces skills whose description mentions
                 PDFs even if the name doesn't. Discord caps this list at
                 25 entries per query.
+
+                Authorization: a quiet pre-check evaluates the slash
+                allowlists and returns ``[]`` for unauthorized users so
+                the installed skill catalog is not leaked to anyone who
+                can see the command in the picker. Returning a generic
+                empty list here is intentional — sending a per-keystroke
+                ephemeral rejection would produce a barrage of error
+                popups during typing.
+
+                Reads ``self._skill_entries`` so a ``/reload-skills`` run
+                since process start shows up on the very next keystroke.
                 """
+                try:
+                    allowed, _reason = self._evaluate_slash_authorization(interaction)
+                except Exception:
+                    # Defensive: never raise from autocomplete. Fail
+                    # closed by returning an empty suggestion list.
+                    return []
+                if not allowed:
+                    return []
                 q = (current or "").strip().lower()
                 choices: list = []
-                for name, desc, _key in entries:
+                for name, desc, _key in self._skill_entries:
                     if not q or q in name.lower() or (desc and q in desc.lower()):
                         if desc:
                             label = f"{name} — {desc}"
@@ -2520,7 +3276,13 @@ class DiscordAdapter(BasePlatformAdapter):
             async def _skill_handler(
                 interaction: "discord.Interaction", name: str, args: str = "",
             ):
-                entry = skill_lookup.get(name)
+                # Authorize BEFORE any skill lookup so that known and
+                # unknown skill names produce identical rejections for
+                # unauthorized users (no probing the installed catalog
+                # via "Unknown skill: <name>" responses).
+                if not await self._check_slash_authorization(interaction, "/skill"):
+                    return
+                entry = self._skill_lookup.get(name)
                 if not entry:
                     await interaction.response.send_message(
                         f"Unknown skill: `{name}`. Start typing for "
@@ -2542,15 +3304,73 @@ class DiscordAdapter(BasePlatformAdapter):
 
             logger.info(
                 "[%s] Registered /skill command with %d skill(s) via autocomplete",
-                self.name, len(entries),
+                self.name, len(self._skill_entries),
             )
-            if hidden:
+            if self._skill_group_hidden_count:
                 logger.info(
                     "[%s] %d skill(s) filtered out of /skill (name clamp / reserved)",
-                    self.name, hidden,
+                    self.name, self._skill_group_hidden_count,
                 )
         except Exception as exc:
             logger.warning("[%s] Failed to register /skill command: %s", self.name, exc)
+
+    def _refresh_skill_catalog_state(self) -> None:
+        """Re-scan disk for skills and repopulate ``self._skill_entries``.
+
+        Called once from :meth:`_register_skill_group` at startup and
+        again from :meth:`refresh_skill_group` whenever the user runs
+        ``/reload-skills``. No Discord API calls are made — autocomplete
+        and the handler both read from these instance attributes
+        directly, so an in-place mutation is sufficient.
+        """
+        from hermes_cli.commands import discord_skill_commands_by_category
+
+        reserved = getattr(self, "_skill_group_reserved_names", set())
+        categories, uncategorized, hidden = discord_skill_commands_by_category(
+            reserved_names=set(reserved),
+        )
+        entries: list[tuple[str, str, str]] = list(uncategorized)
+        for cat_skills in categories.values():
+            entries.extend(cat_skills)
+        # Stable alphabetical order so the autocomplete suggestion
+        # list is predictable across restarts.
+        entries.sort(key=lambda t: t[0])
+
+        self._skill_entries = entries
+        self._skill_lookup = {n: (d, k) for n, d, k in entries}
+        self._skill_group_hidden_count = hidden
+
+    def refresh_skill_group(self) -> tuple[int, int]:
+        """Rescan skills and update the live ``/skill`` autocomplete state.
+
+        Invoked by :meth:`gateway.run.GatewayOrchestrator._handle_reload_skills_command`
+        after :func:`agent.skill_commands.reload_skills` has refreshed
+        the in-process skill-command registry. Without this call, the
+        ``/skill`` autocomplete dropdown keeps showing the list captured
+        at process start — new skills stay invisible and deleted skills
+        return an "Unknown skill" error when clicked.
+
+        Because autocomplete options are fetched dynamically by Discord,
+        we only need to mutate the entries/lookup attributes read by the
+        callbacks — no ``tree.sync()`` is required.
+
+        Returns ``(new_count, hidden_count)``.
+        """
+        try:
+            self._refresh_skill_catalog_state()
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to refresh /skill autocomplete after reload: %s",
+                self.name, exc,
+            )
+            return (len(getattr(self, "_skill_entries", [])), 0)
+        logger.info(
+            "[%s] Refreshed /skill autocomplete: %d skill(s) available (%d filtered)",
+            self.name,
+            len(self._skill_entries),
+            self._skill_group_hidden_count,
+        )
+        return (len(self._skill_entries), self._skill_group_hidden_count)
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
@@ -2609,6 +3429,9 @@ class DiscordAdapter(BasePlatformAdapter):
         auto_archive_duration: int = 1440,
     ) -> None:
         """Create a Discord thread from a slash command and start a session in it."""
+        if not await self._check_slash_authorization(interaction, "/thread"):
+            return
+        await interaction.response.defer(ephemeral=True)
         result = await self._create_thread(
             interaction,
             name=name,
@@ -2688,21 +3511,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 skills: ["skill-a", "skill-b"]
         Also checks parent_id so forum threads inherit the forum's bindings.
         """
-        bindings = self.config.extra.get("channel_skill_bindings", [])
-        if not bindings:
-            return None
-        ids_to_check = {channel_id}
-        if parent_id:
-            ids_to_check.add(parent_id)
-        for entry in bindings:
-            entry_id = str(entry.get("id", ""))
-            if entry_id in ids_to_check:
-                skills = entry.get("skills") or entry.get("skill")
-                if isinstance(skills, str):
-                    return [skills]
-                if isinstance(skills, list) and skills:
-                    return list(dict.fromkeys(skills))  # dedup, preserve order
-        return None
+        from gateway.platforms.base import resolve_channel_skills
+        return resolve_channel_skills(self.config.extra, channel_id, parent_id)
 
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
@@ -2719,14 +3529,26 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
     def _discord_free_response_channels(self) -> set:
-        """Return Discord channel IDs where no bot mention is required."""
+        """Return Discord channel IDs where no bot mention is required.
+
+        A single ``"*"`` entry (either from a list or a comma-separated
+        string) is preserved in the returned set so callers can short-circuit
+        on wildcard membership, consistent with ``allowed_channels``.
+        """
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
-        if isinstance(raw, str) and raw.strip():
-            return {part.strip() for part in raw.split(",") if part.strip()}
+        # Coerce non-list scalars (str/int/float) to str before splitting.
+        # YAML parses a bare numeric value such as
+        # `free_response_channels: 1491973769726791812` as int, which was
+        # previously falling through the isinstance(str) branch and silently
+        # returning an empty set.  str() here accepts whatever scalar the YAML
+        # loader hands us without changing existing string/CSV semantics.
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
     def _thread_parent_channel(self, channel: Any) -> Any:
@@ -2904,6 +3726,7 @@ class DiscordAdapter(BasePlatformAdapter):
             view = ExecApprovalView(
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -2912,9 +3735,48 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_slash_confirm(
+        self, chat_id: str, title: str, message: str, session_key: str,
+        confirm_id: str, metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """Send a three-button slash-command confirmation prompt."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            # Embed description limit is 4096; message usually fits easily.
+            max_desc = 4088
+            body = message if len(message) <= max_desc else message[: max_desc - 3] + "..."
+            embed = discord.Embed(
+                title=title or "Confirm",
+                description=body,
+                color=discord.Color.orange(),
+            )
+
+            view = SlashConfirmView(
+                session_key=session_key,
+                confirm_id=confirm_id,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+
+            msg = await channel.send(embed=embed, view=view)
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an interactive button-based update prompt (Yes / No).
 
@@ -2924,9 +3786,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
         try:
-            channel = self._client.get_channel(int(chat_id))
+            target_id = metadata.get("thread_id") if metadata and metadata.get("thread_id") else chat_id
+            channel = self._client.get_channel(int(target_id))
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+                channel = await self._client.fetch_channel(int(target_id))
 
             default_hint = f" (default: {default})" if default else ""
             embed = discord.Embed(
@@ -2937,6 +3800,7 @@ class DiscordAdapter(BasePlatformAdapter):
             view = UpdatePromptView(
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
             )
             msg = await channel.send(embed=embed, view=view)
             return SendResult(success=True, message_id=str(msg.id))
@@ -2994,6 +3858,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 session_key=session_key,
                 on_model_selected=on_model_selected,
                 allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -3212,14 +4077,14 @@ class DiscordAdapter(BasePlatformAdapter):
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
             if allowed_channels_raw:
                 allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if not (channel_ids & allowed_channels):
+                if "*" not in allowed_channels and not (channel_ids & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
                     return
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
             ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
-            if channel_ids & ignored_channels:
+            if "*" in ignored_channels or (channel_ids & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return
 
@@ -3233,7 +4098,11 @@ class DiscordAdapter(BasePlatformAdapter):
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
             is_voice_linked_channel = current_channel_id in voice_linked_ids
-            is_free_channel = bool(channel_ids & free_channels) or is_voice_linked_channel
+            is_free_channel = (
+                "*" in free_channels
+                or bool(channel_ids & free_channels)
+                or is_voice_linked_channel
+            )
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
@@ -3250,12 +4119,13 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
                 if thread:
+                    parent_channel_id = str(message.channel.id)
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
@@ -3306,6 +4176,7 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
 
         # Build source
+        guild = getattr(message, "guild", None)
         source = self.build_source(
             chat_id=str(effective_channel.id),
             chat_name=chat_name,
@@ -3315,6 +4186,9 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             chat_topic=chat_topic,
             is_bot=getattr(message.author, "bot", False),
+            guild_id=str(guild.id) if guild else None,
+            parent_chat_id=parent_channel_id,
+            message_id=str(message.id),
         )
 
         # Build media URLs -- download image attachments to local cache so the
@@ -3540,6 +4414,72 @@ class DiscordAdapter(BasePlatformAdapter):
 # Discord UI Components (outside the adapter class)
 # ---------------------------------------------------------------------------
 
+
+def _component_check_auth(
+    interaction,
+    allowed_user_ids: Optional[set],
+    allowed_role_ids: Optional[set],
+) -> bool:
+    """Shared user-or-role OR semantics for component view button clicks.
+
+    Mirrors ``DiscordAdapter._is_allowed_user`` / the slash and on_message
+    gates so every Discord interaction surface honors the same trust
+    boundary. Component views (ExecApprovalView, SlashConfirmView,
+    UpdatePromptView, ModelPickerView) used to receive only
+    ``allowed_user_ids``: in role-only deployments
+    (DISCORD_ALLOWED_ROLES set, DISCORD_ALLOWED_USERS empty) the user
+    set was empty and the legacy "no allowlist = allow everyone" branch
+    let any guild member click the buttons -- approving exec commands,
+    cancelling slash confirmations, switching the model.
+
+    Behavior:
+
+      - both allowlists empty -> allow (preserves existing no-allowlist
+        deployments, no regression)
+      - user is in user allowlist -> allow
+      - role allowlist set + user has a role in it -> allow
+      - role allowlist set + interaction.user has no resolvable
+        ``roles`` attribute (e.g. DM context with a role policy active)
+        -> reject (fail closed)
+      - otherwise -> reject
+    """
+    user_set = allowed_user_ids or set()
+    role_set = allowed_role_ids or set()
+    has_users = bool(user_set)
+    has_roles = bool(role_set)
+    if not has_users and not has_roles:
+        return True
+
+    user = getattr(interaction, "user", None)
+    if user is None:
+        return False
+
+    if has_users:
+        try:
+            uid = str(user.id)
+        except AttributeError:
+            uid = ""
+        if uid and uid in user_set:
+            return True
+
+    if has_roles:
+        roles_attr = getattr(user, "roles", None)
+        if roles_attr is None:
+            # Role policy is configured but the interaction doesn't
+            # carry role data (DM-context Member, raw User payload).
+            # Fail closed: a user without a resolvable role list cannot
+            # satisfy a role allowlist.
+            return False
+        try:
+            user_role_ids = {getattr(r, "id", None) for r in roles_attr}
+        except TypeError:
+            return False
+        if user_role_ids & role_set:
+            return True
+
+    return False
+
+
 if DISCORD_AVAILABLE:
 
     class ExecApprovalView(discord.ui.View):
@@ -3552,17 +4492,23 @@ if DISCORD_AVAILABLE:
         Only users in the allowed list can click.  Times out after 5 minutes.
         """
 
-        def __init__(self, session_key: str, allowed_user_ids: set):
+        def __init__(
+            self,
+            session_key: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized."""
-            if not self.allowed_user_ids:
-                return True  # No allowlist = anyone can approve
-            return str(interaction.user.id) in self.allowed_user_ids
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
 
         async def _resolve(
             self, interaction: discord.Interaction, choice: str,
@@ -3636,6 +4582,110 @@ if DISCORD_AVAILABLE:
             for child in self.children:
                 child.disabled = True
 
+    class SlashConfirmView(discord.ui.View):
+        """Three-button view for generic slash-command confirmations.
+
+        Used by ``/reload-mcp`` and any future slash command routed through
+        ``GatewayRunner._request_slash_confirm``.  Buttons map to the
+        gateway's three choices:
+
+          * "Approve Once"   → ``choice="once"``
+          * "Always Approve" → ``choice="always"``
+          * "Cancel"         → ``choice="cancel"``
+
+        Clicking calls the module-level
+        ``tools.slash_confirm.resolve(session_key, confirm_id, choice)``
+        which runs the handler the runner stored for this ``session_key``.
+        Only users in the adapter's allowlist can click.  Times out after
+        5 minutes (matches the gateway primitive's timeout).
+        """
+
+        def __init__(
+            self,
+            session_key: str,
+            confirm_id: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=300)
+            self.session_key = session_key
+            self.confirm_id = confirm_id
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
+
+        async def _resolve(
+            self, interaction: discord.Interaction, choice: str,
+            color: discord.Color, label: str,
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This prompt has already been resolved~", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to answer this prompt~", ephemeral=True,
+                )
+                return
+
+            self.resolved = True
+
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+
+            for child in self.children:
+                child.disabled = True
+
+            await interaction.response.edit_message(embed=embed, view=self)
+
+            # Resolve via the module-level primitive.  If the handler
+            # returns a follow-up message, post it in the same channel.
+            try:
+                from tools import slash_confirm as _slash_confirm_mod
+                result_text = await _slash_confirm_mod.resolve(
+                    self.session_key, self.confirm_id, choice,
+                )
+                if result_text:
+                    await interaction.followup.send(result_text)
+                logger.info(
+                    "Discord button resolved slash-confirm for session %s "
+                    "(choice=%s, user=%s)",
+                    self.session_key, choice, interaction.user.display_name,
+                )
+            except Exception as exc:
+                logger.error("Discord slash-confirm resolve failed: %s", exc, exc_info=True)
+
+        @discord.ui.button(label="Approve Once", style=discord.ButtonStyle.green)
+        async def approve_once(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+
+        @discord.ui.button(label="Always Approve", style=discord.ButtonStyle.blurple)
+        async def approve_always(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "always", discord.Color.purple(), "Always approved")
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
+        async def cancel(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "cancel", discord.Color.greyple(), "Cancelled")
+
+        async def on_timeout(self):
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+
     class UpdatePromptView(discord.ui.View):
         """Interactive Yes/No buttons for ``hermes update`` prompts.
 
@@ -3645,16 +4695,22 @@ if DISCORD_AVAILABLE:
         5-minute timeout on its side).
         """
 
-        def __init__(self, session_key: str, allowed_user_ids: set):
+        def __init__(
+            self,
+            session_key: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
             super().__init__(timeout=300)
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
-            if not self.allowed_user_ids:
-                return True
-            return str(interaction.user.id) in self.allowed_user_ids
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
 
         async def _respond(
             self, interaction: discord.Interaction, answer: str,
@@ -3731,6 +4787,7 @@ if DISCORD_AVAILABLE:
             session_key: str,
             on_model_selected,
             allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
         ):
             super().__init__(timeout=120)
             self.providers = providers
@@ -3739,15 +4796,16 @@ if DISCORD_AVAILABLE:
             self.session_key = session_key
             self.on_model_selected = on_model_selected
             self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
             self._selected_provider: str = ""
 
             self._build_provider_select()
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
-            if not self.allowed_user_ids:
-                return True
-            return str(interaction.user.id) in self.allowed_user_ids
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
 
         def _build_provider_select(self):
             """Build the provider dropdown menu."""
@@ -3866,6 +4924,15 @@ if DISCORD_AVAILABLE:
 
             self.resolved = True
             model_id = interaction.data["values"][0]
+            self.clear_items()
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Switching Model",
+                    description=f"Switching to `{model_id}`...",
+                    color=discord.Color.blue(),
+                ),
+                view=None,
+            )
 
             try:
                 result_text = await self.on_model_selected(
@@ -3876,14 +4943,13 @@ if DISCORD_AVAILABLE:
             except Exception as exc:
                 result_text = f"Error switching model: {exc}"
 
-            self.clear_items()
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=discord.Embed(
                     title="⚙ Model Switched",
                     description=result_text,
                     color=discord.Color.green(),
                 ),
-                view=self,
+                view=None,
             )
 
         async def _on_back(self, interaction: discord.Interaction):

@@ -1,14 +1,14 @@
 ---
-title: "Unsloth"
+title: "Unsloth — Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM"
 sidebar_label: "Unsloth"
-description: "Expert guidance for fast fine-tuning with Unsloth - 2-5x faster training, 50-80% less memory, LoRA/QLoRA optimization"
+description: "Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Unsloth
 
-Expert guidance for fast fine-tuning with Unsloth - 2-5x faster training, 50-80% less memory, LoRA/QLoRA optimization
+Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM.
 
 ## Skill metadata
 
@@ -94,4 +94,4 @@ To refresh this skill with updated documentation:
 1. Re-run the scraper with the same configuration
 2. The skill will be rebuilt with the latest information
 
-&lt;!-- Trigger re-upload 1763621536 -->
+<!-- Trigger re-upload 1763621536 -->

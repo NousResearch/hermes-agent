@@ -20,6 +20,7 @@ test runner at ``scripts/run_tests.sh``.
 """
 
 import asyncio
+import logging
 import os
 import re
 import signal
@@ -174,7 +175,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_KEY",
     "HERMES_GATEWAY_SESSION",
     "HERMES_PLATFORM",
+    "HERMES_MODEL",
+    "HERMES_INFERENCE_MODEL",
     "HERMES_INFERENCE_PROVIDER",
+    "HERMES_TUI_PROVIDER",
     "HERMES_MANAGED",
     "HERMES_DEV",
     "HERMES_CONTAINER",
@@ -184,6 +188,14 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
+    "TERMINAL_CWD",
+    "TERMINAL_ENV",
+    "TERMINAL_VERCEL_RUNTIME",
+    "TERMINAL_CONTAINER_CPU",
+    "TERMINAL_CONTAINER_DISK",
+    "TERMINAL_CONTAINER_MEMORY",
+    "TERMINAL_CONTAINER_PERSISTENT",
+    "TERMINAL_DOCKER_RUN_AS_HOST_USER",
     "BROWSER_CDP_URL",
     "CAMOFOX_URL",
     # Platform allowlists — not credentials, but if set from any source
@@ -211,6 +223,21 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SIGNAL_ALLOW_ALL_USERS",
     "EMAIL_ALLOW_ALL_USERS",
     "SMS_ALLOW_ALL_USERS",
+    # Platform gating — set by load_gateway_config() as a side effect when
+    # a config.yaml is present, so individual test bodies that call the
+    # loader leak these values into later tests on the same xdist worker.
+    # Force-clear on every test setup so the leak can't happen.
+    "SLACK_REQUIRE_MENTION",
+    "SLACK_STRICT_MENTION",
+    "SLACK_FREE_RESPONSE_CHANNELS",
+    "SLACK_ALLOW_BOTS",
+    "SLACK_REACTIONS",
+    "DISCORD_REQUIRE_MENTION",
+    "DISCORD_FREE_RESPONSE_CHANNELS",
+    "TELEGRAM_REQUIRE_MENTION",
+    "WHATSAPP_REQUIRE_MENTION",
+    "DINGTALK_REQUIRE_MENTION",
+    "MATRIX_REQUIRE_MENTION",
 })
 
 
@@ -273,6 +300,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
     except Exception:
         pass
+    # Explicitly clear provider-specific base URL overrides that don't match
+    # the generic credential-shaped env-var filter above.
+    monkeypatch.delenv("GMI_API_KEY", raising=False)
+    monkeypatch.delenv("GMI_BASE_URL", raising=False)
 
 
 # Backward-compat alias — old tests reference this fixture name. Keep it
@@ -307,6 +338,14 @@ def _reset_module_state():
     that don't exist yet (test collection before production import) are
     skipped silently — production import later creates fresh empty state.
     """
+    # --- logging — quiet/one-shot paths mutate process-global logger state ---
+    logging.disable(logging.NOTSET)
+    for _logger_name in ("tools", "run_agent", "trajectory_compressor", "cron", "hermes_cli"):
+        _logger = logging.getLogger(_logger_name)
+        _logger.disabled = False
+        _logger.setLevel(logging.NOTSET)
+        _logger.propagate = True
+
     # --- tools.approval — the single biggest source of cross-test pollution ---
     try:
         from tools import approval as _approval_mod
@@ -358,6 +397,26 @@ def _reset_module_state():
     try:
         from tools import env_passthrough as _envp_mod
         _envp_mod._allowed_env_vars_var.set(set())
+    except Exception:
+        pass
+
+    # --- tools.terminal_tool — active environment/cwd cache ---
+    # File tools prefer a live terminal cwd when one is cached for the task.
+    # Clear terminal environments between tests so a prior terminal call can't
+    # override TERMINAL_CWD in path-resolution tests.
+    try:
+        from tools import terminal_tool as _term_mod
+        _envs_to_cleanup = []
+        with _term_mod._env_lock:
+            _envs_to_cleanup = list(_term_mod._active_environments.values())
+            _term_mod._active_environments.clear()
+            _term_mod._last_activity.clear()
+            _term_mod._creation_locks.clear()
+        for _env in _envs_to_cleanup:
+            try:
+                _env.cleanup()
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -424,15 +483,26 @@ def _ensure_current_event_loop(request):
     A number of gateway tests still use asyncio.get_event_loop().run_until_complete(...).
     Ensure they always have a usable loop without interfering with pytest-asyncio's
     own loop management for @pytest.mark.asyncio tests.
+
+    On Python 3.12+, ``asyncio.get_event_loop_policy().get_event_loop()`` with no
+    *running* loop emits DeprecationWarning; skip that path and install a fresh
+    loop via ``new_event_loop()`` instead.
     """
     if request.node.get_closest_marker("asyncio") is not None:
         yield
         return
 
+    loop = None
     try:
-        loop = asyncio.get_event_loop_policy().get_event_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
-        loop = None
+        pass
+
+    if loop is None and sys.version_info < (3, 12):
+        try:
+            loop = asyncio.get_event_loop_policy().get_event_loop()
+        except RuntimeError:
+            loop = None
 
     created = loop is None or loop.is_closed()
     if created:
@@ -461,3 +531,29 @@ def _enforce_test_timeout():
     yield
     signal.alarm(0)
     signal.signal(signal.SIGALRM, old)
+
+
+@pytest.fixture(autouse=True)
+def _reset_tool_registry_caches():
+    """Clear tool-registry-level caches between tests.
+
+    The production registry caches ``check_fn()`` results for 30 s
+    (see tools/registry.py) and :func:`get_tool_definitions` memoizes
+    its result (see model_tools.py). Both are keyed on state that tests
+    routinely mutate (env vars, registry._generation, config.yaml mtime)
+    — but a stale result from test A can still be served to test B
+    because 30 s covers the entire suite, and xdist worker reuse means
+    one test's cache lands in another's process. Clearing before every
+    test keeps hermetic behavior.
+    """
+    try:
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
+    except ImportError:
+        pass
+    try:
+        from model_tools import _clear_tool_defs_cache
+        _clear_tool_defs_cache()
+    except ImportError:
+        pass
+    yield

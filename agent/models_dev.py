@@ -149,6 +149,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "stepfun": "stepfun",
     "kimi-coding-cn": "kimi-for-coding",
     "minimax": "minimax",
+    "minimax-oauth": "minimax",
     "minimax-cn": "minimax-cn",
     "deepseek": "deepseek",
     "alibaba": "alibaba",
@@ -380,14 +381,18 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
 
     # Extract capability flags (default to False if missing)
     supports_tools = bool(entry.get("tool_call", False))
-    # Vision: check both the `attachment` flag and `modalities.input` for "image".
-    # Some models (e.g. gemma-4) list image in input modalities but not attachment.
+    # Vision: prefer explicit `modalities.input` when models.dev provides it.
+    # The older `attachment` flag can be stale or too broad for image routing;
+    # fall back to it only when the input modalities are absent/invalid.
     input_mods = entry.get("modalities", {})
     if isinstance(input_mods, dict):
-        input_mods = input_mods.get("input", [])
+        input_mods = input_mods.get("input")
     else:
-        input_mods = []
-    supports_vision = bool(entry.get("attachment", False)) or "image" in input_mods
+        input_mods = None
+    if isinstance(input_mods, list):
+        supports_vision = "image" in input_mods
+    else:
+        supports_vision = bool(entry.get("attachment", False))
     supports_reasoning = bool(entry.get("reasoning", False))
 
     # Extract limits

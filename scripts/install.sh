@@ -15,6 +15,23 @@
 
 set -e
 
+# Guard against environment leakage when the installer is launched from another
+# Python-driven tool session (e.g. Hermes terminal tool). A pre-set PYTHONPATH
+# can force pip/entrypoints to import a different checkout than the one being
+# installed, which makes fresh installs appear broken or stale.
+if [ -n "${PYTHONPATH:-}" ]; then
+    echo "⚠ Ignoring inherited PYTHONPATH during install to avoid module shadowing"
+    unset PYTHONPATH
+fi
+if [ -n "${PYTHONHOME:-}" ]; then
+    echo "⚠ Ignoring inherited PYTHONHOME during install"
+    unset PYTHONHOME
+fi
+
+# Prevent uv from discovering config files (uv.toml, pyproject.toml) from the
+# wrong user's home directory when running under sudo -u <user>.  See #21269.
+export UV_NO_CONFIG=1
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -29,9 +46,24 @@ BOLD='\033[1m'
 REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
 REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-INSTALL_DIR="${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
+# INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
+# FHS-style layout for root installs.  Track whether the user gave us an
+# explicit directory — if so we never override it.
+if [ -n "${HERMES_INSTALL_DIR:-}" ]; then
+    INSTALL_DIR="$HERMES_INSTALL_DIR"
+    INSTALL_DIR_EXPLICIT=true
+else
+    INSTALL_DIR=""
+    INSTALL_DIR_EXPLICIT=false
+fi
 PYTHON_VERSION="3.11"
 NODE_VERSION="22"
+
+# FHS-style root install layout (set by resolve_install_layout when applicable):
+#   code at /usr/local/lib/hermes-agent, command at /usr/local/bin/hermes,
+#   data still at /root/.hermes (HERMES_HOME).  Matches Claude Code / Codex CLI
+#   and keeps Docker bind-mounted /root/ volumes lean.
+ROOT_FHS_LAYOUT=false
 
 # Options
 USE_VENV=true
@@ -64,6 +96,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dir)
             INSTALL_DIR="$2"
+            INSTALL_DIR_EXPLICIT=true
             shift 2
             ;;
         --hermes-home)
@@ -79,9 +112,20 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --branch NAME  Git branch to install (default: main)"
-            echo "  --dir PATH     Installation directory (default: ~/.hermes/hermes-agent)"
+            echo "  --dir PATH     Installation directory"
+            echo "                   default (non-root):  ~/.hermes/hermes-agent"
+            echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
             echo "  --hermes-home PATH  Data directory (default: ~/.hermes, or \$HERMES_HOME)"
             echo "  -h, --help     Show this help"
+            echo ""
+            echo "Notes:"
+            echo "  When running as root on Linux, Hermes installs the code under"
+            echo "  /usr/local/lib/hermes-agent and links the command into"
+            echo "  /usr/local/bin/hermes (FHS layout — matches Claude Code / Codex CLI)."
+            echo "  Data, config, sessions, and logs still live in \$HERMES_HOME"
+            echo "  (default /root/.hermes).  This keeps Docker bind-mounted volumes"
+            echo "  small and ensures the command is on PATH for all shells."
+            echo "  Existing installs at \$HERMES_HOME/hermes-agent are preserved in-place."
             exit 0
             ;;
         *)
@@ -163,9 +207,60 @@ is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
 
+# Decide where the repo checkout + venv live, and where the `hermes` command
+# symlink goes.  Called after detect_os so $OS/$DISTRO are known.
+#
+# Defaults:
+#   - Non-root, any OS:       INSTALL_DIR = $HERMES_HOME/hermes-agent
+#                             command link in $HOME/.local/bin
+#   - Termux (any uid):       INSTALL_DIR = $HERMES_HOME/hermes-agent
+#                             command link in $PREFIX/bin (already on PATH)
+#   - Root on Linux (new):    INSTALL_DIR = /usr/local/lib/hermes-agent
+#                             command link in /usr/local/bin
+#                             (unless a legacy install already exists at
+#                              $HERMES_HOME/hermes-agent — then preserve it)
+#
+# Always no-op when the user set --dir or $HERMES_INSTALL_DIR.
+resolve_install_layout() {
+    if [ "$INSTALL_DIR_EXPLICIT" = true ]; then
+        log_info "Install directory: $INSTALL_DIR (explicit)"
+        return 0
+    fi
+
+    # Termux: package manager manages /data/data/..., keep code in HERMES_HOME.
+    if is_termux; then
+        INSTALL_DIR="$HERMES_HOME/hermes-agent"
+        return 0
+    fi
+
+    # Root on Linux: prefer FHS layout unless a legacy install already exists.
+    # macOS root installs keep the legacy layout because /usr/local/ on macOS
+    # is Homebrew territory and we don't want to fight that.
+    if [ "$OS" = "linux" ] && [ "$(id -u)" -eq 0 ]; then
+        if [ -d "$HERMES_HOME/hermes-agent/.git" ]; then
+            INSTALL_DIR="$HERMES_HOME/hermes-agent"
+            log_info "Existing install detected at $INSTALL_DIR — keeping legacy layout"
+            log_info "  (new root installs use /usr/local/lib/hermes-agent)"
+            return 0
+        fi
+        INSTALL_DIR="/usr/local/lib/hermes-agent"
+        ROOT_FHS_LAYOUT=true
+        log_info "Root install on Linux — using FHS layout"
+        log_info "  Code:    $INSTALL_DIR"
+        log_info "  Command: /usr/local/bin/hermes"
+        log_info "  Data:    $HERMES_HOME (unchanged)"
+        return 0
+    fi
+
+    # Default: non-root, non-Termux → legacy user-scoped layout.
+    INSTALL_DIR="$HERMES_HOME/hermes-agent"
+}
+
 get_command_link_dir() {
     if is_termux && [ -n "${PREFIX:-}" ]; then
         echo "$PREFIX/bin"
+    elif [ "$ROOT_FHS_LAYOUT" = true ]; then
+        echo "/usr/local/bin"
     else
         echo "$HOME/.local/bin"
     fi
@@ -174,6 +269,8 @@ get_command_link_dir() {
 get_command_link_display_dir() {
     if is_termux && [ -n "${PREFIX:-}" ]; then
         echo '$PREFIX/bin'
+    elif [ "$ROOT_FHS_LAYOUT" = true ]; then
+        echo '/usr/local/bin'
     else
         echo '~/.local/bin'
     fi
@@ -522,6 +619,41 @@ install_node() {
     HAS_NODE=true
 }
 
+check_network_prerequisites() {
+    log_info "Checking internet connectivity for package install and web tools..."
+
+    local url
+    local failed=false
+    local checks=("https://pypi.org/simple/" "https://duckduckgo.com/")
+
+    if ! command -v curl >/dev/null 2>&1; then
+        log_warn "curl not found; skipping connectivity probes"
+        return 0
+    fi
+
+    for url in "${checks[@]}"; do
+        if ! curl -fsSI --max-time 8 "$url" >/dev/null 2>&1; then
+            failed=true
+            log_warn "Could not reach $url"
+        fi
+    done
+
+    if [ "$failed" = false ]; then
+        log_success "Internet connectivity looks good"
+        return 0
+    fi
+
+    if [ "$DISTRO" = "termux" ]; then
+        log_warn "Termux network prerequisites may be incomplete."
+        log_info "Try: pkg install -y ca-certificates curl && pkg update"
+        log_info "If mirrors are stale: termux-change-repo"
+        log_info "Then test: curl -I https://pypi.org/simple/ && curl -I https://duckduckgo.com/"
+    else
+        log_warn "Network checks failed. Hermes install may complete, but web search and dependency downloads can fail."
+        log_info "Verify internet/DNS and retry if pip install fails."
+    fi
+}
+
 install_system_packages() {
     # Detect what's missing
     HAS_RIPGREP=false
@@ -549,7 +681,7 @@ install_system_packages() {
     # Termux always needs the Android build toolchain for the tested pip path,
     # even when ripgrep/ffmpeg are already present.
     if [ "$DISTRO" = "termux" ]; then
-        local termux_pkgs=(clang rust make pkg-config libffi openssl)
+        local termux_pkgs=(clang rust make pkg-config libffi openssl ca-certificates curl)
         if [ "$need_ripgrep" = true ]; then
             termux_pkgs+=("ripgrep")
         fi
@@ -649,9 +781,12 @@ install_system_packages() {
                         return 0
                     fi
                 fi
-            elif [ -e /dev/tty ]; then
+            elif (: </dev/tty) 2>/dev/null; then
                 # Non-interactive (e.g. curl | bash) but a terminal is available.
                 # Read the prompt from /dev/tty (same approach the setup wizard uses).
+                # Probe by actually opening /dev/tty: a bare existence test passes
+                # in Docker builds where the device node is in the mount namespace
+                # but opening fails with ENXIO. See #16746.
                 echo ""
                 log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
                 log_info "Hermes Agent itself does not require or retain root access."
@@ -849,17 +984,24 @@ install_deps() {
         fi
 
         "$PIP_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null
-        if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
-            log_warn "Termux feature install (.[termux]) failed, trying base install..."
-            if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
-                log_error "Package installation failed on Termux."
-                log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl"
-                log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux]' -c constraints-termux.txt"
-                exit 1
+
+        # Try the broad Termux profile first (best-effort "install all" for Android),
+        # then fall back to the conservative Termux baseline, then base package.
+        if ! "$PIP_PYTHON" -m pip install -e '.[termux-all]' -c constraints-termux.txt; then
+            log_warn "Termux broad profile (.[termux-all]) failed, trying baseline Termux profile..."
+            if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
+                log_warn "Termux baseline profile (.[termux]) failed, trying base install..."
+                if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
+                    log_error "Package installation failed on Termux."
+                    log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl ca-certificates curl"
+                    log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
+                    exit 1
+                fi
             fi
         fi
 
         log_success "Main package installed"
+        log_info "Termux note: matrix e2ee and local faster-whisper extras are excluded from .[termux-all] due to upstream Android wheel/toolchain blockers."
         log_info "Termux note: browser/WhatsApp tooling is not installed by default; see the Termux guide for optional follow-up steps."
 
         if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
@@ -951,7 +1093,7 @@ setup_path() {
         log_warn "hermes entry point not found at $HERMES_BIN"
         log_info "This usually means the pip install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
-            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux]' -c constraints-termux.txt"
+            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
         else
             log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[all]'"
         fi
@@ -964,13 +1106,56 @@ setup_path() {
     command_link_display_dir="$(get_command_link_display_dir)"
 
     # Create a user-facing shim for the hermes command.
+    # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
+    # can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
-    ln -sf "$HERMES_BIN" "$command_link_dir/hermes"
-    log_success "Symlinked hermes → $command_link_display_dir/hermes"
+    cat > "$command_link_dir/hermes" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$HERMES_BIN" "\$@"
+EOF
+    chmod +x "$command_link_dir/hermes"
+    log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
     if [ "$DISTRO" = "termux" ]; then
         export PATH="$command_link_dir:$PATH"
         log_info "$command_link_display_dir is the native Termux command path"
+        log_success "hermes command ready"
+        return 0
+    fi
+
+    # FHS layout: /usr/local/bin is normally on PATH for login shells (via
+    # /etc/profile pathmunge), but on RHEL/CentOS/Rocky/Alma 8+ non-login
+    # interactive root shells (su, sudo -s, tmux panes, some web terminals)
+    # only source /etc/bashrc, which does NOT add /usr/local/bin — and
+    # /root/.bash_profile doesn't either.  So verify with `command -v` and
+    # fall back to writing a PATH guard into /root/.bashrc when needed.
+    if [ "$ROOT_FHS_LAYOUT" = true ]; then
+        export PATH="$command_link_dir:$PATH"
+        # Probe a fresh non-login interactive bash the way the user will use it.
+        # `bash -i -c` sources ~/.bashrc but NOT ~/.bash_profile or /etc/profile,
+        # which is the exact scenario where RHEL root loses /usr/local/bin.
+        if env -i HOME="$HOME" TERM="${TERM:-dumb}" bash -i -c 'command -v hermes' \
+                >/dev/null 2>&1; then
+            log_info "/usr/local/bin is already on PATH for all shells"
+            log_success "hermes command ready"
+            return 0
+        fi
+
+        log_info "hermes not on PATH in non-login shells (common on RHEL-family)"
+        PATH_LINE='export PATH="/usr/local/bin:$PATH"'
+        PATH_COMMENT='# Hermes Agent — ensure /usr/local/bin is on PATH (RHEL non-login shells)'
+        for SHELL_CONFIG in "$HOME/.bashrc" "$HOME/.bash_profile"; do
+            [ -f "$SHELL_CONFIG" ] || continue
+            if ! grep -v '^[[:space:]]*#' "$SHELL_CONFIG" 2>/dev/null \
+                    | grep -qE 'PATH=.*(/usr/local/bin|\$command_link_dir)'; then
+                echo "" >> "$SHELL_CONFIG"
+                echo "$PATH_COMMENT" >> "$SHELL_CONFIG"
+                echo "$PATH_LINE" >> "$SHELL_CONFIG"
+                log_success "Added /usr/local/bin to PATH in $SHELL_CONFIG"
+            fi
+        done
         log_success "hermes command ready"
         return 0
     fi
@@ -1215,7 +1400,12 @@ run_setup_wizard() {
     # The setup wizard reads from /dev/tty, so it works even when the
     # install script itself is piped (curl | bash). Only skip if no
     # terminal is available at all (e.g. Docker build, CI).
-    if ! [ -e /dev/tty ]; then
+    #
+    # Probe by actually opening /dev/tty: a bare existence test passes
+    # in Docker builds where the device node is in the mount namespace
+    # but opening fails with ENXIO, so the wizard would proceed and
+    # then crash on `< /dev/tty` below.
+    if ! (: </dev/tty) 2>/dev/null; then
         log_info "Setup wizard skipped (no terminal available). Run 'hermes setup' after install."
         return 0
     fi
@@ -1277,7 +1467,10 @@ maybe_start_gateway() {
         fi
     fi
 
-    if ! [ -e /dev/tty ]; then
+    # Probe by actually opening /dev/tty: a bare existence test passes
+    # in Docker builds where the device node is in the mount namespace
+    # but opening fails with ENXIO. See #16746.
+    if ! (: </dev/tty) 2>/dev/null; then
         log_info "Gateway setup skipped (no terminal available). Run 'hermes gateway install' later."
         return 0
     fi
@@ -1339,12 +1532,12 @@ print_success() {
     echo ""
 
     # Show file locations
-    echo -e "${CYAN}${BOLD}📁 Your files (all in ~/.hermes/):${NC}"
+    echo -e "${CYAN}${BOLD}📁 Your files:${NC}"
     echo ""
-    echo -e "   ${YELLOW}Config:${NC}    ~/.hermes/config.yaml"
-    echo -e "   ${YELLOW}API Keys:${NC}  ~/.hermes/.env"
-    echo -e "   ${YELLOW}Data:${NC}      ~/.hermes/cron/, sessions/, logs/"
-    echo -e "   ${YELLOW}Code:${NC}      ~/.hermes/hermes-agent/"
+    echo -e "   ${YELLOW}Config:${NC}    $HERMES_HOME/config.yaml"
+    echo -e "   ${YELLOW}API Keys:${NC}  $HERMES_HOME/.env"
+    echo -e "   ${YELLOW}Data:${NC}      $HERMES_HOME/cron/, sessions/, logs/"
+    echo -e "   ${YELLOW}Code:${NC}      $INSTALL_DIR"
     echo ""
 
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
@@ -1363,6 +1556,9 @@ print_success() {
     echo ""
     if [ "$DISTRO" = "termux" ]; then
         echo -e "${YELLOW}⚡ 'hermes' was linked into $(get_command_link_display_dir), which is already on PATH in Termux.${NC}"
+        echo ""
+    elif [ "$ROOT_FHS_LAYOUT" = true ]; then
+        echo -e "${YELLOW}⚡ 'hermes' was linked into /usr/local/bin and is ready to use — no shell reload needed.${NC}"
         echo ""
     else
         echo -e "${YELLOW}⚡ Reload your shell to use 'hermes' command:${NC}"
@@ -1415,10 +1611,12 @@ main() {
     print_banner
 
     detect_os
+    resolve_install_layout
     install_uv
     check_python
     check_git
     check_node
+    check_network_prerequisites
     install_system_packages
 
     clone_repo

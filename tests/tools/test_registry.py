@@ -292,6 +292,7 @@ class TestBuiltinDiscovery:
     def test_matches_previous_manual_builtin_tool_set(self):
         expected = {
             "tools.browser_cdp_tool",
+            "tools.browser_dialog_tool",
             "tools.browser_tool",
             "tools.clarify_tool",
             "tools.code_execution_tool",
@@ -303,6 +304,7 @@ class TestBuiltinDiscovery:
             "tools.file_tools",
             "tools.homeassistant_tool",
             "tools.image_generation_tool",
+            "tools.kanban_tools",
             "tools.memory_tool",
             "tools.mixture_of_agents_tool",
             "tools.process_registry",
@@ -316,6 +318,7 @@ class TestBuiltinDiscovery:
             "tools.tts_tool",
             "tools.vision_tools",
             "tools.web_tools",
+            "tools.yuanbao_tools",
         }
 
         with patch("tools.registry.importlib.import_module"):

@@ -1,25 +1,41 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
-import { memo } from 'react'
+import { memo, useState } from 'react'
 
-import { sectionMode } from '../domain/details.js'
 import { LONG_MSG } from '../config/limits.js'
+import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
-import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi } from '../lib/text.js'
+import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
+import {
+  boundedHistoryRenderText,
+  boundedLiveRenderText,
+  compactPreview,
+  hasAnsi,
+  isPasteBackedText,
+  stripAnsi
+} from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { DetailsMode, Msg, SectionVisibility } from '../types.js'
+import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { Md } from './markdown.js'
+import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
+import { TodoPanel } from './todoPanel.js'
+
+// Collapse threshold for long system messages (system prompt etc.)
+const SYSTEM_COLLAPSE_CHARS = 400
 
 export const MessageLine = memo(function MessageLine({
   cols,
   compact,
   detailsMode = 'collapsed',
+  detailsModeCommandOverride = false,
   isStreaming = false,
+  limitHistoryRender = false,
   msg,
   sections,
-  t
+  t,
+  tools = []
 }: MessageLineProps) {
   // Per-section overrides win over the global mode, so resolve each section
   // we might consume here once and gate visibility on the *content-bearing*
@@ -28,14 +44,40 @@ export const MessageLine = memo(function MessageLine({
   // feeds Thinking + Tool calls.  Gating on every section would let
   // `thinking` (expanded by default) keep an empty wrapper alive when only
   // `tools` is hidden — exactly the empty-Box bug Copilot caught.
-  const thinkingMode = sectionMode('thinking', detailsMode, sections)
-  const toolsMode = sectionMode('tools', detailsMode, sections)
-  const activityMode = sectionMode('activity', detailsMode, sections)
+  const thinkingMode = sectionMode('thinking', detailsMode, sections, detailsModeCommandOverride)
+  const toolsMode = sectionMode('tools', detailsMode, sections, detailsModeCommandOverride)
+  const activityMode = sectionMode('activity', detailsMode, sections, detailsModeCommandOverride)
+  const thinking = msg.thinking?.trim() ?? ''
 
-  if (msg.kind === 'trail' && msg.tools?.length) {
-    return toolsMode !== 'hidden' || activityMode !== 'hidden' ? (
-      <Box flexDirection="column" marginTop={1}>
-        <ToolTrail detailsMode={detailsMode} sections={sections} t={t} trail={msg.tools} />
+  // Collapse toggle for long system messages
+  const systemIsLong = msg.role === 'system' && msg.text.length > SYSTEM_COLLAPSE_CHARS
+  const [systemOpen, setSystemOpen] = useState(false)
+
+  if (msg.kind === 'trail' && msg.todos?.length) {
+    return (
+      <TodoPanel
+        defaultCollapsed={msg.todoCollapsedByDefault}
+        incomplete={msg.todoIncomplete}
+        t={t}
+        todos={msg.todos}
+      />
+    )
+  }
+
+  if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {
+    return thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden' ? (
+      <Box flexDirection="column">
+        <ToolTrail
+          commandOverride={detailsModeCommandOverride}
+          detailsMode={detailsMode}
+          reasoning={thinking}
+          reasoningTokens={msg.thinkingTokens}
+          sections={sections}
+          t={t}
+          tools={tools}
+          toolTokens={msg.toolTokens}
+          trail={msg.tools ?? []}
+        />
       </Box>
     ) : null
   }
@@ -46,13 +88,13 @@ export const MessageLine = memo(function MessageLine({
     const preview = compactPreview(stripped, maxChars) || '(empty tool result)'
 
     return (
-      <Box alignSelf="flex-start" borderColor={t.color.dim} borderStyle="round" marginLeft={3} paddingX={1}>
+      <Box alignSelf="flex-start" borderColor={t.color.muted} borderStyle="round" marginLeft={3} paddingX={1}>
         {hasAnsi(msg.text) ? (
           <Text wrap="truncate-end">
             <Ansi>{msg.text}</Ansi>
           </Text>
         ) : (
-          <Text color={t.color.dim} wrap="truncate-end">
+          <Text color={t.color.muted} wrap="truncate-end">
             {preview}
           </Text>
         )}
@@ -61,15 +103,35 @@ export const MessageLine = memo(function MessageLine({
   }
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
-  const thinking = msg.thinking?.trim() ?? ''
+  const gutterWidth = transcriptGutterWidth(msg.role, t.brand.prompt)
 
   const showDetails =
-    (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) ||
-    (thinkingMode !== 'hidden' && Boolean(thinking))
+    (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) || (thinkingMode !== 'hidden' && Boolean(thinking))
 
   const content = (() => {
     if (msg.kind === 'slash') {
-      return <Text color={t.color.dim}>{msg.text}</Text>
+      return <Text color={t.color.muted}>{msg.text}</Text>
+    }
+
+    // ── Collapsible long system message (system prompt, AGENTS.md, etc.) ──
+    // MUST come before the hasAnsi check — system messages from the backend
+    // contain Rich markup escape codes that would otherwise hit <Ansi> full render.
+    if (systemIsLong) {
+      const firstLine = (msg.text.split('\n')[0] ?? '').trim().slice(0, 120) || '(system message)'
+
+      return (
+        <Box flexDirection="column">
+          <Box onClick={() => setSystemOpen(v => !v)}>
+            <Text color={t.color.accent}>{systemOpen ? '▾ ' : '▸ '}</Text>
+            <Text color={t.color.muted}>{firstLine}</Text>
+            <Text color={t.color.muted} dimColor>
+              {' — '}
+              {msg.text.length.toLocaleString()} chars
+            </Text>
+          </Box>
+          {systemOpen && <Ansi>{msg.text}</Ansi>}
+        </Box>
+      )
     }
 
     if (msg.role !== 'user' && hasAnsi(msg.text)) {
@@ -77,7 +139,14 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'assistant') {
-      return isStreaming ? <Text color={body}>{msg.text}</Text> : <Md compact={compact} t={t} text={msg.text} />
+      return isStreaming ? (
+        // Incremental markdown: split at the last stable block boundary so
+        // only the in-flight tail re-tokenizes per delta. See
+        // streamingMarkdown.tsx for the cost model.
+        <StreamingMd compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
+      ) : (
+        <Md compact={compact} t={t} text={limitHistoryRender ? boundedHistoryRenderText(msg.text) : msg.text} />
+      )
     }
 
     if (msg.role === 'user' && msg.text.length > LONG_MSG && isPasteBackedText(msg.text)) {
@@ -86,7 +155,7 @@ export const MessageLine = memo(function MessageLine({
       return (
         <Text color={body}>
           {head}
-          <Text color={t.color.dim} dimColor>
+          <Text color={t.color.muted} dimColor>
             [long message]
           </Text>
           {rest.join('')}
@@ -111,6 +180,7 @@ export const MessageLine = memo(function MessageLine({
       {showDetails && (
         <Box flexDirection="column" marginBottom={1}>
           <ToolTrail
+            commandOverride={detailsModeCommandOverride}
             detailsMode={detailsMode}
             reasoning={thinking}
             reasoningTokens={msg.thinkingTokens}
@@ -123,13 +193,13 @@ export const MessageLine = memo(function MessageLine({
       )}
 
       <Box>
-        <NoSelect flexShrink={0} fromLeftEdge width={3}>
+        <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
           <Text bold={msg.role === 'user'} color={prefix}>
             {glyph}{' '}
           </Text>
         </NoSelect>
 
-        <Box width={Math.max(20, cols - 5)}>{content}</Box>
+        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt)}>{content}</Box>
       </Box>
     </Box>
   )
@@ -139,8 +209,11 @@ interface MessageLineProps {
   cols: number
   compact?: boolean
   detailsMode?: DetailsMode
+  detailsModeCommandOverride?: boolean
   isStreaming?: boolean
+  limitHistoryRender?: boolean
   msg: Msg
   sections?: SectionVisibility
   t: Theme
+  tools?: ActiveTool[]
 }

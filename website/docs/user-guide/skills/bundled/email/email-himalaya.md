@@ -1,14 +1,14 @@
 ---
-title: "Himalaya — CLI to manage emails via IMAP/SMTP"
+title: "Himalaya — Himalaya CLI: IMAP/SMTP email from terminal"
 sidebar_label: "Himalaya"
-description: "CLI to manage emails via IMAP/SMTP"
+description: "Himalaya CLI: IMAP/SMTP email from terminal"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Himalaya
 
-CLI to manage emails via IMAP/SMTP. Use himalaya to list, read, write, reply, forward, search, and organize emails from the terminal. Supports multiple accounts and message composition with MML (MIME Meta Language).
+Himalaya CLI: IMAP/SMTP email from terminal.
 
 ## Skill metadata
 

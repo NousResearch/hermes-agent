@@ -164,6 +164,37 @@ When the agent needs to run a potentially dangerous command, it sends an Adaptiv
 
 Clicking a button resolves the approval inline and replaces the card with the decision.
 
+### Meeting Summary Delivery (Teams Meeting Pipeline)
+
+When the [Teams meeting pipeline plugin](/docs/user-guide/messaging/msgraph-webhook) is enabled, this adapter also handles outbound delivery of meeting summaries — one Teams integration surface, not two. After a meeting's transcript is summarized, the writer posts the summary into your chosen Teams target.
+
+Pipeline summary delivery is configured under the `teams` platform entry alongside the bot config:
+
+```yaml
+platforms:
+  teams:
+    enabled: true
+    extra:
+      # existing bot config (client_id, client_secret, tenant_id, port) ...
+
+      # Meeting summary delivery (only used when the teams_pipeline plugin is enabled)
+      delivery_mode: "graph"       # or "incoming_webhook"
+      # For delivery_mode: graph — pick ONE of:
+      chat_id: "19:meeting_..."    # post into a Teams chat
+      # team_id: "..."             # OR post into a channel
+      # channel_id: "..."
+      # access_token: "..."        # optional; falls back to MSGRAPH_* app credentials
+      # For delivery_mode: incoming_webhook:
+      # incoming_webhook_url: "https://outlook.office.com/webhook/..."
+```
+
+| Mode | Use when | Trade-off |
+|------|----------|-----------|
+| `incoming_webhook` | Simple "post a summary into this channel" with a static Teams-generated URL. | No reply threading, no reactions, shows as the webhook's configured identity. |
+| `graph` | Threaded channel posts or 1:1/group chat posts under the bot's identity via Microsoft Graph. | Requires the [Graph app registration](/docs/guides/microsoft-graph-app-registration) with `ChannelMessage.Send` (channel) or `Chat.ReadWrite.All` (chat) application permissions. |
+
+If the `teams_pipeline` plugin is **not** enabled, these settings are inert — they only wire up when the pipeline runtime binds to the Graph webhook ingress.
+
 ---
 
 ## Production Deployment

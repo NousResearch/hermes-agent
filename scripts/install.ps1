@@ -605,21 +605,61 @@ function Install-SystemPackages {
 
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
-    
+
+    $didUpdate = $false
+
     if (Test-Path $InstallDir) {
+        # Test-Path "$InstallDir\.git" returns True when .git is a file OR a
+        # directory OR a symlink OR a submodule-style gitfile — and also when
+        # it's a broken stub left over from a failed previous install (e.g.
+        # a partial Remove-Item that couldn't delete a locked index.lock).
+        # Validate the repo properly by asking git itself.  If git can't see
+        # it as a real repo, fall through to the clone-or-zip path.
+        $repoValid = $false
         if (Test-Path "$InstallDir\.git") {
+            Push-Location $InstallDir
+            try {
+                $null = git -c windows.appendAtomically=false rev-parse --is-inside-work-tree 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                    $repoValid = $true
+                }
+            } catch {}
+            Pop-Location
+        }
+
+        if ($repoValid) {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
-            git -c windows.appendAtomically=false fetch origin
-            git -c windows.appendAtomically=false checkout $Branch
-            git -c windows.appendAtomically=false pull origin $Branch
-            Pop-Location
+            try {
+                git -c windows.appendAtomically=false fetch origin
+                if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
+                git -c windows.appendAtomically=false checkout $Branch
+                if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
+                git -c windows.appendAtomically=false pull origin $Branch
+                if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
+            } finally {
+                Pop-Location
+            }
+            $didUpdate = $true
         } else {
-            Write-Err "Directory exists but is not a git repository: $InstallDir"
-            Write-Info "Remove it or choose a different directory with -InstallDir"
-            throw "Directory exists but is not a git repository: $InstallDir"
+            # Directory exists but isn't a usable git repo.  Wipe it and
+            # fall through to a fresh clone.  A leftover ``.git`` stub from
+            # a partial uninstall used to lock the installer into the
+            # "update" branch forever, emitting three ``fatal: not a git
+            # repository`` errors and failing with "not in a git directory".
+            Write-Warn "Existing directory at $InstallDir is not a valid git repo — replacing it."
+            try {
+                Remove-Item -Recurse -Force $InstallDir -ErrorAction Stop
+            } catch {
+                Write-Err "Could not remove $InstallDir : $_"
+                Write-Info "Close any programs that might be using files in $InstallDir (editors,"
+                Write-Info "terminals, running hermes processes) and try again."
+                throw
+            }
         }
-    } else {
+    }
+
+    if (-not $didUpdate) {
         $cloneSuccess = $false
 
         # Fix Windows git "copy-fd: write returned: Invalid argument" error.
@@ -640,7 +680,7 @@ function Install-Repository {
             if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
         } catch { }
         $env:GIT_SSH_COMMAND = $null
-        
+
         if (-not $cloneSuccess) {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
@@ -658,18 +698,18 @@ function Install-Repository {
                 $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
                 $zipPath = "$env:TEMP\hermes-agent-$Branch.zip"
                 $extractPath = "$env:TEMP\hermes-agent-extract"
-                
+
                 Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
                 if (Test-Path $extractPath) { Remove-Item -Recurse -Force $extractPath }
                 Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-                
+
                 # GitHub ZIPs extract to repo-branch/ subdirectory
                 $extractedDir = Get-ChildItem $extractPath -Directory | Select-Object -First 1
                 if ($extractedDir) {
                     New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) -ErrorAction SilentlyContinue | Out-Null
                     Move-Item $extractedDir.FullName $InstallDir -Force
                     Write-Success "Downloaded and extracted"
-                    
+
                     # Initialize git repo so updates work later
                     Push-Location $InstallDir
                     git -c windows.appendAtomically=false init 2>$null
@@ -677,10 +717,10 @@ function Install-Repository {
                     git remote add origin $RepoUrlHttps 2>$null
                     Pop-Location
                     Write-Success "Git repo initialized for future updates"
-                    
+
                     $cloneSuccess = $true
                 }
-                
+
                 # Cleanup temp files
                 Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
                 Remove-Item -Recurse -Force $extractPath -ErrorAction SilentlyContinue
@@ -693,7 +733,7 @@ function Install-Repository {
             throw "Failed to download repository (tried git clone SSH, HTTPS, and ZIP)"
         }
     }
-    
+
     # Set per-repo config (harmless if it fails)
     Push-Location $InstallDir
     git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
@@ -707,7 +747,7 @@ function Install-Repository {
         Write-Success "Submodules ready"
     }
     Pop-Location
-    
+
     Write-Success "Repository ready"
 }
 

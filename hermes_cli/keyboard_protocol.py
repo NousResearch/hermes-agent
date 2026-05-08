@@ -204,6 +204,14 @@ def register_prompt_toolkit_keys() -> None:
     # macOS (Alt+Backspace) under the disambiguate flag.
     extras["\x1b[127;3u"] = (_Keys.Escape, _Keys.Backspace)
 
+    # Shift+Backspace — kitty disambiguate mode emits CSI 127;2u and
+    # prompt_toolkit has no built-in mapping, so the sequence leaks
+    # into the input buffer as literal "[127;2u". Map it to plain
+    # Backspace so Shift+Backspace just deletes one character (the
+    # universal terminal convention; some apps treat it as kill-line
+    # but that surprises more users than it pleases).
+    extras["\x1b[127;2u"] = _Keys.Backspace
+
     # Common Alt+letter word-navigation keys (M-b/M-f/M-d) — restore them
     # too so word-jump and kill-word-forward keep working under kitty's
     # disambiguate mode. Emacs bindings register on ('escape', 'b') etc.,

@@ -1684,6 +1684,27 @@ def check_all_command_guards(command: str, env_type: str,
                             "approvals.cron_mode: approve in config.yaml."
                         ),
                     }
+                # Also run tirith check in cron-deny mode so content-level
+                # threats (homograph URLs, pipe-to-interpreter, terminal
+                # injection, etc.) are caught even when they do not match
+                # the pattern-based detection above.
+                try:
+                    from tools.tirith_security import check_command_security
+                    _cron_tirith = check_command_security(command)
+                    if _cron_tirith.get("action") in ("block", "warn"):
+                        _cron_desc = _format_tirith_description(_cron_tirith)
+                        return {
+                            "approved": False,
+                            "message": (
+                                f"BLOCKED: {_cron_desc} "
+                                "but cron jobs run without a user present to approve it. "
+                                "Find an alternative approach that avoids this command. "
+                                "To allow dangerous commands in cron jobs, set "
+                                "approvals.cron_mode: approve in config.yaml."
+                            ),
+                        }
+                except ImportError:
+                    pass  # tirith not installed — allow
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---

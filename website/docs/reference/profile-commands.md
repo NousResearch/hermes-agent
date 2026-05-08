@@ -320,8 +320,36 @@ hermes profile info <name>
 ```
 
 Prints the profile's distribution manifest — name, version, required
-Hermes version, author, env var requirements, and the source URL/path.
-Useful for checking what a shared profile needs before installing it.
+Hermes version, author, env var requirements, the source URL/path, and
+the `Installed:` timestamp recorded when the distribution was last
+`install`-ed or `update`-d. Useful for checking what a shared profile
+needs before installing it, and for spotting "this profile was installed
+6 months ago and hasn't been updated."
+
+`hermes profile list` also shows the distribution name and version in a
+`Distribution` column, and `hermes profile show <name>` / `delete <name>`
+surface the source URL so you can tell at a glance which profiles came
+from a git repo vs. were created locally.
+
+### Private distributions
+
+A private git repository works as a distribution source with no extra
+configuration — the install shells out to your normal `git` binary, so
+whatever authentication your shell is already set up for (SSH key,
+`git credential` helper, GitHub CLI's stored HTTPS credentials) applies
+transparently.
+
+```bash
+# Uses your SSH key, the same as any other `git clone`
+hermes profile install git@github.com:your-org/internal-assistant.git
+
+# Uses your git credential helper
+hermes profile install https://github.com/your-org/internal-assistant.git
+```
+
+If a clone prompts for credentials interactively in your terminal during
+install, that prompt flows through. Set up your auth the way you'd
+normally use `git clone` against the same repo first, then install.
 
 ### Distribution manifest (`distribution.yaml`)
 

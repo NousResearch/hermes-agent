@@ -66,6 +66,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -174,6 +175,10 @@ class DistributionManifest:
     distribution_owned: List[str] = field(default_factory=list)
     # Tracked after install — where we pulled from, so ``update`` can re-pull.
     source: str = ""
+    # ISO-8601 UTC timestamp written on install / update, so ``info`` and
+    # ``list`` can show when a distribution landed on disk.  Empty for
+    # manifests that ship in a repo (authors don't populate this).
+    installed_at: str = ""
 
     @classmethod
     def from_dict(cls, data: Any) -> "DistributionManifest":
@@ -202,6 +207,7 @@ class DistributionManifest:
             env_requires=env_requires,
             distribution_owned=distribution_owned,
             source=str(data.get("source") or ""),
+            installed_at=str(data.get("installed_at") or ""),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -223,6 +229,8 @@ class DistributionManifest:
             out["distribution_owned"] = self.distribution_owned
         if self.source:
             out["source"] = self.source
+        if self.installed_at:
+            out["installed_at"] = self.installed_at
         return out
 
     def owned_paths(self) -> List[str]:
@@ -494,6 +502,9 @@ def plan_install(
         )
     manifest.name = canon
     manifest.source = provenance
+    # Stamped once here so plan_install() callers (both fresh install and
+    # update) propagate a freshly-minted timestamp through _copy_dist_payload.
+    manifest.installed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     target_dir = get_profile_dir(canon)
     existing = target_dir.is_dir()

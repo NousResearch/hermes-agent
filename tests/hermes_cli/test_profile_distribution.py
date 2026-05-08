@@ -472,3 +472,87 @@ class TestSecurity:
         # about is that the leaked content didn't land in the target.
         if (plan.target_dir / ".env").exists():
             assert "LEAKED" not in (plan.target_dir / ".env").read_text()
+
+
+# ===========================================================================
+# Install-time metadata (installed_at stamp)
+# ===========================================================================
+
+
+class TestInstalledAtStamp:
+
+    def test_install_stamps_installed_at(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="stamped")
+        mf = read_manifest(plan.target_dir)
+        assert mf.installed_at, "installed_at should be set after install"
+        # ISO-8601 UTC sanity: starts with 4-digit year, contains 'T', ends with '+00:00'.
+        assert mf.installed_at[:4].isdigit()
+        assert "T" in mf.installed_at
+        assert mf.installed_at.endswith("+00:00")
+
+    def test_update_refreshes_installed_at(self, profile_env, monkeypatch):
+        staged = _make_staging_dir(profile_env, "src")
+        install_distribution(str(staged), name="demo")
+        from hermes_cli.profiles import get_profile_dir
+        first = read_manifest(get_profile_dir("demo")).installed_at
+
+        # Freeze `datetime.now()` to a fixed future time so we can observe that
+        # update writes a NEW stamp (installs within the same second otherwise
+        # collide at iso-8601 seconds resolution).
+        import datetime as _dt
+        class _FakeDT(_dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return _dt.datetime(2099, 1, 1, 0, 0, 0, tzinfo=tz or _dt.timezone.utc)
+        monkeypatch.setattr(
+            "hermes_cli.profile_distribution.datetime", _FakeDT, raising=True
+        )
+
+        from hermes_cli.profile_distribution import update_distribution
+        update_distribution("demo")
+        refreshed = read_manifest(get_profile_dir("demo")).installed_at
+        assert refreshed != first, "installed_at should change on update"
+        assert refreshed.startswith("2099-01-01"), refreshed
+
+
+# ===========================================================================
+# ProfileInfo exposes distribution metadata
+# ===========================================================================
+
+
+class TestProfileInfoDistribution:
+
+    def test_installed_distribution_shows_in_list(self, profile_env):
+        staged = _make_staging_dir(
+            profile_env, "src",
+            manifest=DistributionManifest(name="telem", version="1.2.3"),
+        )
+        install_distribution(str(staged), name="telem")
+
+        from hermes_cli.profiles import list_profiles
+        rows = {p.name: p for p in list_profiles()}
+        assert "telem" in rows
+        row = rows["telem"]
+        assert row.distribution_name == "telem"
+        assert row.distribution_version == "1.2.3"
+        assert row.distribution_source  # path populated, exact value depends on fixture
+
+    def test_plain_profile_has_no_distribution_fields(self, profile_env):
+        from hermes_cli.profiles import create_profile, list_profiles
+        create_profile(name="plain", no_alias=True)
+        rows = {p.name: p for p in list_profiles()}
+        assert rows["plain"].distribution_name is None
+        assert rows["plain"].distribution_version is None
+
+    def test_malformed_manifest_does_not_break_list(self, profile_env):
+        from hermes_cli.profiles import create_profile, list_profiles, get_profile_dir
+        create_profile(name="brokenmeta", no_alias=True)
+        # Write a distribution.yaml that isn't a valid mapping
+        (get_profile_dir("brokenmeta") / "distribution.yaml").write_text(
+            "not: [a, valid, mapping\n"  # broken YAML
+        )
+        # list_profiles must NOT raise; distribution_* stay None for this row.
+        rows = {p.name: p for p in list_profiles()}
+        assert rows["brokenmeta"].distribution_name is None
+

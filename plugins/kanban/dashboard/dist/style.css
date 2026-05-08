@@ -9,13 +9,55 @@
   width: 100%;
 }
 
-/* Override the Nous DS global `code { background: var(--midground) }` rule
-   which paints an opaque cream/yellow fill on every <code> inside the board,
-   hiding the text underneath. Kanban uses <code> for event payloads, run-meta,
-   and log panes — those need transparent backgrounds. */
-.hermes-kanban code {
-  background: transparent;
+/* ---- Code/pre reset (theme-immune default) --------------------------- *
+ *
+ * Themes (shipped AND user-installable) routinely paint every <code> and
+ * <pre> on the page with an opaque accent-color fill. That's fine for a
+ * Markdown doc page; it's wrong for the kanban plugin, which uses <code>
+ * for event payloads, run metadata, log panes, and similar raw-data
+ * surfaces that must read as plain text on the board's own background.
+ *
+ * Rather than play whack-a-mole with theme rules (the pre-#21086 approach
+ * was a single ``.hermes-kanban code { background: transparent }`` rule
+ * that lost specificity fights in the drawer context), reset EVERY
+ * <code>/<pre> inside the kanban plugin container to transparent with
+ * ``!important``, then opt back in ONLY on the class that carries
+ * intentional styling (``.hermes-kanban-md code``, the inline code pill
+ * inside rendered task-body Markdown).
+ *
+ * Net effect: any new theme, shipped or third-party, can introduce
+ * whatever global code-fill rule it wants — kanban surfaces stay clean
+ * unless the theme deliberately targets our internal class names.
+ * Regression coverage: #21086 (task-drawer event payloads unreadable
+ * across every shipped theme).
+ */
+.hermes-kanban code,
+.hermes-kanban pre,
+.hermes-kanban-drawer code,
+.hermes-kanban-drawer pre {
+  background: transparent !important;
   color: inherit;
+}
+/* The Markdown renderer intentionally paints a subtle code pill behind
+ * inline ``<code>`` inside task-body prose — but NOT inside a fenced
+ * block (those are a ``<pre class="hermes-kanban-md-code">`` with a
+ * bare ``<code>`` inside, and the pill would double up with the pre
+ * background). ``:not()`` scopes this opt-back-in to inline code only.
+ *
+ * Uses ``color-mix(currentColor ...)`` rather than ``--color-foreground``
+ * so the pill renders consistently even when a theme forgets to set
+ * ``--color-foreground`` (pre-existing safeguard from #18576).
+ */
+.hermes-kanban .hermes-kanban-md code:not(.hermes-kanban-md-code *) {
+  background: color-mix(in srgb, currentColor 8%, transparent) !important;
+}
+/* Tighten contrast on the drawer-specific payload class — it lives on
+ * its own line in the events list, so matching the muted-foreground
+ * color keeps it visually distinct from the event title without
+ * screaming for attention. */
+.hermes-kanban-event-payload,
+.hermes-kanban-drawer .hermes-kanban-event-payload {
+  color: var(--color-muted-foreground) !important;
 }
 
 /* ---- Columns layout -------------------------------------------------- */
@@ -360,6 +402,26 @@
   gap: 0.3rem;
 }
 
+/* Specifier result banner — sits directly under the status action row. */
+.hermes-kanban-msg-ok,
+.hermes-kanban-msg-err {
+  margin-top: 0.4rem;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.375rem;
+  font-size: 0.85rem;
+  line-height: 1.3;
+}
+.hermes-kanban-msg-ok {
+  background: rgba(46, 160, 67, 0.12);
+  color: #2ea043;
+  border: 1px solid rgba(46, 160, 67, 0.35);
+}
+.hermes-kanban-msg-err {
+  background: rgba(248, 81, 73, 0.12);
+  color: #f85149;
+  border: 1px solid rgba(248, 81, 73, 0.35);
+}
+
 /* ---- Home channel subscription toggles (per-platform, per-task) ----- */
 
 .hermes-kanban-home-subs {
@@ -668,7 +730,9 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.8rem;
   padding: 0.05rem 0.3rem;
-  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+  /* Background is set in the code/pre reset block at the top of this
+   * file with !important, so theme-level global code rules can't knock
+   * out this intentional pill. See #21086. */
   border-radius: 3px;
   color: inherit;
 }
@@ -678,10 +742,15 @@
  * UA default on <code> elements — otherwise themes that don't set
  * --color-foreground leave code text rendering near-black on dark themes
  * (see issue #18576). */
-.hermes-kanban-md-code {
+.hermes-kanban pre.hermes-kanban-md-code {
   margin: 0.35rem 0;
   padding: 0.5rem 0.6rem;
-  background: color-mix(in srgb, currentColor 6%, transparent);
+  /* Higher specificity (``.hermes-kanban pre.hermes-kanban-md-code`` vs
+   * the reset's ``.hermes-kanban pre``) so this intentional pill wins
+   * over our own ``<pre>`` reset. ``!important`` also needed so theme
+   * rules that drop their own ``code``/``pre`` fill don't knock it out
+   * either. #21086. */
+  background: color-mix(in srgb, currentColor 6%, transparent) !important;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm, 0.25rem);
   overflow-x: auto;
@@ -822,6 +891,32 @@
   display: flex;
   justify-content: flex-end;
   padding: 0 0.25rem;
+  gap: 0.5rem;
+  align-items: center;
+}
+.hermes-kanban-docs-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-muted-foreground, rgba(180, 180, 200, 0.8));
+  background: var(--color-card-subtle, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
+  text-decoration: none;
+  cursor: help;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.hermes-kanban-docs-link:hover,
+.hermes-kanban-docs-link:focus-visible {
+  color: var(--color-foreground, #e7e7ee);
+  background: var(--color-card, rgba(255, 255, 255, 0.08));
+  border-color: var(--color-border, rgba(160, 160, 190, 0.45));
+  outline: none;
 }
 .hermes-kanban-dialog-backdrop {
   position: fixed;

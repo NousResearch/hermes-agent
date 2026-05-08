@@ -90,22 +90,20 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawna
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
-        # Three ticks below the default limit (5) → still ready, counter grows.
-        for i in range(3):
-            res = kb.dispatch_once(conn, spawn_fn=_bad_spawn, failure_limit=5)
-            assert tid not in res.auto_blocked
+        assert kb.DEFAULT_FAILURE_LIMIT == 2
+        # One default-limit failure → still ready, counter grows.
+        res1 = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
+        assert tid not in res1.auto_blocked
         task = kb.get_task(conn, tid)
         assert task.status == "ready"
-        assert task.consecutive_failures == 3
+        assert task.consecutive_failures == 1
 
-        # Two more ticks → fifth failure exceeds the limit.
-        res1 = kb.dispatch_once(conn, spawn_fn=_bad_spawn, failure_limit=5)
-        assert tid not in res1.auto_blocked
-        res2 = kb.dispatch_once(conn, spawn_fn=_bad_spawn, failure_limit=5)
+        # Second default-limit failure trips the guard.
+        res2 = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
         assert tid in res2.auto_blocked
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
-        assert task.consecutive_failures >= 5
+        assert task.consecutive_failures >= 2
         assert task.last_failure_error and "no PATH" in task.last_failure_error
     finally:
         conn.close()
@@ -166,6 +164,158 @@ def test_successful_completion_resets_failure_counter(kanban_home, all_assignees
         task = kb.get_task(conn, tid)
         assert task.consecutive_failures == 0
         assert task.last_failure_error is None
+    finally:
+        conn.close()
+
+
+def test_reassign_resets_failure_counter_for_new_profile(kanban_home, all_assignees_spawnable):
+    """Retry streaks are scoped to a task/profile pair; reassigning is a
+    human recovery action and gives the new profile a fresh budget."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET consecutive_failures = 1, "
+                "last_failure_error = 'timed out' WHERE id = ?",
+                (tid,),
+            )
+        assert kb.assign_task(conn, tid, "reviewer") is True
+        task = kb.get_task(conn, tid)
+        assert task.assignee == "reviewer"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+    finally:
+        conn.close()
+
+
+def test_per_task_max_retries_overrides_dispatcher_limit(kanban_home, all_assignees_spawnable):
+    """Per-task ``max_retries`` overrides both the caller-supplied
+    ``failure_limit`` (gateway config) and the hardcoded default.
+
+    Three-tier resolution order:
+      1. ``task.max_retries`` (set via ``create_task(max_retries=N)`` /
+         ``hermes kanban create --max-retries N``)
+      2. ``failure_limit`` kwarg passed by the caller (gateway threads
+         this from ``kanban.failure_limit`` config)
+      3. ``DEFAULT_FAILURE_LIMIT``
+    """
+    conn = kb.connect()
+    try:
+        # max_retries=1 should trip on the FIRST failure, even though the
+        # caller is asking for failure_limit=10.
+        tid = kb.create_task(
+            conn, title="one-shot", assignee="worker", max_retries=1,
+        )
+        task = kb.get_task(conn, tid)
+        assert task.max_retries == 1, "per-task override must persist"
+
+        kb.claim_task(conn, tid)
+        tripped = kb._record_task_failure(
+            conn, tid,
+            error="first fail",
+            outcome="spawn_failed",
+            failure_limit=10,   # far higher than per-task override
+            release_claim=True,
+            end_run=False,
+        )
+        assert tripped is True, "should auto-block on first failure"
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+
+        # gave_up event should record where the threshold came from
+        events = kb.list_events(conn, tid)
+        gave_up = [e for e in events if e.kind == "gave_up"]
+        assert gave_up, f"expected gave_up event, got {[e.kind for e in events]}"
+        assert gave_up[-1].payload.get("limit_source") == "task"
+        assert gave_up[-1].payload.get("effective_limit") == 1
+    finally:
+        conn.close()
+
+
+def test_per_task_max_retries_allows_more_than_default(kanban_home, all_assignees_spawnable):
+    """A task with ``max_retries=5`` does NOT auto-block at the default
+    limit of 2 — it must reach the per-task override first."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="flaky-retry", assignee="worker", max_retries=5,
+        )
+        # Four failures — still below the per-task threshold, should stay ready.
+        for i in range(1, 5):
+            kb.claim_task(conn, tid)
+            tripped = kb._record_task_failure(
+                conn, tid,
+                error=f"fail {i}",
+                outcome="spawn_failed",
+                # Caller passes the default so the dispatcher tier matches
+                # ``DEFAULT_FAILURE_LIMIT``; without the per-task override
+                # the breaker would have tripped at failure 2.
+                release_claim=True,
+                end_run=False,
+            )
+            assert tripped is False, f"shouldn't trip at failure {i} with max_retries=5"
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", f"at failure {i} status was {task.status}"
+
+        # Fifth failure trips the per-task limit.
+        kb.claim_task(conn, tid)
+        tripped = kb._record_task_failure(
+            conn, tid,
+            error="fail 5",
+            outcome="spawn_failed",
+            release_claim=True,
+            end_run=False,
+        )
+        assert tripped is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 5
+    finally:
+        conn.close()
+
+
+def test_max_retries_none_falls_through_to_dispatcher_limit(kanban_home, all_assignees_spawnable):
+    """``max_retries=None`` (the default) falls through to the caller-
+    supplied ``failure_limit`` — the gateway config tier."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="standard", assignee="worker")
+        task = kb.get_task(conn, tid)
+        assert task.max_retries is None
+
+        # Caller passes failure_limit=4 (simulates kanban.failure_limit=4).
+        # Should trip at 4, not at the DEFAULT_FAILURE_LIMIT of 2.
+        for i in range(1, 4):
+            kb.claim_task(conn, tid)
+            tripped = kb._record_task_failure(
+                conn, tid,
+                error=f"fail {i}",
+                outcome="spawn_failed",
+                failure_limit=4,
+                release_claim=True,
+                end_run=False,
+            )
+            assert tripped is False, f"premature trip at failure {i}"
+
+        kb.claim_task(conn, tid)
+        tripped = kb._record_task_failure(
+            conn, tid,
+            error="fail 4",
+            outcome="spawn_failed",
+            failure_limit=4,
+            release_claim=True,
+            end_run=False,
+        )
+        assert tripped is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+
+        events = kb.list_events(conn, tid)
+        gave_up = [e for e in events if e.kind == "gave_up"]
+        assert gave_up[-1].payload.get("limit_source") == "dispatcher"
+        assert gave_up[-1].payload.get("effective_limit") == 4
     finally:
         conn.close()
 
@@ -713,6 +863,48 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
             to_event = next(e for e in events if e.kind == "timed_out")
             assert to_event.payload["limit_seconds"] == 1
             assert to_event.payload["elapsed_seconds"] >= 30
+        finally:
+            conn.close()
+    finally:
+        _kb._pid_alive = original_alive
+
+
+def test_repeated_timeouts_auto_block_at_default_limit(kanban_home):
+    """Two timed_out outcomes on the same task/profile trip the retry guard."""
+    import hermes_cli.kanban_db as _kb
+    original_alive = _kb._pid_alive
+    _kb._pid_alive = lambda pid: False
+
+    def _age_active_run(conn, tid):
+        old_started = int(time.time()) - 30
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (old_started, tid),
+            )
+
+    try:
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(
+                conn, title="long job", assignee="worker",
+                max_runtime_seconds=1,
+            )
+            for expected_failures in (1, 2):
+                kb.claim_task(conn, tid)
+                kb._set_worker_pid(conn, tid, os.getpid())
+                _age_active_run(conn, tid)
+                timed_out = kb.enforce_max_runtime(conn, signal_fn=lambda pid, sig: None)
+                assert tid in timed_out
+                task = kb.get_task(conn, tid)
+                assert task.consecutive_failures == expected_failures
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked"
+            events = kb.list_events(conn, tid)
+            assert [e.kind for e in events].count("timed_out") == 2
+            gave_up = [e for e in events if e.kind == "gave_up"]
+            assert gave_up and gave_up[-1].payload["trigger_outcome"] == "timed_out"
         finally:
             conn.close()
     finally:
@@ -2648,6 +2840,203 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
     conn.close()
 
 
+def test_legacy_spawn_failure_columns_are_copied_not_renamed(tmp_path):
+    """Legacy failure counters survive migration without fragile column renames."""
+    import sqlite3
+    db_path = tmp_path / "legacy-failures.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            tenant TEXT,
+            result TEXT,
+            idempotency_key TEXT,
+            spawn_failures INTEGER NOT NULL DEFAULT 0,
+            worker_pid INTEGER,
+            last_spawn_error TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    # task_events is required: _migrate_add_optional_columns also runs a
+    # PRAGMA on it to back-fill the run_id column and raises
+    # OperationalError if the table is absent.
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, title, body, assignee, status, priority, created_by, created_at, "
+        "started_at, completed_at, workspace_kind, workspace_path, claim_lock, "
+        "claim_expires, tenant, result, idempotency_key, spawn_failures, "
+        "worker_pid, last_spawn_error) "
+        "VALUES ('legacy', 'old task', NULL, 'default', 'ready', 0, NULL, 1, "
+        "NULL, NULL, 'scratch', NULL, NULL, NULL, NULL, NULL, NULL, 4, NULL, "
+        "'missing profile')"
+    )
+    conn.commit()
+
+    kb._migrate_add_optional_columns(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+    assert "spawn_failures" in cols
+    assert "consecutive_failures" in cols
+    assert "last_spawn_error" in cols
+    assert "last_failure_error" in cols
+
+    row = conn.execute("SELECT * FROM tasks WHERE id = 'legacy'").fetchone()
+    assert row["consecutive_failures"] == 4
+    assert row["last_failure_error"] == "missing profile"
+    task = kb.Task.from_row(row)
+    assert task.consecutive_failures == 4
+    assert task.last_failure_error == "missing profile"
+
+    kb._migrate_add_optional_columns(conn)
+    row_again = conn.execute("SELECT * FROM tasks WHERE id = 'legacy'").fetchone()
+    assert row_again["consecutive_failures"] == 4
+    assert row_again["last_failure_error"] == "missing profile"
+    conn.close()
+
+
+def test_legacy_migration_no_legacy_columns_at_all(tmp_path):
+    """Scenario A: DB has neither spawn_failures nor consecutive_failures.
+
+    This is the exact crash scenario from issue #20842 — a very old DB that
+    predates the spawn_failures column entirely.  The old RENAME COLUMN path
+    raised ``sqlite3.OperationalError: no such column: spawn_failures``.
+    The ADD-first approach adds consecutive_failures with default 0.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "ancient.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    # task_events is required: _migrate_add_optional_columns also runs a
+    # PRAGMA on it to back-fill the run_id column and raises
+    # OperationalError if the table is absent.
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('t1', 'ancient task', 'ready', 1)"
+    )
+    conn.commit()
+
+    # Must not raise (this was the crash before this fix).
+    kb._migrate_add_optional_columns(conn)
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+    assert "consecutive_failures" in cols, "migration must add consecutive_failures"
+    assert "last_failure_error" in cols, "migration must add last_failure_error"
+    assert "spawn_failures" not in cols, "no legacy column should be synthesised"
+
+    row = conn.execute("SELECT * FROM tasks WHERE id = 't1'").fetchone()
+    assert row["consecutive_failures"] == 0
+    assert row["last_failure_error"] is None
+
+    # Idempotent second run must not raise either.
+    kb._migrate_add_optional_columns(conn)
+    row_again = conn.execute("SELECT * FROM tasks WHERE id = 't1'").fetchone()
+    assert row_again["consecutive_failures"] == 0
+    assert row_again["last_failure_error"] is None
+    conn.close()
+
+
+def test_legacy_migration_both_columns_already_present(tmp_path):
+    """Scenario D: DB already has both spawn_failures AND consecutive_failures.
+
+    Represents a partially-migrated DB (e.g. user recovered manually after the
+    #20842 crash).  The migration must be a complete no-op and must not
+    zero-out the existing counter.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "partial.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            spawn_failures INTEGER NOT NULL DEFAULT 0,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_spawn_error TEXT,
+            last_failure_error TEXT
+        )
+    """)
+    # task_events required for the run_id back-fill PRAGMA inside the migrator.
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at, spawn_failures, "
+        "consecutive_failures, last_spawn_error, last_failure_error) "
+        "VALUES ('t2', 'partial task', 'ready', 1, 2, 3, 'old error', 'new error')"
+    )
+    conn.commit()
+
+    kb._migrate_add_optional_columns(conn)
+
+    row = conn.execute("SELECT * FROM tasks WHERE id = 't2'").fetchone()
+    # consecutive_failures must not be reset by the migration.
+    assert row["consecutive_failures"] == 3, "migration must not overwrite existing counter"
+    assert row["last_failure_error"] == "new error", "migration must not overwrite existing error"
+    # Legacy column is preserved harmlessly.
+    assert row["spawn_failures"] == 2
+
+    # Schema must be unchanged — no spurious ADD or DROP.
+    cols_after = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+    assert "consecutive_failures" in cols_after
+    assert "last_failure_error" in cols_after
+    assert "spawn_failures" in cols_after  # legacy preserved
+
+    # Idempotent second run must not modify values or raise.
+    kb._migrate_add_optional_columns(conn)
+    row_again = conn.execute("SELECT * FROM tasks WHERE id = 't2'").fetchone()
+    assert row_again["consecutive_failures"] == 3
+    assert row_again["last_failure_error"] == "new error"
+    conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Gateway-embedded dispatcher: config, CLI warnings, daemon deprecation stub
@@ -3086,17 +3475,28 @@ def test_complete_prose_scan_ignores_existing_ids(kanban_home):
 # Recovery helpers (reclaim + reassign)
 # ---------------------------------------------------------------------------
 
-def test_reclaim_task_resets_running_to_ready(kanban_home):
+def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
     """Manual reclaim releases the claim, resets status, and emits a
     ``reclaimed`` event even when claim_expires has not passed."""
+    import signal
     import time
     import secrets
+    import hermes_cli.kanban_db as _kb
     conn = kb.connect()
     try:
         t = kb.create_task(conn, title="stuck", assignee="broken")
         # Simulate a live claim (not expired).
-        lock = secrets.token_hex(8)
+        lock = f"{_kb._claimer_id().split(':', 1)[0]}:{secrets.token_hex(8)}"
         future = int(time.time()) + 3600
+        killed: list[int] = []
+        state = {"alive": True}
+
+        def _signal(pid, sig):
+            killed.append(sig)
+            if sig == signal.SIGTERM:
+                state["alive"] = False
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
         conn.execute(
             "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
             "worker_pid=? WHERE id=?",
@@ -3115,7 +3515,7 @@ def test_reclaim_task_resets_running_to_ready(kanban_home):
         assert kb.release_stale_claims(conn) == 0
 
         # reclaim_task should work immediately.
-        assert kb.reclaim_task(conn, t, reason="test reason") is True
+        assert kb.reclaim_task(conn, t, reason="test reason", signal_fn=_signal) is True
 
         row = conn.execute(
             "SELECT status, claim_lock, worker_pid FROM tasks WHERE id=?",
@@ -3136,6 +3536,9 @@ def test_reclaim_task_resets_running_to_ready(kanban_home):
         assert len(reclaim_evs) == 1
         assert reclaim_evs[0].get("manual") is True
         assert reclaim_evs[0].get("reason") == "test reason"
+        assert reclaim_evs[0].get("termination_attempted") is True
+        assert reclaim_evs[0].get("terminated") is True
+        assert killed == [signal.SIGTERM]
     finally:
         conn.close()
 
@@ -3360,6 +3763,100 @@ def test_detect_crashed_workers_increments_counter(kanban_home):
         task = kb.get_task(conn, tid)
         assert task.consecutive_failures == 1
         assert task.status == "ready"
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
+    """A worker that exited rc=0 while its task was still ``running``
+    is a protocol violation (agent answered conversationally without
+    calling kanban_complete / kanban_block). Retrying will just loop,
+    so auto-block immediately instead of waiting for the breaker to
+    trip at ``DEFAULT_FAILURE_LIMIT``.
+
+    Regression test for the respawn-loop-after-completion bug reported
+    against small local models (gemma4-e2b q4) where the model writes
+    the answer as plain text and the CLI exits rc=0 cleanly.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="quiet", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999998
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # Simulate the reap loop having recorded a clean exit for this pid.
+        # os.W_EXITCODE(status=0, signal=0) == 0 on POSIX.
+        _kb._record_worker_exit(fake_pid, 0)
+        # Force liveness check to say "dead" for the fake pid.
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            result_crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in result_crashed, "should be detected as crashed"
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"protocol violation should auto-block on first occurrence, "
+            f"got status={task.status}"
+        )
+        assert "kanban_complete" in (task.last_failure_error or ""), (
+            f"expected protocol-violation message, got {task.last_failure_error!r}"
+        )
+
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "protocol_violation" in kinds, (
+            f"expected 'protocol_violation' event, got {kinds}"
+        )
+        # The ``crashed`` event would be misleading here — the worker
+        # didn't crash, it returned 0.
+        assert "crashed" not in kinds, (
+            f"should NOT emit 'crashed' event on clean exit, got {kinds}"
+        )
+        assert "gave_up" in kinds, (
+            f"breaker should trip, expected 'gave_up' event, got {kinds}"
+        )
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
+    """A worker that exited non-zero (real error / crash) uses the
+    normal counter path — one failure doesn't trip the breaker.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="crashy", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        fake_pid = 999997
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # W_EXITCODE(1, 0) == 256 — WIFEXITED True, WEXITSTATUS == 1.
+        _kb._record_worker_exit(fake_pid, 256)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", (
+            f"single non-zero crash shouldn't auto-block, got {task.status}"
+        )
+        assert task.consecutive_failures == 1
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "crashed" in kinds
+        assert "protocol_violation" not in kinds
     finally:
         conn.close()
 

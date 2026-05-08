@@ -258,6 +258,43 @@ class TestDocumentDownloadBlock:
         assert event.media_types == ["application/zip"]
 
     @pytest.mark.asyncio
+    async def test_png_document_is_routed_as_image(self, adapter):
+        """Telegram documents that are really PNGs should use the image path."""
+        file_obj = _make_file_obj(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        doc = _make_document(file_name="screenshot.png", mime_type="image/png", file_size=9, file_obj=file_obj)
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch.object(adapter, "_photo_batch_key", return_value="batch-1"), patch.object(
+            adapter, "_enqueue_photo_event"
+        ) as enqueue_mock:
+            await adapter._handle_media_message(update, MagicMock())
+
+        enqueue_mock.assert_called_once()
+        event = enqueue_mock.call_args.args[1]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls and event.media_urls[0].endswith(".png")
+        assert event.media_types == ["image/png"]
+        assert adapter.handle_message.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_spoofed_png_document_falls_back_with_error(self, adapter):
+        """A .png filename with non-image bytes should fail clearly, not disappear."""
+        file_obj = _make_file_obj(b"not-a-real-image")
+        doc = _make_document(file_name="spoofed.png", mime_type="image/png", file_size=16, file_obj=file_obj)
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch.object(adapter, "_photo_batch_key", return_value="batch-2"), patch.object(
+            adapter, "_enqueue_photo_event"
+        ) as enqueue_mock:
+            await adapter._handle_media_message(update, MagicMock())
+
+        enqueue_mock.assert_not_called()
+        event = adapter.handle_message.call_args[0][0]
+        assert "could not be read as an image" in event.text
+
+    @pytest.mark.asyncio
     async def test_oversized_file_rejected(self, adapter):
         doc = _make_document(file_name="huge.pdf", file_size=25 * 1024 * 1024)
         msg = _make_message(document=doc)

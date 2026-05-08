@@ -351,6 +351,95 @@ class TestResolveDeliveryTarget:
         assert _resolve_delivery_targets({"deliver": []}) == []
 
 
+class TestRoutingIntents:
+    """``all`` routing intent expands at fire time."""
+
+    def test_all_expands_to_every_connected_home_channel(self, monkeypatch):
+        """deliver='all' fans out to every platform with a configured home channel."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "C333")
+        # Sanity: platforms without the env var must NOT appear in the expansion.
+        monkeypatch.delenv("SIGNAL_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
+
+        targets = _resolve_delivery_targets({"deliver": "all", "origin": None})
+        platforms = sorted(t["platform"] for t in targets)
+
+        assert "telegram" in platforms
+        assert "discord" in platforms
+        assert "slack" in platforms
+        assert "signal" not in platforms
+        assert "matrix" not in platforms
+
+    def test_all_combines_with_explicit_target_and_dedups(self, monkeypatch):
+        """'telegram:-999,all' yields every home channel + the explicit target without dupes."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
+
+        # Explicit telegram target precedes 'all'. Expansion adds discord;
+        # the dedup pass collapses any (platform, chat_id, thread_id) repeats.
+        job = {"deliver": "telegram:-999,all", "origin": None}
+        targets = _resolve_delivery_targets(job)
+
+        platforms = sorted(t["platform"].lower() for t in targets)
+        assert "telegram" in platforms
+        assert "discord" in platforms
+        # Every target is unique on (platform, chat_id, thread_id).
+        keys = [(t["platform"].lower(), str(t["chat_id"]), t.get("thread_id")) for t in targets]
+        assert len(keys) == len(set(keys))
+
+    def test_all_with_no_connected_channels_returns_empty(self, monkeypatch):
+        """deliver='all' with nothing connected returns [] — delivery is recorded as failed upstream."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        for var in ("TELEGRAM_HOME_CHANNEL", "DISCORD_HOME_CHANNEL", "SLACK_HOME_CHANNEL",
+                    "SIGNAL_HOME_CHANNEL", "MATRIX_HOME_ROOM", "MATTERMOST_HOME_CHANNEL",
+                    "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS", "DINGTALK_HOME_CHANNEL",
+                    "FEISHU_HOME_CHANNEL", "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL",
+                    "BLUEBUBBLES_HOME_CHANNEL", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL"):
+            monkeypatch.delenv(var, raising=False)
+
+        assert _resolve_delivery_targets({"deliver": "all", "origin": None}) == []
+
+    def test_origin_comma_all_preserves_origin_first(self, monkeypatch):
+        """'origin,all' delivers to the origin platform plus every other home channel."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
+
+        job = {
+            "deliver": "origin,all",
+            "origin": {"platform": "discord", "chat_id": "888"},
+        }
+        targets = _resolve_delivery_targets(job)
+        platforms = sorted(t["platform"].lower() for t in targets)
+        assert "telegram" in platforms
+        assert "discord" in platforms
+
+        # The origin's explicit chat_id (888) wins the dedup race over the
+        # discord home channel (-222) because origin is resolved first.
+        discord = next(t for t in targets if t["platform"].lower() == "discord")
+        assert discord["chat_id"] == "888"
+
+    def test_all_token_case_insensitive(self, monkeypatch):
+        """'ALL' / 'All' / 'all' are all recognized."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
+
+        for token in ("ALL", "All", "all"):
+            targets = _resolve_delivery_targets({"deliver": token, "origin": None})
+            platforms = sorted(t["platform"].lower() for t in targets)
+            assert platforms == ["discord", "telegram"], f"token={token!r} -> {platforms}"
+
+
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
 

@@ -390,9 +390,12 @@ def _call(tool_name, args):
     req_file = os.path.join(_RPC_DIR, f"req_{seq_str}")
     res_file = os.path.join(_RPC_DIR, f"res_{seq_str}")
 
-    # Write request atomically (write to .tmp, then rename)
+    # Write request atomically (write to .tmp, then rename).
+    # encoding="utf-8" is critical: on Windows-hosted remote backends
+    # (or any non-UTF-8 locale) the default open() mode would mangle
+    # non-ASCII chars in tool args when encoding them as JSON.
     tmp = req_file + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"tool": tool_name, "args": args, "seq": seq}, f)
     os.rename(tmp, req_file)
 
@@ -405,7 +408,7 @@ def _call(tool_name, args):
         time.sleep(poll_interval)
         poll_interval = min(poll_interval * 1.2, 0.25)  # Back off to 250ms
 
-    with open(res_file) as f:
+    with open(res_file, encoding="utf-8") as f:
         raw = f.read()
 
     # Clean up response file
@@ -1111,15 +1114,22 @@ def execute_code(
     server_sock = None
 
     try:
-        # Write the auto-generated hermes_tools module
+        # Write the auto-generated hermes_tools module.
+        # encoding="utf-8" is required on Windows — the stub and user code
+        # both contain non-ASCII characters (em-dashes in docstrings, plus
+        # whatever the user script carries).  Python's default open() uses
+        # the system locale on Windows (cp1252 typically), which corrupts
+        # those bytes; the child then fails to import with a SyntaxError
+        # ("'utf-8' codec can't decode byte 0x97 in position ...") because
+        # Python source files are decoded as UTF-8 by default (PEP 3120).
         # sandbox_tools is already the correct set (intersection with session
         # tools, or SANDBOX_ALLOWED_TOOLS as fallback — see lines above).
         tools_src = generate_hermes_tools_module(list(sandbox_tools))
-        with open(os.path.join(tmpdir, "hermes_tools.py"), "w") as f:
+        with open(os.path.join(tmpdir, "hermes_tools.py"), "w", encoding="utf-8") as f:
             f.write(tools_src)
 
         # Write the user's script
-        with open(os.path.join(tmpdir, "script.py"), "w") as f:
+        with open(os.path.join(tmpdir, "script.py"), "w", encoding="utf-8") as f:
             f.write(code)
 
         # --- Start RPC server ---

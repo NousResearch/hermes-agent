@@ -1846,6 +1846,27 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Feishu/Lark message."""
+        if not self._client:
+            return False
+
+        try:
+            request = self._build_delete_message_request(message_id)
+            response = await asyncio.to_thread(self._client.im.v1.message.delete, request)
+            if self._response_succeeded(response):
+                return True
+            logger.debug(
+                "[Feishu] Failed to delete message %s: %s %s",
+                message_id,
+                getattr(response, "code", "unknown"),
+                getattr(response, "msg", "delete failed"),
+            )
+            return False
+        except Exception as exc:
+            logger.debug("[Feishu] Failed to delete message %s: %s", message_id, exc, exc_info=True)
+            return False
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -4564,6 +4585,14 @@ class FeishuAdapter(BasePlatformAdapter):
         if "GetMessageRequest" in globals():
             return GetMessageRequest.builder().message_id(message_id).build()
         return SimpleNamespace(message_id=message_id)
+
+    @staticmethod
+    def _build_delete_message_request(message_id: str) -> Any:
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageRequest
+            return DeleteMessageRequest.builder().message_id(message_id).build()
+        except Exception:
+            return SimpleNamespace(message_id=message_id)
 
     @staticmethod
     def _build_message_resource_request(*, message_id: str, file_key: str, resource_type: str) -> Any:

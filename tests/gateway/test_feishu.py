@@ -415,6 +415,41 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_delete_message_deletes_existing_feishu_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def delete(self, request):
+                captured["request"] = request
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.delete_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                )
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(captured["request"].message_id, "om_progress")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

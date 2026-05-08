@@ -230,16 +230,22 @@ def _detect_contradiction_type(new_memory: str, existing_memory: str) -> str:
     """Detect contradiction type between new and existing memory.
 
     Returns: SUPERSEDE / EXTEND / ADD
+    
+    Priority: keyword signals > similarity thresholds
+    But keyword SUPERSEDE only triggers when there's SOME content overlap (sim > 0.15),
+    to avoid false positives on unrelated memories that happen to share a verb.
     """
-    # Check contradiction keywords FIRST (before similarity threshold)
-    for keyword in _CONTRADICTION_KEYWORDS["zh"]:
-        if keyword in new_memory:
-            return "SUPERSEDE"
-    for keyword in _CONTRADICTION_KEYWORDS["en"]:
-        if keyword in new_memory.lower():
-            return "SUPERSEDE"
-
     similarity = _calculate_text_similarity(new_memory, existing_memory)
+    
+    # Contradiction keywords — only trigger if some content overlap exists
+    # Jaccard is harsh on short Chinese text, so gate at 0.10 (not 0.15)
+    if similarity > 0.10:
+        for keyword in _CONTRADICTION_KEYWORDS["zh"]:
+            if keyword in new_memory:
+                return "SUPERSEDE"
+        for keyword in _CONTRADICTION_KEYWORDS["en"]:
+            if keyword in new_memory.lower():
+                return "SUPERSEDE"
 
     if similarity < 0.4:
         return "ADD"  # Not similar → different facts
@@ -405,6 +411,12 @@ class Mem0MemoryProvider(MemoryProvider):
                 return self._client
             try:
                 from mem0 import MemoryClient
+                # SDK 2.0.2+ self-hosted compat: patch Project validation
+                try:
+                    from mem0.client.selfhost_patch import patch as patch_selfhost
+                    patch_selfhost()
+                except ImportError:
+                    pass  # SDK < 2.0.2, no patch needed
                 # Self-hosted detection: if host in config points to
                 # localhost/private IP, pass it to MemoryClient.
                 host = self._config.get("host", "")

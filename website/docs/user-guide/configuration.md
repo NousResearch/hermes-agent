@@ -1505,11 +1505,11 @@ browser:
   command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
   record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
   # Optional CDP override — when set, Hermes attaches directly to your own
-  # Chrome (via /browser connect) rather than starting a headless browser.
+  # Chromium-family browser (via /browser connect) rather than starting a headless browser.
   cdp_url: ""
   # Dialog supervisor — controls how native JS dialogs (alert / confirm / prompt)
-  # are handled when a CDP backend is attached (Browserbase, local Chrome via
-  # /browser connect). Ignored on Camofox and default local agent-browser mode.
+  # are handled when a CDP backend is attached (Browserbase, local Chromium-family
+  # browser via /browser connect). Ignored on Camofox and default local agent-browser mode.
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
   camofox:
@@ -1527,7 +1527,7 @@ browser:
 
 See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
 
-The browser toolset supports multiple providers. See the [Browser feature page](/docs/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chrome CDP setup.
+The browser toolset supports multiple providers. See the [Browser feature page](/docs/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chromium-family CDP setup.
 
 ## Timezone
 

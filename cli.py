@@ -105,6 +105,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 from hermes_constants import get_hermes_home, display_hermes_home
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
+    is_browser_debug_ready,
     manual_chrome_debug_command,
     try_launch_chrome_debug,
 )
@@ -8454,10 +8455,10 @@ class HermesCLI:
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
-        """Try to launch Chrome/Chromium with remote debugging enabled.
+        """Try to launch a Chromium-family browser with remote debugging enabled.
 
         Uses a dedicated user-data-dir so the debug instance doesn't conflict
-        with an already-running Chrome using the default profile.
+        with an already-running browser using the default profile.
 
         Returns True if a launch command was executed (doesn't guarantee success).
         """
@@ -8502,7 +8503,7 @@ class HermesCLI:
         )
 
     def _handle_browser_command(self, cmd: str):
-        """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
+        """Handle /browser connect|disconnect|status — manage live Chromium-family CDP connection."""
         import platform as _plat
 
         parts = cmd.strip().split(None, 1)
@@ -8556,56 +8557,42 @@ class HermesCLI:
 
             print()
 
-            # Check if Chrome is already listening on the debug port
-            import socket
-            _already_open = False
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(1)
-                s.connect((_host, _port))
-                s.close()
-                _already_open = True
-            except (OSError, socket.timeout):
-                pass
+            # Check if a Chromium-family browser is already serving CDP on the debug port
+            _already_open = is_browser_debug_ready(cdp_url, timeout=1.0)
 
             if _already_open:
-                print(f"   ✓ Chrome is already listening on port {_port}")
+                print(f"   ✓ Chromium-family browser is already listening on port {_port}")
             elif cdp_url == _DEFAULT_CDP:
-                # Try to auto-launch Chrome with remote debugging
-                print("   Chrome isn't running with remote debugging — attempting to launch...")
+                # Try to auto-launch a Chromium-family browser with remote debugging
+                print("   Chromium-family browser isn't running with remote debugging — attempting to launch...")
                 _launched = self._try_launch_chrome_debug(_port, _plat.system())
                 if _launched:
-                    # Wait for the port to come up
+                    # Wait for the DevTools discovery endpoint to come up
                     for _wait in range(10):
-                        try:
-                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                            s.settimeout(1)
-                            s.connect((_host, _port))
-                            s.close()
+                        if is_browser_debug_ready(cdp_url, timeout=1.0):
                             _already_open = True
                             break
-                        except (OSError, socket.timeout):
-                            time.sleep(0.5)
+                        time.sleep(0.5)
                     if _already_open:
-                        print(f"   ✓ Chrome launched and listening on port {_port}")
+                        print(f"   ✓ Chromium-family browser launched and listening on port {_port}")
                     else:
-                        print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
+                        print(f"   ⚠ Browser launched but port {_port} isn't responding yet")
                         print("     Try again in a few seconds — the debug instance may still be starting")
                 else:
-                    print("   ⚠ Could not auto-launch Chrome")
+                    print("   ⚠ Could not auto-launch a Chromium-family browser")
                     sys_name = _plat.system()
                     chrome_cmd = manual_chrome_debug_command(_port, sys_name)
                     if chrome_cmd:
-                        print(f"     Launch Chrome manually:")
+                        print(f"     Launch a Chromium-family browser manually:")
                         print(f"     {chrome_cmd}")
                     else:
-                        print("     No Chrome/Chromium executable found in this environment")
+                        print("     No supported Chromium-family browser executable found in this environment")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 
             if not _already_open:
                 print()
-                print("Browser not connected — start Chrome with remote debugging and retry /browser connect")
+                print("Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect")
                 print()
                 return
 
@@ -8618,20 +8605,23 @@ class HermesCLI:
             except Exception:
                 pass
             print()
-            print("🌐 Browser connected to live Chrome via CDP")
+            print("🌐 Browser connected to live Chromium-family browser via CDP")
             print(f"   Endpoint: {cdp_url}")
             print()
 
-            # Inject context message so the model knows
+            # Inject context message so the model knows this slash command
+            # intentionally makes the dev/debug CDP browser available for use.
             if hasattr(self, '_pending_input'):
                 self._pending_input.put(
-                    "[System note: The user has connected your browser tools to their live Chrome browser "
-                    "via Chrome DevTools Protocol. Your browser_navigate, browser_snapshot, browser_click, "
-                    "and other browser tools now control their real browser — including any pages they have "
-                    "open, logged-in sessions, and cookies. They likely opened specific sites or logged into "
-                    "services before connecting. Please await their instruction before attempting to operate "
-                    "the browser. When you do act, be mindful that your actions affect their real browser — "
-                    "don't close tabs or navigate away from pages without asking.]"
+                    "[System note: The user invoked /browser connect and connected your browser tools to "
+                    "a Chromium-family dev/debug browser via Chrome DevTools Protocol. "
+                    "Your browser_navigate, browser_snapshot, browser_click, and other browser tools now "
+                    "control that CDP browser. The command itself is a signal that using browser tools for "
+                    "their current browser-related request is expected; do not wait for separate permission "
+                    "just because CDP is connected. This is typically a Hermes-managed isolated debug "
+                    "profile, not the user's main everyday browser. It is still user-visible and may contain "
+                    "pages, logged-in sessions, or cookies in that debug profile, so avoid destructive actions, "
+                    "closing tabs, or navigating away unless the user's task calls for it.]"
                 )
 
         elif sub == "disconnect":
@@ -8644,24 +8634,24 @@ class HermesCLI:
                 except Exception:
                     pass
                 print()
-                print("🌐 Browser disconnected from live Chrome")
+                print("🌐 Browser disconnected from live Chromium-family browser")
                 print("   Browser tools reverted to default mode (local headless or cloud provider)")
                 print()
 
                 if hasattr(self, '_pending_input'):
                     self._pending_input.put(
-                        "[System note: The user has disconnected the browser tools from their live Chrome. "
+                        "[System note: The user has disconnected the browser tools from their live Chromium-family browser. "
                         "Browser tools are back to default mode (headless local browser or cloud provider).]"
                     )
             else:
                 print()
-                print("Browser is not connected to live Chrome (already using default mode)")
+                print("Browser is not connected to a live Chromium-family browser (already using default mode)")
                 print()
 
         elif sub == "status":
             print()
             if current:
-                print("🌐 Browser: connected to live Chrome via CDP")
+                print("🌐 Browser: connected to live Chromium-family browser via CDP")
                 print(f"   Endpoint: {current}")
 
                 _port = 9222
@@ -8677,7 +8667,7 @@ class HermesCLI:
                     s.close()
                     print("   Status: ✓ reachable")
                 except (OSError, Exception):
-                    print("   Status: ⚠ not reachable (Chrome may not be running)")
+                    print("   Status: ⚠ not reachable (browser may not be running)")
             else:
                 try:
                     from tools.browser_tool import _get_cloud_provider
@@ -8697,13 +8687,13 @@ class HermesCLI:
                     if engine == "lightpanda":
                         print("🌐 Browser: local Lightpanda (agent-browser --engine lightpanda)")
                         print("   ⚡ Lightpanda: faster navigation, no screenshot support")
-                        print("   Automatic Chrome fallback for screenshots and failed commands")
+                        print("   Automatic Chromium fallback for screenshots and failed commands")
                     elif engine == "chrome":
-                        print("🌐 Browser: local headless Chrome (agent-browser --engine chrome)")
+                        print("🌐 Browser: local headless Chromium (agent-browser --engine chrome)")
                     else:
                         print("🌐 Browser: local headless Chromium (agent-browser)")
             print()
-            print("   /browser connect      — connect to your live Chrome")
+            print("   /browser connect      — connect to your live Chromium-family browser")
             print("   /browser disconnect   — revert to default")
             print()
 
@@ -8711,7 +8701,7 @@ class HermesCLI:
             print()
             print("Usage: /browser connect|disconnect|status")
             print()
-            print("   connect      Connect browser tools to your live Chrome session")
+            print("   connect      Connect browser tools to your live Chromium-family browser session")
             print("   disconnect   Revert to default browser backend")
             print("   status       Show current browser mode")
             print()

@@ -3914,7 +3914,7 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"] == ["Chrome is already listening on port 9222"]
+    assert resp["result"]["messages"] == ["Chromium-family browser is already listening on port 9222"]
     assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
     # First cleanup runs against the OLD env (none here), second against the NEW.
     assert cleanup_calls == ["", "http://127.0.0.1:9222"]
@@ -3934,7 +3934,7 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"] == ["Chrome is already listening on port 9222"]
+    assert resp["result"]["messages"] == ["Chromium-family browser is already listening on port 9222"]
     assert urls[0] == "http://127.0.0.1:9222/json/version"
 
 
@@ -3977,10 +3977,10 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
     assert (
         resp["result"]["messages"][0]
-        == "Chrome isn't running with remote debugging — attempting to launch..."
+        == "Chromium-family browser isn't running with remote debugging — attempting to launch..."
     )
     assert any(
-        "No Chrome/Chromium executable was found" in line
+        "No supported Chromium-family browser executable was found" in line
         for line in resp["result"]["messages"]
     )
     assert any(
@@ -4107,8 +4107,8 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
     assert resp["result"]["messages"] == [
-        "Chrome isn't running with remote debugging — attempting to launch...",
-        "Chrome launched and listening on port 9222",
+        "Chromium-family browser isn't running with remote debugging — attempting to launch...",
+        "Chromium-family browser launched and listening on port 9222",
     ]
     assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
 

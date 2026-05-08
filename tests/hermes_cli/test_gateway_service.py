@@ -882,6 +882,49 @@ class TestGatewaySystemServiceRouting:
 
         assert calls == [(False, False, True)]
 
+    def test_gateway_status_prints_runtime_health_for_systemd_service(self, monkeypatch, capsys):
+        user_unit = SimpleNamespace(exists=lambda: True)
+        system_unit = SimpleNamespace(exists=lambda: False)
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: system_unit if system else user_unit,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_gateway_runtime_snapshot",
+            lambda system=False: gateway_cli.GatewayRuntimeSnapshot(
+                manager="systemd (user)",
+                service_installed=True,
+                service_running=True,
+                gateway_pids=(1234,),
+                service_scope="user",
+            ),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "systemd_status",
+            lambda deep=False, system=False, full=False: print("service active"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_runtime_health_lines",
+            lambda: ["⚠ feishu: need_user_authorization"],
+        )
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="status", deep=False, system=False, full=False)
+        )
+
+        out = capsys.readouterr().out
+        assert "service active" in out
+        assert "Recent gateway health:" in out
+        assert "feishu: need_user_authorization" in out
+
     def test_gateway_install_passes_system_flags(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)

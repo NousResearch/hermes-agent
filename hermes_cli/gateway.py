@@ -3395,6 +3395,16 @@ def _runtime_health_lines() -> list[str]:
     return lines
 
 
+def _print_runtime_health_lines() -> None:
+    runtime_lines = _runtime_health_lines()
+    if not runtime_lines:
+        return
+    print()
+    print("Recent gateway health:")
+    for line in runtime_lines:
+        print(f"  {line}")
+
+
 def _setup_standard_platform(platform: dict):
     """Interactive setup for Telegram, Discord, or Slack."""
     emoji = platform["emoji"]
@@ -4825,21 +4835,18 @@ def _gateway_command_inner(args):
         if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
             systemd_status(deep, system=system, full=full)
             _print_gateway_process_mismatch(snapshot)
+            _print_runtime_health_lines()
         elif is_macos() and get_launchd_plist_path().exists():
             launchd_status(deep)
             _print_gateway_process_mismatch(snapshot)
+            _print_runtime_health_lines()
         else:
             # Check for manually running processes
             pids = list(snapshot.gateway_pids)
             if pids:
                 print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
                 print("  (Running manually, not as a system service)")
-                runtime_lines = _runtime_health_lines()
-                if runtime_lines:
-                    print()
-                    print("Recent gateway health:")
-                    for line in runtime_lines:
-                        print(f"  {line}")
+                _print_runtime_health_lines()
                 print()
                 if is_termux():
                     print("Termux note:")
@@ -4854,12 +4861,7 @@ def _gateway_command_inner(args):
                     print("  sudo hermes gateway install --system")
             else:
                 print("✗ Gateway is not running")
-                runtime_lines = _runtime_health_lines()
-                if runtime_lines:
-                    print()
-                    print("Recent gateway health:")
-                    for line in runtime_lines:
-                        print(f"  {line}")
+                _print_runtime_health_lines()
                 print()
                 print("To start:")
                 print("  hermes gateway run      # Run in foreground")

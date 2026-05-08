@@ -331,13 +331,64 @@ def test_run_slash_specify_end_to_end(kanban_home, monkeypatch):
 
 
 def test_run_slash_specify_help_is_reachable(kanban_home):
-    """`--help` on a subcommand is handled by argparse itself — it prints
-    to the process stdout and raises SystemExit before run_slash's output
-    redirection is installed, so the returned string is the usage-error
-    sentinel. All we're asserting here is that the subcommand is
-    registered (no "unknown action" error) — the shape of the help text
-    is covered by the direct argparse tests in test_kanban_specify.py."""
+    """`-h`/`--help` on a subcommand returns the actual help text — see
+    issue #21794. argparse writes help to stdout and exits 0; run_slash
+    must capture both streams and treat exit 0 as success, not error."""
     out = kc.run_slash("specify --help")
-    # Either the usage-error sentinel (stdout swallowed by argparse) or
-    # a real help rendering — both mean the subcommand exists.
-    assert "usage error" in out.lower() or "specify" in out.lower()
+    assert "specify" in out.lower()
+    # Help dump should NOT come back wrapped as a usage error.
+    assert not out.startswith("⚠")
+
+
+# ---------------------------------------------------------------------------
+# /kanban help / no-args / unknown-action UX (issue #21794)
+# ---------------------------------------------------------------------------
+
+def test_run_slash_bare_returns_curated_help(kanban_home):
+    """Bare `/kanban` returns the curated short-help block — not a 5KB
+    argparse usage dump."""
+    out = kc.run_slash("")
+    assert "/kanban" in out
+    assert "list" in out
+    assert "show" in out
+    # Sanity: should be a chat-friendly size, not the raw usage tree.
+    assert len(out) < 2000
+    # Shouldn't surface argparse's usage-error sentinel.
+    assert "usage error" not in out.lower()
+
+
+@pytest.mark.parametrize("alias", ["help", "--help", "-h", "?"])
+def test_run_slash_help_aliases_match_bare(kanban_home, alias):
+    """Every documented help alias produces the same curated output."""
+    bare = kc.run_slash("")
+    out = kc.run_slash(alias)
+    assert out == bare
+
+
+def test_run_slash_subcommand_help_returns_help_text(kanban_home):
+    """`/kanban show -h` returns the actual subcommand help, not a
+    fake `(usage error: 0)` sentinel."""
+    out = kc.run_slash("show -h")
+    assert "task_id" in out
+    assert "/kanban show" in out
+    assert not out.startswith("⚠")
+
+
+def test_run_slash_unknown_action_friendly_error(kanban_home):
+    """Unknown subcommand surfaces a single-line usage error prefixed
+    with our marker — no `(usage error: 2)` wrapping, no doubled
+    `kanban kanban` prog string."""
+    out = kc.run_slash("frobnicate")
+    assert "/kanban" in out
+    assert "frobnicate" in out
+    assert "/kanban-wrap" not in out
+    assert "/kanban kanban" not in out
+    assert "(usage error: " not in out
+
+
+def test_run_slash_missing_required_arg_friendly_error(kanban_home):
+    """Missing positional argument shows the subcommand-scoped usage
+    line, not the top-level kanban tree."""
+    out = kc.run_slash("show")
+    assert "/kanban show" in out
+    assert "task_id" in out

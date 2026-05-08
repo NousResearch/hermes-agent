@@ -59,21 +59,33 @@ const asGatewayEvent = (value: unknown): GatewayEvent | null =>
     ? (value as GatewayEvent)
     : null
 
+// Hoisted decoder: attach mode can drive high-frequency binary frames
+// (tool deltas, reasoning streams) and constructing a fresh TextDecoder
+// per message creates avoidable GC pressure. One module-level instance
+// is fine because UTF-8 is stateless and we always pass entire frames.
+const _wireDecoder = new TextDecoder()
+
 const asWireText = (raw: unknown): string | null => {
   if (typeof raw === 'string') {
     return raw
   }
 
   if (raw instanceof ArrayBuffer) {
-    return new TextDecoder().decode(raw)
+    return _wireDecoder.decode(raw)
   }
 
   if (ArrayBuffer.isView(raw)) {
-    return new TextDecoder().decode(raw)
+    return _wireDecoder.decode(raw)
   }
 
   return null
 }
+
+// Matches `<scheme>://user:pass@host…` style user-info segments in
+// otherwise-malformed URLs that the WHATWG `URL` parser can't accept.
+// Used by the `redactUrl` fallback so embedded credentials are
+// scrubbed from log lines even when the URL is unparseable.
+const _USERINFO_FALLBACK_RE = /^([a-z][a-z0-9+.\-]*:\/\/)[^/?#@]*@/i
 
 // Connection URLs (gateway, sidecar) often carry bearer tokens in the query
 // string. We surface them in user-facing log lines and the
@@ -91,9 +103,13 @@ const redactUrl = (raw: string): string => {
 
     return `${url.protocol}//${userInfo}${url.host}${url.pathname}${query}`
   } catch {
-    const queryIdx = raw.indexOf('?')
+    // WHATWG URL rejected the input. Best-effort: strip an embedded
+    // `user:pass@` segment AND the query string so a malformed token
+    // bearer can never escape into the log tail.
+    const noUserInfo = raw.replace(_USERINFO_FALLBACK_RE, '$1***@')
+    const queryIdx = noUserInfo.indexOf('?')
 
-    return queryIdx >= 0 ? `${raw.slice(0, queryIdx)}?***` : raw
+    return queryIdx >= 0 ? `${noUserInfo.slice(0, queryIdx)}?***` : noUserInfo
   }
 }
 

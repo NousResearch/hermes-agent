@@ -271,4 +271,36 @@ describe('GatewayClient websocket attach mode', () => {
 
     gw.kill()
   })
+
+  it('redacts user-info credentials even on URLs the WHATWG parser rejects', () => {
+    // Trailing space makes `new URL(raw)` throw, exercising the
+    // fallback redaction path. The credentials must still be stripped.
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://alice:hunter2@gateway.test/api/ws?token=secret '
+    delete (globalThis as { WebSocket?: unknown }).WebSocket
+
+    const gw = new GatewayClient()
+    const stderrLines: string[] = []
+
+    gw.on('event', ev => {
+      if (ev.type === 'gateway.stderr' && typeof ev.payload?.line === 'string') {
+        stderrLines.push(ev.payload.line)
+      }
+    })
+    gw.start()
+    gw.drain()
+
+    expect(stderrLines.length).toBeGreaterThan(0)
+    for (const line of stderrLines) {
+      expect(line).not.toContain('alice')
+      expect(line).not.toContain('hunter2')
+      expect(line).not.toContain('token=secret')
+    }
+
+    const tail = gw.getLogTail(20)
+    expect(tail).not.toContain('alice')
+    expect(tail).not.toContain('hunter2')
+    expect(tail).not.toContain('token=secret')
+
+    gw.kill()
+  })
 })

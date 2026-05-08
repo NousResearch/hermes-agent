@@ -1060,6 +1060,57 @@ Compression and fallback model settings are config.yaml-only.
 Run `hermes config` to see your current auxiliary model settings. Overrides only show up when they differ from the defaults.
 :::
 
+## Persistent Goals
+
+The `/goal` command keeps a standing objective active across turns until a
+judge model marks it done, you pause or clear it, or the turn budget runs out.
+See [Persistent Goals](/docs/user-guide/features/goals) for the workflow.
+
+```yaml
+goals:
+  max_turns: 20
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `goals.max_turns` | `20` | Maximum continuation turns before Hermes auto-pauses the active goal and asks you to `/goal resume` or `/goal clear`. |
+| `auxiliary.goal_judge.provider` | `auto` | Optional provider override for the lightweight judge call that decides whether the goal is complete. |
+| `auxiliary.goal_judge.model` | provider default | Optional model override for the judge. Use a cheap fast model because it runs once per goal turn. |
+
+Example judge override:
+
+```yaml
+auxiliary:
+  goal_judge:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+```
+
+## Kanban Dispatcher
+
+Kanban is Hermes' durable multi-agent work queue. The gateway runs the
+dispatcher by default, so ready tasks are picked up without a separate daemon.
+See [Kanban (Multi-Agent Board)](/docs/user-guide/features/kanban) for board,
+workspace, and worker details.
+
+```yaml
+kanban:
+  dispatch_in_gateway: true
+  dispatch_interval_seconds: 60
+  failure_limit: 2
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `kanban.dispatch_in_gateway` | `true` | Run the dispatcher loop inside `hermes gateway start`. Set to `false` only if you operate a separate dispatcher process. |
+| `kanban.dispatch_interval_seconds` | `60` | Seconds between dispatcher ticks for reclaiming stale claims, promoting ready tasks, and spawning workers. |
+| `kanban.failure_limit` | `2` | Consecutive non-success attempts for the same task/profile before the dispatcher auto-blocks the task with the last error. |
+
+Runtime board selection also honors the Kanban environment variables listed in
+the [environment variable reference](/docs/reference/environment-variables),
+including `HERMES_KANBAN_BOARD`, `HERMES_KANBAN_HOME`,
+`HERMES_KANBAN_DB`, and `HERMES_KANBAN_WORKSPACES_ROOT`.
+
 ## Reasoning Effort
 
 Control how much "thinking" the model does before responding:

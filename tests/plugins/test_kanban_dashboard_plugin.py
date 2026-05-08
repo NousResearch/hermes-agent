@@ -1683,3 +1683,43 @@ def test_specify_no_aux_client_surfaces_reason(client, monkeypatch):
     # Task must stay in triage — nothing was touched.
     detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
     assert detail["status"] == "triage"
+
+
+def test_board_endpoint_accepts_explicit_board_default_param(client):
+    """GET /board?board=default must not fall through to env/current-file resolution.
+
+    The dashboard always sends ``?board=<slug>`` (including ``board=default``)
+    so that the server-side ``current`` file can never override the dashboard's
+    selected board.  This test asserts the endpoint accepts the parameter and
+    returns the default board without falling back to environment variable or
+    current-file resolution.
+    Regression: #21819.
+    """
+    # Create a task on the default board.
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "on-default-board"},
+    ).json()["task"]
+    assert t["status"] == "ready"
+
+    # Request with explicit board=default — must succeed and include the task.
+    r = client.get("/api/plugins/kanban/board?board=default")
+    assert r.status_code == 200
+    data = r.json()
+    ready = next((c for c in data["columns"] if c["name"] == "ready"), None)
+    assert ready is not None, "no 'ready' column in default board response"
+    task_ids = [task["id"] for task in ready["tasks"]]
+    assert t["id"] in task_ids, (
+        f"task {t['id']} not found in ready column of default board "
+        f"(got tasks: {task_ids}). The board=default param was likely ignored."
+    )
+
+
+def test_dashboard_requests_default_board_explicitly():
+    """Dashboard REST calls must include board=default instead of relying on server current board."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "SDK.fetchJSON(withBoard(`${API}/config`, board))" in dist
+    assert "SDK.fetchJSON(withBoard(`${API}/boards`, board))" in dist
+    assert "}, [loadBoardList, switchBoard, board]);" in dist

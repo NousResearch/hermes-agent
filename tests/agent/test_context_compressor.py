@@ -1631,3 +1631,50 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestOnSessionResetSummaryModel:
+    """on_session_reset() must restore summary_model to the configured value.
+
+    When the aux summary model fails mid-session, the fallback logic clears
+    self.summary_model = "" so subsequent compressions use the main model.
+    On /reset the compressor is reused (not recreated), so without an explicit
+    restore the new session silently degrades to the main model even if the
+    aux model is back online. See issue companion to #15548.
+    """
+
+    def _make_compressor(self, summary_model: str):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            return ContextCompressor(
+                model="main/model",
+                threshold_percent=0.85,
+                quiet_mode=True,
+                summary_model_override=summary_model,
+            )
+
+    def test_configured_summary_model_restored_after_fallback(self):
+        c = self._make_compressor("gpt-4o-mini")
+        assert c.summary_model == "gpt-4o-mini"
+
+        # Simulate the fallback clearing summary_model
+        c.summary_model = ""
+        c._summary_model_fallen_back = True
+
+        c.on_session_reset()
+
+        assert c.summary_model == "gpt-4o-mini", (
+            "on_session_reset() must restore summary_model to the configured value"
+        )
+
+    def test_summary_model_fallen_back_cleared_on_reset(self):
+        c = self._make_compressor("gpt-4o-mini")
+        c._summary_model_fallen_back = True
+
+        c.on_session_reset()
+
+        assert c._summary_model_fallen_back is False
+
+    def test_empty_summary_model_stays_empty_after_reset(self):
+        c = self._make_compressor("")
+        c.on_session_reset()
+        assert c.summary_model == ""

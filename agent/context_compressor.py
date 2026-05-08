@@ -372,6 +372,8 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self.summary_model = self._configured_summary_model  # restore in case fallback cleared it
+        self._summary_model_fallen_back = False  # allow the one-shot fallback to fire again
 
     def update_model(
         self,
@@ -464,7 +466,8 @@ class ContextCompressor(ContextEngine):
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
 
-        self.summary_model = summary_model_override or ""
+        self._configured_summary_model: str = summary_model_override or ""
+        self.summary_model = self._configured_summary_model
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None

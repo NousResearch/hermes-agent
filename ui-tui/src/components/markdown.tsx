@@ -216,7 +216,11 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     const k = parts.length
 
     if (i > last) {
-      parts.push(<Text key={k}>{text.slice(last, i)}</Text>)
+      parts.push(
+        <Text key={k} wrap="wrap-trim">
+          {text.slice(last, i)}
+        </Text>
+      )
     }
 
     if (m[1] && m[2]) {
@@ -299,7 +303,11 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       parts.push(renderAutolink(parts.length, t, url))
 
       if (url.length < m[16].length) {
-        parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)
+        parts.push(
+          <Text key={parts.length} wrap="wrap-trim">
+            {m[16].slice(url.length)}
+          </Text>
+        )
       }
     } else if (m[17] ?? m[18]) {
       // Inline math is run through `texToUnicode` (Greek letters, ℕℤℚℝ,
@@ -320,10 +328,24 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
   }
 
   if (last < text.length) {
-    parts.push(<Text key={parts.length}>{text.slice(last)}</Text>)
+    parts.push(
+      <Text key={parts.length} wrap="wrap-trim">
+        {text.slice(last)}
+      </Text>
+    )
   }
 
-  return <Text>{parts.length ? parts : <Text>{text}</Text>}</Text>
+  return (
+    <Text wrap="wrap-trim">
+      {parts.length ? (
+        parts
+      ) : (
+        <Text wrap="wrap-trim">
+          {text}
+        </Text>
+      )}
+    </Text>
+  )
 }
 
 // Cross-instance parsed-children cache: useMemo's per-instance cache dies
@@ -420,7 +442,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (media) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.muted} key={key}>
+          <Text color={t.color.muted} key={key} wrap="wrap-trim">
             {'▸ '}
 
             <Link url={/^(?:\/|[a-z]:[\\/])/i.test(media) ? `file://${media}` : media}>
@@ -594,7 +616,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (heading) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.accent} key={key}>
+          <Text bold color={t.color.accent} key={key} wrap="wrap-trim">
             <MdInline t={t} text={heading} />
           </Text>
         )
@@ -606,7 +628,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (i + 1 < lines.length && SETEXT_RE.test(lines[i + 1]!)) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.accent} key={key}>
+          <Text bold color={t.color.accent} key={key} wrap="wrap-trim">
             <MdInline t={t} text={line.trim()} />
           </Text>
         )
@@ -632,7 +654,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (footnote) {
         start('list')
         nodes.push(
-          <Text color={t.color.muted} key={key}>
+          <Text color={t.color.muted} key={key} wrap="wrap-trim">
             [{footnote[1]}] <MdInline t={t} text={footnote[2] ?? ''} />
           </Text>
         )
@@ -641,7 +663,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         while (i < lines.length && /^\s{2,}\S/.test(lines[i]!)) {
           nodes.push(
             <Box key={`${key}-cont-${i}`} paddingLeft={2}>
-              <Text color={t.color.muted}>
+              <Text color={t.color.muted} wrap="wrap-trim">
                 <MdInline t={t} text={lines[i]!.trim()} />
               </Text>
             </Box>
@@ -655,7 +677,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (i + 1 < lines.length && DEF_RE.test(lines[i + 1]!)) {
         start('list')
         nodes.push(
-          <Text bold key={key}>
+          <Text bold key={key} wrap="wrap-trim">
             {line.trim()}
           </Text>
         )
@@ -774,7 +796,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (summary) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.muted} key={key}>
+          <Text color={t.color.muted} key={key} wrap="wrap-trim">
             ▶ {summary}
           </Text>
         )
@@ -786,7 +808,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (/^<\/?[^>]+>$/.test(line.trim())) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.muted} key={key}>
+          <Text color={t.color.muted} key={key} wrap="wrap-trim">
             {line.trim()}
           </Text>
         )

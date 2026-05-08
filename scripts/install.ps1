@@ -1040,7 +1040,64 @@ function Install-NodeDeps {
     if (Test-Path "$InstallDir\package.json") {
         Write-Info "Installing Node.js dependencies (browser tools)..."
         $browserLog = "$env:TEMP\hermes-npm-browser-$(Get-Random).log"
-        [void](_Run-NpmInstall "Browser tools" $InstallDir $browserLog $npmExe)
+        $browserNpmOk = _Run-NpmInstall "Browser tools" $InstallDir $browserLog $npmExe
+
+        # Install Playwright Chromium (mirrors scripts/install.sh behaviour for
+        # Linux).  Without this, tools/browser_tool.py::check_browser_requirements
+        # returns False (no Chromium under %LOCALAPPDATA%\ms-playwright), and the
+        # browser_* tools are silently filtered out of the agent's tool schema.
+        # System Chrome at "C:\Program Files\Google\Chrome\..." is NOT used by
+        # agent-browser — it expects a Playwright-managed Chromium.
+        if ($browserNpmOk) {
+            Write-Info "Installing browser engine (Playwright Chromium)..."
+            # npx lives next to npm in the same bin dir.  Prefer .cmd to dodge
+            # the same execution-policy gotcha that affects npm.ps1 (see above).
+            $npmDir = Split-Path $npmExe -Parent
+            $npxExe = $null
+            foreach ($cand in @("npx.cmd", "npx.exe", "npx")) {
+                $try = Join-Path $npmDir $cand
+                if (Test-Path $try) { $npxExe = $try; break }
+            }
+            if (-not $npxExe) {
+                $npxCmd = Get-Command npx -ErrorAction SilentlyContinue
+                if ($npxCmd) { $npxExe = $npxCmd.Source }
+            }
+            if (-not $npxExe) {
+                Write-Warn "npx not found — cannot install Playwright Chromium."
+                Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
+            } else {
+                $pwLog = "$env:TEMP\hermes-playwright-install-$(Get-Random).log"
+                Push-Location $InstallDir
+                try {
+                    & $npxExe playwright install chromium *> $pwLog
+                    $pwCode = $LASTEXITCODE
+                    if ($pwCode -eq 0) {
+                        Write-Success "Playwright Chromium installed (browser tools ready)"
+                        Remove-Item -Force $pwLog -ErrorAction SilentlyContinue
+                    } else {
+                        Write-Warn "Playwright Chromium install failed — exit code $pwCode"
+                        Write-Warn "Browser tools will not work until Chromium is installed."
+                        if (Test-Path $pwLog) {
+                            $pwErr = Get-Content $pwLog -Raw -ErrorAction SilentlyContinue
+                            if ($pwErr) {
+                                $snippet = if ($pwErr.Length -gt 1200) { $pwErr.Substring(0, 1200) + "..." } else { $pwErr }
+                                Write-Info "  playwright output:"
+                                foreach ($line in $snippet -split "`n") {
+                                    Write-Host "    $line" -ForegroundColor DarkGray
+                                }
+                                Write-Info "  Full log: $pwLog"
+                            }
+                        }
+                        Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
+                    }
+                } catch {
+                    Write-Warn "Playwright Chromium install could not be launched: $_"
+                    Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
+                } finally {
+                    Pop-Location
+                }
+            }
+        }
     }
 
     # TUI

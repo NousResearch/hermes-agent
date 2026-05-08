@@ -375,7 +375,7 @@ def _read_distribution_meta(profile_dir: Path) -> tuple:
         return None, None, None
     try:
         import yaml
-        with open(mf_path, "r") as f:
+        with open(mf_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         if not isinstance(data, dict):
             return None, None, None

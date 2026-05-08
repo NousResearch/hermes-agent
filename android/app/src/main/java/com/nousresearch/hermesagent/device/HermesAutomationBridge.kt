@@ -4090,6 +4090,7 @@ object HermesAutomationBridge {
         "grant_runtime_permission",
         "revoke_runtime_permission",
         "force_stop_app",
+        "clear_app_data",
         "enable_app",
         "disable_app",
         "set_app_enabled",

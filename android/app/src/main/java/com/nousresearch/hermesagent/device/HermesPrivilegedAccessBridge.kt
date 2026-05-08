@@ -52,6 +52,7 @@ private val DEFAULT_PRIVILEGED_ACTIONS = listOf(
     "grant_runtime_permission",
     "revoke_runtime_permission",
     "force_stop_app",
+    "clear_app_data",
     "enable_app",
     "disable_app",
     "set_app_enabled",
@@ -167,6 +168,7 @@ object HermesPrivilegedAccessBridge {
             "grant_runtime_permission" -> "pm grant $packageName $permission"
             "revoke_runtime_permission" -> "pm revoke $packageName $permission"
             "force_stop_app" -> "am force-stop $packageName"
+            "clear_app_data" -> "pm clear $packageName"
             "enable_app" -> "pm enable $packageName"
             "disable_app" -> "pm disable-user $packageName"
             "set_app_enabled" -> if (enabledArgument(arguments)) {
@@ -418,6 +420,7 @@ object HermesPrivilegedAccessBridge {
         "grant_runtime_permission",
         "revoke_runtime_permission",
         "force_stop_app",
+        "clear_app_data",
         "enable_app",
         "disable_app",
         "set_app_enabled",
@@ -429,6 +432,9 @@ object HermesPrivilegedAccessBridge {
         "pm_revoke" to "revoke_runtime_permission",
         "force_stop_package" to "force_stop_app",
         "kill_app" to "force_stop_app",
+        "clear_package_data" to "clear_app_data",
+        "clear_data" to "clear_app_data",
+        "pm_clear" to "clear_app_data",
         "enable_package" to "enable_app",
         "pm_enable" to "enable_app",
         "disable_package" to "disable_app",
@@ -436,7 +442,7 @@ object HermesPrivilegedAccessBridge {
         "pm_disable" to "disable_app",
     )
     private val PERMISSION_ACTIONS = setOf("grant_runtime_permission", "revoke_runtime_permission")
-    private val SELF_PROTECTING_ACTIONS = setOf("force_stop_app", "disable_app", "set_app_enabled")
+    private val SELF_PROTECTING_ACTIONS = setOf("force_stop_app", "clear_app_data", "disable_app", "set_app_enabled")
     private val ANDROID_PACKAGE_OR_PERMISSION_REGEX = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)*")
 }
 

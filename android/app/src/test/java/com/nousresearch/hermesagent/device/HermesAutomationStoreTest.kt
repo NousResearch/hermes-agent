@@ -135,6 +135,43 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesShizukuClearAppDataRecordsAndProtectsHermes() {
+        val context = RuntimeEnvironment.getApplication()
+        HermesAutomationStore(context).clear()
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_shizuku_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-clear-data")
+                    .put("label", "Clear app data smoke")
+                    .put("shizuku_action", "pm_clear")
+                    .put("package_name", "com.example.target")
+                    .put("enabled", false),
+            ),
+        )
+
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        assertEquals(ACTION_TYPE_SHIZUKU_ACTION, automation.getString("action_type"))
+        assertTrue(automation.getBoolean("use_shizuku"))
+        val payload = org.json.JSONObject(automation.getString("command"))
+        assertEquals("clear_app_data", payload.getString("shizuku_action"))
+        assertEquals("com.example.target", payload.getString("package_name"))
+
+        val selfClear = org.json.JSONObject(
+            HermesPrivilegedAccessBridge.performStructuredActionJson(
+                context,
+                "clear_app_data",
+                org.json.JSONObject().put("package_name", context.packageName),
+            ),
+        )
+        assertFalse(selfClear.toString(), selfClear.getBoolean("success"))
+        assertTrue(selfClear.getString("error").contains("Hermes"))
+    }
+
+    @Test
     fun bridgeCreatesAndRunsToastRecords() {
         val context = RuntimeEnvironment.getApplication()
         val store = HermesAutomationStore(context)

@@ -562,7 +562,7 @@ class LocalEnvironment(BaseEnvironment):
         ``_run_bash`` recovery path will resolve a safe fallback if needed.
         """
         try:
-            with open(self._cwd_file) as f:
+            with open(self._cwd_file, encoding="utf-8") as f:
                 cwd_path = f.read().strip()
             if cwd_path and os.path.isdir(cwd_path):
                 self.cwd = cwd_path

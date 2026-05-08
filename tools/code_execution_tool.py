@@ -517,7 +517,7 @@ def _rpc_server_loop(
                 # their status prints don't leak into the CLI spinner.
                 try:
                     _real_stdout, _real_stderr = sys.stdout, sys.stderr
-                    devnull = open(os.devnull, "w")
+                    devnull = open(os.devnull, "w", encoding="utf-8")
                     try:
                         sys.stdout = devnull
                         sys.stderr = devnull
@@ -791,7 +791,7 @@ def _rpc_poll_loop(
                     # Dispatch through the standard tool handler
                     try:
                         _real_stdout, _real_stderr = sys.stdout, sys.stderr
-                        devnull = open(os.devnull, "w")
+                        devnull = open(os.devnull, "w", encoding="utf-8")
                         try:
                             sys.stdout = devnull
                             sys.stderr = devnull

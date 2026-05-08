@@ -111,7 +111,7 @@ def summarize(log: Path, since_ts_ms: int) -> dict[str, Any]:
     frame_events: list[dict[str, Any]] = []
     if not log.exists():
         return {"error": f"no log at {log}", "react": [], "frame": []}
-    for line in log.read_text().splitlines():
+    for line in log.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -505,7 +505,7 @@ def main() -> int:
 
     if args.save:
         path = Path(f"/tmp/perf-{args.save}.json")
-        path.write_text(json.dumps(metrics, indent=2))
+        path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         print(f"\n• saved: {path}")
 
     if args.compare:

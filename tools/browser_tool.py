@@ -751,7 +751,7 @@ def _run_chrome_fallback_command(
             proc.wait()
             return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
         try:
-            with open(stdout_path, "r") as f:
+            with open(stdout_path, "r", encoding="utf-8") as f:
                 stdout = f.read().strip()
             if stdout:
                 return json.loads(stdout.split("\n")[-1])
@@ -1110,7 +1110,7 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
     """
     try:
         path = os.path.join(socket_dir, f"{session_name}.owner_pid")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(str(os.getpid()))
     except OSError as exc:
         logger.debug("Could not write owner_pid file for %s: %s",
@@ -1174,7 +1174,7 @@ def _reap_orphaned_browser_sessions():
         owner_alive: Optional[bool] = None  # None = owner_pid missing/unreadable
         if os.path.isfile(owner_pid_file):
             try:
-                owner_pid = int(Path(owner_pid_file).read_text().strip())
+                owner_pid = int(Path(owner_pid_file).read_text(encoding="utf-8").strip())
                 try:
                     os.kill(owner_pid, 0)
                     owner_alive = True
@@ -1209,7 +1209,7 @@ def _reap_orphaned_browser_sessions():
             continue
 
         try:
-            daemon_pid = int(Path(pid_file).read_text().strip())
+            daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
         except (ValueError, OSError):
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
@@ -1834,7 +1834,7 @@ def _run_browser_command(
                 # Detect AppArmor user namespace restrictions (Ubuntu 23.10+)
                 _userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
                 try:
-                    with open(_userns_restrict) as _f:
+                    with open(_userns_restrict, encoding="utf-8") as _f:
                         if _f.read().strip() == "1":
                             _needs_sandbox_bypass = True
                             logger.debug(
@@ -1879,9 +1879,9 @@ def _run_browser_command(
             result = {"success": False, "error": f"Command timed out after {timeout} seconds"}
             # Fall through to fallback check below
         else:
-            with open(stdout_path, "r") as f:
+            with open(stdout_path, "r", encoding="utf-8") as f:
                 stdout = f.read()
-            with open(stderr_path, "r") as f:
+            with open(stderr_path, "r", encoding="utf-8") as f:
                 stderr = f.read()
             returncode = proc.returncode
 
@@ -3180,7 +3180,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 pid_file = os.path.join(socket_dir, f"{session_name}.pid")
                 if os.path.isfile(pid_file):
                     try:
-                        daemon_pid = int(Path(pid_file).read_text().strip())
+                        daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
                         os.kill(daemon_pid, signal.SIGTERM)
                         logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
                     except (ProcessLookupError, ValueError, PermissionError, OSError):
@@ -3323,7 +3323,7 @@ def _running_in_docker() -> bool:
     if os.path.exists("/.dockerenv"):
         return True
     try:
-        with open("/proc/1/cgroup", "rt") as fp:
+        with open("/proc/1/cgroup", "rt", encoding="utf-8") as fp:
             return "docker" in fp.read()
     except OSError:
         return False

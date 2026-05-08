@@ -16,12 +16,14 @@ Memory providers are one of two **provider plugin** types. The other is [Context
 
 Each memory provider lives in `plugins/memory/<name>/`:
 
-```
+<!-- ascii-guard-ignore -->
+```text
 plugins/memory/my-provider/
 ├── __init__.py      # MemoryProvider implementation + register() entry point
 ├── plugin.yaml      # Metadata (name, description, hooks)
 └── README.md        # Setup instructions, config reference, tools
 ```
+<!-- ascii-guard-ignore-end -->
 
 ## The MemoryProvider ABC
 

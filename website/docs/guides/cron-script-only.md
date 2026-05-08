@@ -10,6 +10,7 @@ Sometimes you already know exactly what message you want to send. You don't need
 
 Hermes calls this **no-agent mode**. It's the cron system minus the LLM.
 
+<!-- ascii-guard-ignore -->
 ```
    ┌──────────────────┐          ┌──────────────────┐
    │ scheduler tick   │  every   │ run script       │
@@ -23,6 +24,7 @@ Hermes calls this **no-agent mode**. It's the cron system minus the LLM.
                                  │ (telegram/disc…) │
                                  └──────────────────┘
 ```
+<!-- ascii-guard-ignore-end -->
 
 - **No LLM call.** Zero tokens, zero agent loop, zero model spend.
 - **Script is the job.** The script decides whether to alert. Emit output → message gets sent. Emit nothing → silent tick.

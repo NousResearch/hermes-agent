@@ -104,6 +104,7 @@ AUTHOR_MAP = {
     "rxdxxxx@users.noreply.github.com": "rxdxxxx",
     "ma.haohao2@xydigit.com": "MaHaoHao-ch",
     "29756950+revaraver@users.noreply.github.com": "revaraver",
+    "pingchesu@users.noreply.github.com": "pingchesu",
     "nexus@eptic.me": "TheEpTic",
     "74554762+wmagev@users.noreply.github.com": "wmagev",
     "ashermorse@icloud.com": "ashermorse",

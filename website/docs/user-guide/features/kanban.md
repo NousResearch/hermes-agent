@@ -464,6 +464,7 @@ Visually the target is the familiar Linear / Fusion layout: dark theme, column h
 
 The GUI is strictly a **read-through-the-DB + write-through-kanban_db** layer with no domain logic of its own:
 
+<!-- ascii-guard-ignore -->
 ```
 ┌────────────────────────┐      WebSocket (tails task_events)
 │   React SPA (plugin)   │ ◀──────────────────────────────────┐
@@ -483,6 +484,7 @@ The GUI is strictly a **read-through-the-DB + write-through-kanban_db** layer wi
 │  (WAL, shared)         │
 └────────────────────────┘
 ```
+<!-- ascii-guard-ignore-end -->
 
 ### REST surface
 

@@ -10,7 +10,7 @@ Tools are functions that extend the agent's capabilities. They're organized into
 
 ## Available Tools
 
-Hermes ships with a broad built-in tool registry covering web search, browser automation, terminal execution, file editing, memory, delegation, RL training, messaging delivery, Home Assistant, and more. A fresh minimal install enables only `hermes-minimal` by default so the starting schema stays small and avoids optional dependencies.
+Hermes ships with a broad built-in tool registry covering web search, browser automation, terminal execution, file editing, memory, delegation, RL training, messaging delivery, Home Assistant, and more. Toolsets are now reported with runtime availability: tools whose optional dependencies are not installed or configured are marked unavailable instead of appearing ready to use. Compact `minimal` installs start with `hermes-minimal` by default so the starting schema stays small and avoids unavailable optional integrations.
 
 :::note
 **Honcho cross-session memory** is available as a memory provider plugin (`plugins/memory/honcho/`), not as a built-in toolset. See [Plugins](./plugins.md) for installation.
@@ -48,9 +48,13 @@ hermes tools
 hermes tools
 ```
 
-Common toolsets include `hermes-minimal` (fresh-install default: skills, todo, clarify), `web`, `search`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `homeassistant`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, `safe`, and `rl`.
+Common toolsets include `hermes-minimal` (compact install default: skills, file editing, terminal/process, todo, memory, session search, clarify, and web search/extraction), `web-search`, `web`, `search`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `homeassistant`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, `safe`, and `rl`.
 
-Minimal installs intentionally do not expose browser, TTS/media, messaging, dashboard, Home Assistant, or RL tools in the default schemas. Enable broader presets with `hermes tools`, install extras with `scripts/install.sh --with ...`, or use `scripts/install.sh --full` for the legacy all-in profile.
+`web-search` is the public feature/toolset for `web_search` and `web_extract`. The local web UI/API backend is installed as the `dashboard` feature; `web` remains as a compatibility alias in older commands/config.
+
+Use `/toolsets` or `hermes tools list` to see which toolsets are active and which are actually ready in the current environment. If a configured toolset is missing dependencies, Hermes marks it unavailable and suggests the matching `hermes install-feature ...` command.
+
+Compact installs intentionally do not expose browser, TTS/media, messaging, dashboard, Home Assistant, or RL tools in the default schemas. Enable broader presets with `hermes tools`, install extras with `hermes install-feature ...` or `scripts/install.sh --with ...`, or use the default installer for the full feature set.
 
 See [Toolsets Reference](/docs/reference/toolsets-reference) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
 

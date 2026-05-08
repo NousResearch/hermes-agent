@@ -105,22 +105,30 @@ class TestResolveToolset:
         tools = resolve_toolset("*")
         assert len(tools) > 10
 
-    def test_minimal_toolset_is_small_and_excludes_heavy_tools(self):
+    def test_minimal_toolset_is_compact_but_useful(self):
         tools = resolve_toolset("hermes-minimal")
-        assert set(tools) == {"skills_list", "skill_view", "skill_manage", "todo", "clarify"}
+        assert set(tools) == {
+            "skills_list", "skill_view", "skill_manage",
+            "read_file", "write_file", "patch", "search_files",
+            "terminal", "process",
+            "todo", "memory", "session_search", "clarify",
+            "web_search", "web_extract",
+        }
 
         excluded = {
-            "web_search",
-            "web_extract",
             "browser_navigate",
             "text_to_speech",
             "image_generate",
             "vision_analyze",
             "send_message",
             "cronjob",
-            "terminal",
+            "delegate_task",
+            "execute_code",
         }
         assert excluded.isdisjoint(tools)
+
+    def test_web_search_toolset_is_public_alias_for_web_research_tools(self):
+        assert set(resolve_toolset("web-search")) == {"web_search", "web_extract"}
 
 
 class TestResolveMultipleToolsets:

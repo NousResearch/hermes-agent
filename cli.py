@@ -5032,13 +5032,18 @@ class HermesCLI:
         _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
 
     def show_toolsets(self):
-        """Display available toolsets with kawaii ASCII art."""
+        """Display available toolsets with runtime availability status."""
+        from hermes_cli.tools_config import (
+            _format_toolset_runtime_detail,
+            _get_toolset_runtime_status,
+        )
+
         all_toolsets = get_all_toolsets()
         
         # Header
         print()
         title = "(^_^)b Available Toolsets"
-        width = 58
+        width = 78
         pad = width - len(title)
         print("+" + "-" * width + "+")
         print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
@@ -5048,17 +5053,23 @@ class HermesCLI:
         for name in sorted(all_toolsets.keys()):
             info = get_toolset_info(name)
             if info:
-                tool_count = info["tool_count"]
                 desc = info["description"]
-                
-                # Mark if currently enabled
-                marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
-                print(f"  {marker} {name:<18} [{tool_count:>2} tools] - {desc}")
+                runtime = _get_toolset_runtime_status(name)
+                detail = _format_toolset_runtime_detail(name, runtime)
+                enabled = bool(self.enabled_toolsets and name in self.enabled_toolsets)
+                if enabled and runtime.get("available"):
+                    marker = "(*)"
+                elif enabled:
+                    marker = "(!)"
+                else:
+                    marker = "   "
+                print(f"  {marker} {name:<18} [{detail}] - {desc}")
         
         print()
-        print("  (*) = currently enabled")
+        print("  (*) = configured and active")
+        print("  (!) = configured but unavailable until dependencies/config are fixed")
         print()
-        print("  Tip: Use 'all' or '*' to enable all toolsets")
+        print("  Tip: Use 'all' or '*' to enable all installed toolsets")
         print("  Example: python cli.py --toolsets web,terminal")
         print()
     

@@ -77,7 +77,7 @@ termux = [
   "hermes-agent[acp]",
 ]
 termux-all = [
-  # Best-effort "install all" profile for Termux: include broad extras that
+  # Best-effort "install all" option for Termux: include broad extras that
   # are known to resolve on Android, while intentionally excluding extras that
   # currently hard-fail from missing/broken Android wheels/toolchains.
   #
@@ -111,7 +111,8 @@ google = [
   "google-auth-oauthlib>=1.0,<2",
   "google-auth-httplib2>=0.2,<1",
 ]
-# `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
+# `hermes dashboard` (localhost SPA + API). Public feature name is `dashboard`;
+# `web` remains as the dependency extra/backcompat alias for the API server deps.
 web = ["fastapi>=0.104.0,<1", "uvicorn[standard]>=0.24.0,<1"]
 dashboard = ["hermes-agent[web]"]
 rl = [

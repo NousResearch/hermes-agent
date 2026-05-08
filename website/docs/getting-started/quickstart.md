@@ -55,15 +55,16 @@ Run the one-line installer:
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-That default path installs the **minimal** profile: classic CLI, provider/model config, skills, and a small default toolset. It deliberately skips Node.js, browser automation, TUI/npm dependencies, the dashboard, voice/TTS, messaging gateway extras, and `ffmpeg`.
+That default path uses the **default** install option: the full desktop/server feature set Hermes traditionally installed.
 
-Want the legacy all-in setup instead?
+Want a compact install instead?
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --full
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --install-option minimal
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --install-option minimalTUI
 ```
 
-Want a few extras up front?
+Want a few extras on a compact base?
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --with terminal,file,web-search
@@ -152,13 +153,13 @@ The right value goes to the right file automatically.
 ## 3. Run Your First Chat
 
 ```bash
-hermes            # classic CLI; minimal-install smoke path
+hermes            # CLI
 ```
 
-Install the TUI feature before using the modern Ink UI:
+The default install includes TUI dependencies. If you chose the compact `minimal` option, add TUI support before using the modern Ink UI:
 
 ```bash
-scripts/install.sh --with tui
+hermes install-feature tui
 hermes --tui
 ```
 

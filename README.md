@@ -34,21 +34,21 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-Works on Linux, macOS, WSL2, and Android via Termux. The installer handles the platform-specific setup for you. By default it installs the **minimal** profile: provider/model config, the classic CLI, skills, and a tiny default toolset. It intentionally skips Node.js, browser automation, TUI/npm dependencies, the web dashboard, voice/TTS, messaging gateway extras, and `ffmpeg`.
+Works on Linux, macOS, WSL2, and Android via Termux. The installer handles the platform-specific setup for you. By default it uses the **default** install option: the full desktop/server feature set Hermes traditionally installed.
 
-Need everything up front?
+Want a smaller setup?
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --full
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --install-option minimal
 ```
 
-Or add features selectively:
+Use `minimalTUI` when you want the compact Python toolset plus TUI dependencies, or add features selectively:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --with terminal,file,web-search
 ```
 
-> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, the default installer uses the minimal Termux profile; use `--full` for the broader `.[termux-all]` profile.
+> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, the default install option maps to the broader `.[termux-all]` extra; compact installs use `.[termux-minimal]`.
 >
 > **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
 

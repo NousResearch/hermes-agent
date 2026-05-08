@@ -12,16 +12,12 @@ It gives you a working local CLI on the phone, plus the core extras that are cur
 
 ## What is supported in the tested path?
 
-The tested Termux bundle installs:
-- the Hermes CLI
-- cron support
-- PTY/background terminal support
-- Telegram gateway support (manual / best-effort background runs)
-- MCP support
-- Honcho memory support
-- ACP support
+The tested Termux bundles are:
+- `termux-minimal`: compact core agent (`--install-option minimal` and `minimalTUI`)
+- `termux`: reliable Android baseline used by the manual path
+- `termux-all`: broader best-effort bundle used by the default installer option
 
-Concretely, it maps to:
+The manual baseline maps to:
 
 ```bash
 python -m pip install -e '.[termux]' -c constraints-termux.txt
@@ -31,7 +27,7 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 
 A few features still need desktop/server-style dependencies that are not published for Android, or have not been validated on phones yet:
 
-- `.[all]` is not supported on Android today
+- `.[all]` is not supported on Android today; use `.[termux-all]` for the broad Termux install option
 - the `voice` extra is blocked by `faster-whisper -> ctranslate2`, and `ctranslate2` does not publish Android wheels
 - automatic browser / Playwright bootstrap is skipped in the Termux installer
 - Docker-based terminal isolation is not available inside Termux
@@ -52,7 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 On Termux, the installer automatically:
 - uses `pkg` for system packages
 - creates the venv with `python -m venv`
-- installs `.[termux]` with `pip`
+- installs the selected Termux extra with `pip` (`termux-all` by default, `termux-minimal` for compact install options)
 - links `hermes` into `$PREFIX/bin` so it stays on your Termux PATH
 - skips the untested browser / WhatsApp bootstrap
 
@@ -107,10 +103,10 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 
-If you only want the minimal core agent, this also works:
+If you only want the minimal core agent, use the dedicated Termux minimal extra:
 
 ```bash
-python -m pip install -e '.' -c constraints-termux.txt
+python -m pip install -e '.[termux-minimal]' -c constraints-termux.txt
 ```
 
 ### 5. Put `hermes` on your Termux PATH

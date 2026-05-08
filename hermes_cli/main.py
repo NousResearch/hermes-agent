@@ -8485,13 +8485,17 @@ def _report_dashboard_status() -> int:
 def cmd_install_feature(args):
     """Install optional Hermes feature extras after a minimal install."""
     feature = getattr(args, "feature", "")
-    valid = {
-        "browser", "tts", "voice", "dashboard", "tui", "gateway", "web",
+    public_valid = {
+        "browser", "tts", "voice", "dashboard", "tui", "gateway",
         "web-search", "image-gen", "cron", "full", "all",
     }
-    if feature not in valid:
+    aliases = {"web": "dashboard"}
+    if feature in aliases:
+        print("Feature 'web' is deprecated; installing 'dashboard' instead.")
+        feature = aliases[feature]
+    if feature not in public_valid:
         print(f"Unknown feature: {feature}")
-        print("Valid features: " + ", ".join(sorted(valid)))
+        print("Valid features: " + ", ".join(sorted(public_valid)))
         sys.exit(1)
 
     install_script = PROJECT_ROOT / "scripts" / "install.sh"
@@ -8506,7 +8510,6 @@ def cmd_install_feature(args):
 
     extra_map = {
         "dashboard": "dashboard",
-        "web": "web",
         "web-search": "web-search",
         "image-gen": "image-gen",
         "tts": "tts",
@@ -8559,7 +8562,7 @@ def cmd_dashboard(args):
         print("Install them with:")
         print("  hermes install-feature dashboard")
         print("or:")
-        print("  pip install 'hermes-agent[web]'")
+        print("  pip install 'hermes-agent[dashboard]'")
         print(f"Import error: {e}")
         sys.exit(1)
 
@@ -8691,11 +8694,8 @@ def main():
     )
     install_feature_parser.add_argument(
         "feature",
-        choices=[
-            "browser", "tts", "voice", "dashboard", "tui", "gateway", "web",
-            "web-search", "image-gen", "cron", "full", "all",
-        ],
-        help="Feature to install",
+        metavar="FEATURE",
+        help="Feature to install: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, full, all",
     )
     install_feature_parser.set_defaults(func=cmd_install_feature)
 
@@ -8923,15 +8923,22 @@ def main():
     )
     setup_parser.add_argument(
         "--install-option",
-        choices=["minimal", "standard", "full"],
+        choices=["minimal", "minimalTUI", "minimal-tui", "default", "full"],
         default=None,
-        help="Installer/setup dependency option. 'minimal' asks only for provider/model and enables the bare toolset.",
+        help="Installer/setup dependency option. Default is the full install; 'minimal' enables the compact toolset, 'minimalTUI' also installs TUI deps.",
     )
     setup_parser.add_argument(
         "--minimal",
         dest="setup_minimal",
         action="store_true",
         help="Alias for --install-option minimal.",
+    )
+    setup_parser.add_argument(
+        "--minimal-tui",
+        "--minimalTUI",
+        dest="setup_minimal_tui",
+        action="store_true",
+        help="Alias for --install-option minimalTUI.",
     )
     setup_parser.set_defaults(func=cmd_setup)
 

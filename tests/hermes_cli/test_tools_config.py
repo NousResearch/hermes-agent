@@ -1,5 +1,6 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -14,10 +15,13 @@ from hermes_cli.tools_config import (
     _reconfigure_tool,
     _save_platform_tools,
     _toolset_has_keys,
+    _format_toolset_runtime_detail,
+    _get_toolset_runtime_status,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
     _visible_providers,
     tools_command,
+    tools_disable_enable_command,
 )
 
 
@@ -901,6 +905,135 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
     assert len(spotify_rows) == 1, spotify_rows
     # Built-in label wins over the plugin label.
     assert spotify_rows[0][1] == "🎵 Spotify"
+
+
+def test_toolset_runtime_status_distinguishes_declared_installed_and_ready(monkeypatch):
+    """Runtime status should be based on registry readiness, not static declarations."""
+    from tools.registry import ToolRegistry
+
+    reg = ToolRegistry()
+    reg.register(
+        name="ready_tool",
+        toolset="test-runtime",
+        schema={"name": "ready_tool", "description": "Ready", "parameters": {"type": "object", "properties": {}}},
+        handler=lambda args, **kwargs: "{}",
+        check_fn=lambda: True,
+    )
+    reg.register(
+        name="configured_later_tool",
+        toolset="test-runtime",
+        schema={"name": "configured_later_tool", "description": "Needs config", "parameters": {"type": "object", "properties": {}}},
+        handler=lambda args, **kwargs: "{}",
+        check_fn=lambda: False,
+    )
+
+    monkeypatch.setattr("tools.registry.registry", reg)
+    monkeypatch.setattr("tools.registry.discover_builtin_tools", lambda: None)
+    monkeypatch.setattr("toolsets.resolve_toolset", lambda name: ["ready_tool", "configured_later_tool", "missing_dep_tool"])
+
+    status = _get_toolset_runtime_status("test-runtime")
+
+    assert status["declared_tools"] == ["configured_later_tool", "missing_dep_tool", "ready_tool"]
+    assert status["installed_tools"] == ["configured_later_tool", "ready_tool"]
+    assert status["tools"] == ["ready_tool"]
+    assert status["available"] is True
+    assert status["available_count"] == 1
+    assert status["installed_count"] == 2
+    assert status["declared_count"] == 3
+
+
+def test_format_toolset_runtime_detail_includes_install_hint():
+    detail = _format_toolset_runtime_detail(
+        "web-search",
+        {
+            "available": False,
+            "reason": "not installed",
+            "available_count": 0,
+            "declared_count": 2,
+        },
+    )
+
+    assert "0/2 tools ready" in detail
+    assert "not installed" in detail
+    assert "hermes install-feature web-search" in detail
+
+
+def test_tools_enable_rejects_unavailable_builtin_toolset(monkeypatch, capsys):
+    config = {"platform_toolsets": {"cli": ["terminal"]}}
+    saved = []
+
+    monkeypatch.setattr("hermes_cli.tools_config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda cfg: saved.append(cfg.copy()))
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_toolset_runtime_status",
+        lambda name: {
+            "available": False,
+            "reason": "not installed",
+            "tools": [],
+            "installed_tools": [],
+            "declared_tools": ["browser_navigate"],
+            "available_count": 0,
+            "installed_count": 0,
+            "declared_count": 1,
+        } if name == "browser" else {
+            "available": True,
+            "reason": "available",
+            "tools": ["terminal"],
+            "installed_tools": ["terminal"],
+            "declared_tools": ["terminal"],
+            "available_count": 1,
+            "installed_count": 1,
+            "declared_count": 1,
+        },
+    )
+
+    tools_disable_enable_command(
+        SimpleNamespace(tools_action="enable", platform="cli", names=["browser"])
+    )
+
+    out = capsys.readouterr().out
+    assert "Toolset 'browser' is not installed" in out
+    assert "hermes install-feature browser" in out
+    assert "Enabled: browser" not in out
+    assert "browser" not in config["platform_toolsets"]["cli"]
+
+
+def test_tools_list_marks_enabled_unavailable_toolsets(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.load_config",
+        lambda: {"platform_toolsets": {"cli": ["browser"]}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_toolset_runtime_status",
+        lambda name: {
+            "available": False,
+            "reason": "not installed",
+            "tools": [],
+            "installed_tools": [],
+            "declared_tools": ["browser_navigate"],
+            "available_count": 0,
+            "installed_count": 0,
+            "declared_count": 1,
+        } if name == "browser" else {
+            "available": True,
+            "reason": "available",
+            "tools": [name],
+            "installed_tools": [name],
+            "declared_tools": [name],
+            "available_count": 1,
+            "installed_count": 1,
+            "declared_count": 1,
+        },
+    )
+
+    tools_disable_enable_command(
+        SimpleNamespace(tools_action="list", platform="cli", names=[])
+    )
+
+    out = capsys.readouterr().out
+    assert "browser" in out
+    assert "enabled/unavailable" in out or "unavailable" in out
+    assert "hermes install-feature browser" in out
 
 
 @pytest.mark.parametrize("provider,config_key,expected", [

@@ -1,4 +1,4 @@
-"""Regression coverage for the minimal installer option."""
+"""Regression coverage for Hermes installer install options."""
 
 import os
 import subprocess
@@ -41,6 +41,7 @@ def test_pyproject_defines_install_option_and_feature_extras() -> None:
     extras = _optional_deps()
     for name in [
         "minimal",
+        # Backcompat extra: still resolvable, but not a public install option.
         "standard",
         "web-search",
         "browser",
@@ -49,6 +50,7 @@ def test_pyproject_defines_install_option_and_feature_extras() -> None:
         "voice",
         "cron",
         "dashboard",
+        # Hidden/backcompat alias for dashboard deps.
         "web",
         "termux-minimal",
         "termux",
@@ -65,27 +67,42 @@ def test_pyproject_defines_install_option_and_feature_extras() -> None:
     assert any(dep.startswith("fal-client") for dep in extras["image-gen"])
     assert any(dep.startswith("edge-tts") for dep in extras["tts"])
     assert any(dep.startswith("croniter") for dep in extras["cron"])
+    assert extras["dashboard"] == ["hermes-agent[web]"]
 
 
-def test_install_script_defaults_to_minimal_install_option_and_selected_extras() -> None:
+def test_install_script_defaults_to_default_full_and_custom_minimal_extras() -> None:
     text = INSTALL_SH.read_text()
-    assert 'INSTALL_OPTION="${HERMES_INSTALL_OPTION:-minimal}"' in text
+    assert 'INSTALL_OPTION="${HERMES_INSTALL_OPTION:-default}"' in text
+    assert "INSTALL_OPTION_EXPLICIT=false" in text
     assert "WITH_FEATURES=()" in text
-    assert "--install-option NAME  Install option: minimal (default), standard, full" in text
+    assert "--install-option NAME  Install option: default (full), minimal, minimalTUI" in text
+    assert "--minimal-tui  Alias for --install-option minimalTUI" in text
+    assert "--full         Backward-compatible alias for --install-option default" in text
     assert "--profile NAME Install profile" not in text
     assert "resolve_python_extras()" in text
-    assert 'minimal) extras+=("minimal") ;;' in text
-    assert 'standard) extras+=("standard") ;;' in text
+    assert 'if [ "$INSTALL_OPTION" = "default" ] || has_feature "all"; then' in text
+    assert 'minimal|minimalTUI) extras+=("minimal" "web-search") ;;' in text
+    assert 'has_feature "dashboard" && extras+=("dashboard")' in text
     assert 'has_feature "browser" && extras+=("browser")' in text
     assert 'echo "all"' in text
     assert 'install_target=".[${extras}]"' in text
     assert 'uv pip install -e ".[all]"' not in text
 
 
+def test_install_script_public_features_and_hidden_web_alias() -> None:
+    text = INSTALL_SH.read_text()
+    assert "Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, file, terminal, all" in text
+    assert "--with web is deprecated; using --with dashboard instead" in text
+    assert "web-search, image-gen, cron, file, terminal, all" in text
+    assert "browser, tts, voice, dashboard, tui, gateway," in text
+    assert "web feature" not in text.lower()
+
+
 def test_default_config_uses_install_option_not_install_profile() -> None:
     text = (REPO_ROOT / "hermes_cli" / "config.py").read_text()
-    assert '"install_option": "minimal"' in text
-    assert '"install_profile": "minimal"' not in text
+    assert '"install_option": "default"' in text
+    assert '"toolsets": ["hermes-cli"]' in text
+    assert '"install_profile"' not in text
 
 
 def test_installer_invokes_setup_with_install_option_not_hermes_profile() -> None:
@@ -135,6 +152,37 @@ def test_setup_install_option_flag_does_not_require_named_hermes_profile(tmp_pat
     output = result.stdout + result.stderr
     assert "Profile 'minimal' does not exist" not in output
     assert result.returncode == 0, output
+
+
+def test_setup_install_option_accepts_minimal_tui_alias(tmp_path) -> None:
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(tmp_path / "hermes-home")
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "setup",
+            "--install-option",
+            "minimal-tui",
+            "--non-interactive",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+
+    output = result.stdout + result.stderr
+    assert "Unknown install option" not in output
+    assert result.returncode == 0, output
+    config_text = (Path(env["HERMES_HOME"]) / "config.yaml").read_text()
+    assert "install_option: minimalTUI" in config_text
+    assert "hermes-minimal" in config_text
 
 
 def test_install_option_flag_can_be_combined_with_named_hermes_profile(tmp_path) -> None:
@@ -194,13 +242,17 @@ def test_dashboard_missing_dependencies_message_points_to_feature_extra() -> Non
     text = (REPO_ROOT / "hermes_cli" / "main.py").read_text()
     assert "Dashboard dependencies are not installed." in text
     assert "hermes install-feature dashboard" in text
-    assert "pip install 'hermes-agent[web]'" in text
+    assert "pip install 'hermes-agent[dashboard]'" in text
+    assert "pip install 'hermes-agent[web]'" not in text
 
 
 def test_tui_and_install_feature_have_minimal_option_opt_in_messages() -> None:
     text = (REPO_ROOT / "hermes_cli" / "main.py").read_text()
     assert "def cmd_install_feature(args):" in text
-    assert '"browser", "tts", "voice", "dashboard", "tui", "gateway", "web",' in text
+    assert '"browser", "tts", "voice", "dashboard", "tui", "gateway",' in text
+    assert '"web-search", "image-gen", "cron", "full", "all",' in text
+    assert 'aliases = {"web": "dashboard"}' in text
+    assert "Feature 'web' is deprecated; installing 'dashboard' instead." in text
     assert "TUI dependencies are not installed" in text
     assert "hermes install-feature tui" in text
     assert "HERMES_TUI_AUTO_INSTALL=1" in text

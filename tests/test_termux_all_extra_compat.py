@@ -16,11 +16,11 @@ def test_pyproject_defines_termux_all_without_known_blockers() -> None:
     assert '"hermes-agent[voice]"' not in text.split("termux-all = [", 1)[1].split("]", 1)[0]
 
 
-def test_install_script_resolves_termux_profile_extras_and_fallbacks() -> None:
+def test_install_script_resolves_termux_install_option_extras_and_fallbacks() -> None:
     text = INSTALL_SH.read_text()
     assert "resolve_termux_extra()" in text
+    assert 'if [ "$INSTALL_OPTION" = "default" ] || has_feature "all"; then' in text
     assert 'echo "termux-all"' in text
-    assert 'echo "termux"' in text
     assert 'echo "termux-minimal"' in text
     assert 'termux_extra="$(resolve_termux_extra)"' in text
     assert 'pip install -e ".[${termux_extra}]" -c constraints-termux.txt' in text

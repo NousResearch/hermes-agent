@@ -28,8 +28,8 @@ The installer detects Termux automatically and switches to a tested Android flow
 - uses Termux `pkg` for hard requirements (`git`, `python`, certificates/curl, build tools as needed)
 - creates the virtualenv with `python -m venv`
 - exports `ANDROID_API_LEVEL` automatically for Android wheel builds
-- installs `.[termux-minimal]` by default, `.[termux]` for `--install-option standard`, or `.[termux-all]` for `--full`
-- skips Node/browser, WhatsApp, TUI/npm, voice/TTS, dashboard, and `ffmpeg` unless the selected install option or `--with ...` requests them
+- installs `.[termux-all]` for the default install option, or `.[termux-minimal]` for `--install-option minimal` / `--install-option minimalTUI`
+- skips optional Node/browser, WhatsApp, TUI/npm, voice/TTS, dashboard, and `ffmpeg` work unless the selected install option or `--with ...` requests them
 
 If you want the fully explicit path, follow the dedicated [Termux guide](./termux.md).
 
@@ -37,15 +37,16 @@ If you want the fully explicit path, follow the dedicated [Termux guide](./termu
 Native Windows is **not supported**. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes Agent from there. The install command above works inside WSL2.
 :::
 
-The default installer uses the **minimal** install option: it installs the Python CLI, provider/model setup, skills, and a small default toolset. It does **not** install Node.js, browser automation, the TUI/npm frontend, dashboard server deps, voice/TTS deps, messaging gateway extras, or `ffmpeg`.
+The default installer uses the **default** install option: the full desktop/server feature set Hermes traditionally installed.
 
-For the legacy all-in install, pass `--full`:
+For a compact install, choose `minimal` or `minimalTUI` explicitly:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --full
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --install-option minimal
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --install-option minimalTUI
 ```
 
-To opt into specific features during install, use `--with`:
+`minimal` installs the core Python CLI plus lightweight agent tools: skills, file editing, terminal/process, todo, memory, session search, clarify, and web search/extraction. `minimalTUI` adds the TUI dependencies. To opt into specific features during install, use `--with`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --with terminal,file,web-search
@@ -53,7 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 ### What the Installer Does
 
-The installer handles the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. The minimal install option installs only the core Python package dependencies. Selected install options/features add their own extras: for example `--with dashboard` installs web server dependencies, `--with browser` enables Node/browser setup, and `--with tts`/`--with voice` checks `ffmpeg`. By the end, you're ready to chat in the classic CLI; install extra features only when you need them.
+The installer handles the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. The default install option installs the full Hermes feature set. Compact install options keep dependencies smaller: `minimal` sticks to the core Python CLI and lightweight agent tools, while `minimalTUI` adds TUI dependencies without pulling in every optional integration. Selected features add their own extras: for example `--with dashboard` installs local web UI/API dependencies, `--with browser` enables Node/browser setup, and `--with tts`/`--with voice` checks `ffmpeg`. By the end, you're ready to chat; install extra features only when you need them.
 
 #### Install Layout
 
@@ -89,16 +90,21 @@ hermes setup          # Or run the full setup wizard to configure everything at 
 
 ## Prerequisites
 
-The only hard prerequisite is **Git**. Minimal install keeps the system footprint small:
+The hard prerequisites depend on the install option:
 
+- **Default** install: Git, Python/uv, Node.js for frontend/browser/TUI features, and `ffmpeg` for media features are checked or installed as needed.
+- **Minimal** install: Git is the only hard prerequisite; uv/Python are bootstrapped or managed on desktop platforms.
+- **minimalTUI**: minimal plus the TUI dependency path.
+
+Notes:
 - **uv** (fast Python package manager) is bootstrapped if missing
 - **Python 3.11** is managed via uv on desktop platforms
-- **Node.js v22** is only checked/installed for browser or TUI features (`--with browser`, `--with tui`, or `--full`)
+- **Node.js v22** is checked/installed for the default install option, browser/TUI features (`--with browser`, `--with tui`), or compact `minimalTUI`
 - **ripgrep** is optional in minimal; file search falls back when it is absent
-- **ffmpeg** is only checked/installed for TTS or voice (`--with tts`, `--with voice`, or `--full`)
+- **ffmpeg** is checked/installed for the default install option, TTS, or voice (`--with tts`, `--with voice`)
 
 :::info
-You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually for the minimal smoke path. Make sure `git` is available (`git --version`), run the installer, reload your shell, then start with `hermes`.
+You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually for the minimal smoke path. Make sure `git` is available (`git --version`), run the installer with `--install-option minimal`, reload your shell, then start with `hermes`.
 :::
 
 :::tip Nix users

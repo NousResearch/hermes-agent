@@ -71,7 +71,11 @@ RUN_SETUP=true
 BRANCH="main"
 BRANCH_EXPLICIT=false
 SOURCE_REPO_URL="${HERMES_INSTALL_REPO_URL:-}"
-INSTALL_OPTION="${HERMES_INSTALL_OPTION:-minimal}"
+INSTALL_OPTION="${HERMES_INSTALL_OPTION:-default}"
+INSTALL_OPTION_EXPLICIT=false
+if [ -n "${HERMES_INSTALL_OPTION:-}" ]; then
+    INSTALL_OPTION_EXPLICIT=true
+fi
 WITH_FEATURES=()
 
 # Detect non-interactive mode (e.g. curl | bash)
@@ -118,28 +122,46 @@ while [[ $# -gt 0 ]]; do
             ;;
         --install-option)
             if [ -z "${2:-}" ]; then
-                echo "Missing value for --install-option (valid: minimal, standard, full)"
+                echo "Missing value for --install-option (valid: minimal, minimalTUI, default)"
                 exit 1
             fi
             case "$2" in
-                minimal|standard|full) INSTALL_OPTION="$2" ;;
-                *) echo "Unknown install option: $2 (valid: minimal, standard, full)"; exit 1 ;;
+                minimal)
+                    INSTALL_OPTION="minimal"
+                    ;;
+                minimalTUI|minimal-tui|minimaltui)
+                    INSTALL_OPTION="minimalTUI"
+                    ;;
+                default|full)
+                    INSTALL_OPTION="default"
+                    ;;
+                *)
+                    echo "Unknown install option: $2 (valid: minimal, minimalTUI, default)"
+                    exit 1
+                    ;;
             esac
+            INSTALL_OPTION_EXPLICIT=true
             shift 2
             ;;
         --minimal)
             INSTALL_OPTION="minimal"
+            INSTALL_OPTION_EXPLICIT=true
+            shift
+            ;;
+        --minimal-tui|--minimalTUI)
+            INSTALL_OPTION="minimalTUI"
+            INSTALL_OPTION_EXPLICIT=true
             shift
             ;;
         --full)
-            INSTALL_OPTION="full"
-            WITH_FEATURES+=("all")
+            INSTALL_OPTION="default"
+            INSTALL_OPTION_EXPLICIT=true
             shift
             ;;
         --with)
             if [ -z "${2:-}" ]; then
                 echo "Missing value for --with"
-                echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web, web-search, image-gen, cron, file, terminal, all"
+                echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, file, terminal, all"
                 exit 1
             fi
             IFS=',' read -ra _features <<< "$2"
@@ -147,12 +169,16 @@ while [[ $# -gt 0 ]]; do
                 _feature="${_feature//[[:space:]]/}"
                 [ -z "$_feature" ] && continue
                 case "$_feature" in
-                    browser|tts|voice|dashboard|tui|gateway|web|web-search|image-gen|cron|file|terminal|all)
+                    browser|tts|voice|dashboard|tui|gateway|web-search|image-gen|cron|file|terminal|all)
                         WITH_FEATURES+=("$_feature")
+                        ;;
+                    web)
+                        echo "⚠ --with web is deprecated; using --with dashboard instead"
+                        WITH_FEATURES+=("dashboard")
                         ;;
                     *)
                         echo "Unknown --with feature: $_feature"
-                        echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web, web-search, image-gen, cron, file, terminal, all"
+                        echo "Valid features: browser, tts, voice, dashboard, tui, gateway, web-search, image-gen, cron, file, terminal, all"
                         exit 1
                         ;;
                 esac
@@ -169,11 +195,12 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --branch NAME  Git branch to install (default: main)"
             echo "  --repo URL     Git repository to install (default: NousResearch/hermes-agent)"
-            echo "  --install-option NAME  Install option: minimal (default), standard, full"
+            echo "  --install-option NAME  Install option: default (full), minimal, minimalTUI"
             echo "  --minimal      Alias for --install-option minimal"
-            echo "  --full         Alias for --install-option full / --with all"
-            echo "  --with LIST    Add optional features (comma-separated):"
-            echo "                 browser, tts, voice, dashboard, tui, gateway, web,"
+            echo "  --minimal-tui  Alias for --install-option minimalTUI"
+            echo "  --full         Backward-compatible alias for --install-option default"
+            echo "  --with LIST    Add optional features to a custom/minimal install (comma-separated):"
+            echo "                 browser, tts, voice, dashboard, tui, gateway,"
             echo "                 web-search, image-gen, cron, file, terminal, all"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
@@ -240,11 +267,62 @@ has_feature() {
     return 1
 }
 
+normalize_install_option() {
+    case "$INSTALL_OPTION" in
+        default|full)
+            INSTALL_OPTION="default"
+            ;;
+        minimal)
+            INSTALL_OPTION="minimal"
+            ;;
+        minimalTUI|minimal-tui|minimaltui)
+            INSTALL_OPTION="minimalTUI"
+            ;;
+        standard)
+            log_warn "Install option 'standard' is deprecated; using 'minimal' plus requested features instead"
+            INSTALL_OPTION="minimal"
+            ;;
+        *)
+            log_error "Unknown install option: $INSTALL_OPTION (valid: minimal, minimalTUI, default)"
+            exit 1
+            ;;
+    esac
+}
+
+finalize_install_options() {
+    normalize_install_option
+
+    if [ ${#WITH_FEATURES[@]} -gt 0 ] && [ "$INSTALL_OPTION_EXPLICIT" = false ]; then
+        if has_feature "all"; then
+            INSTALL_OPTION="default"
+            log_info "Feature list includes 'all'; using the default full install option"
+        elif has_feature "tui"; then
+            INSTALL_OPTION="minimalTUI"
+            log_info "Custom feature list selected; using minimalTUI base plus requested features"
+        else
+            INSTALL_OPTION="minimal"
+            log_info "Custom feature list selected; using minimal base plus requested features"
+        fi
+    fi
+}
+
 option_includes_feature() {
     local feature="$1"
-    if [ "$INSTALL_OPTION" = "full" ]; then
-        return 0
-    fi
+    case "$INSTALL_OPTION" in
+        default|full)
+            return 0
+            ;;
+        minimalTUI)
+            case "$feature" in
+                web-search|file|terminal|tui) return 0 ;;
+            esac
+            ;;
+        minimal)
+            case "$feature" in
+                web-search|file|terminal) return 0 ;;
+            esac
+            ;;
+    esac
     if has_feature "$feature"; then
         return 0
     fi
@@ -260,27 +338,24 @@ should_check_ffmpeg() {
 }
 
 should_check_web_network() {
-    option_includes_feature "browser" || option_includes_feature "web" || \
-        option_includes_feature "web-search" || option_includes_feature "dashboard"
+    option_includes_feature "browser" || option_includes_feature "web-search" || option_includes_feature "dashboard"
 }
 
 resolve_python_extras() {
-    if [ "$INSTALL_OPTION" = "full" ] || has_feature "all"; then
+    if [ "$INSTALL_OPTION" = "default" ] || has_feature "all"; then
         echo "all"
         return 0
     fi
 
     local extras=()
     case "$INSTALL_OPTION" in
-        minimal) extras+=("minimal") ;;
-        standard) extras+=("standard") ;;
+        minimal|minimalTUI) extras+=("minimal" "web-search") ;;
     esac
 
     has_feature "browser" && extras+=("browser")
     has_feature "tts" && extras+=("tts")
     has_feature "voice" && extras+=("voice")
     has_feature "dashboard" && extras+=("dashboard")
-    has_feature "web" && extras+=("web")
     has_feature "web-search" && extras+=("web-search")
     has_feature "image-gen" && extras+=("image-gen")
     has_feature "cron" && extras+=("cron")
@@ -298,10 +373,8 @@ resolve_python_extras() {
 }
 
 resolve_termux_extra() {
-    if [ "$INSTALL_OPTION" = "full" ] || has_feature "all"; then
+    if [ "$INSTALL_OPTION" = "default" ] || has_feature "all"; then
         echo "termux-all"
-    elif [ "$INSTALL_OPTION" = "standard" ]; then
-        echo "termux"
     else
         echo "termux-minimal"
     fi
@@ -1248,7 +1321,7 @@ install_deps() {
         fi
 
         log_success "Main package installed"
-        log_info "Termux note: full install option uses .[termux-all]; the default install option stays minimal and skips browser/WhatsApp tooling."
+        log_info "Termux note: default install option uses .[termux-all]; minimal/minimalTUI use .[termux-minimal] and skip browser/WhatsApp tooling."
 
         if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
             log_info "tinker-atropos submodule found — skipping install (optional, for RL training)"
@@ -1266,7 +1339,7 @@ install_deps() {
 
     # On Debian/Ubuntu (including WSL), some Python packages need build tools.
     # Check and offer to install them if missing.
-    if { [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; } && { [ "$INSTALL_OPTION" = "full" ] || has_feature "voice" || has_feature "all"; }; then
+    if { [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; } && { [ "$INSTALL_OPTION" = "default" ] || has_feature "voice" || has_feature "all"; }; then
         local need_build_tools=false
         for pkg in gcc python3-dev libffi-dev; do
             if ! dpkg -s "$pkg" &>/dev/null; then
@@ -1866,6 +1939,7 @@ print_success() {
 
 main() {
     print_banner
+    finalize_install_options
 
     detect_os
     resolve_install_layout

@@ -55,6 +55,41 @@ class TestToolsSlashList:
         assert cli_obj.enabled_toolsets == {"web", "memory"}
 
 
+# ── /toolsets availability display ───────────────────────────────────────────
+
+
+class TestToolsetsSlashAvailability:
+
+    def test_show_toolsets_marks_configured_but_unavailable(self, capsys):
+        cli_obj = _make_cli(["browser"])
+
+        def runtime(name):
+            if name == "browser":
+                return {
+                    "available": False,
+                    "reason": "not installed",
+                    "available_count": 0,
+                    "declared_count": 1,
+                }
+            return {
+                "available": True,
+                "reason": "available",
+                "available_count": 1,
+                "declared_count": 1,
+            }
+
+        with patch("cli.get_all_toolsets", return_value={"browser": {}, "terminal": {}}), \
+             patch("cli.get_toolset_info", side_effect=lambda name: {"description": f"{name} tools"}), \
+             patch("hermes_cli.tools_config._get_toolset_runtime_status", side_effect=runtime):
+            cli_obj.show_toolsets()
+
+        out = capsys.readouterr().out
+        assert "(!) browser" in out
+        assert "0/1 tools ready" in out
+        assert "not installed" in out
+        assert "(*) terminal" not in out
+
+
 # ── /tools disable (session reset) ──────────────────────────────────────────
 
 

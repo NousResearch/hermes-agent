@@ -1,6 +1,6 @@
 # Hermes AI Office — NEXT
 
-Last updated: 2026-05-09 08:23 KST
+Last updated: 2026-05-09 08:45 KST
 
 ## Start here after `/new`
 
@@ -64,7 +64,16 @@ When not to rely on `/goal` alone:
 
 ## Current next stage
 
-Stage 9-D visual polish is completed on top of Stage 9-C and the Stage 8 read-only dashboard. Stage 8-A/B/C and Stage 9-A/B/C remain completed and verified.
+Stage 9-E Korean-first readability pass is in progress on top of Stage 9-D and the Stage 8 read-only dashboard. Stage 8-A/B/C and Stage 9-A/B/C/D remain completed and verified.
+
+
+Stage 9-E current implementation:
+
+- `/office` primary UI copy is now Korean-first: headings, focus buttons, refresh/inspect actions, empty states, safety copy, status labels, room labels, and inspector field labels.
+- Technical identifiers remain visible where useful: DTO, OfficeState, source IDs, cron, IDs, and adapter-emitted status strings.
+- Planning note for the next dynamic/tracking pass: `docs/ai-office/plans/2026-05-09-koreanization-and-dynamic-map.md`.
+
+Recommended next implementation stage: Stage 9-F dynamic office-map tracking. Start with a pure helper test for safe deltas, then add room change chips and a `최근 변화` rail. Keep it read-only/browser-local and never diff raw records.
 
 Stage 9-D completed:
 

@@ -1,17 +1,46 @@
 # Hermes AI Office — STATUS
 
-Last updated: 2026-05-09 08:23 KST
+Last updated: 2026-05-09 08:45 KST
 
 ## Current phase
 
-Stage 9-D visual polish completed on top of the Stage 9-C dependency-free DeskRPG-like 2D office prototype. Stage 8-A/B/C and Stage 9-A/B/C remain completed and verified.
+Stage 9-E Korean-first readability pass is in progress on top of the Stage 9-D polished CSS/SVG 2D office map. Stage 8-A/B/C and Stage 9-A/B/C/D remain completed and verified.
 
-Next phase: keep the page read-only and localhost-first; recommended next work is Stage 8-D fixture/visual-regression expansion or small-screen fixture coverage. A renderer dependency review remains separate and unapproved.
+Current Stage 9-E result: the `/office` page now uses Korean for primary headings, buttons, helper text, safety copy, status labels, inspector field labels, and office-map room/zone labels while keeping stable technical identifiers such as DTO, OfficeState, source IDs, cron, and enum-like adapter values visible for debugging.
+
+Next phase: Stage 9-F dynamic office-map tracking should compare only safe browser-local counts/status deltas, then render room change chips and a compact recent-change rail. A renderer dependency review remains separate and unapproved.
 
 Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
 
 
 
+
+
+## Stage 9-E Korean-first readability pass in progress
+
+Implemented so far:
+
+- Translated `/office` primary section titles, focus buttons, action buttons, empty states, safety copy, status summaries, inspector labels, and office-map room labels to Korean.
+- Kept source IDs (`kanban`, `cron`, `sessions`, etc.), DTO/OfficeState wording, ID values, and adapter-emitted enum-like values visible where they support debugging.
+- Updated office-map helper labels/details and tests so generated scene object labels remain safe and Korean-readable.
+- Added `docs/ai-office/plans/2026-05-09-koreanization-and-dynamic-map.md` for the dynamic/tracking design.
+
+Verification performed:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 7 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed
+
+npm run build
+# passed: tsc -b && vite build
+
+Browser smoke: http://127.0.0.1:8765/office?stage10=korean2
+# Korean labels visible; source IDs and technical identifiers preserved; console has no JS errors
+```
 
 ## Stage 9-D 2D office visual polish completed
 

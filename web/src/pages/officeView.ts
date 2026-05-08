@@ -81,8 +81,8 @@ export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
   return [
     {
       id: "sessions",
-      label: "Sessions",
-      detail: "recent safe session metadata",
+      label: "세션",
+      detail: "최근 안전 세션 메타데이터",
       zone: "entry",
       count: state.agents.length,
       health: sourceStatus("sessions"),
@@ -91,8 +91,8 @@ export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
     },
     {
       id: "work",
-      label: "Work",
-      detail: "Kanban/task cards without bodies",
+      label: "작업",
+      detail: "본문 없는 칸반/작업 카드",
       zone: "workbench",
       count: state.work_items.length,
       health: sourceStatus("kanban"),
@@ -101,8 +101,8 @@ export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
     },
     {
       id: "automation",
-      label: "Automation",
-      detail: "cron jobs as read-only machines",
+      label: "자동화",
+      detail: "읽기 전용 기계로 표시한 cron 작업",
       zone: "machine",
       count: state.automations.length,
       health: sourceStatus("cron"),
@@ -111,8 +111,8 @@ export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
     },
     {
       id: "routing",
-      label: "Routing",
-      detail: "topic/provenance projection",
+      label: "라우팅",
+      detail: "토픽/출처 투영",
       zone: "routing",
       count: state.topics.length + state.provenance.length,
       health: routingHealth,
@@ -125,9 +125,9 @@ export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {
 export function buildOfficeMapFlows(nodes: OfficeMapNode[]): OfficeMapFlow[] {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const flowDefs: Array<Omit<OfficeMapFlow, "health">> = [
-    { from: "sessions", to: "work", label: "intake to work" },
-    { from: "work", to: "automation", label: "work to automation" },
-    { from: "automation", to: "routing", label: "automation to routing" },
+    { from: "sessions", to: "work", label: "세션에서 작업으로" },
+    { from: "work", to: "automation", label: "작업에서 자동화로" },
+    { from: "automation", to: "routing", label: "자동화에서 라우팅으로" },
   ];
   const severity: Record<OfficeMapNode["health"], number> = { ok: 0, missing: 1, partial: 2, error: 3 };
   const healthBySeverity: OfficeMapNode["health"][] = ["ok", "missing", "partial", "error"];
@@ -150,10 +150,10 @@ const SCENE_SLOTS: Record<OfficeMapNode["id"], Array<[number, number]>> = {
 };
 
 const SCENE_ROOM_CONFIG: Record<OfficeMapNode["id"], { kind: OfficeSceneObject["kind"]; singular: string; plural: string; emptyLabel?: string; emptyDetail?: string }> = {
-  sessions: { kind: "avatar", singular: "session avatar", plural: "sessions" },
-  work: { kind: "desk", singular: "work desk", plural: "work" },
-  automation: { kind: "machine", singular: "automation machine", plural: "automations" },
-  routing: { kind: "mail", singular: "routing mail", plural: "routes", emptyLabel: "unrouted bucket", emptyDetail: "topic/provenance gap remains explicit" },
+  sessions: { kind: "avatar", singular: "세션 표시", plural: "세션" },
+  work: { kind: "desk", singular: "작업 책상", plural: "작업" },
+  automation: { kind: "machine", singular: "자동화 기계", plural: "자동화" },
+  routing: { kind: "mail", singular: "라우팅 우편", plural: "경로", emptyLabel: "미연결 보관함", emptyDetail: "토픽/출처 공백을 명시" },
 };
 
 function roomRows(state: OfficeState, roomId: OfficeMapNode["id"]): Array<Record<string, unknown>> {
@@ -201,7 +201,7 @@ export function buildOfficeSceneObjects(state: OfficeState, nodes: OfficeMapNode
         roomId: node.id,
         kind: config.kind,
         label: `${config.singular} ${index + 1}`,
-        detail: `${node.zone} safe marker`,
+        detail: `${node.zone} 안전 표시`,
         health: node.health,
         x,
         y,
@@ -215,7 +215,7 @@ export function buildOfficeSceneObjects(state: OfficeState, nodes: OfficeMapNode
         roomId: node.id,
         kind: config.kind,
         label: config.emptyLabel,
-        detail: config.emptyDetail ?? `${node.zone} empty marker`,
+        detail: config.emptyDetail ?? `${node.zone} 빈 표시`,
         health: node.health,
         x,
         y,
@@ -228,7 +228,7 @@ export function buildOfficeSceneObjects(state: OfficeState, nodes: OfficeMapNode
         roomId: node.id,
         kind: "alert",
         label: `+${rows.length - SCENE_OBJECT_LIMIT} ${config.plural}`,
-        detail: "additional safe count hidden from map density",
+        detail: "지도 밀도 때문에 숨긴 추가 안전 개수",
         health: node.health,
         x: Math.min(node.x + 12, 90),
         y: Math.min(node.y + 11, 88),
@@ -244,7 +244,7 @@ export function buildOfficeAttentionItems(state: OfficeState): AttentionItem[] {
     .map((item) => ({
       id: `work:${String(item.id)}`,
       label: textField(item, "title"),
-      detail: `work item · ${textField(item, "status")}`,
+      detail: `작업 항목 · ${textField(item, "status")}`,
     }))
     .filter((item) => item.detail.includes("blocked"));
   const failedAutomations = state.automations
@@ -254,7 +254,7 @@ export function buildOfficeAttentionItems(state: OfficeState): AttentionItem[] {
     .map((job) => ({
       id: `automation:${String(job.id)}`,
       label: textField(job, "name"),
-      detail: `automation · ${textField(job, "last_status")}`,
+      detail: `자동화 · ${textField(job, "last_status")}`,
     }));
   const sourceWarnings = state.data_sources
     .filter((source) => source.status === "partial" || source.status === "error" || (source.warning_count ?? 0) > 0)

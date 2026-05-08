@@ -165,9 +165,9 @@ describe("OfficePage view helpers", () => {
     expect(objects.map((object) => object.kind)).toContain("machine");
     expect(objects.map((object) => object.kind)).toContain("mail");
     expect(objects.filter((object) => object.roomId === "sessions" && object.kind === "avatar")).toHaveLength(6);
-    expect(objects.find((object) => object.id === "sessions-overflow")?.label).toBe("+2 sessions");
-    expect(objects.find((object) => object.id === "work-overflow")?.label).toBe("+1 work");
-    expect(objects.find((object) => object.roomId === "routing")?.label).toBe("unrouted bucket");
+    expect(objects.find((object) => object.id === "sessions-overflow")?.label).toBe("+2 세션");
+    expect(objects.find((object) => object.id === "work-overflow")?.label).toBe("+1 작업");
+    expect(objects.find((object) => object.roomId === "routing")?.label).toBe("미연결 보관함");
     expect(objects.every((object) => object.x >= 10 && object.x <= 90 && object.y >= 12 && object.y <= 88)).toBe(true);
     expect(objects.map((object) => `${object.label} ${object.detail}`).join(" ")).not.toMatch(/raw|transcript|body|script|secret/i);
   });

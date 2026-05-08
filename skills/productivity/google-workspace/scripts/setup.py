@@ -26,6 +26,7 @@ from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -59,6 +60,12 @@ REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
 # copy the code from the browser's URL bar (or the page body).
 REDIRECT_URI = "http://localhost:1"
+_OAUTH_ERROR_CODES = (
+    "disabled_client",
+    "invalid_client",
+    "token_revoked",
+    "invalid_grant",
+)
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:
@@ -107,8 +114,14 @@ def _extract_oauth_error_code(exc: Exception) -> str:
                 return code
 
     err_str = str(exc).lower()
-    for code in ("disabled_client", "invalid_client", "token_revoked", "invalid_grant"):
-        if code in err_str:
+    match = re.match(r"\s*([a-z_]+)\s*:", err_str)
+    if match:
+        code = match.group(1)
+        if code in _OAUTH_ERROR_CODES:
+            return code
+
+    for code in _OAUTH_ERROR_CODES:
+        if re.search(rf'["\']error["\']\s*[:=]\s*["\']{re.escape(code)}["\']', err_str):
             return code
     return ""
 
@@ -184,7 +197,7 @@ def check_auth_live():
             "access_token_scope_insufficient" in body
             or "insufficientpermissions" in body
             or "insufficient authentication scopes" in body
-            or "scope" in body
+            or "insufficient permission" in body
         ):
             print(f"LIVE_CHECK_PARTIAL: Calendar scope not granted, but token is valid: {e}")
             return True

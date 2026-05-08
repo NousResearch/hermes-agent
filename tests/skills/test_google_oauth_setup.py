@@ -341,6 +341,17 @@ class TestExchangeAuthCode:
 
 
 class TestCheckAuth:
+    def test_extract_oauth_error_code_uses_structured_refresh_error(self, setup_module):
+        refresh_error = sys.modules["google.auth.exceptions"].RefreshError(
+            "misleading invalid_client text",
+            {"error": "invalid_grant"},
+        )
+
+        assert setup_module._extract_oauth_error_code(refresh_error) == "invalid_grant"
+
+    def test_extract_oauth_error_code_does_not_match_compound_codes(self, setup_module):
+        assert setup_module._extract_oauth_error_code(Exception("invalid_grant_type: nope")) == ""
+
     def test_check_auth_refresh_disabled_client_prints_guidance(self, setup_module, capsys):
         refresh_error = sys.modules["google.auth.exceptions"].RefreshError(
             "disabled_client: The OAuth client was disabled.",
@@ -464,6 +475,30 @@ class TestCheckAuthLive:
         out = capsys.readouterr().out
         assert "LIVE_CHECK_PARTIAL:" in out
         assert "disabled" not in out.lower()
+
+    def test_check_auth_live_generic_403_still_fails(self, setup_module, monkeypatch, capsys):
+        creds = _make_fake_creds(valid=True, expired=False)
+        FakeCredentials.from_authorized_user_file_impl = lambda _path, scopes=None: creds
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "x", "refresh_token": "r"}))
+
+        class _FakeCalendarList:
+            def list(self, **_kwargs):
+                return self
+
+            def execute(self):
+                raise FakeHttpError(403, "HttpError 403: access forbidden by policy")
+
+        class _FakeService:
+            def calendarList(self):
+                return _FakeCalendarList()
+
+        monkeypatch.setattr(sys.modules["googleapiclient.discovery"], "build", lambda *_a, **_k: _FakeService())
+
+        assert setup_module.check_auth_live() is False
+
+        out = capsys.readouterr().out
+        assert "LIVE_CHECK_FAILED: HTTP 403" in out
+        assert "LIVE_CHECK_PARTIAL" not in out
 
 
 class TestHermesConstantsFallback:

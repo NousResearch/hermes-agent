@@ -14,6 +14,7 @@ import contextvars
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 
@@ -360,12 +361,52 @@ def _normalize_deliver_value(deliver) -> str:
     return str(deliver)
 
 
+# Routing intent tokens — resolved at fire time, not create time, so a
+# job created before Telegram was wired up will pick up Telegram once it
+# comes online.  ``all`` expands into the set of connected platforms
+# (those with a configured home chat_id) in _expand_routing_tokens.
+_ROUTING_TOKENS = frozenset({"all"})
+
+
+def _expand_routing_tokens(part: str) -> List[str]:
+    """Expand a routing-intent token to concrete platform names.
+
+    ``all`` expands to every platform in ``_iter_home_target_platforms()``
+    that has a configured home chat_id right now.  Unknown / non-token
+    values pass through unchanged as a single-element list, so the caller
+    can treat every token uniformly.
+    """
+    token = part.lower()
+    if token not in _ROUTING_TOKENS:
+        return [part]
+    expanded: List[str] = []
+    for platform_name in _iter_home_target_platforms():
+        if _get_home_target_chat_id(platform_name):
+            expanded.append(platform_name)
+    return expanded
+
+
 def _resolve_delivery_targets(job: dict) -> List[dict]:
-    """Resolve all concrete auto-delivery targets for a cron job (supports comma-separated deliver)."""
+    """Resolve all concrete auto-delivery targets for a cron job.
+
+    Accepts the legacy comma-separated ``deliver`` string plus the
+    ``all`` routing-intent token, which expands to every platform with
+    a configured home channel.  Tokens may be combined with explicit
+    targets: ``origin,all`` and ``all,telegram:-100:17`` both work.
+    Duplicate (platform, chat_id, thread_id) tuples are collapsed by the
+    existing dedup pass.
+    """
     deliver = _normalize_deliver_value(job.get("deliver", "local"))
     if deliver == "local":
         return []
-    parts = [p.strip() for p in deliver.split(",") if p.strip()]
+
+    raw_parts = [p.strip() for p in deliver.split(",") if p.strip()]
+
+    # Expand routing intents.
+    parts: List[str] = []
+    for raw in raw_parts:
+        parts.extend(_expand_routing_tokens(raw))
+
     seen = set()
     targets = []
     for part in parts:
@@ -714,7 +755,21 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     # choice explicit here keeps the allowed surface small and auditable.
     suffix = path.suffix.lower()
     if suffix in (".sh", ".bash"):
-        argv = ["/bin/bash", str(path)]
+        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
+        # all work.  On native Windows without Git for Windows installed
+        # shutil.which returns None — fall back to a clear error rather
+        # than a FileNotFoundError with a confusing "[WinError 2]"
+        # traceback.
+        _bash = shutil.which("bash") or (
+            "/bin/bash" if os.path.isfile("/bin/bash") else None
+        )
+        if _bash is None:
+            return False, (
+                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
+                "On Windows, install Git for Windows (which ships Git Bash) "
+                "or rewrite the script as Python (.py)."
+            )
+        argv = [_bash, str(path)]
     else:
         argv = [sys.executable, str(path)]
 
@@ -1213,7 +1268,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             import yaml
             _cfg_path = str(_get_hermes_home() / "config.yaml")
             if os.path.exists(_cfg_path):
-                with open(_cfg_path) as _f:
+                with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _cfg = _expand_env_vars(_cfg)
                 _model_cfg = _cfg.get("model", {})
@@ -1596,7 +1651,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
     try:
-        lock_fd = open(lock_file, "w")
+        lock_fd = open(lock_file, "w", encoding="utf-8")
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:

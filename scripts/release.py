@@ -47,6 +47,7 @@ AUTHOR_MAP = {
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "oleksii.lisikh@gmail.com": "olisikh",
     "leone.parise@gmail.com": "leoneparise",
+    "buraysandro9@gmail.com": "ygd58",
     "teknium@nousresearch.com": "teknium1",
     "piyushvp1@gmail.com": "thelumiereguy",
     "harish.kukreja@gmail.com": "counterposition",
@@ -271,6 +272,7 @@ AUTHOR_MAP = {
     "104278804+Sertug17@users.noreply.github.com": "Sertug17",
     "112503481+caentzminger@users.noreply.github.com": "caentzminger",
     "258577966+voidborne-d@users.noreply.github.com": "voidborne-d",
+    "3820588+ddupont808@users.noreply.github.com": "ddupont808",
     "liusway405@gmail.com": "voidborne-d",
     "xydarcher@uestc.edu.cn": "Readon",
     "sir_even@icloud.com": "sirEven",
@@ -904,6 +906,7 @@ AUTHOR_MAP = {
     "montbra@gmail.com": "Montbra",  # PR #20897 salvage of #16189 (TUI voice PTT)
     "promptsiren@gmail.com": "firefly",  # PR #18123 salvage of #16660 (ContextVars)
     "wtyopenclaw@gmail.com": "WuTianyi123",  # PR #20275 salvage of #13723 (feishu markdown)
+    "zhicheng.han@mathematik.uni-goettingen.de": "hanzckernel",  # PR #20311 (api-server approval events)
     # pander: empty email, salvaged via PR #19665 from #16126 by @ms-alan
 }
 
@@ -1362,7 +1365,7 @@ def main():
     )
 
     if args.output:
-        Path(args.output).write_text(changelog)
+        Path(args.output).write_text(changelog, encoding="utf-8")
         print(f"Changelog written to {args.output}")
     else:
         print(changelog)

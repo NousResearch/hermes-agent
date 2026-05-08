@@ -617,7 +617,7 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
             save_allowlist(data)
         return
 
-    with open(lock_path, "a+") as lock_fh:
+    with open(lock_path, "a+", encoding="utf-8") as lock_fh:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
         try:
             data = load_allowlist()

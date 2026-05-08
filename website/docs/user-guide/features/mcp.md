@@ -373,7 +373,11 @@ mcp_servers:
     auth: oauth
 ```
 
-On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
+On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. OAuth state is cached per profile and reused across sessions.
+
+OAuth JSON state is stored in the active profile's `$HERMES_HOME/mcp-tokens/` directory (`~/.hermes/mcp-tokens/` for the default profile): `<server>.json` stores tokens, `<server>.client.json` stores client registration, and `<server>.meta.json` stores discovered authorization-server metadata, including the token endpoint. Here `<server>` is the sanitized server name used for filenames. Files are created as needed; internal lock, marker, or backup files may also be present. On Unix, JSON state files are written with mode `0600`.
+
+Hermes restores cached metadata on startup. If it is missing and stored tokens exist, Hermes attempts metadata discovery before refresh; keeping the metadata file avoids that extra discovery step and preserves the discovered token endpoint. Missing metadata does not by itself require a new login, but failed discovery or refresh can still require re-authorization.
 
 Refresh tokens are bound to the authorization server that granted them: Hermes records the discovered issuer alongside the cached tokens and, if a server's advertised authorization server ever changes (server migration, metadata edit, or hijack), the stored refresh token is dropped instead of being sent to the new issuer. The current access token keeps working until it expires, then a normal re-authorization runs against the new issuer.
 

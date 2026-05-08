@@ -245,6 +245,14 @@ mcp_servers:
 行为：
 - Hermes 使用 MCP SDK 的 OAuth 2.1 PKCE 流程（元数据发现、动态客户端注册、token 交换及刷新）
 - 首次连接时，浏览器窗口将打开以完成授权
-- Token 持久化至 `~/.hermes/mcp-tokens/<server>.json`，跨会话复用
-- Token 刷新自动进行；仅在刷新失败时才需重新授权
+- OAuth 状态持久化至当前 profile 的 `$HERMES_HOME/mcp-tokens/`，跨会话复用（命名 profile 通常使用 `~/.hermes/profiles/<name>/mcp-tokens/`）
+- 可用的授权会自动复用并刷新；授权无法继续使用时需要重新授权
 - 仅适用于 HTTP/StreamableHTTP 传输（基于 `url` 的服务器）
+
+### OAuth 状态持久化
+
+OAuth 的 JSON 状态存储在当前 profile 的 `$HERMES_HOME/mcp-tokens/` 目录中（默认 profile 为 `~/.hermes/mcp-tokens/`）：`<server>.json` 保存 token，`<server>.client.json` 保存客户端注册信息，`<server>.meta.json` 保存已发现的授权服务器元数据，包括 token 端点。这里的 `<server>` 指用于文件名的规范化服务器名称。文件按需创建，目录中还可能包含内部锁文件、标记文件或备份文件。
+
+Hermes 在启动时恢复缓存的元数据。如果已有 token 但缺少元数据，Hermes 会在刷新前尝试重新发现元数据；保留元数据文件可避免这一步，并保留已发现的 token 端点。仅缺少元数据并不意味着必须重新登录，但发现或刷新失败时仍可能需要重新授权。
+
+在另一台机器上预置状态前，请先停止源机器上使用该服务器的 Hermes 进程，再将这三个 JSON 文件中实际存在的文件复制到目标 profile 的 `mcp-tokens/` 目录。保持相同的服务器配置，并仅允许 Hermes 服务账户访问这些文件；在 Unix 上使用 `0600` 权限。不要在同时运行的多台机器之间共享刷新 token。

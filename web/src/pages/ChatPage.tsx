@@ -49,14 +49,23 @@ function buildWsUrl(
 }
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
-// (subscriber).  Generated once per mount so a tab refresh starts a fresh
-// channel — the previous PTY child terminates with the old WS, and its
-// channel auto-evicts when no subscribers remain.
+// (subscriber). Persist it per resume target so a reload or transient browser
+// disconnect can reattach to the same server-side PTY while it is still alive.
 function generateChannelId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
   return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+}
+
+function getOrCreateChannelId(resume: string | null): string {
+  if (typeof window === "undefined") return generateChannelId();
+  const key = `hermes.chat.channel.${resume || "new"}`;
+  const existing = window.sessionStorage.getItem(key);
+  if (existing && /^[A-Za-z0-9._-]{1,128}$/.test(existing)) return existing;
+  const next = generateChannelId();
+  window.sessionStorage.setItem(key, next);
+  return next;
 }
 
 // Colors for the terminal body.  Matches the dashboard's dark teal canvas
@@ -156,7 +165,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const channel = useMemo(() => getOrCreateChannelId(resumeParam), [resumeParam]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -544,52 +553,55 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
     });
 
-    // WebSocket
-    const url = buildWsUrl(token, resumeParam, channel);
-    const ws = new WebSocket(url);
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
-    // Suppress banner/terminal side-effects when cleanup() calls `ws.close()`
-    // (React StrictMode remount, route change) so we never write to a
-    // disposed xterm or setState on an unmounted tree.
+    // WebSocket. Keep reconnect state inside this effect so a transient
+    // browser/network close reattaches to the same channel instead of ending
+    // the PTY session immediately.
     let unmounting = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    ws.onopen = () => {
-      setBanner(null);
-      // Send the initial RESIZE immediately so Ink has *a* size to lay
-      // out against on its first paint.  The double-rAF block above will
-      // follow up with the authoritative measurement — at worst Ink
-      // reflows once after the PTY boots, which is imperceptible.
-      ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+    const connectWebSocket = (attempt = 0) => {
+      if (unmounting) return;
+      const url = buildWsUrl(token, resumeParam, channel);
+      const ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (unmounting) return;
+        setBanner(null);
+        ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      };
+
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+          term.write(ev.data);
+        } else {
+          term.write(new Uint8Array(ev.data as ArrayBuffer));
+        }
+      };
+
+      ws.onclose = (ev) => {
+        if (wsRef.current === ws) wsRef.current = null;
+        if (unmounting) return;
+        if (ev.code === 4401) {
+          setBanner("Auth failed. Reload the page to refresh the session token.");
+          return;
+        }
+        if (ev.code === 4403) {
+          setBanner("Chat is only reachable from localhost.");
+          return;
+        }
+        if (ev.code === 1011) {
+          // Server already wrote an ANSI error frame.
+          return;
+        }
+        const delay = Math.min(1000 * 2 ** attempt, 10_000);
+        setBanner(`Connection lost. Reconnecting in ${Math.round(delay / 1000)}s…`);
+        reconnectTimer = setTimeout(() => connectWebSocket(attempt + 1), delay);
+      };
     };
 
-    ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        term.write(ev.data);
-      } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
-      }
-    };
-
-    ws.onclose = (ev) => {
-      wsRef.current = null;
-      if (unmounting) {
-        return;
-      }
-      if (ev.code === 4401) {
-        setBanner("Auth failed. Reload the page to refresh the session token.");
-        return;
-      }
-      if (ev.code === 4403) {
-        setBanner("Chat is only reachable from localhost.");
-        return;
-      }
-      if (ev.code === 1011) {
-        // Server already wrote an ANSI error frame.
-        return;
-      }
-      term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
-    };
+    connectWebSocket();
 
     // Keystrokes → PTY.
     //
@@ -608,7 +620,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
     const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
     const onDataDisposable = term.onData((data) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
       if (SGR_MOUSE_RE.test(data)) {
         return;
@@ -618,7 +631,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
 
     const onResizeDisposable = term.onResize(({ cols, rows }) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(`\x1b[RESIZE:${cols};${rows}]`);
       }
     });
@@ -631,6 +645,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(
         "resize",
@@ -640,7 +655,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
-      ws.close();
+      wsRef.current?.close();
       wsRef.current = null;
       term.dispose();
       termRef.current = null;

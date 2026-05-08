@@ -1159,6 +1159,44 @@ class SessionDB:
             current = row["id"]
         return current
 
+    @staticmethod
+    def _resumable_session_predicate(alias: str = "s") -> str:
+        """SQL predicate for logical sessions that can resume to messages.
+
+        Compression roots may have ``message_count = 0`` while their live
+        continuation child holds the messages. Treat those roots as resumable
+        too so list/count callers don't hide valid compressed conversations.
+        """
+        return f"""
+            (
+                EXISTS (
+                    SELECT 1 FROM messages m
+                    WHERE m.session_id = {alias}.id
+                    LIMIT 1
+                )
+                OR EXISTS (
+                    WITH RECURSIVE compression_chain(id) AS (
+                        SELECT child.id
+                        FROM sessions child
+                        WHERE child.parent_session_id = {alias}.id
+                          AND {alias}.end_reason = 'compression'
+                          AND child.started_at >= COALESCE({alias}.ended_at, {alias}.started_at)
+                        UNION ALL
+                        SELECT child.id
+                        FROM compression_chain cc
+                        JOIN sessions parent ON parent.id = cc.id
+                        JOIN sessions child ON child.parent_session_id = parent.id
+                        WHERE parent.end_reason = 'compression'
+                          AND child.started_at >= COALESCE(parent.ended_at, parent.started_at)
+                    )
+                    SELECT 1
+                    FROM compression_chain cc
+                    JOIN messages m ON m.session_id = cc.id
+                    LIMIT 1
+                )
+            )
+        """
+
     def list_sessions_rich(
         self,
         source: str = None,
@@ -1168,6 +1206,7 @@ class SessionDB:
         include_children: bool = False,
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
+        resumable_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -1220,6 +1259,8 @@ class SessionDB:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
             params.extend(exclude_sources)
+        if resumable_only:
+            where_clauses.append(self._resumable_session_predicate("s"))
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         if order_by_last_active:
@@ -2415,15 +2456,41 @@ class SessionDB:
     # Utility
     # =========================================================================
 
-    def session_count(self, source: str = None) -> int:
-        """Count sessions, optionally filtered by source."""
+    def session_count(
+        self,
+        source: str = None,
+        exclude_sources: List[str] = None,
+        resumable_only: bool = False,
+        include_children: bool = True,
+    ) -> int:
+        """Count sessions, optionally using the same coarse filters as listings."""
+        where_clauses = []
+        params = []
+
+        if not include_children:
+            where_clauses.append(
+                "(s.parent_session_id IS NULL"
+                " OR EXISTS (SELECT 1 FROM sessions p"
+                "            WHERE p.id = s.parent_session_id"
+                "            AND p.end_reason = 'branched'"
+                "            AND s.started_at >= p.ended_at))"
+            )
+        if source:
+            where_clauses.append("s.source = ?")
+            params.append(source)
+        if exclude_sources:
+            placeholders = ",".join("?" for _ in exclude_sources)
+            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            params.extend(exclude_sources)
+        if resumable_only:
+            where_clauses.append(self._resumable_session_predicate("s"))
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         with self._lock:
-            if source:
-                cursor = self._conn.execute(
-                    "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
-                )
-            else:
-                cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
+            cursor = self._conn.execute(
+                f"SELECT COUNT(*) FROM sessions s{where_sql}",
+                params,
+            )
             return cursor.fetchone()[0]
 
     def message_count(self, session_id: str = None) -> int:

@@ -10,6 +10,7 @@ Usage:
 """
 
 import asyncio
+from collections import deque
 import hmac
 import importlib.util
 import json
@@ -85,6 +86,7 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_RESUMABLE_SESSION_EXCLUDE_SOURCES = ["tool", "cron"]
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
@@ -773,13 +775,23 @@ async def get_action_status(name: str, lines: int = 200):
 
 
 @app.get("/api/sessions")
-async def get_sessions(limit: int = 20, offset: int = 0):
+async def get_sessions(limit: int = 20, offset: int = 0, resumable: bool = True):
     try:
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
-            total = db.session_count()
+            exclude_sources = _RESUMABLE_SESSION_EXCLUDE_SOURCES if resumable else None
+            sessions = db.list_sessions_rich(
+                limit=limit,
+                offset=offset,
+                exclude_sources=exclude_sources,
+                resumable_only=resumable,
+            )
+            total = db.session_count(
+                exclude_sources=exclude_sources,
+                resumable_only=resumable,
+                include_children=False,
+            )
             now = time.time()
             for s in sessions:
                 s["is_active"] = (
@@ -795,7 +807,7 @@ async def get_sessions(limit: int = 20, offset: int = 0):
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20):
+async def search_sessions(q: str = "", limit: int = 20, resumable: bool = True):
     """Full-text search across session message content using FTS5."""
     if not q or not q.strip():
         return {"results": []}
@@ -814,7 +826,11 @@ async def search_sessions(q: str = "", limit: int = 20):
                 else:
                     terms.append(token + "*")
             prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
+            matches = db.search_messages(
+                query=prefix_query,
+                limit=limit,
+                exclude_sources=_RESUMABLE_SESSION_EXCLUDE_SOURCES if resumable else None,
+            )
             # Group by session_id — return unique sessions with their best snippet
             seen: dict = {}
             for m in matches:
@@ -3287,6 +3303,12 @@ except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
+_DASHBOARD_PTY_IDLE_TTL_SECONDS = float(
+    os.environ.get("HERMES_DASHBOARD_PTY_IDLE_TTL_SECONDS", "1800")
+)
+_DASHBOARD_PTY_BUFFER_BYTES = int(
+    os.environ.get("HERMES_DASHBOARD_PTY_BUFFER_BYTES", str(2 * 1024 * 1024))
+)
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
 # loopback so tests don't need to rewrite request scope.
@@ -3399,6 +3421,199 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     return channel if _VALID_CHANNEL_RE.match(channel) else None
 
 
+class _DashboardPtySession:
+    def __init__(self, bridge: PtyBridge):
+        self.bridge = bridge
+        self.ws: Optional[WebSocket] = None
+        self.reader_task: Optional[asyncio.Task] = None
+        self.cleanup_task: Optional[asyncio.Task] = None
+        self.buffer = deque()
+        self.buffer_bytes = 0
+        self.closed = False
+        self.lock = asyncio.Lock()
+
+
+_dashboard_pty_sessions: dict[str, _DashboardPtySession] = {}
+_dashboard_pty_sessions_lock = asyncio.Lock()
+
+
+def _buffer_dashboard_pty_chunk(session: _DashboardPtySession, chunk: bytes) -> None:
+    if not chunk:
+        return
+    session.buffer.append(chunk)
+    session.buffer_bytes += len(chunk)
+    while session.buffer and session.buffer_bytes > _DASHBOARD_PTY_BUFFER_BYTES:
+        old = session.buffer.popleft()
+        session.buffer_bytes -= len(old)
+
+
+async def _close_dashboard_pty_session(
+    channel: Optional[str], session: _DashboardPtySession
+) -> None:
+    if session.closed:
+        return
+    session.closed = True
+    if session.cleanup_task and session.cleanup_task is not asyncio.current_task():
+        session.cleanup_task.cancel()
+    if session.reader_task and session.reader_task is not asyncio.current_task():
+        session.reader_task.cancel()
+    async with session.lock:
+        ws = session.ws
+        session.ws = None
+        session.buffer.clear()
+        session.buffer_bytes = 0
+    if channel:
+        async with _dashboard_pty_sessions_lock:
+            if _dashboard_pty_sessions.get(channel) is session:
+                _dashboard_pty_sessions.pop(channel, None)
+    if ws is not None:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    session.bridge.close()
+
+
+async def _dashboard_pty_reader(
+    channel: Optional[str], session: _DashboardPtySession, loop: asyncio.AbstractEventLoop
+) -> None:
+    try:
+        while not session.closed:
+            chunk = await loop.run_in_executor(
+                None, session.bridge.read, _PTY_READ_CHUNK_TIMEOUT
+            )
+            if chunk is None:
+                await _close_dashboard_pty_session(channel, session)
+                return
+            if not chunk:
+                await asyncio.sleep(0)
+                continue
+            async with session.lock:
+                ws = session.ws
+            if ws is None:
+                async with session.lock:
+                    _buffer_dashboard_pty_chunk(session, chunk)
+                continue
+            try:
+                await ws.send_bytes(chunk)
+            except Exception:
+                async with session.lock:
+                    if session.ws is ws:
+                        session.ws = None
+                    _buffer_dashboard_pty_chunk(session, chunk)
+    except asyncio.CancelledError:
+        # TestClient and some ASGI lifecycles can cancel tasks created during
+        # a WebSocket request when that request exits.  Cancellation is not PTY
+        # EOF; keep the bridge alive so a later browser reconnect can reattach.
+        return
+
+
+async def _spawn_dashboard_pty_session(
+    *,
+    channel: Optional[str],
+    resume: Optional[str],
+    sidecar_url: Optional[str],
+    loop: asyncio.AbstractEventLoop,
+) -> _DashboardPtySession:
+    argv, cwd, env = await loop.run_in_executor(
+        None,
+        lambda: _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url),
+    )
+    bridge = await loop.run_in_executor(
+        None,
+        lambda: PtyBridge.spawn(argv, cwd=cwd, env=env),
+    )
+    session = _DashboardPtySession(bridge)
+    session.reader_task = asyncio.create_task(
+        _dashboard_pty_reader(channel, session, loop)
+    )
+    return session
+
+
+async def _get_dashboard_pty_session(
+    *,
+    channel: Optional[str],
+    resume: Optional[str],
+    sidecar_url: Optional[str],
+    loop: asyncio.AbstractEventLoop,
+) -> _DashboardPtySession:
+    if not channel:
+        return await _spawn_dashboard_pty_session(
+            channel=None, resume=resume, sidecar_url=sidecar_url, loop=loop
+        )
+
+    async with _dashboard_pty_sessions_lock:
+        existing = _dashboard_pty_sessions.get(channel)
+        if existing and not existing.closed:
+            if existing.cleanup_task:
+                existing.cleanup_task.cancel()
+                existing.cleanup_task = None
+            if existing.reader_task is None or existing.reader_task.done():
+                existing.reader_task = asyncio.create_task(
+                    _dashboard_pty_reader(channel, existing, loop)
+                )
+            return existing
+
+    session = await _spawn_dashboard_pty_session(
+        channel=channel, resume=resume, sidecar_url=sidecar_url, loop=loop
+    )
+    async with _dashboard_pty_sessions_lock:
+        existing = _dashboard_pty_sessions.get(channel)
+        if existing and not existing.closed:
+            await _close_dashboard_pty_session(None, session)
+            return existing
+        _dashboard_pty_sessions[channel] = session
+    return session
+
+
+async def _attach_dashboard_pty_session(
+    session: _DashboardPtySession, ws: WebSocket
+) -> None:
+    async with session.lock:
+        old_ws = session.ws
+        session.ws = ws
+        buffered = list(session.buffer)
+        session.buffer.clear()
+        session.buffer_bytes = 0
+    if old_ws is not None and old_ws is not ws:
+        try:
+            await old_ws.close(code=1012)
+        except Exception:
+            pass
+    for chunk in buffered:
+        await ws.send_bytes(chunk)
+
+
+async def _schedule_dashboard_pty_cleanup(
+    channel: str, session: _DashboardPtySession
+) -> None:
+    async def _cleanup() -> None:
+        try:
+            await asyncio.sleep(max(0.0, _DASHBOARD_PTY_IDLE_TTL_SECONDS))
+            async with session.lock:
+                attached = session.ws is not None
+            if not attached:
+                await _close_dashboard_pty_session(channel, session)
+        except asyncio.CancelledError:
+            return
+
+    if session.cleanup_task:
+        session.cleanup_task.cancel()
+    session.cleanup_task = asyncio.create_task(_cleanup())
+
+
+async def _detach_dashboard_pty_session(
+    channel: Optional[str], session: _DashboardPtySession, ws: WebSocket
+) -> None:
+    async with session.lock:
+        if session.ws is ws:
+            session.ws = None
+    if channel:
+        await _schedule_dashboard_pty_cleanup(channel, session)
+    else:
+        await _close_dashboard_pty_session(None, session)
+
+
 @app.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
@@ -3430,22 +3645,26 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=1011)
         return
 
-    # --- spawn PTY ------------------------------------------------------
+    loop = asyncio.get_running_loop()
+
+    # --- spawn or reattach PTY -----------------------------------------
     resume = ws.query_params.get("resume") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
     try:
-        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+        session = await _get_dashboard_pty_session(
+            channel=channel,
+            resume=resume,
+            sidecar_url=sidecar_url,
+            loop=loop,
+        )
+        await _attach_dashboard_pty_session(session, ws)
     except SystemExit as exc:
         # _make_tui_argv calls sys.exit(1) when node/npm is missing.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
-
-
-    try:
-        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
@@ -3454,26 +3673,6 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
-
-    loop = asyncio.get_running_loop()
-
-    # --- reader task: PTY master → WebSocket ----------------------------
-    async def pump_pty_to_ws() -> None:
-        while True:
-            chunk = await loop.run_in_executor(
-                None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
-            )
-            if chunk is None:  # EOF
-                return
-            if not chunk:  # no data this tick; yield control and retry
-                await asyncio.sleep(0)
-                continue
-            try:
-                await ws.send_bytes(chunk)
-            except Exception:
-                return
-
-    reader_task = asyncio.create_task(pump_pty_to_ws())
 
     # --- writer loop: WebSocket → PTY master ----------------------------
     try:
@@ -3494,19 +3693,14 @@ async def pty_ws(ws: WebSocket) -> None:
             if match and match.end() == len(raw):
                 cols = int(match.group(1))
                 rows = int(match.group(2))
-                bridge.resize(cols=cols, rows=rows)
+                session.bridge.resize(cols=cols, rows=rows)
                 continue
 
-            bridge.write(raw)
+            session.bridge.write(raw)
     except WebSocketDisconnect:
         pass
     finally:
-        reader_task.cancel()
-        try:
-            await reader_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        bridge.close()
+        await _detach_dashboard_pty_session(channel, session, ws)
 
 
 # ---------------------------------------------------------------------------

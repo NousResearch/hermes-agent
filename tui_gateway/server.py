@@ -2180,21 +2180,30 @@ def _(rid, params: dict) -> dict:
         # user-facing surface — CLI, TUI, all gateway platforms (including new
         # ones not enumerated here), ACP adapter clients, webhook sessions,
         # custom `HERMES_SESSION_SOURCE` values, and older installs with
-        # different source labels. We deny-list only the noisy internal
-        # sources (``tool`` sub-agent runs) rather than allow-listing a
-        # fixed set of platform names that goes stale whenever a new
-        # platform is added or a user names their own source.
-        deny = frozenset({"tool"})
+        # different source labels. We deny-list only noisy internal/scheduled
+        # sources and require non-empty sessions so cron jobs, background tool
+        # rows, failed smoke tests, and accidental blank sessions do not crowd
+        # the resume picker.
+        deny = ["tool", "cron"]
 
         limit = int(params.get("limit", 200) or 200)
-        # Over-fetch modestly so per-source filtering doesn't leave us
-        # short; the compression-tip projection in ``list_sessions_rich``
-        # can also merge rows.
+        # Over-fetch modestly so compression-tip projection doesn't leave us
+        # short after rows are merged.
         fetch_limit = max(limit * 2, 200)
+        raw_rows = db.list_sessions_rich(
+            source=None,
+            exclude_sources=deny,
+            resumable_only=True,
+            limit=fetch_limit,
+        )
+        # Keep a defensive post-filter for older/stub DB implementations that
+        # may ignore newer filtering kwargs; the real DB already applies these
+        # at query time.
         rows = [
             s
-            for s in db.list_sessions_rich(source=None, limit=fetch_limit)
-            if (s.get("source") or "").strip().lower() not in deny
+            for s in raw_rows
+            if (s.get("source") or "") not in deny
+            and ("message_count" not in s or (s.get("message_count") or 0) > 0)
         ][:limit]
         return _ok(
             rid,
@@ -2221,7 +2230,8 @@ def _(rid, params: dict) -> dict:
     """Return the most recent human-facing session id, or ``None``.
 
     Mirrors ``session.list``'s deny-list behaviour (drops ``tool``
-    sub-agent rows).  Used by TUI auto-resume when
+    sub-agent rows, ``cron`` scheduled-job rows, and empty sessions).
+    Used by TUI auto-resume when
     ``display.tui_auto_resume_recent`` is on; the field is also handy
     for any CLI tooling that wants "latest session" without paginating
     the full list.
@@ -2235,16 +2245,22 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _ok(rid, {"session_id": None})
     try:
-        deny = frozenset({"tool"})
-        # Over-fetch by a generous bounded amount so heavy sub-agent
-        # users (lots of recent ``tool`` rows) don't get a false
-        # "no eligible session" answer.  ``session.list`` uses a
-        # similar over-fetch strategy.
-        rows = db.list_sessions_rich(source=None, limit=200)
+        deny = ["tool", "cron"]
+        # Over-fetch by a generous bounded amount so compression projection
+        # does not leave us with a false "no eligible session" answer.
+        raw_rows = db.list_sessions_rich(
+            source=None,
+            exclude_sources=deny,
+            resumable_only=True,
+            limit=200,
+        )
+        rows = [
+            row
+            for row in raw_rows
+            if (row.get("source") or "") not in deny
+            and ("message_count" not in row or (row.get("message_count") or 0) > 0)
+        ]
         for row in rows:
-            src = (row.get("source") or "").strip().lower()
-            if src in deny:
-                continue
             return _ok(
                 rid,
                 {

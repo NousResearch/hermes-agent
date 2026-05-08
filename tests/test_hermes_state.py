@@ -2348,6 +2348,55 @@ class TestCompressionChainProjection:
         assert tip_row["ended_at"] is None  # tip is still live
         assert tip_row["end_reason"] is None
 
+    def test_resumable_only_includes_empty_compression_root_with_message_tip(self, db):
+        """A compressed root can have zero own messages while its continuation
+        has the usable transcript; resumable-only views must keep that logical
+        conversation visible.
+        """
+        import time as _time
+
+        t0 = _time.time() - 3600
+        db.create_session("empty-root", "cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, end_reason=? WHERE id=?",
+            (t0, t0 + 100, "compression", "empty-root"),
+        )
+        db.create_session("message-tip", "cli", parent_session_id="empty-root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 101, "message-tip")
+        )
+        db.append_message("message-tip", "user", "resume me")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(
+            source="cli", exclude_sources=["tool", "cron"], resumable_only=True
+        )
+
+        assert [s["id"] for s in sessions] == ["message-tip"]
+        assert sessions[0]["_lineage_root_id"] == "empty-root"
+        assert db.session_count(
+            source="cli",
+            exclude_sources=["tool", "cron"],
+            resumable_only=True,
+            include_children=False,
+        ) == 1
+
+    def test_resumable_only_does_not_count_empty_orphan_compression_root(self, db):
+        import time as _time
+
+        t0 = _time.time() - 3600
+        db.create_session("empty-root", "cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, end_reason=? WHERE id=?",
+            (t0, t0 + 100, "compression", "empty-root"),
+        )
+        db._conn.commit()
+
+        assert db.list_sessions_rich(source="cli", resumable_only=True) == []
+        assert db.session_count(
+            source="cli", resumable_only=True, include_children=False
+        ) == 0
+
     def test_list_without_projection_returns_raw_root(self, db):
         """project_compression_tips=False returns the raw parent-NULL root
         rows — useful for admin/debug UIs.

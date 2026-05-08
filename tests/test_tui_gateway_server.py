@@ -3289,6 +3289,42 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     assert "state.db unavailable: locking protocol" in resp["error"]["message"]
 
 
+def test_session_list_hides_cron_tool_and_empty_rows(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, **kwargs):
+            assert kwargs["source"] is None
+            assert kwargs["exclude_sources"] == ["tool", "cron"]
+            assert kwargs["resumable_only"] is True
+            return [
+                {
+                    "id": "human-1",
+                    "source": "tui",
+                    "title": "Human chat",
+                    "preview": "hello",
+                    "started_at": 100,
+                    "message_count": 2,
+                }
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.list", "params": {"limit": 20}}
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["sessions"] == [
+        {
+            "id": "human-1",
+            "title": "Human chat",
+            "preview": "hello",
+            "started_at": 100,
+            "message_count": 2,
+            "source": "tui",
+        }
+    ]
+
+
 # --------------------------------------------------------------------------
 # session.delete — TUI resume picker `d` key
 # --------------------------------------------------------------------------
@@ -3731,9 +3767,11 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
     """Drops `tool` rows like session.list does, returns the first hit."""
 
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200):
+        def list_sessions_rich(self, **kwargs):
+            assert kwargs["source"] is None
+            assert kwargs["exclude_sources"] == ["tool", "cron"]
+            assert kwargs["resumable_only"] is True
             return [
-                {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100},
                 {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
             ]
 
@@ -3750,8 +3788,10 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
 
 def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200):
-            return [{"id": "tool-1", "source": "tool", "started_at": 1}]
+        def list_sessions_rich(self, **kwargs):
+            assert kwargs["exclude_sources"] == ["tool", "cron"]
+            assert kwargs["resumable_only"] is True
+            return []
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 
@@ -3768,7 +3808,7 @@ def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
     'no answer' (Copilot review on #17130)."""
 
     class _BrokenDB:
-        def list_sessions_rich(self, *, source=None, limit=200):
+        def list_sessions_rich(self, **kwargs):
             raise RuntimeError("db locked")
 
     monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())

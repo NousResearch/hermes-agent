@@ -102,24 +102,13 @@ def _safe_parse_import_env(
         return default
 
 
-# Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
-FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env(
-    "TERMINAL_MAX_FOREGROUND_TIMEOUT",
-    600,
-    int,
-    "integer",
-)
+# Default hard cap on foreground timeout (seconds). Configurable only via
+# ``terminal.max_foreground_timeout_seconds`` in ~/.hermes/config.yaml.
+FOREGROUND_MAX_TIMEOUT = 600
 
 
 def _get_foreground_max_timeout() -> int:
-    """Effective foreground timeout cap for terminal_tool guardrails.
-
-    When ``TERMINAL_MAX_FOREGROUND_TIMEOUT`` is set in the environment (loaded
-    before this module), it wins over ``terminal.max_foreground_timeout_seconds``
-    in ``config.yaml`` — same precedence users already had with env-only tuning.
-    """
-    if os.getenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", "").strip():
-        return int(FOREGROUND_MAX_TIMEOUT)
+    """Effective foreground timeout cap from ``terminal.max_foreground_timeout_seconds``."""
     try:
         from hermes_cli.config import load_config
 
@@ -2314,8 +2303,7 @@ TERMINAL_SCHEMA = {
                 "description": (
                     "Max seconds to wait (default: 180). Returns INSTANTLY when command finishes — "
                     "set high for long tasks, you won't wait unnecessarily. Foreground timeout above "
-                    "the configured maximum is rejected (see terminal.max_foreground_timeout_seconds "
-                    "in ~/.hermes/config.yaml, or env TERMINAL_MAX_FOREGROUND_TIMEOUT when set); "
+                    "terminal.max_foreground_timeout_seconds in ~/.hermes/config.yaml is rejected; "
                     "use background=true for longer commands."
                 ),
                 "minimum": 1

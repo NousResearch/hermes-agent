@@ -552,9 +552,8 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
-        # Hard cap on foreground terminal timeout (seconds). When
-        # TERMINAL_MAX_FOREGROUND_TIMEOUT is set in the environment, it wins
-        # over this key (same numeric default as the env fallback: 600).
+        # Hard cap on foreground terminal timeout (seconds). Set in config.yaml only
+        # (``terminal.max_foreground_timeout_seconds``); not read from .env.
         "max_foreground_timeout_seconds": 600,
     },
 
@@ -4598,7 +4597,7 @@ def show_config():
     print(
         "  Foreground max:"
         f" {terminal.get('max_foreground_timeout_seconds', 600)}s"
-        " (env TERMINAL_MAX_FOREGROUND_TIMEOUT overrides when set)"
+        " (config.yaml: terminal.max_foreground_timeout_seconds)"
     )
 
     if terminal.get('backend') == 'docker':

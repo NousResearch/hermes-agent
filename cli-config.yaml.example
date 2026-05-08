@@ -162,7 +162,7 @@ terminal:
   timeout: 180
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
-  max_foreground_timeout_seconds: 600  # Foreground cap (seconds); env TERMINAL_MAX_FOREGROUND_TIMEOUT overrides when set.
+  max_foreground_timeout_seconds: 600  # Foreground cap (seconds); set in config.yaml only.
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 

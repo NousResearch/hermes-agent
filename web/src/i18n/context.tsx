@@ -1,15 +1,20 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
-import type { Locale, Translations } from "./types";
+import { SUPPORTED_LOCALES, type Locale, type Translations } from "./types";
 import { en } from "./en";
+import { ptBR } from "./pt-BR";
 import { zh } from "./zh";
 
-const TRANSLATIONS: Record<Locale, Translations> = { en, zh };
+const TRANSLATIONS: Record<Locale, Translations> = { en, zh, "pt-BR": ptBR };
 const STORAGE_KEY = "hermes-locale";
+
+function isLocale(value: string | null): value is Locale {
+  return SUPPORTED_LOCALES.includes(value as Locale);
+}
 
 function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "en" || stored === "zh") return stored;
+    if (isLocale(stored)) return stored;
   } catch {
     // SSR or privacy mode
   }

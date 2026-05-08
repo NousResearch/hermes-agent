@@ -922,6 +922,38 @@ class TestRunJobSessionPersistence:
         assert success is True
         cleanup_mock.assert_called_once()
 
+    def test_run_job_cleans_script_payload_artifacts(self, tmp_path):
+        artifact = tmp_path / "script-output.json"
+        artifact.write_text("temporary", encoding="utf-8")
+        job = {
+            "id": "script-payload-job",
+            "name": "script payload",
+            "prompt": "Summarize {{ subject }}",
+            "script": "collect.py",
+        }
+        payload = json.dumps({
+            "template_vars": {"subject": "Inbox"},
+            "prepend_context": "3 unread messages",
+            "cleanup_paths": [str(artifact)],
+        })
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("cron.scheduler._run_job_script", return_value=(True, payload)), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, _final_response, _error = run_job(job)
+
+        assert success is True
+        assert not artifact.exists()
+        assert "_script_cleanup_paths" not in job
+        prompt = mock_agent.run_conversation.call_args.args[0]
+        assert "Summarize Inbox" in prompt
+        assert "3 unread messages" in prompt
+
     def _make_run_job_patches(self, tmp_path):
         """Common patches for run_job tests."""
         fake_db = MagicMock()
@@ -1772,6 +1804,25 @@ class TestSilentDelivery:
             tick(verbose=False)
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
+
+
+class TestBuildJobPromptScriptPayload:
+    def test_json_script_payload_replaces_template_vars_and_prepends_context(self):
+        job = {
+            "prompt": "Summary for {{ subject }}",
+            "script": "collect.py",
+        }
+        payload = json.dumps({
+            "template_vars": {"subject": "Inbox"},
+            "prepend_context": "3 unread messages",
+        })
+
+        with patch("cron.scheduler._run_job_script", return_value=(True, payload)):
+            result = _build_job_prompt(job)
+
+        assert "Summary for Inbox" in result
+        assert "3 unread messages" in result
+        assert "{{ subject }}" not in result
 
 
 class TestBuildJobPromptSilentHint:

@@ -663,6 +663,44 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
     return adapter.get_pending_message(session_key)
 
 
+async def _save_handoff_response_and_notice(
+    message_text: str,
+    response: str,
+    *,
+    already_sent: bool,
+    adapter: Any = None,
+    chat_id: str | None = None,
+    event: MessageEvent | None = None,
+    metadata: Any = None,
+) -> tuple[str, Any | None]:
+    """Persist generated /handoff-save output and surface the save path.
+
+    Non-streaming responses can be mutated before final delivery.  Streaming
+    or previewed responses have already reached the user, so send a small
+    trailing notice instead of resending the full body.
+    """
+    if not response:
+        return response, None
+    try:
+        from hermes_cli.handoff import save_handoff_response_if_requested
+
+        saved_path = save_handoff_response_if_requested(message_text, response)
+        if saved_path is None:
+            return response, None
+        if already_sent:
+            if adapter is not None and chat_id:
+                await adapter.send(
+                    chat_id,
+                    f"✓ Handoff saved: `{saved_path}`",
+                    metadata=metadata if metadata is not None else getattr(event, "metadata", None),
+                )
+            return response, saved_path
+        return f"{response}\n\n---\n✓ Handoff saved: `{saved_path}`", saved_path
+    except Exception as exc:
+        logger.debug("handoff deterministic save failed: %s", exc)
+        return response, None
+
+
 _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
@@ -5015,6 +5053,34 @@ class GatewayRunner:
                     return "Queued for the next turn."
                 return f"Queued for the next turn. ({depth} queued)"
 
+            # /handoff* queues a generated handoff prompt as the next turn
+            # without interrupting the active agent, preserving the same
+            # turn-boundary semantics as /queue while using the structured
+            # handoff template.
+            if _cmd_def_inner and _cmd_def_inner.name in ("handoff", "handoff-save", "handoff-new"):
+                from hermes_cli.handoff import build_handoff_prompt
+
+                focus = event.get_command_args().strip()
+                queued_text = build_handoff_prompt(
+                    _cmd_def_inner.name,
+                    focus,
+                    session_id=_quick_key,
+                )
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    queued_event = MessageEvent(
+                        text=queued_text,
+                        message_type=MessageType.TEXT,
+                        source=event.source,
+                        message_id=event.message_id,
+                        channel_prompt=event.channel_prompt,
+                    )
+                    self._enqueue_fifo(_quick_key, queued_event, adapter)
+                depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
+                if depth <= 1:
+                    return f"Queued /{_cmd_def_inner.name} for the next turn."
+                return f"Queued /{_cmd_def_inner.name} for the next turn. ({depth} queued)"
+
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
             # iterations inside the same agent run, by appending to the
@@ -5392,6 +5458,19 @@ class GatewayRunner:
 
         if canonical == "compress":
             return await self._handle_compress_command(event)
+
+        if canonical in ("handoff", "handoff-save", "handoff-new"):
+            from hermes_cli.handoff import build_handoff_prompt
+
+            focus = event.get_command_args().strip()
+            event.text = build_handoff_prompt(
+                canonical,
+                focus,
+                session_id=_quick_key,
+            )
+            command = None
+            canonical = None
+            # Fall through to _handle_message_with_agent with rewritten text.
 
         if canonical == "usage":
             return await self._handle_usage_command(event)
@@ -6484,6 +6563,23 @@ class GatewayRunner:
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
+
+            # Deterministic fallback for /handoff-save and /handoff-new. The
+            # generated prompt embeds a guarded path marker; save the final
+            # handoff response there even if the model did not use write_file.
+            handoff_saved_path = None
+            if response:
+                try:
+                    from hermes_cli.handoff import save_handoff_response_if_requested
+
+                    saved_path = save_handoff_response_if_requested(message_text, response)
+                    if saved_path is not None:
+                        handoff_saved_path = saved_path
+                        if not agent_result.get("already_sent"):
+                            response = f"{response}\n\n---\n✓ Handoff saved: `{saved_path}`"
+                except Exception as exc:
+                    logger.debug("handoff deterministic save failed: %s", exc)
+
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
@@ -6775,6 +6871,17 @@ class GatewayRunner:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
+                if handoff_saved_path is not None:
+                    try:
+                        _save_adapter = self.adapters.get(source.platform)
+                        if _save_adapter:
+                            await _save_adapter.send(
+                                source.chat_id,
+                                f"✓ Handoff saved: `{handoff_saved_path}`",
+                                metadata=getattr(event, "metadata", None),
+                            )
+                    except Exception as _e:
+                        logger.debug("trailing handoff save notification failed: %s", _e)
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.
@@ -14416,6 +14523,18 @@ class GatewayRunner:
                         or _previewed
                     )
                     first_response = result.get("final_response", "")
+                    if first_response:
+                        first_response, _handoff_saved_path = await _save_handoff_response_and_notice(
+                            message,
+                            first_response,
+                            already_sent=_already_streamed,
+                            adapter=adapter,
+                            chat_id=source.chat_id,
+                            metadata=_status_thread_metadata,
+                        )
+                        if _handoff_saved_path is not None:
+                            result["handoff_saved_path"] = str(_handoff_saved_path)
+                            result["final_response"] = first_response
                     if first_response and not _already_streamed:
                         try:
                             logger.info(

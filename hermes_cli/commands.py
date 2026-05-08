@@ -108,6 +108,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("handoff", "Generate a structured session handoff prompt", "Session",
+               args_hint="[focus]"),
+    CommandDef("handoff-save", "Generate a session handoff and ask the agent to save it", "Session",
+               aliases=("handoff_save",), args_hint="[focus]"),
+    CommandDef("handoff-new", "Generate a handoff package for starting a fresh session", "Session",
+               aliases=("handoff_new",), args_hint="[focus]"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
@@ -321,6 +327,9 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "commands",
         "deny",
         "help",
+        "handoff",
+        "handoff-save",
+        "handoff-new",
         "new",
         "profile",
         "queue",

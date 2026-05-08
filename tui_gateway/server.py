@@ -3144,6 +3144,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 raw = str(result)
                 status = "complete"
 
+            if isinstance(raw, str) and raw:
+                try:
+                    from hermes_cli.handoff import save_handoff_response_if_requested
+
+                    saved_path = save_handoff_response_if_requested(prompt, raw)
+                    if saved_path is not None:
+                        raw = f"{raw}\n\n---\n✓ Handoff saved: `{saved_path}`"
+                except Exception as exc:
+                    logger.debug("handoff deterministic save failed: %s", exc)
+
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
@@ -4193,6 +4203,11 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "steer",
         "plan",
         "goal",
+        "handoff",
+        "handoff-save",
+        "handoff-new",
+        "handoff_save",
+        "handoff_new",
     }
 )
 
@@ -4452,6 +4467,16 @@ def _(rid, params: dict) -> dict:
         if not arg:
             return _err(rid, 4004, "usage: /queue <prompt>")
         return _ok(rid, {"type": "send", "message": arg})
+
+    if name in ("handoff", "handoff-save", "handoff-new"):
+        try:
+            from hermes_cli.handoff import build_handoff_prompt
+
+            session_key = session.get("session_key", "") if session else ""
+            msg = build_handoff_prompt(name, arg.strip(), session_id=session_key)
+            return _ok(rid, {"type": "send", "message": msg})
+        except Exception as exc:
+            return _err(rid, 5030, f"handoff unavailable: {exc}")
 
     if name == "retry":
         if not session:

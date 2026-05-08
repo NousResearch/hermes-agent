@@ -5319,6 +5319,37 @@ class HermesCLI:
             else:
                 print("(^_^)v New session started!")
 
+    def _put_pending_input_front(self, payload: str) -> None:
+        """Put an internally generated prompt before already queued user input."""
+        pending = getattr(self, "_pending_input", None)
+        if pending is None:
+            return
+        try:
+            with pending.mutex:
+                pending.queue.appendleft(payload)
+                pending.unfinished_tasks += 1
+                pending.not_empty.notify()
+        except Exception:
+            pending.put(payload)
+
+    def _handle_handoff_command(self, canonical: str, cmd_original: str) -> None:
+        """Queue a structured handoff request as the next agent turn."""
+        parts = cmd_original.split(None, 1)
+        focus = parts[1].strip() if len(parts) > 1 else ""
+        from hermes_cli.handoff import build_handoff_prompt
+
+        prompt = build_handoff_prompt(
+            canonical,
+            focus,
+            session_id=getattr(self, "session_id", "") or "",
+        )
+        self._put_pending_input_front(prompt)
+        label = canonical
+        if self._agent_running:
+            _cprint(f"  Queued {label} prompt for the next turn.")
+        else:
+            _cprint(f"  Queued {label} prompt; it will run as the next turn.")
+
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         parts = cmd_original.split(None, 1)
@@ -6733,6 +6764,8 @@ class HermesCLI:
             parts = cmd_original.split(maxsplit=1)
             title = parts[1].strip() if len(parts) > 1 else None
             self.new_session(title=title)
+        elif canonical in ("handoff", "handoff-save", "handoff-new"):
+            self._handle_handoff_command(canonical, cmd_original)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
         elif canonical == "model":
@@ -9820,6 +9853,19 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
 
             response_previewed = result.get("response_previewed", False) if result else False
+
+            # Deterministic fallback for /handoff-save and /handoff-new: the
+            # prompt embeds a guarded save-path marker, so the runtime can save
+            # the final handoff even if the model did not call write_file.
+            if response:
+                try:
+                    from hermes_cli.handoff import save_handoff_response_if_requested
+
+                    saved_path = save_handoff_response_if_requested(message, response)
+                    if saved_path is not None:
+                        _cprint(f"\n{_DIM}✓ Handoff saved: {saved_path}{_RST}")
+                except Exception as exc:
+                    logging.debug("handoff deterministic save failed: %s", exc)
 
             # Display reasoning (thinking) box if enabled and available.
             # Skip when streaming already showed reasoning live.  Use the

@@ -2267,6 +2267,106 @@ def test_snapshot_restore_is_blocked_from_tui_worker():
     )
 
 
+def test_handoff_dispatch_returns_send_prompt():
+    server._sessions["sid"] = _session()
+    try:
+        worker_resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "handoff-new focus on TUI", "session_id": "sid"},
+            }
+        )
+        dispatch_resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "command.dispatch",
+                "params": {
+                    "arg": "focus on TUI",
+                    "name": "handoff-new",
+                    "session_id": "sid",
+                },
+            }
+        )
+        alias_resp = server.handle_request(
+            {
+                "id": "3",
+                "method": "command.dispatch",
+                "params": {
+                    "arg": "focus on alias",
+                    "name": "handoff_save",
+                    "session_id": "sid",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert worker_resp["error"]["code"] == 4018
+    assert "pending-input command" in worker_resp["error"]["message"]
+    assert dispatch_resp["result"]["type"] == "send"
+    assert "Create a concise but complete SESSION HANDOFF" in dispatch_resp["result"]["message"]
+    assert "Focus especially on: focus on TUI" in dispatch_resp["result"]["message"]
+    assert "- /new" in dispatch_resp["result"]["message"]
+    assert alias_resp["result"]["type"] == "send"
+    assert "Focus especially on: focus on alias" in alias_resp["result"]["message"]
+
+
+def test_tui_prompt_submit_saves_handoff_response_if_requested(monkeypatch, tmp_path):
+    from hermes_cli import handoff as handoff_mod
+
+    emitted = []
+
+    class _Agent:
+        session_id = "session-key"
+        model = "x"
+        provider = "openrouter"
+        base_url = ""
+        api_key = ""
+        _cached_system_prompt = ""
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "SESSION HANDOFF\n\n目的:\n- TUI save fallback",
+                "messages": [{"role": "assistant", "content": "SESSION HANDOFF"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **kw):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    prompt = handoff_mod.build_handoff_prompt("handoff-save", hermes_home=tmp_path)
+    session = _session(agent=_Agent())
+    server._sessions["sid"] = session
+    monkeypatch.setattr(handoff_mod, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kw: emitted.append(args))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": prompt},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    saved = list((tmp_path / "handoffs").glob("handoff_*.md"))
+    assert len(saved) == 1
+    assert "TUI save fallback" in saved[0].read_text(encoding="utf-8")
+    complete_payloads = [args[2] for args in emitted if args[0] == "message.complete"]
+    assert complete_payloads
+    assert "Handoff saved" in complete_payloads[-1]["text"]
+
+
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     monkeypatch.setattr(
         server,

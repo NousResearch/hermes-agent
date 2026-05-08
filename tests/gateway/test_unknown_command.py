@@ -11,6 +11,32 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+
+class _FakeGatewayAdapter:
+    SUPPORTS_MESSAGE_EDITING = False
+
+    def __init__(self):
+        self.send = AsyncMock()
+        self.send_typing = AsyncMock()
+        self._pending_messages = {}
+        self._active_sessions = {}
+        self._post_delivery_callbacks = {}
+
+    def has_pending_interrupt(self, _session_key):
+        return False
+
+    def get_pending_message(self, session_key):
+        return self._pending_messages.pop(session_key, None)
+
+    def extract_media(self, text):
+        return [], text
+
+    def extract_images(self, text):
+        return [], text
+
+    async def edit_message(self, *args, **kwargs):
+        return None
+
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -39,6 +65,7 @@ def _make_runner():
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
+    adapter._pending_messages = {}
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
@@ -66,6 +93,7 @@ def _make_runner():
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._session_db = None
+    runner._draining = False
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -168,6 +196,261 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
     # Whatever /reload_mcp returns, it must not be the unknown-command guard.
     if result is not None:
         assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_handoff_rewrites_to_agent_prompt_when_idle(monkeypatch):
+    """Gateway /handoff should run as an agent turn, not as an unknown command."""
+    runner = _make_runner()
+    captured = {}
+
+    async def _capture(event, source, quick_key, run_generation):
+        captured["text"] = event.text
+        captured["quick_key"] = quick_key
+        return {"final_response": "handoff ready"}
+
+    runner._handle_message_with_agent = _capture  # type: ignore[method-assign]
+
+    result = await runner._handle_message(_make_event("/handoff focus on tests"))
+
+    assert result == {"final_response": "handoff ready"}
+    assert "Create a concise but complete SESSION HANDOFF" in captured["text"]
+    assert "Focus especially on: focus on tests" in captured["text"]
+    assert captured["quick_key"] == build_session_key(_make_source())
+
+
+@pytest.mark.asyncio
+async def test_handoff_queues_next_turn_when_agent_is_running():
+    """Gateway /handoff should not interrupt an active agent."""
+    runner = _make_runner()
+    source = _make_source()
+    key = build_session_key(source)
+    runner._running_agents[key] = SimpleNamespace(
+        get_activity_summary=lambda: {"seconds_since_activity": 0}
+    )
+    runner._running_agents_ts[key] = datetime.now().timestamp()
+
+    result = await runner._handle_message(_make_event("/handoff-new focus on restart"))
+
+    assert "Queued /handoff-new" in result
+    adapter = runner.adapters[Platform.TELEGRAM]
+    assert key in adapter._pending_messages
+    queued = adapter._pending_messages[key]
+    assert "Create a concise but complete SESSION HANDOFF" in queued.text
+    assert "Focus especially on: focus on restart" in queued.text
+    assert "推奨コマンド:" in queued.text
+    assert "- /new" in queued.text
+
+
+@pytest.mark.asyncio
+async def test_handoff_save_already_sent_sends_trailing_save_notice(monkeypatch, tmp_path):
+    """When streaming already sent the body, gateway should still notify save path."""
+    from hermes_cli.handoff import build_handoff_prompt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "c1")
+    runner = _make_runner()
+    source = _make_source()
+    key = build_session_key(source)
+    runner._session_run_generation = {key: 1}
+    runner._running_agents_ts = {}
+    runner._session_model_overrides = {}
+    runner._set_session_reasoning_override = lambda *_args, **_kwargs: None
+    runner._pending_model_notes = {}
+    runner._prepare_inbound_message_text = AsyncMock()
+    runner._bind_adapter_run_generation = MagicMock()
+    runner._deliver_media_from_response = AsyncMock()
+
+    prompt = build_handoff_prompt("handoff-save", hermes_home=tmp_path)
+    runner._prepare_inbound_message_text.return_value = prompt
+    handoff_response = "SESSION HANDOFF\n\n目的:\n- preserve context"
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": handoff_response,
+        "messages": [],
+        "already_sent": True,
+        "failed": False,
+    })
+
+    result = await runner._handle_message_with_agent(
+        _make_event("/handoff-save"), source, key, 1,
+    )
+
+    assert result is None
+    saved_files = list((tmp_path / "handoffs").glob("handoff_*.md"))
+    assert len(saved_files) == 1
+    assert saved_files[0].read_text(encoding="utf-8") == handoff_response + "\n"
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.send.assert_awaited_once()
+    assert "Handoff saved:" in adapter.send.await_args.args[1]
+    assert str(saved_files[0]) in adapter.send.await_args.args[1]
+    assert adapter.send.await_args.kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_handoff_save_helper_appends_notice_before_queued_followup_send(monkeypatch, tmp_path):
+    """Queued follow-up recursion must save the current turn before recursing."""
+    from gateway.run import _save_handoff_response_and_notice
+    from hermes_cli.handoff import build_handoff_prompt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    prompt = build_handoff_prompt("handoff-save", hermes_home=tmp_path)
+    handoff_response = "SESSION HANDOFF\n\n目的:\n- before queued follow-up"
+
+    response, saved_path = await _save_handoff_response_and_notice(
+        prompt,
+        handoff_response,
+        already_sent=False,
+    )
+
+    assert saved_path is not None
+    assert saved_path.read_text(encoding="utf-8") == handoff_response + "\n"
+    assert response.startswith(handoff_response)
+    assert "Handoff saved:" in response
+    assert str(saved_path) in response
+
+
+@pytest.mark.asyncio
+async def test_handoff_save_helper_sends_notice_when_queued_turn_was_streamed(monkeypatch, tmp_path):
+    """If the first queued-turn response was streamed, only send a trailing save notice."""
+    from gateway.run import _save_handoff_response_and_notice
+    from hermes_cli.handoff import build_handoff_prompt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    prompt = build_handoff_prompt("handoff-save", hermes_home=tmp_path)
+    handoff_response = "SESSION HANDOFF\n\n目的:\n- streamed before queued follow-up"
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    event = _make_event("/handoff-save")
+    event.metadata = {"thread_id": "t1"}
+
+    response, saved_path = await _save_handoff_response_and_notice(
+        prompt,
+        handoff_response,
+        already_sent=True,
+        adapter=adapter,
+        chat_id="c1",
+        event=event,
+    )
+
+    assert response == handoff_response
+    assert saved_path is not None
+    assert saved_path.read_text(encoding="utf-8") == handoff_response + "\n"
+    adapter.send.assert_awaited_once()
+    assert "Handoff saved:" in adapter.send.await_args.args[1]
+    assert str(saved_path) in adapter.send.await_args.args[1]
+    assert adapter.send.await_args.kwargs["metadata"] == {"thread_id": "t1"}
+
+
+@pytest.mark.asyncio
+async def test_handoff_save_run_agent_saves_before_queued_followup_recursion(monkeypatch, tmp_path):
+    """Exercise the actual _run_agent recursion branch, not just the helper."""
+    import run_agent
+    from hermes_cli.handoff import build_handoff_prompt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "0")
+
+    runner = _make_runner()
+    source = _make_source()
+    key = build_session_key(source)
+    adapter = _FakeGatewayAdapter()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._session_run_generation = {key: 1}
+    runner._running_agents_ts = {}
+    runner._session_model_overrides = {}
+    runner._pending_model_notes = {}
+    runner._pending_skills_reload_notes = {}
+    runner._ephemeral_system_prompt = ""
+    runner._MAX_INTERRUPT_DEPTH = 5
+    runner._prefill_messages = []
+    runner.session_store._entries = {}
+    runner._resolve_session_agent_runtime = lambda **_kwargs: ("fake-model", {"provider": "fake"})
+    runner._resolve_turn_agent_config = lambda _message, model, runtime: {
+        "model": model,
+        "runtime": runtime,
+        "request_overrides": {},
+    }
+    runner._resolve_session_reasoning_config = lambda **_kwargs: None
+    runner._load_service_tier = lambda: None
+    runner._cleanup_agent_resources = lambda _agent: None
+
+    async def _run_inline(fn):
+        return fn()
+
+    runner._run_in_executor_with_context = _run_inline
+    runner._is_session_run_current = lambda _session_key, _generation: True
+    runner._release_running_agent_state = lambda *_args, **_kwargs: None
+    runner._promote_queued_event = lambda _session_key, _adapter, pending_event: pending_event
+    runner._consume_pending_native_image_paths = lambda _session_key: []
+    runner._prepare_inbound_message_text = AsyncMock(
+        side_effect=lambda event, source, history: event.text
+    )
+
+    prompt = build_handoff_prompt("handoff-save", hermes_home=tmp_path)
+    adapter._pending_messages[key] = _make_event("follow up after handoff")
+    calls = []
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            self.tools = []
+            self.context_compressor = SimpleNamespace(last_prompt_tokens=0)
+            self.session_prompt_tokens = 0
+            self.session_completion_tokens = 0
+            self.context_length = 0
+            self.model = "fake-model"
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            calls.append(user_message)
+            if len(calls) == 1:
+                return {
+                    "final_response": "SESSION HANDOFF\n\n目的:\n- actual recursion path",
+                    "messages": [{"role": "assistant", "content": "handoff"}],
+                    "api_calls": 1,
+                    "tools": [],
+                }
+            return {
+                "final_response": "follow-up complete",
+                "messages": [{"role": "assistant", "content": "follow-up"}],
+                "api_calls": 1,
+                "tools": [],
+            }
+
+        def get_activity_summary(self):
+            return {
+                "seconds_since_activity": 0,
+                "api_call_count": 1,
+                "max_iterations": 90,
+                "last_activity_desc": "done",
+            }
+
+        def interrupt(self, _message=None):
+            return None
+
+    monkeypatch.setattr(run_agent, "AIAgent", _FakeAgent)
+
+    result = await runner._run_agent(
+        prompt,
+        "",
+        [],
+        source,
+        "sess-1",
+        key,
+        1,
+    )
+
+    assert result["final_response"] == "follow-up complete"
+    assert calls[0] == prompt
+    assert calls[1] == "follow up after handoff"
+    saved_files = list((tmp_path / "handoffs").glob("handoff_*.md"))
+    assert len(saved_files) == 1
+    assert saved_files[0].read_text(encoding="utf-8") == (
+        "SESSION HANDOFF\n\n目的:\n- actual recursion path\n"
+    )
+    assert adapter.send.await_count == 1
+    sent_text = adapter.send.await_args.args[1]
+    assert "SESSION HANDOFF" in sent_text
+    assert "Handoff saved:" in sent_text
+    assert str(saved_files[0]) in sent_text
 
 
 # ------------------------------------------------------------------

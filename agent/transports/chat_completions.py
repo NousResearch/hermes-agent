@@ -258,6 +258,7 @@ class ChatCompletionsTransport(ProviderTransport):
         anthropic_max_out = params.get("anthropic_max_output")
         is_nvidia_nim = params.get("is_nvidia_nim", False)
         is_kimi = params.get("is_kimi", False)
+        is_deepseek = params.get("is_deepseek", False)
         is_tokenhub = params.get("is_tokenhub", False)
         reasoning_config = params.get("reasoning_config")
 
@@ -331,6 +332,19 @@ class ChatCompletionsTransport(ProviderTransport):
                     _kimi_thinking_enabled = False
             extra_body["thinking"] = {
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
+            }
+
+        # DeepSeek extra_body.thinking (same format as Kimi)
+        if is_deepseek:
+            _ds_thinking_enabled = True
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    _ds_thinking_enabled = False
+                _ds_effort = (reasoning_config.get("effort") or "").strip().lower()
+                if _ds_effort == "none":
+                    _ds_thinking_enabled = False
+            extra_body["thinking"] = {
+                "type": "enabled" if _ds_thinking_enabled else "disabled",
             }
 
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,

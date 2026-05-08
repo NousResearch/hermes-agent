@@ -8710,6 +8710,11 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
         _is_tokenhub = base_url_host_matches(self._base_url_lower, "tokenhub.tencentmaas.com")
+        _is_deepseek = (
+            self.provider == "deepseek"
+            or "deepseek" in (self.model or "").lower()
+            or base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
         _is_lmstudio = (self.provider or "").strip().lower() == "lmstudio"
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
@@ -8819,6 +8824,7 @@ class AIAgent:
             is_github_models=_is_gh,
             is_nvidia_nim=_is_nvidia,
             is_kimi=_is_kimi,
+            is_deepseek=_is_deepseek,
             is_tokenhub=_is_tokenhub,
             is_lmstudio=_is_lmstudio,
             is_custom_provider=self.provider == "custom",

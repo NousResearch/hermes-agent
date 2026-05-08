@@ -810,6 +810,29 @@ class AIAgent:
         except Exception as exc:
             logger.debug("Signal evaluator failed for tool=%s: %s", tool_name, exc)
 
+    def _compute_should_review_skills(self) -> tuple[bool, set[str]]:
+        """Return whether skill review should run and which nudge signals fired."""
+        if "skill_manage" not in self.valid_tool_names:
+            return False, set()
+        if getattr(self, "_nudge_disabled", False):
+            return False, set()
+
+        ev = getattr(self, "_signal_evaluator", None)
+        if getattr(self, "_nudge_signals_enabled", False) and ev is not None and ev.fired_signals:
+            signals = set(ev.fired_signals)
+            ev.clear()
+            self._iters_since_skill = 0
+            return True, signals
+
+        if (
+            self._skill_nudge_interval > 0
+            and self._iters_since_skill >= self._skill_nudge_interval
+        ):
+            self._iters_since_skill = 0
+            return True, set()
+
+        return False, set()
+
     def __init__(
         self,
         base_url: str = None,
@@ -3081,6 +3104,7 @@ class AIAgent:
         messages_snapshot: List[Dict],
         review_memory: bool = False,
         review_skills: bool = False,
+        triggered_signals: set[str] | None = None,
     ) -> None:
         """Spawn a background thread to review the conversation for memory/skill saves.
 
@@ -3093,11 +3117,21 @@ class AIAgent:
 
         # Pick the right prompt based on which triggers fired
         if review_memory and review_skills:
-            prompt = self._COMBINED_REVIEW_PROMPT
+            base_prompt = self._COMBINED_REVIEW_PROMPT
         elif review_memory:
-            prompt = self._MEMORY_REVIEW_PROMPT
+            base_prompt = self._MEMORY_REVIEW_PROMPT
         else:
-            prompt = self._SKILL_REVIEW_PROMPT
+            base_prompt = self._SKILL_REVIEW_PROMPT
+
+        if review_skills and triggered_signals:
+            prompt = (
+                base_prompt
+                + "\n\nThe following nudge signals fired this turn: "
+                + ", ".join(sorted(triggered_signals))
+                + ". Consider whether they suggest a reusable skill."
+            )
+        else:
+            prompt = base_prompt
 
         def _run_review():
             import contextlib
@@ -12257,13 +12291,8 @@ class AIAgent:
         # Clear stream callback so it doesn't leak into future calls
         self._stream_callback = None
 
-        # Check skill trigger NOW — based on how many tool iterations THIS turn used.
-        _should_review_skills = False
-        if (self._skill_nudge_interval > 0
-                and self._iters_since_skill >= self._skill_nudge_interval
-                and "skill_manage" in self.valid_tool_names):
-            _should_review_skills = True
-            self._iters_since_skill = 0
+        # Check skill trigger NOW — signal-first, with time as a fallback.
+        _should_review_skills, _triggered_skill_signals = self._compute_should_review_skills()
 
         # External memory provider: sync the completed turn + queue next prefetch.
         # Use original_user_message (clean input) — user_message may contain
@@ -12283,6 +12312,7 @@ class AIAgent:
                     messages_snapshot=list(messages),
                     review_memory=_should_review_memory,
                     review_skills=_should_review_skills,
+                    triggered_signals=_triggered_skill_signals,
                 )
             except Exception:
                 pass  # Background review is best-effort

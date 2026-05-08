@@ -26,6 +26,7 @@ _DEFAULT_CONTAINER_TAG = "hermes"
 _DEFAULT_MAX_RECALL_RESULTS = 10
 _DEFAULT_PROFILE_FREQUENCY = 50
 _DEFAULT_CAPTURE_MODE = "all"
+_VALID_CAPTURE_MODES = {"all", "everything", "explicit"}
 _DEFAULT_SEARCH_MODE = "hybrid"
 _VALID_SEARCH_MODES = ("hybrid", "memories", "documents")
 _DEFAULT_API_TIMEOUT = 5.0
@@ -120,7 +121,8 @@ def _load_supermemory_config(hermes_home: str) -> dict:
         config["profile_frequency"] = max(1, min(500, int(config.get("profile_frequency", _DEFAULT_PROFILE_FREQUENCY))))
     except Exception:
         config["profile_frequency"] = _DEFAULT_PROFILE_FREQUENCY
-    config["capture_mode"] = "everything" if config.get("capture_mode") == "everything" else "all"
+    raw_capture_mode = str(config.get("capture_mode", _DEFAULT_CAPTURE_MODE)).strip().lower()
+    config["capture_mode"] = raw_capture_mode if raw_capture_mode in _VALID_CAPTURE_MODES else _DEFAULT_CAPTURE_MODE
     raw_search_mode = str(config.get("search_mode", _DEFAULT_SEARCH_MODE)).strip().lower()
     config["search_mode"] = raw_search_mode if raw_search_mode in _VALID_SEARCH_MODES else _DEFAULT_SEARCH_MODE
     config["entity_context"] = _clamp_entity_context(str(config.get("entity_context", _DEFAULT_ENTITY_CONTEXT)))
@@ -439,6 +441,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._entity_context = _DEFAULT_ENTITY_CONTEXT
         self._api_timeout = _DEFAULT_API_TIMEOUT
         self._hermes_home = ""
+        self._platform = ""
+        self._agent_context = ""
         self._write_enabled = True
         self._active = False
         # Multi-container support
@@ -508,6 +512,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._allowed_containers = [self._container_tag] + list(self._custom_containers)
 
         agent_context = kwargs.get("agent_context", "")
+        self._platform = str(kwargs.get("platform") or "").strip()
+        self._agent_context = str(agent_context or "").strip()
         self._write_enabled = agent_context not in ("cron", "flush", "subagent")
         self._active = bool(self._api_key)
         self._client = None
@@ -563,6 +569,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         if not self._active or not self._auto_capture or not self._write_enabled or not self._client:
             return
+        if self._capture_mode == "explicit":
+            return
 
         clean_user = _clean_text_for_capture(user_content)
         clean_assistant = _clean_text_for_capture(assistant_content)
@@ -593,7 +601,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not self._active or not self._write_enabled or not self._client or not self._session_id:
+        if not self._active or not self._auto_capture or not self._write_enabled or not self._client or not self._session_id:
             return
         cleaned = []
         for message in messages or []:
@@ -624,7 +632,14 @@ class SupermemoryMemoryProvider(MemoryProvider):
             try:
                 self._client.add_memory(
                     content.strip(),
-                    metadata={"source": "hermes_memory", "target": target, "type": "explicit_memory"},
+                    metadata={
+                        "source": "hermes_memory",
+                        "target": target,
+                        "type": "explicit_memory",
+                        "saved_at": datetime.now(timezone.utc).isoformat(),
+                        **({"platform": self._platform} if self._platform else {}),
+                        **({"origin": self._agent_context} if self._agent_context else {}),
+                    },
                     entity_context=self._entity_context,
                 )
             except Exception:
@@ -692,6 +707,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
             metadata = {}
         metadata.setdefault("type", _detect_category(content))
         metadata["source"] = "hermes_tool"
+        metadata.setdefault("saved_at", datetime.now(timezone.utc).isoformat())
+        if self._platform:
+            metadata.setdefault("platform", self._platform)
+        if self._agent_context:
+            metadata.setdefault("origin", self._agent_context)
         try:
             result = self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context, container_tag=tag)
             preview = content[:80] + ("..." if len(content) > 80 else "")
@@ -757,15 +777,22 @@ class SupermemoryMemoryProvider(MemoryProvider):
             return tool_error(str(exc))
         try:
             profile = self._client.get_profile(query=query, container_tag=tag)
+            static_facts = profile["static"] or []
+            dynamic_facts = profile["dynamic"] or []
+            static_visible = static_facts[:self._max_recall_results]
+            dynamic_visible = dynamic_facts[:self._max_recall_results]
             sections = []
-            if profile["static"]:
-                sections.append("## User Profile (Persistent)\n" + "\n".join(f"- {item}" for item in profile["static"]))
-            if profile["dynamic"]:
-                sections.append("## Recent Context\n" + "\n".join(f"- {item}" for item in profile["dynamic"]))
+            if static_visible:
+                sections.append("## User Profile (Persistent)\n" + "\n".join(f"- {item}" for item in static_visible))
+            if dynamic_visible:
+                sections.append("## Recent Context\n" + "\n".join(f"- {item}" for item in dynamic_visible))
             resp: dict[str, Any] = {
                 "profile": "\n\n".join(sections),
-                "static_count": len(profile["static"]),
-                "dynamic_count": len(profile["dynamic"]),
+                "static_count": len(static_facts),
+                "dynamic_count": len(dynamic_facts),
+                "visible_static_count": len(static_visible),
+                "visible_dynamic_count": len(dynamic_visible),
+                "truncated": len(static_facts) > len(static_visible) or len(dynamic_facts) > len(dynamic_visible),
             }
             if tag:
                 resp["container_tag"] = tag

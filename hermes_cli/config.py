@@ -982,6 +982,10 @@ DEFAULT_CONFIG = {
         "user_profile_enabled": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Hard cap for memory/recall tool outputs (session_search, memory-provider
+        # search/profile/recall tools). Tool boundary enforcement appends a
+        # visible truncation notice instead of silently flooding context.
+        "search_result_char_limit": 10000,
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

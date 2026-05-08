@@ -84,12 +84,13 @@ def test_is_available_false_when_import_missing(monkeypatch):
 
 
 def test_load_and_save_config_round_trip(tmp_path):
-    _save_supermemory_config({"container_tag": "demo-tag", "auto_capture": False}, str(tmp_path))
+    _save_supermemory_config({"container_tag": "demo-tag", "auto_capture": False, "capture_mode": "explicit"}, str(tmp_path))
     cfg = _load_supermemory_config(str(tmp_path))
     # container_tag is kept raw — sanitization happens in initialize() after template resolution
     assert cfg["container_tag"] == "demo-tag"
     assert cfg["auto_capture"] is False
     assert cfg["auto_recall"] is True
+    assert cfg["capture_mode"] == "explicit"
 
 
 def test_clean_text_for_capture_strips_injected_context():
@@ -153,6 +154,16 @@ def test_sync_turn_persists_cleaned_exchange(provider):
     assert "[role: assistant]" in content
 
 
+def test_sync_turn_skips_when_capture_mode_explicit(provider):
+    provider._capture_mode = "explicit"
+    provider.sync_turn(
+        "Please remember this request in long-term memory",
+        "Absolutely, I will keep that in long-term memory.",
+        session_id="session-1",
+    )
+    assert provider._client.add_calls == []
+
+
 def test_on_session_end_ingests_clean_messages(provider):
     messages = [
         {"role": "system", "content": "skip"},
@@ -174,7 +185,12 @@ def test_on_memory_write_tracks_thread(provider):
     assert provider._write_thread is not None
     provider._write_thread.join(timeout=1)
     assert len(provider._client.add_calls) == 1
-    assert provider._client.add_calls[0]["metadata"]["type"] == "explicit_memory"
+    metadata = provider._client.add_calls[0]["metadata"]
+    assert metadata["type"] == "explicit_memory"
+    assert metadata["source"] == "hermes_memory"
+    assert metadata["target"] == "memory"
+    assert metadata["platform"] == "cli"
+    assert "saved_at" in metadata
 
 
 def test_shutdown_joins_and_clears_threads(provider, monkeypatch):
@@ -220,6 +236,11 @@ def test_store_tool_returns_saved_payload(provider):
     result = json.loads(provider.handle_tool_call("supermemory_store", {"content": "Jordan likes concise docs"}))
     assert result["saved"] is True
     assert result["id"] == "mem_123"
+    metadata = provider._client.add_calls[0]["metadata"]
+    assert metadata["source"] == "hermes_tool"
+    assert metadata["type"] == "preference"
+    assert metadata["platform"] == "cli"
+    assert "saved_at" in metadata
 
 
 def test_search_tool_formats_results(provider):
@@ -253,7 +274,29 @@ def test_profile_tool_formats_sections(provider):
     result = json.loads(provider.handle_tool_call("supermemory_profile", {}))
     assert result["static_count"] == 1
     assert result["dynamic_count"] == 1
+    assert result["visible_static_count"] == 1
+    assert result["visible_dynamic_count"] == 1
+    assert result["truncated"] is False
     assert "User Profile (Persistent)" in result["profile"]
+
+
+def test_profile_tool_limits_visible_profile_context(provider):
+    provider._max_recall_results = 2
+    provider._client.profile_response = {
+        "static": ["static 1", "static 2", "static 3"],
+        "dynamic": ["dynamic 1", "dynamic 2", "dynamic 3"],
+        "search_results": [],
+    }
+    result = json.loads(provider.handle_tool_call("supermemory_profile", {}))
+    assert result["static_count"] == 3
+    assert result["dynamic_count"] == 3
+    assert result["visible_static_count"] == 2
+    assert result["visible_dynamic_count"] == 2
+    assert result["truncated"] is True
+    assert "static 1" in result["profile"]
+    assert "static 3" not in result["profile"]
+    assert "dynamic 1" in result["profile"]
+    assert "dynamic 3" not in result["profile"]
 
 
 def test_handle_tool_call_returns_error_when_unconfigured(monkeypatch):
@@ -409,3 +452,31 @@ def test_get_config_schema_minimal():
     assert len(schema) == 1
     assert schema[0]["key"] == "api_key"
     assert schema[0]["secret"] is True
+
+
+def test_memory_manager_caps_memory_search_tool_results(monkeypatch):
+    from agent.memory_manager import MemoryManager
+
+    class Provider:
+        name = "dummy"
+
+        def is_available(self):
+            return True
+
+        def initialize(self, session_id, **kwargs):
+            pass
+
+        def get_tool_schemas(self):
+            return [{"name": "dummy_search", "description": "", "parameters": {}}]
+
+        def handle_tool_call(self, tool_name, args, **kwargs):
+            return "x" * 12000
+
+    monkeypatch.setattr("tools.memory_search_caps.get_memory_search_result_char_limit", lambda: 10000)
+    manager = MemoryManager()
+    manager.add_provider(Provider())
+
+    result = manager.handle_tool_call("dummy_search", {})
+
+    assert len(result) <= 10000
+    assert "[Result truncated at 10K chars." in result

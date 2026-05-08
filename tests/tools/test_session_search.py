@@ -5,6 +5,7 @@ import json
 import time
 import pytest
 
+from tools.memory_search_caps import cap_memory_search_result, format_memory_search_truncation_notice
 from tools.session_search_tool import (
     _format_timestamp,
     _format_conversation,
@@ -14,6 +15,7 @@ from tools.session_search_tool import (
     _HIDDEN_SESSION_SOURCES,
     MAX_SESSION_CHARS,
     SESSION_SEARCH_SCHEMA,
+    session_search,
 )
 
 
@@ -182,6 +184,37 @@ class TestTruncateAroundMatches:
         text = pre + match1 + gap + match2 + post
         result = _truncate_around_matches(text, "alpha beta")
         assert result.lower().count("alpha beta") == 2
+
+
+class TestMemorySearchResultCap:
+    def test_cap_appends_visible_notice_and_respects_limit(self):
+        result = cap_memory_search_result("x" * 12000, limit=10000)
+        assert len(result) <= 10000
+        assert result.endswith(format_memory_search_truncation_notice(10000))
+        assert "Result truncated at 10K chars" in result
+
+    def test_session_search_caps_large_result_at_tool_boundary(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        async def fake_summarize(*_args, **_kwargs):
+            return "s" * 12000
+
+        monkeypatch.setattr("tools.session_search_tool._summarize_session", fake_summarize)
+        monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
+        monkeypatch.setattr("tools.memory_search_caps.get_memory_search_result_char_limit", lambda: 10000)
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"session_id": "s1", "source": "cli", "session_started": 1709500000, "model": "test"},
+        ]
+        mock_db.get_session.return_value = {"id": "s1", "parent_session_id": None, "source": "cli", "started_at": 1709500000}
+        mock_db.get_messages_as_conversation.return_value = [{"role": "user", "content": "message"}]
+
+        result = session_search(query="message", db=mock_db, limit=1)
+
+        assert len(result) <= 10000
+        assert result.endswith(format_memory_search_truncation_notice(10000))
+        assert "Result truncated at 10K chars" in result
 
 
 class TestSessionSearchConcurrency:

@@ -25,6 +25,7 @@ import re
 from typing import Dict, Any, List, Optional, Union
 
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+from tools.memory_search_caps import cap_memory_search_result, get_memory_search_result_char_limit
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
 
@@ -265,6 +266,10 @@ async def _summarize_session(
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
+def _cap_result(payload: str) -> str:
+    return cap_memory_search_result(payload)
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
@@ -310,13 +315,13 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             if len(results) >= limit:
                 break
 
-        return json.dumps({
+        return _cap_result(json.dumps({
             "success": True,
             "mode": "recent",
             "results": results,
             "count": len(results),
             "message": f"Showing {len(results)} most recent sessions. Use a keyword query to search specific topics.",
-        }, ensure_ascii=False)
+        }, ensure_ascii=False))
     except Exception as e:
         logging.error("Error listing recent sessions: %s", e, exc_info=True)
         return tool_error(f"Failed to list recent sessions: {e}", success=False)
@@ -372,13 +377,13 @@ def session_search(
         )
 
         if not raw_results:
-            return json.dumps({
+            return _cap_result(json.dumps({
                 "success": True,
                 "query": query,
                 "results": [],
                 "count": 0,
                 "message": "No matching sessions found.",
-            }, ensure_ascii=False)
+            }, ensure_ascii=False))
 
         # Resolve child sessions to their parent — delegation stores detailed
         # content in child sessions, but the user's conversation is the parent.
@@ -480,10 +485,10 @@ def session_search(
                 "Session summarization timed out after 60 seconds",
                 exc_info=True,
             )
-            return json.dumps({
+            return _cap_result(json.dumps({
                 "success": False,
                 "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
-            }, ensure_ascii=False)
+            }, ensure_ascii=False))
 
         summaries = []
         for (session_id, match_info, conversation_text, session_meta), result in zip(tasks, results):
@@ -518,13 +523,13 @@ def session_search(
 
             summaries.append(entry)
 
-        return json.dumps({
+        return _cap_result(json.dumps({
             "success": True,
             "query": query,
             "results": summaries,
             "count": len(summaries),
             "sessions_searched": len(seen_sessions),
-        }, ensure_ascii=False)
+        }, ensure_ascii=False))
 
     except Exception as e:
         logging.error("Session search failed: %s", e, exc_info=True)
@@ -602,4 +607,5 @@ registry.register(
         current_session_id=kw.get("current_session_id")),
     check_fn=check_session_search_requirements,
     emoji="🔍",
+    max_result_size_chars=get_memory_search_result_char_limit(),
 )

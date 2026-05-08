@@ -279,6 +279,9 @@ object HermesTaskerImportBridge {
                 base.put("action_type", ACTION_TYPE_SYSTEM_ACTION)
                     .put("command", TASKER_SETTINGS_ACTIONS.getValue(code))
             }
+            TASKER_CUSTOM_SETTING -> {
+                customSettingRecordFromTaskerAction(base, action) ?: return null
+            }
             in TASKER_SHIZUKU_FIXED_ACTIONS -> {
                 shizukuRecordFromTaskerAction(base, code, action) ?: return null
             }
@@ -297,6 +300,27 @@ object HermesTaskerImportBridge {
             val mode = taskerDndModeFromAction(action) ?: return null
             payload.put("dnd_mode", mode)
         }
+        return base.put("action_type", ACTION_TYPE_SHIZUKU_ACTION)
+            .put("use_shizuku", true)
+            .put("command", payload.toString())
+    }
+
+    private fun customSettingRecordFromTaskerAction(base: JSONObject, action: Element): JSONObject? {
+        val namespace = taskerCustomSettingNamespace(action) ?: return null
+        val name = argText(action, 1).trim()
+        val value = argText(action, 2)
+        if (!isSafeSettingName(name) ||
+            value.isBlank() ||
+            value.indexOf('\u0000') >= 0 ||
+            value.trim() == TASKER_CUSTOM_SETTING_TOGGLE
+        ) {
+            return null
+        }
+        val payload = JSONObject()
+            .put("shizuku_action", "set_custom_setting")
+            .put("setting_namespace", namespace)
+            .put("setting_name", name)
+            .put("setting_value", value.take(MAX_CUSTOM_SETTING_VALUE_CHARS))
         return base.put("action_type", ACTION_TYPE_SHIZUKU_ACTION)
             .put("use_shizuku", true)
             .put("command", payload.toString())
@@ -357,6 +381,15 @@ object HermesTaskerImportBridge {
             "1", "priority", "important_interruptions" -> "priority"
             "2", "all", "off", "disable", "disabled" -> "off"
             "3", "alarms", "alarms_only" -> "alarms"
+            else -> null
+        }
+    }
+
+    private fun taskerCustomSettingNamespace(action: Element): String? {
+        return when (argText(action, 0).trim().lowercase()) {
+            "0", "system" -> "system"
+            "1", "secure" -> "secure"
+            "2", "global" -> "global"
             else -> null
         }
     }
@@ -486,6 +519,12 @@ object HermesTaskerImportBridge {
             lower.startsWith("tel:")
     }
 
+    private fun isSafeSettingName(name: String): Boolean {
+        return name.length in 1..MAX_CUSTOM_SETTING_NAME_CHARS &&
+            name.indexOf('\u0000') < 0 &&
+            SETTINGS_NAME_REGEX.matches(name)
+    }
+
     private const val TASKER_LAUNCH_APP = 20
     private const val TASKER_GO_HOME = 25
     private const val TASKER_WAIT = 30
@@ -502,6 +541,7 @@ object HermesTaskerImportBridge {
     private const val TASKER_BLUETOOTH_SETTINGS = 218
     private const val TASKER_QUICK_SETTINGS = 219
     private const val TASKER_MOBILE_DATA_SETTINGS = 220
+    private const val TASKER_CUSTOM_SETTING = 235
     private const val TASKER_ACCESSIBILITY_SETTINGS = 236
     private const val TASKER_NOTIFICATION_LISTENER_SETTINGS = 237
     private const val TASKER_BACK_BUTTON = 245
@@ -523,6 +563,8 @@ object HermesTaskerImportBridge {
     private const val MAX_TASKER_XML_CHARS = 512_000
     private const val MAX_LABEL_CHARS = 80
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
+    private const val MAX_CUSTOM_SETTING_NAME_CHARS = 128
+    private const val MAX_CUSTOM_SETTING_VALUE_CHARS = 512
     private const val MAX_WAIT_DURATION_MS = 60_000L
     private const val MAX_VIBRATION_TOTAL_MS = 60_000L
     private const val MAX_VIBRATION_PATTERN_ENTRIES = 32
@@ -531,6 +573,8 @@ object HermesTaskerImportBridge {
     private const val MAX_CLIPBOARD_TEXT_CHARS = 8_000
     private const val MAX_TOAST_TEXT_CHARS = 1_000
     private val ANDROID_PACKAGE_REGEX = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
+    private val SETTINGS_NAME_REGEX = Regex("[A-Za-z0-9_.:-]+")
+    private const val TASKER_CUSTOM_SETTING_TOGGLE = "=:=toggle=:="
     private val DOCTYPE_REGEX = Regex("<!\\s*DOCTYPE", RegexOption.IGNORE_CASE)
     private val ENTITY_REGEX = Regex("<!\\s*ENTITY", RegexOption.IGNORE_CASE)
     private val TASKER_GLOBAL_UI_ACTIONS = mapOf(
@@ -585,6 +629,7 @@ object HermesTaskerImportBridge {
         TASKER_BLUETOOTH_SETTINGS to "Bluetooth Settings",
         TASKER_QUICK_SETTINGS to "Quick Settings",
         TASKER_MOBILE_DATA_SETTINGS to "Mobile Data Settings",
+        TASKER_CUSTOM_SETTING to "Custom Setting",
         TASKER_ACCESSIBILITY_SETTINGS to "Accessibility Settings",
         TASKER_NOTIFICATION_LISTENER_SETTINGS to "Notification Listener Settings",
         TASKER_BACK_BUTTON to "Back Button",

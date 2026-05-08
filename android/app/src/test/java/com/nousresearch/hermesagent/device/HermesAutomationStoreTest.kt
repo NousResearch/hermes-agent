@@ -1745,6 +1745,7 @@ class HermesAutomationStoreTest {
                 <Action><code>312</code><Int sr="arg0" val="1" /></Action>
                 <Action><code>333</code><Int sr="arg0" val="1" /></Action>
                 <Action><code>113</code><Int sr="arg0" val="1" /><Int sr="arg1" val="1" /></Action>
+                <Action><code>235</code><Int sr="arg0" val="1" /><Str sr="arg1" ve="3">screen_off_timeout</Str><Str sr="arg2" ve="3">60000</Str><Int sr="arg3" val="0" /><Str sr="arg4" ve="3" /></Action>
                 <Action><code>425</code><Int sr="arg0" val="0" /></Action>
                 <Action><code>433</code><Int sr="arg0" val="1" /></Action>
                 <Action><code>733</code></Action>
@@ -1762,12 +1763,12 @@ class HermesAutomationStoreTest {
             ),
         )
         assertTrue(imported.toString(), imported.getBoolean("success"))
-        assertEquals(9, imported.getInt("tasker_imported_action_count"))
+        assertEquals(10, imported.getInt("tasker_imported_action_count"))
         assertEquals(0, imported.getJSONArray("tasker_skipped_actions").length())
-        assertEquals(9, imported.getInt("imported_automation_count"))
+        assertEquals(10, imported.getInt("imported_automation_count"))
 
         val records = store.list()
-        assertEquals(9, records.size)
+        assertEquals(10, records.size)
         assertTrue(records.all { it.actionType == ACTION_TYPE_SHIZUKU_ACTION })
         assertTrue(records.all { it.useShizuku })
         assertTrue(records.none { it.enabled })
@@ -1803,6 +1804,14 @@ class HermesAutomationStoreTest {
             payloads.any {
                 it.getString("shizuku_action") == "set_wifi_tethering_enabled" &&
                     it.getBoolean("target_enabled")
+            },
+        )
+        assertTrue(
+            payloads.any {
+                it.getString("shizuku_action") == "set_custom_setting" &&
+                    it.getString("setting_namespace") == "secure" &&
+                    it.getString("setting_name") == "screen_off_timeout" &&
+                    it.getString("setting_value") == "60000"
             },
         )
         assertTrue(

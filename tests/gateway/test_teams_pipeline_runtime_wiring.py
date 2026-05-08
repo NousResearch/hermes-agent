@@ -28,6 +28,10 @@ def test_gateway_runner_wires_teams_pipeline_runtime(monkeypatch):
         return True
 
     monkeypatch.setattr("plugins.teams_pipeline.runtime.bind_gateway_runtime", _bind)
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"plugins": {"enabled": ["teams_pipeline"]}},
+    )
 
     GatewayRunner._wire_teams_pipeline_runtime(runner)
 
@@ -47,6 +51,10 @@ def test_gateway_runner_skips_wiring_without_msgraph_adapter(monkeypatch):
         return True
 
     monkeypatch.setattr("plugins.teams_pipeline.runtime.bind_gateway_runtime", _bind)
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"plugins": {"enabled": ["teams_pipeline"]}},
+    )
 
     GatewayRunner._wire_teams_pipeline_runtime(runner)
 
@@ -154,7 +162,11 @@ def test_build_pipeline_runtime_skips_sender_when_adapter_layer_is_unavailable(m
     assert runtime.teams_sender is None
 
 
-def test_bind_gateway_runtime_leaves_scheduler_unchanged_on_failure(monkeypatch):
+def test_bind_gateway_runtime_installs_drop_scheduler_on_failure(monkeypatch):
+    """When the runtime can't build, install a drop-scheduler so Graph
+    notifications still ack cleanly rather than leaving the adapter's
+    scheduler unbound.
+    """
     class FakeAdapter:
         def __init__(self):
             self.scheduler = None
@@ -181,5 +193,5 @@ def test_bind_gateway_runtime_leaves_scheduler_unchanged_on_failure(monkeypatch)
     bound = bind_gateway_runtime(gateway)
 
     assert bound is False
-    assert gateway.adapters[Platform.MSGRAPH_WEBHOOK].scheduler is None
+    assert callable(gateway.adapters[Platform.MSGRAPH_WEBHOOK].scheduler)
     assert gateway._teams_pipeline_runtime_error == "boom"

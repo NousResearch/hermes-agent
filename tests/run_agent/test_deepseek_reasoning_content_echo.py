@@ -318,6 +318,32 @@ class TestBuildAssistantMessageDeepSeekReasoningContent:
         assert msg["reasoning_content"] == "DeepSeek tool-call reasoning"
         assert msg["tool_calls"][0]["id"] == "call_1"
 
+    def test_deepseek_content_array_thinking_is_backfilled(self) -> None:
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-pro")
+        assistant_message = SimpleNamespace(
+            content=[{"type": "thinking", "thinking": "DeepSeek array thoughts"}],
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=None,
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1",
+                    call_id=None,
+                    response_item_id=None,
+                    type="function",
+                    function=SimpleNamespace(name="terminal", arguments="{}"),
+                )
+            ],
+        )
+
+        msg = agent._build_assistant_message(assistant_message, "tool_calls")
+
+        assert msg["content"] == ""
+        assert msg["reasoning"] == "DeepSeek array thoughts"
+        assert msg["reasoning_content"] == "DeepSeek array thoughts"
+
     def test_deepseek_model_extra_reasoning_content_is_preserved(self) -> None:
         """OpenAI SDK stores unknown provider fields in model_extra."""
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")

@@ -3904,9 +3904,10 @@ class AIAgent:
             # Without this branch the thinking text is silently dropped and the
             # next turn fails with HTTP 400 ("thinking must be passed back").
             # Refs #21944.
+            assistant_message.content = ""
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "thinking":
-                    thinking_text = block.get("thinking") or block.get("text") or ""
+                    thinking_text = block.get("thinking") or block.get("content") or block.get("text") or ""
                     thinking_text = thinking_text.strip()
                     if thinking_text and thinking_text not in reasoning_parts:
                         reasoning_parts.append(thinking_text)

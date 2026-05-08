@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: "Installation"
-description: "Install Hermes Agent on Linux, macOS, WSL2, native Windows, or Android via Termux"
+description: "Install Hermes Agent on Linux, macOS, WSL2, native Windows (early beta), or Android via Termux"
 ---
 
 # Installation
@@ -16,7 +16,11 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-### Windows (native, PowerShell)
+### Windows (native, PowerShell) — Early Beta
+
+:::warning Early BETA
+Native Windows support is **early beta**. It installs and works for the common paths, but hasn't been road-tested as broadly as our POSIX installers. Please [file issues](https://github.com/NousResearch/hermes-agent/issues) when you hit rough edges. For the most battle-tested setup on Windows today, use the Linux/macOS one-liner above inside **WSL2** instead.
+:::
 
 Open PowerShell and run:
 
@@ -53,9 +57,9 @@ The installer detects Termux automatically and switches to a tested Android flow
 
 If you want the fully explicit path, follow the dedicated [Termux guide](./termux.md).
 
-:::note Windows Feature Parity
+:::note Windows Feature Parity (Early Beta)
 
-Everything except the browser-based dashboard chat terminal runs natively on Windows:
+Native Windows is in **early beta**. Everything except the browser-based dashboard chat terminal runs natively on Windows:
 - **CLI (`hermes chat`, `hermes setup`, `hermes gateway`, …)** — native, uses your default terminal
 - **Gateway (Telegram, Discord, Slack, …)** — native, runs as a background PowerShell process
 - **Cron scheduler** — native

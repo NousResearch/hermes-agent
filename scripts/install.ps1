@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # Hermes Agent Installer for Windows
 # ============================================================================
 # Installation script for Windows (PowerShell).
@@ -794,26 +794,78 @@ function Install-Dependencies {
         $env:VIRTUAL_ENV = "$InstallDir\venv"
     }
     
-    # Install main package with all extras
-    try {
-        & $UvCmd pip install -e ".[all]" 2>&1 | Out-Null
-    } catch {
-        & $UvCmd pip install -e "." | Out-Null
+    # Install main package.  Tiered fallback so a single flaky git+https dep
+    # (atroposlib / tinker in the [rl] extra) doesn't silently drop
+    # dashboard/MCP/cron/messaging extras.  Each tier's stdout/stderr is
+    # preserved — no Out-Null swallowing — so the user can see what failed.
+    #
+    # Tier 1: [all] — everything, including RL git+https deps (best case).
+    # Tier 2: [core-extras] synthesised locally — all PyPI-only extras we
+    #         ship (web, mcp, cron, cli, voice, messaging, slack, dev, acp,
+    #         pty, homeassistant, sms, tts-premium, honcho, google, mistral,
+    #         bedrock, dingtalk, feishu, modal, daytona, vercel).  Drops [rl]
+    #         and [matrix] (linux-only) which are the usual failure culprits.
+    # Tier 3: [web,mcp,cron,cli,messaging,dev] — the minimum we strongly
+    #         believe a user expects `hermes dashboard` / slash commands /
+    #         cron / messaging platforms to work out of the box.
+    # Tier 4: bare `.` — last-resort so at least the core CLI launches.
+    $installTiers = @(
+        @{ Name = "all (with RL/matrix extras)"; Spec = ".[all]" },
+        @{ Name = "PyPI-only extras (no git deps)"; Spec = ".[web,mcp,cron,cli,voice,messaging,slack,dev,acp,pty,homeassistant,sms,tts-premium,honcho,google,mistral,bedrock,dingtalk,feishu,modal,daytona,vercel]" },
+        @{ Name = "dashboard + core platforms"; Spec = ".[web,mcp,cron,cli,messaging,dev]" },
+        @{ Name = "core only (no extras)"; Spec = "." }
+    )
+    $installed = $false
+    foreach ($tier in $installTiers) {
+        Write-Info "Trying tier: $($tier.Name) ..."
+        & $UvCmd pip install -e $tier.Spec
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Main package installed ($($tier.Name))"
+            $script:InstalledTier = $tier.Name
+            $installed = $true
+            break
+        }
+        Write-Warn "Tier '$($tier.Name)' failed (exit $LASTEXITCODE). Trying next tier..."
+    }
+    if (-not $installed) {
+        throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
+    }
+
+    # Verify the dashboard deps specifically — they're the most common thing
+    # users hit and lazy-import errors from `hermes dashboard` are confusing.
+    # If tier 1 failed (the common case), [web] was still picked up by tiers
+    # 2-3; only tier 4 leaves you without it.
+    $pythonExe = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
+    if (Test-Path $pythonExe) {
+        $webOk = $false
+        try {
+            & $pythonExe -c "import fastapi, uvicorn" 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $webOk = $true }
+        } catch { }
+        if (-not $webOk) {
+            Write-Warn "fastapi/uvicorn not importable — `hermes dashboard` will not work."
+            Write-Info "Attempting targeted install of [web] extra as last resort..."
+            & $UvCmd pip install -e ".[web]"
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success "[web] extra installed; `hermes dashboard` should now work."
+            } else {
+                Write-Warn "Could not install [web] extra. Run manually: uv pip install --python `"$pythonExe`" `"fastapi>=0.104,<1`" `"uvicorn[standard]>=0.24,<1`""
+            }
+        }
     }
     
-    Write-Success "Main package installed"
-    
-    # Install optional submodules
-    Write-Info "Installing tinker-atropos (RL training backend)..."
+    # tinker-atropos (RL training) is optional and OFF by default.  Matches the
+    # Linux/macOS install.sh behavior.  Reasons not to auto-install:
+    #   - tinker-atropos/pyproject.toml pulls atroposlib + tinker from git+https
+    #     (NousResearch/atropos + thinking-machines-lab/tinker) which can fail on
+    #     locked-down networks, flaky DNS, or rate-limited github.com and would
+    #     previously kill the whole install mid-flight on Windows.
+    #   - It's an RL training submodule, not part of the default agent surface.
+    #     Users who don't do RL training never need it.
+    # Users who do want it can run the one-liner we print below.
     if (Test-Path "tinker-atropos\pyproject.toml") {
-        try {
-            & $UvCmd pip install -e ".\tinker-atropos" 2>&1 | Out-Null
-            Write-Success "tinker-atropos installed"
-        } catch {
-            Write-Warn "tinker-atropos install failed (RL tools may not work)"
-        }
-    } else {
-        Write-Warn "tinker-atropos not found (run: git submodule update --init)"
+        Write-Info "tinker-atropos submodule found — skipping install (optional, for RL training)"
+        Write-Info "  To install later: $UvCmd pip install -e `".\tinker-atropos`""
     }
     
     Pop-Location

@@ -1951,6 +1951,38 @@ def delegate_task(
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
+    # Post-coercion recovery: if coerce_tool_args wrapped a JSON array string
+    # into a single-element list, attempt to unwrap it here so batch delegation
+    # works even when models (e.g. Qwen, DeepSeek, GLM) emit tasks as a
+    # JSON-encoded string instead of a native array.
+    if (
+        tasks
+        and isinstance(tasks, list)
+        and len(tasks) == 1
+        and isinstance(tasks[0], str)
+    ):
+        import json as _json
+        try:
+            recovered = _json.loads(tasks[0])
+            if isinstance(recovered, list):
+                logger.info(
+                    "delegate_task: recovered %d tasks from JSON-encoded string "
+                    "(model emitted tasks as a JSON string instead of a native array)",
+                    len(recovered),
+                )
+                tasks = recovered
+            else:
+                return tool_error(
+                    f"tasks parameter is a JSON string that parses to "
+                    f"{type(recovered).__name__}, not an array. "
+                    f"The model should emit a native JSON array for batch delegation."
+                )
+        except _json.JSONDecodeError:
+            return tool_error(
+                "tasks parameter appears to be a malformed JSON string. "
+                "Ensure the model emits a native JSON array for batch delegation."
+            )
+
     if tasks and isinstance(tasks, list):
         if len(tasks) > max_children:
             return tool_error(

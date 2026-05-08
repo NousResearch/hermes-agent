@@ -56,6 +56,7 @@ import re
 import shutil
 import subprocess
 import time
+from fnmatch import fnmatch
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -92,6 +93,7 @@ DEFAULT_EXCLUDES = [
     "*.pyc",
     "*.pyo",
     ".cache/",
+    ".uv-cache/",
     ".pytest_cache/",
     ".mypy_cache/",
     ".ruff_cache/",
@@ -433,6 +435,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         _migrate_legacy_store(base)
 
     if (store / "HEAD").exists():
+        _reconcile_default_excludes(store)
         return None
 
     store.mkdir(parents=True, exist_ok=True)
@@ -473,14 +476,35 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     _run_git(["config", "tag.gpgSign", "false"], store, cfg_wd)
     _run_git(["config", "gc.auto", "0"], store, cfg_wd)
 
-    info_dir = store / "info"
-    info_dir.mkdir(exist_ok=True)
-    (info_dir / "exclude").write_text(
-        "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
-    )
+    _reconcile_default_excludes(store)
 
     logger.debug("Initialised checkpoint store at %s", store)
     return None
+
+
+def _reconcile_default_excludes(store: Path) -> None:
+    """Best-effort append of missing default excludes to the store exclude file."""
+    info_dir = store / "info"
+    exclude_file = info_dir / "exclude"
+    try:
+        info_dir.mkdir(exist_ok=True)
+        text = exclude_file.read_text(encoding="utf-8") if exclude_file.exists() else ""
+    except OSError as exc:
+        logger.debug("Checkpoint exclude reconcile skipped: %s", exc)
+        return
+
+    existing = {line.strip() for line in text.splitlines() if line.strip()}
+    missing = [pattern for pattern in DEFAULT_EXCLUDES if pattern not in existing]
+    if not missing:
+        return
+
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += "\n".join(missing) + "\n"
+    try:
+        exclude_file.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Checkpoint exclude reconcile failed: %s", exc)
 
 
 def _register_project(store: Path, working_dir: str) -> None:
@@ -545,14 +569,50 @@ def _list_projects(store: Path) -> List[Dict]:
     return out
 
 
+def _is_checkpoint_excluded(rel_path: str, *, is_dir: bool) -> bool:
+    """Return whether a relative path matches checkpoint default excludes."""
+    rel_path = rel_path.replace(os.sep, "/").strip("/")
+    if not rel_path:
+        return False
+
+    parts = rel_path.split("/")
+    for pattern in DEFAULT_EXCLUDES:
+        if pattern.endswith("/"):
+            dir_pattern = pattern.rstrip("/")
+            if is_dir and (
+                fnmatch(parts[-1], dir_pattern) or fnmatch(rel_path, dir_pattern)
+            ):
+                return True
+            if any(fnmatch(part, dir_pattern) for part in parts[:-1]):
+                return True
+        elif fnmatch(parts[-1], pattern) or fnmatch(rel_path, pattern):
+            return True
+    return False
+
+
 def _dir_file_count(path: str) -> int:
-    """Quick file count estimate (stops early if over _MAX_FILES)."""
+    """Quick file count estimate using checkpoint excludes."""
     count = 0
+    root = Path(path)
     try:
-        for _ in Path(path).rglob("*"):
-            count += 1
-            if count > _MAX_FILES:
-                return count
+        for dirpath, dirnames, filenames in os.walk(root):
+            current = Path(dirpath)
+            rel_dir = current.relative_to(root)
+
+            kept_dirs = []
+            for dirname in dirnames:
+                rel_path = rel_dir / dirname
+                if not _is_checkpoint_excluded(rel_path.as_posix(), is_dir=True):
+                    kept_dirs.append(dirname)
+            dirnames[:] = kept_dirs
+
+            for filename in filenames:
+                rel_path = rel_dir / filename
+                if _is_checkpoint_excluded(rel_path.as_posix(), is_dir=False):
+                    continue
+                count += 1
+                if count > _MAX_FILES:
+                    return count
     except (PermissionError, OSError):
         pass
     return count
@@ -928,6 +988,8 @@ class CheckpointManager:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
 
+        self._drop_default_excludes_from_index(store, working_dir, index_file)
+
         if self.max_file_size_mb > 0:
             self._drop_oversize_from_index(store, working_dir, index_file)
 
@@ -1003,6 +1065,37 @@ class CheckpointManager:
         self._enforce_size_cap(store)
 
         return True
+
+    def _drop_default_excludes_from_index(
+        self, store: Path, working_dir: str, index_file: Path,
+    ) -> None:
+        """Remove staged paths that now match checkpoint default excludes."""
+        ok, stdout, _ = _run_git(
+            ["ls-files", "--cached", "-z"],
+            store, working_dir, index_file=index_file,
+        )
+        if not ok or not stdout:
+            return
+
+        paths = [p for p in stdout.split("\x00") if p]
+        excluded = [
+            rel for rel in paths if _is_checkpoint_excluded(rel, is_dir=False)
+        ]
+        if not excluded:
+            return
+
+        logger.debug(
+            "Checkpoint: dropping %d default-excluded path(s) from index",
+            len(excluded),
+        )
+        BATCH = 200
+        for i in range(0, len(excluded), BATCH):
+            chunk = excluded[i:i + BATCH]
+            _run_git(
+                ["rm", "--cached", "--quiet", "--ignore-unmatch", "--"] + chunk,
+                store, working_dir, index_file=index_file,
+                allowed_returncodes={128},
+            )
 
     def _drop_oversize_from_index(
         self, store: Path, working_dir: str, index_file: Path,

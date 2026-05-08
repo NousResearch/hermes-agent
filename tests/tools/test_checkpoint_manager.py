@@ -129,6 +129,34 @@ class TestStoreInit:
         assert _init_store(store, str(work_dir)) is None
         assert _init_store(store, str(work_dir)) is None
 
+    def test_existing_store_reconciles_default_excludes_before_checkpoint(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+
+        exclude_file = store / "info" / "exclude"
+        exclude_file.write_text("node_modules/\ncustom-local/\n", encoding="utf-8")
+        uv_cache = work_dir / ".uv-cache"
+        uv_cache.mkdir()
+        (uv_cache / "wheel").write_text("cached artifact\n")
+
+        manager = CheckpointManager(enabled=True)
+        assert manager.ensure_checkpoint(str(work_dir), "initial") is True
+
+        exclude_text = exclude_file.read_text(encoding="utf-8")
+        assert "custom-local/" in exclude_text
+        assert ".uv-cache/" in exclude_text
+
+        ok, tree_paths, err = _run_git(
+            ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(work_dir)))],
+            store,
+            str(work_dir),
+        )
+        assert ok, err
+        assert ".uv-cache/wheel" not in tree_paths.splitlines()
+
     def test_bc_init_shadow_repo_shim(self, work_dir, checkpoint_base, monkeypatch):
         """Backward-compatible helper still works for old callers/tests."""
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
@@ -227,6 +255,48 @@ class TestTakeCheckpoint:
         assert (BASE / "store" / "HEAD").exists()
         assert (BASE / "store" / "projects" / f"{_project_hash(str(a))}.json").exists()
         assert (BASE / "store" / "projects" / f"{_project_hash(str(b))}.json").exists()
+
+    def test_new_default_excludes_drop_previously_checkpointed_paths(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        old_excludes = [
+            pattern for pattern in DEFAULT_EXCLUDES if pattern != ".uv-cache/"
+        ]
+        monkeypatch.setattr("tools.checkpoint_manager.DEFAULT_EXCLUDES", old_excludes)
+
+        uv_cache = work_dir / ".uv-cache"
+        uv_cache.mkdir()
+        (uv_cache / "wheel").write_text("cached artifact\n")
+
+        manager = CheckpointManager(enabled=True)
+        assert manager.ensure_checkpoint(str(work_dir), "old excludes") is True
+
+        store = _store_path(checkpoint_base)
+        ref = _ref_name(_project_hash(str(work_dir)))
+        ok, files, err = _run_git(
+            ["ls-tree", "-r", "--name-only", ref],
+            store,
+            str(work_dir),
+        )
+        assert ok, err
+        assert ".uv-cache/wheel" in files.splitlines()
+
+        monkeypatch.setattr("tools.checkpoint_manager.DEFAULT_EXCLUDES", DEFAULT_EXCLUDES)
+        manager.new_turn()
+        (work_dir / "main.py").write_text("print('modified')\n")
+        assert manager.ensure_checkpoint(str(work_dir), "current excludes") is True
+
+        ok, files, err = _run_git(
+            ["ls-tree", "-r", "--name-only", ref],
+            store,
+            str(work_dir),
+        )
+        assert ok, err
+        names = set(files.splitlines())
+        assert "main.py" in names
+        assert "README.md" in names
+        assert ".uv-cache/wheel" not in names
 
 
 # =========================================================================
@@ -534,6 +604,71 @@ class TestDirFileCount:
 
     def test_nonexistent_dir(self, tmp_path):
         assert _dir_file_count(str(tmp_path / "nonexistent")) == 0
+
+    def test_default_excludes_include_uv_cache(self):
+        assert ".uv-cache/" in DEFAULT_EXCLUDES
+
+    def test_excluded_directories_do_not_trip_file_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 2)
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / "src.py").write_text("print('tracked')\n")
+
+        for dirname in [".venv", "venv", "env", "node_modules", ".uv-cache"]:
+            excluded = work / dirname
+            excluded.mkdir()
+            for i in range(3):
+                (excluded / f"ignored_{i}.txt").write_text("ignored\n")
+
+        assert _dir_file_count(str(work)) == 1
+
+    def test_non_excluded_files_still_trip_file_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 2)
+        work = tmp_path / "work"
+        work.mkdir()
+        for i in range(3):
+            (work / f"source_{i}.py").write_text("print('tracked')\n")
+
+        assert _dir_file_count(str(work)) > 2
+
+
+class TestCheckpointFileLimit:
+    def test_checkpoint_allows_large_excluded_directories(
+        self,
+        tmp_path,
+        checkpoint_base,
+        monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 2)
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / "src.py").write_text("print('tracked')\n")
+
+        for dirname in [".venv", ".uv-cache"]:
+            excluded = work / dirname
+            excluded.mkdir()
+            for i in range(3):
+                (excluded / f"ignored_{i}.txt").write_text("ignored\n")
+
+        m = CheckpointManager(enabled=True)
+        assert m.ensure_checkpoint(str(work), "initial") is True
+
+    def test_checkpoint_skips_large_non_excluded_directory(
+        self,
+        tmp_path,
+        checkpoint_base,
+        monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 2)
+        work = tmp_path / "work"
+        work.mkdir()
+        for i in range(3):
+            (work / f"source_{i}.py").write_text("print('tracked')\n")
+
+        m = CheckpointManager(enabled=True)
+        assert m.ensure_checkpoint(str(work), "initial") is False
 
 
 # =========================================================================

@@ -54,7 +54,7 @@ TIPS = [
     "Combine multiple references: \"Review @file:main.py and @file:test.py for consistency.\"",
 
     # --- Keybindings ---
-    "Alt+Enter (or Ctrl+J) inserts a newline for multi-line input.",
+    "Alt+Enter inserts a newline for multi-line input. (Windows Terminal intercepts Alt+Enter — use Ctrl+Enter instead.)",
     "Ctrl+C interrupts the agent. Double-press within 2 seconds to force exit.",
     "Ctrl+Z suspends Hermes to the background — run fg in your shell to resume.",
     "Tab accepts auto-suggestion ghost text or autocompletes slash commands.",

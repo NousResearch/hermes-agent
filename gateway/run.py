@@ -2683,8 +2683,8 @@ class GatewayRunner:
         streaming-response), the upstream busy-ack message itself becomes
         the anchor — see ``_anchor_busy_session_buttons_to_ack`` invoked
         from ``_handle_active_session_busy_message`` after the ack send.
-        Two anchors (ack + tool bubble) are fine: both refer to the same
-        session and either tap acts on every queued follow-up.
+        A busy session must have exactly one live button surface; when a
+        tool bubble takes over, any ack-message keyboard is cleared.
         """
         adapter = self.adapters.get(event.source.platform) if event.source else None
         if adapter is None:
@@ -2695,6 +2695,17 @@ class GatewayRunner:
         if bubble_id and hasattr(adapter, "attach_busy_session_buttons"):
             try:
                 await adapter.attach_busy_session_buttons(session_key, bubble_id)
+                _bcb = getattr(self, "_busy_control_bubble_ids", None)
+                old_ack_ids = list(_bcb.get(session_key, [])) if _bcb else []
+                if old_ack_ids and hasattr(adapter, "clear_busy_session_buttons"):
+                    for ack_id in old_ack_ids:
+                        if str(ack_id) == str(bubble_id):
+                            continue
+                        try:
+                            await adapter.clear_busy_session_buttons(session_key, ack_id)
+                        except Exception:
+                            pass
+                    _bcb.pop(session_key, None)
             except Exception as exc:
                 logger.debug(
                     "attach_busy_session_buttons failed for %s on %s: %s",
@@ -2712,17 +2723,24 @@ class GatewayRunner:
         """Treat the upstream busy-ack message as the keyboard anchor.
 
         Avoids the duplicate "queue'd / control-bubble" pair by reusing
-        the message that's already going to be sent.  The previous
-        anchor (if any) keeps its keyboard intact — both are valid tap
-        targets and the user only sees the most recent one anyway.  The
-        new id replaces the tracked control-bubble so end-of-turn
-        cleanup detaches the right keyboard.
+        the message that's already going to be sent.  Only one busy-session
+        keyboard may be live at a time: a current tool bubble wins over an
+        ack, and a newer ack replaces older ack keyboards.
         """
         adapter = self.adapters.get(event.source.platform) if event.source else None
         if adapter is None:
             return
         if not hasattr(adapter, "attach_busy_session_buttons"):
             return
+
+        _tbm = getattr(self, "_tool_bubble_msg_ids", None)
+        bubble_id = _tbm.get(session_key) if _tbm else None
+        if bubble_id:
+            await self._ensure_busy_session_controls(session_key, event)
+            return
+
+        _bcb = getattr(self, "_busy_control_bubble_ids", None)
+        old_ack_ids = list(_bcb.get(session_key, [])) if _bcb else []
         try:
             await adapter.attach_busy_session_buttons(session_key, ack_msg_id)
         except Exception as exc:
@@ -2733,11 +2751,16 @@ class GatewayRunner:
                 exc,
             )
             return
-        _bcb = getattr(self, "_busy_control_bubble_ids", None)
         if _bcb is not None:
-            existing = _bcb.setdefault(session_key, [])
-            if ack_msg_id not in existing:
-                existing.append(ack_msg_id)
+            if old_ack_ids and hasattr(adapter, "clear_busy_session_buttons"):
+                for old_ack_id in old_ack_ids:
+                    if str(old_ack_id) == str(ack_msg_id):
+                        continue
+                    try:
+                        await adapter.clear_busy_session_buttons(session_key, old_ack_id)
+                    except Exception:
+                        pass
+            _bcb[session_key] = [ack_msg_id]
 
     async def _handle_busy_session_button_tap(
         self,

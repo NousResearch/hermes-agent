@@ -442,10 +442,13 @@ class TestAckAnchorAndToolBubbleAnchor:
         sk = build_session_key(event.source)
         runner.adapters[event.source.platform] = adapter
         runner._tool_bubble_msg_ids[sk] = "bubble_42"
+        runner._busy_control_bubble_ids[sk] = ["ack_old"]
 
         await runner._ensure_busy_session_controls(sk, event)
 
         adapter.attach_busy_session_buttons.assert_awaited_once_with(sk, "bubble_42")
+        adapter.clear_busy_session_buttons.assert_awaited_with(sk, "ack_old")
+        assert sk not in runner._busy_control_bubble_ids
         adapter.send_or_update_busy_control_bubble.assert_not_called()
 
     @pytest.mark.asyncio
@@ -462,12 +465,9 @@ class TestAckAnchorAndToolBubbleAnchor:
         assert runner._busy_control_bubble_ids[sk] == ["ack_msg_77"]
 
     @pytest.mark.asyncio
-    async def test_anchor_to_ack_appends_each_subsequent_anchor(self):
-        """Long turns crossing the 30s ack-cooldown produce multiple acks.
-
-        Each ack carries its own keyboard, so the runner must remember
-        every anchor — cleanup at turn end has to detach every one of
-        them, not just the latest.
+    async def test_anchor_to_ack_replaces_previous_ack_anchor(self):
+        """Long turns crossing the 30s ack-cooldown may produce another
+        ack, but only the newest ack may keep a live keyboard.
         """
         runner, _ = _make_runner()
         adapter = _make_adapter()
@@ -479,7 +479,23 @@ class TestAckAnchorAndToolBubbleAnchor:
         await runner._anchor_busy_session_buttons_to_ack(sk, event, "ack_2")
         await runner._anchor_busy_session_buttons_to_ack(sk, event, "ack_3")
 
-        assert runner._busy_control_bubble_ids[sk] == ["ack_1", "ack_2", "ack_3"]
+        assert runner._busy_control_bubble_ids[sk] == ["ack_3"]
+        adapter.clear_busy_session_buttons.assert_any_await(sk, "ack_1")
+        adapter.clear_busy_session_buttons.assert_any_await(sk, "ack_2")
+
+    @pytest.mark.asyncio
+    async def test_anchor_to_ack_uses_tool_bubble_if_one_exists(self):
+        runner, _ = _make_runner()
+        adapter = _make_adapter()
+        event = _make_event()
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        runner._tool_bubble_msg_ids[sk] = "bubble_9"
+
+        await runner._anchor_busy_session_buttons_to_ack(sk, event, "ack_should_not_get_buttons")
+
+        adapter.attach_busy_session_buttons.assert_awaited_once_with(sk, "bubble_9")
+        assert sk not in runner._busy_control_bubble_ids
 
 
 class TestAckTextUpdateAfterTap:

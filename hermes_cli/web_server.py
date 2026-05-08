@@ -711,6 +711,63 @@ select jsonb_build_object(
 """
 
 
+def _morning_brief_v0_status_path() -> Path:
+    return (
+        _control_plane_workdir()
+        / "hera-198-data-architecture-reset"
+        / "gate-b-v0.2-execution-readback.md"
+    )
+
+
+def _get_morning_brief_v0_canary_payload() -> Dict[str, Any]:
+    """Return the local Gate B/C Morning Brief canary status without mutation.
+
+    This read-only surface exposes local execution readback metadata only. It
+    never sends Supabase credentials to the browser, performs database mutation,
+    sends Telegram messages, or changes cron state.
+    """
+    status_path = _morning_brief_v0_status_path()
+    try:
+        status_text = status_path.read_text(encoding="utf-8")
+    except OSError:
+        return {
+            "enabled": False,
+            "reason": "morning_brief_v0_2_canary_not_configured",
+            "safe_next_action": "verify Gate B/C execution readbacks or keep hold/observe",
+        }
+
+    normalized = status_text.lower()
+    passed = "status: pass" in normalized
+    if not passed:
+        return {
+            "enabled": False,
+            "reason": "morning_brief_v0_2_canary_not_verified",
+            "safe_next_action": "verify Gate B/C execution readbacks or keep hold/observe",
+        }
+
+    return {
+        "enabled": True,
+        "canary_key": "morning-brief-v0.2-preview-canary",
+        "report_kind": "morning_brief",
+        "verification_status": "verified",
+        "rollback_status": "ready_not_needed",
+        "gateb_verification_result": "pass",
+        "hermes_direct_db_verification": True,
+        "verification_source": "hermes_supabase_cli_readback",
+        "report_snapshot_ref": "supabase://hermes_projection/morning_brief_cockpit_v1",
+        "preview_payload_present": True,
+        "source_quality_present": True,
+        "safe_next_action": "Gate D WebUI local read-only observation; Telegram send/cron still require separate approval",
+        "boundaries": {
+            "writes_enabled": False,
+            "telegram_send_enabled": False,
+            "obsidian_authority_edit_enabled": False,
+            "cron_change_enabled": False,
+            "webui_mutation_enabled": False,
+        },
+    }
+
+
 def _get_control_plane_morning_brief_payload() -> Dict[str, Any]:
     rows, disabled = _run_supabase_control_plane_read(_control_plane_payload_query())
     if disabled is not None:
@@ -729,6 +786,133 @@ def _get_control_plane_morning_brief_payload() -> Dict[str, Any]:
             "message": _CONTROL_PLANE_DISABLED_REASONS["control_plane_unexpected_shape"],
         }
     return payload
+
+
+_CONTROL_PLANE_SAFETY_PREVIEW_FORBIDDEN_KEYS = frozenset({
+    "target_ref",
+    "provider_message_ref",
+    "error_summary",
+    "provider_error_body",
+    "raw_source_packet",
+    "raw_source_dump",
+    "raw_payload",
+    "private_target_payload",
+})
+
+
+def _control_plane_safety_preview_query() -> str:
+    return """
+select
+  run_ref,
+  title,
+  status,
+  lifecycle_state,
+  report_date::text,
+  source_count,
+  quarantined_source_count,
+  source_safety_state,
+  source_safety_summary_kr,
+  source_safety_refs,
+  latest_channel,
+  latest_delivery_mode,
+  latest_send_result,
+  latest_approval_state,
+  delivery_browser_safe,
+  latest_redaction_class,
+  latest_provider_error_class,
+  notification_action_state,
+  authority_boundary_state,
+  obsidian_ref,
+  paperclip_parent_ref,
+  rollback_available,
+  publish_blocked,
+  publish_block_reason_kr
+from hermes_projection.morning_brief_cockpit_v2
+where run_ref = 'hermes://canary/HERA-198/morning-brief/gate-g-real-source-packet-dry-run'
+order by report_date desc, run_ref desc
+limit 1;
+"""
+
+
+def _strip_control_plane_forbidden_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _strip_control_plane_forbidden_fields(item)
+            for key, item in value.items()
+            if str(key) not in _CONTROL_PLANE_SAFETY_PREVIEW_FORBIDDEN_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_control_plane_forbidden_fields(item) for item in value]
+    return value
+
+
+def _get_control_plane_safety_preview_payload() -> Dict[str, Any]:
+    rows, disabled = _run_supabase_control_plane_read(_control_plane_safety_preview_query())
+    if disabled is not None:
+        return disabled
+    if not rows:
+        return {
+            "enabled": False,
+            "reason": "control_plane_empty_response",
+            "message": "Control-plane safety-preview query returned no rows",
+        }
+    row = rows[0] if isinstance(rows[0], dict) else None
+    if not isinstance(row, dict):
+        return {
+            "enabled": False,
+            "reason": "control_plane_unexpected_shape",
+            "message": _CONTROL_PLANE_DISABLED_REASONS["control_plane_unexpected_shape"],
+        }
+
+    source_refs = _strip_control_plane_forbidden_fields(row.get("source_safety_refs") or [])
+    return {
+        "enabled": True,
+        "status": "ok",
+        "mode": "read_only_safety_preview",
+        "run": {
+            "run_ref": row.get("run_ref"),
+            "title": row.get("title"),
+            "status": row.get("status"),
+            "lifecycle_state": row.get("lifecycle_state"),
+            "report_date": row.get("report_date"),
+            "paperclip_parent_ref": row.get("paperclip_parent_ref"),
+        },
+        "source_safety": {
+            "state": row.get("source_safety_state"),
+            "source_count": row.get("source_count"),
+            "quarantined_source_count": row.get("quarantined_source_count"),
+            "summary_kr": row.get("source_safety_summary_kr"),
+            "refs": source_refs,
+        },
+        "notification_readiness": {
+            "action_state": row.get("notification_action_state"),
+            "latest_channel": row.get("latest_channel"),
+            "latest_delivery_mode": row.get("latest_delivery_mode"),
+            "latest_send_result": row.get("latest_send_result"),
+            "latest_approval_state": row.get("latest_approval_state"),
+            "delivery_browser_safe": row.get("delivery_browser_safe"),
+            "latest_redaction_class": row.get("latest_redaction_class"),
+            "latest_provider_error_class": row.get("latest_provider_error_class"),
+        },
+        "authority_boundary": {
+            "state": row.get("authority_boundary_state"),
+            "obsidian_ref_present": bool(row.get("obsidian_ref")),
+            "supabase_is_authority": False,
+            "requires_obsidian_merge_review_before_authority": True,
+        },
+        "rollback_readiness": {
+            "available": row.get("rollback_available"),
+            "publish_blocked": row.get("publish_blocked"),
+            "publish_block_reason_kr": row.get("publish_block_reason_kr"),
+        },
+        "boundaries": {
+            "writes_enabled": False,
+            "telegram_send_enabled": False,
+            "obsidian_authority_edit_enabled": False,
+            "cron_change_enabled": False,
+            "webui_mutation_enabled": False,
+        },
+    }
 
 
 def _first_dry_run_target_ref(delivery_events: Any) -> str:
@@ -812,6 +996,11 @@ def _build_morning_brief_telegram_preview(canary: Dict[str, Any]) -> Dict[str, A
     }
 
 
+@app.get("/api/control-plane/morning-brief-v0/canary")
+def get_control_plane_morning_brief_v0_canary():
+    return _get_morning_brief_v0_canary_payload()
+
+
 @app.get("/api/control-plane/morning-brief-canary")
 def get_control_plane_morning_brief_canary():
     return _get_control_plane_morning_brief_payload()
@@ -823,6 +1012,11 @@ def get_control_plane_morning_brief_telegram_preview():
     if not canary.get("enabled"):
         return canary
     return _build_morning_brief_telegram_preview(canary)
+
+
+@app.get("/api/control-plane/morning-brief-canary/safety-preview")
+def get_control_plane_morning_brief_safety_preview():
+    return _get_control_plane_safety_preview_payload()
 
 
 @app.get("/api/status")

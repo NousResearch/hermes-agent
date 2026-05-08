@@ -7,7 +7,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   api,
   type MorningBriefCanaryResponse,
+  type MorningBriefV0CanaryResponse,
   type MorningBriefTelegramPreviewResponse,
+  type MorningBriefSafetyPreviewResponse,
 } from "@/lib/api";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -39,8 +41,11 @@ function BoundaryBadge({ label, value }: { label: string; value?: boolean }) {
 
 export default function ControlPlanePage() {
   const [data, setData] = useState<MorningBriefCanaryResponse | null>(null);
+  const [v0Canary, setV0Canary] = useState<MorningBriefV0CanaryResponse | null>(null);
   const [telegramPreview, setTelegramPreview] =
     useState<MorningBriefTelegramPreviewResponse | null>(null);
+  const [safetyPreview, setSafetyPreview] =
+    useState<MorningBriefSafetyPreviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -49,6 +54,8 @@ export default function ControlPlanePage() {
     setLoading(true);
     setError(null);
     setTelegramPreview(null);
+    setSafetyPreview(null);
+    setV0Canary(null);
 
     try {
       const canary = await api.getMorningBriefCanary();
@@ -61,6 +68,17 @@ export default function ControlPlanePage() {
     }
 
     try {
+      const v0 = await api.getMorningBriefV0Canary();
+      setV0Canary(v0);
+    } catch {
+      setV0Canary({
+        enabled: false,
+        reason: "morning_brief_v0_canary_unavailable",
+        safe_next_action: "verify Gate B artifact status or keep hold/observe",
+      });
+    }
+
+    try {
       const preview = await api.getMorningBriefTelegramPreview();
       setTelegramPreview(preview);
     } catch {
@@ -68,6 +86,17 @@ export default function ControlPlanePage() {
         enabled: false,
         reason: "telegram_preview_unavailable",
         message: "Telegram preview unavailable; control-plane readback can still be shown.",
+      });
+    }
+
+    try {
+      const safety = await api.getMorningBriefSafetyPreview();
+      setSafetyPreview(safety);
+    } catch {
+      setSafetyPreview({
+        enabled: false,
+        reason: "safety_preview_unavailable",
+        message: "Safety preview unavailable; keep publish/send blocked until verified.",
       });
     } finally {
       setLoading(false);
@@ -139,6 +168,46 @@ export default function ControlPlanePage() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader className="py-3 px-4">
+          <CardTitle className="flex items-center gap-2 text-sm uppercase">
+            <ShieldCheck className="h-4 w-4" />
+            Morning Brief v0.2 Gate B/C Verification
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 p-4 text-sm">
+          <div className="flex flex-wrap gap-2 uppercase">
+            <Badge tone={v0Canary?.enabled ? "success" : "secondary"} className="text-[10px]">
+              {v0Canary?.enabled ? "local readback pass" : "safe disabled"}
+            </Badge>
+            <Badge tone="secondary" className="text-[10px]">
+              Hermes DB readback: {v0Canary?.hermes_direct_db_verification ? "yes" : "no"}
+            </Badge>
+            <Badge tone={v0Canary?.boundaries?.webui_mutation_enabled ? "destructive" : "success"} className="text-[10px]">
+              webui mutation: {v0Canary?.boundaries?.webui_mutation_enabled ? "enabled" : "off"}
+            </Badge>
+          </div>
+          {v0Canary?.enabled ? (
+            <dl className="grid gap-2 md:grid-cols-2">
+              <div><dt className="text-xs uppercase text-muted-foreground">Canary key</dt><dd className="break-all font-mono-ui text-xs">{v0Canary.canary_key}</dd></div>
+              <div><dt className="text-xs uppercase text-muted-foreground">Result</dt><dd>{v0Canary.gateb_verification_result}</dd></div>
+              <div><dt className="text-xs uppercase text-muted-foreground">Verification</dt><dd>{v0Canary.verification_status}</dd></div>
+              <div><dt className="text-xs uppercase text-muted-foreground">Rollback</dt><dd>{v0Canary.rollback_status}</dd></div>
+              <div className="md:col-span-2"><dt className="text-xs uppercase text-muted-foreground">Evidence source</dt><dd>{v0Canary.verification_source}</dd></div>
+              <div className="md:col-span-2"><dt className="text-xs uppercase text-muted-foreground">Snapshot ref</dt><dd className="break-all font-mono-ui text-xs">{v0Canary.report_snapshot_ref}</dd></div>
+            </dl>
+          ) : (
+            <div className="rounded-md border border-warning/30 bg-warning/10 p-3">
+              <p className="text-sm font-semibold uppercase text-warning">Safe disabled</p>
+              <p className="text-sm text-muted-foreground">{v0Canary?.reason ?? "morning_brief_v0_canary_not_configured"}</p>
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground normal-case">
+            Read-only only: no browser-side Supabase secret, no DB mutation, no Telegram send, no cron/routine integration.
+          </p>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader className="py-3 px-4">
@@ -187,6 +256,65 @@ export default function ControlPlanePage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader className="py-3 px-4">
+          <CardTitle className="flex items-center gap-2 text-sm uppercase">
+            <ShieldCheck className="h-4 w-4" />
+            Source Safety Preview
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 p-4 text-sm">
+          {safetyPreview && !safetyPreview.enabled && (
+            <div className="rounded-md border border-warning/30 bg-warning/10 p-3">
+              <p className="text-sm font-semibold uppercase text-warning">Safety preview disabled</p>
+              <p className="text-sm text-muted-foreground">
+                {safetyPreview.reason}: {safetyPreview.message}
+              </p>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 uppercase">
+            <Badge tone={safetyPreview?.source_safety?.state === "has_quarantine" ? "warning" : "success"} className="text-[10px]">
+              source safety: {safetyPreview?.source_safety?.state ?? "loading"}
+            </Badge>
+            <Badge tone={safetyPreview?.rollback_readiness?.publish_blocked ? "warning" : "success"} className="text-[10px]">
+              publish_blocked: {safetyPreview?.rollback_readiness?.publish_blocked ? "yes" : "no"}
+            </Badge>
+            <Badge tone={safetyPreview?.boundaries?.webui_mutation_enabled ? "destructive" : "success"} className="text-[10px]">
+              webui mutation: {safetyPreview?.boundaries?.webui_mutation_enabled ? "enabled" : "off"}
+            </Badge>
+          </div>
+          <dl className="grid gap-2 md:grid-cols-2">
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">quarantined_source_count</dt>
+              <dd className="text-lg font-semibold text-foreground">
+                {safetyPreview?.source_safety?.quarantined_source_count ?? 0}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">notification action</dt>
+              <dd>{safetyPreview?.notification_readiness?.action_state ?? "preview_only"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">authority state</dt>
+              <dd>{safetyPreview?.authority_boundary?.state ?? "no_obsidian_ref"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">rollback available</dt>
+              <dd>{safetyPreview?.rollback_readiness?.available ? "yes" : "no"}</dd>
+            </div>
+            <div className="md:col-span-2">
+              <dt className="text-xs uppercase text-muted-foreground">publish block reason</dt>
+              <dd className="normal-case text-muted-foreground">
+                {safetyPreview?.rollback_readiness?.publish_block_reason_kr ?? "No safety preview loaded yet."}
+              </dd>
+            </div>
+          </dl>
+          <p className="text-xs text-muted-foreground normal-case">
+            Read-only safety preview: no send controls, no browser-side Supabase access, no cron change, no Obsidian authority edit.
+          </p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="py-3 px-4">

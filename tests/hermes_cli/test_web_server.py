@@ -253,7 +253,7 @@ class TestWebServerEndpoints:
                     "db",
                     "query",
                     "--linked",
-                    "select * from hermes_notify.delivery_events where target_ref = 'telegram:7048346032'",
+                    "select * from hermes_notify.delivery_events where target_ref = 'telegram:test-recipient'",
                 ],
                 timeout=30,
             )
@@ -271,7 +271,7 @@ class TestWebServerEndpoints:
         message = data["message"].lower()
         assert "supabase" not in message
         assert "hermes_notify" not in message
-        assert "7048346032" not in message
+        assert "test-recipient" not in message
         assert "delivery_events" not in message
 
     def test_control_plane_cli_query_uses_serialization_lock(self, monkeypatch, tmp_path):
@@ -368,6 +368,69 @@ class TestWebServerEndpoints:
         assert "target_ref like 'telegram://dry-run/%'" in sql
         assert "and channel = 'dry_run'" in sql
         assert "null::text as error_summary" in sql
+
+    def test_control_plane_morning_brief_v0_canary_requires_session_token(self):
+        import hermes_cli.web_server as web_server
+
+        resp = self.client.get(
+            "/api/control-plane/morning-brief-v0/canary",
+            headers={web_server._SESSION_HEADER_NAME: "invalid-token"},
+        )
+
+        assert resp.status_code == 401
+
+    def test_control_plane_morning_brief_v0_canary_returns_safe_disabled_state(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_WORKDIR", str(tmp_path))
+
+        resp = self.client.get("/api/control-plane/morning-brief-v0/canary")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {
+            "enabled": False,
+            "reason": "morning_brief_v0_2_canary_not_configured",
+            "safe_next_action": "verify Gate B/C execution readbacks or keep hold/observe",
+        }
+
+    def test_control_plane_morning_brief_v0_canary_returns_read_only_user_reported_pass(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        artifacts = tmp_path / "hera-198-data-architecture-reset"
+        artifacts.mkdir(parents=True)
+        (artifacts / "gate-b-v0.2-execution-readback.md").write_text(
+            "Status: PASS\n"
+            "projection_exists: 1\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_WORKDIR", str(tmp_path))
+
+        resp = self.client.get("/api/control-plane/morning-brief-v0/canary")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is True
+        assert data["canary_key"] == "morning-brief-v0.2-preview-canary"
+        assert data["report_kind"] == "morning_brief"
+        assert data["verification_status"] == "verified"
+        assert data["rollback_status"] == "ready_not_needed"
+        assert data["gateb_verification_result"] == "pass"
+        assert data["hermes_direct_db_verification"] is True
+        assert data["verification_source"] == "hermes_supabase_cli_readback"
+        assert data["preview_payload_present"] is True
+        assert data["source_quality_present"] is True
+        assert data["boundaries"] == {
+            "writes_enabled": False,
+            "telegram_send_enabled": False,
+            "obsidian_authority_edit_enabled": False,
+            "cron_change_enabled": False,
+            "webui_mutation_enabled": False,
+        }
+        dumped = json.dumps(data).lower()
+        assert "service_role" not in dumped
+        assert "postgresql://" not in dumped
+        assert "eyj" not in dumped
 
     def test_control_plane_telegram_preview_requires_session_token(self):
         import hermes_cli.web_server as web_server
@@ -478,7 +541,7 @@ class TestWebServerEndpoints:
                 {
                     "channel": "telegram",
                     "delivery_status": "sent",
-                    "target_ref": "telegram:7048346032",
+                    "target_ref": "telegram:test-recipient",
                 }
             ],
             "counts": {},
@@ -486,7 +549,136 @@ class TestWebServerEndpoints:
         })
 
         assert preview["target_ref"] == "telegram://dry-run/hera-198"
-        assert "7048346032" not in preview["message_text"]
+        assert "test-recipient" not in preview["message_text"]
+
+    def test_control_plane_safety_preview_requires_session_token(self):
+        import hermes_cli.web_server as web_server
+
+        resp = self.client.get(
+            "/api/control-plane/morning-brief-canary/safety-preview",
+            headers={web_server._SESSION_HEADER_NAME: "invalid-token"},
+        )
+
+        assert resp.status_code == 401
+
+    def test_control_plane_safety_preview_is_private_api_path(self):
+        import hermes_cli.web_server as web_server
+
+        assert "/api/control-plane/morning-brief-canary/safety-preview" not in web_server._PUBLIC_API_PATHS
+
+    def test_control_plane_safety_preview_returns_browser_safe_v2_payload(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        class Completed:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps([
+                {
+                    "run_ref": "hermes://canary/HERA-198/morning-brief/gate-g-real-source-packet-dry-run",
+                    "title": "HERA-198 Gate G Morning Brief dry-run canary",
+                    "status": "generated",
+                    "lifecycle_state": "reviewed",
+                    "report_date": "2026-05-08",
+                    "source_count": 3,
+                    "quarantined_source_count": 1,
+                    "source_safety_state": "has_quarantine",
+                    "source_safety_summary_kr": "격리 출처 1건 포함 — 발행/전송 전 Hermes source review 필요",
+                    "source_safety_refs": [
+                        {
+                            "claim_key": "kospi-close-7490",
+                            "section_key": "korea_economy",
+                            "source_title": "browser-safe source title",
+                            "publisher": "KRX required",
+                            "source_tier": "quarantined",
+                            "quality_label": "hold",
+                            "timing_label": "NEW_24H",
+                            "is_quarantined": True,
+                            "quarantine_reason": "Same-run Tier-1 KRX confirmation not attached",
+                            "target_ref": "telegram://private-target/must-not-leak",
+                        }
+                    ],
+                    "latest_channel": "dry_run",
+                    "latest_delivery_mode": "dry_run",
+                    "latest_send_result": "not_attempted",
+                    "latest_approval_state": "pending",
+                    "delivery_browser_safe": True,
+                    "latest_redaction_class": "internal_safe",
+                    "latest_provider_error_class": None,
+                    "notification_action_state": "preview_only",
+                    "authority_boundary_state": "no_obsidian_ref",
+                    "obsidian_ref": None,
+                    "paperclip_parent_ref": "paperclip://HERA-207",
+                    "rollback_available": True,
+                    "publish_blocked": True,
+                    "publish_block_reason_kr": "격리 출처 포함 — Hermes source review 전 발행/전송 불가",
+                }
+            ])
+
+        calls = []
+
+        def fake_run(cmd, cwd, check, capture_output, text, timeout):
+            calls.append({"cmd": cmd, "cwd": cwd, "check": check, "timeout": timeout})
+            return Completed()
+
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_WORKDIR", str(tmp_path))
+        monkeypatch.setattr(web_server.shutil, "which", lambda _: "/usr/bin/supabase")
+        monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+
+        resp = self.client.get("/api/control-plane/morning-brief-canary/safety-preview")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is True
+        assert data["mode"] == "read_only_safety_preview"
+        assert data["run"]["status"] == "generated"
+        assert data["source_safety"]["state"] == "has_quarantine"
+        assert data["source_safety"]["quarantined_source_count"] == 1
+        assert data["notification_readiness"]["action_state"] == "preview_only"
+        assert data["authority_boundary"]["supabase_is_authority"] is False
+        assert data["authority_boundary"]["requires_obsidian_merge_review_before_authority"] is True
+        assert data["rollback_readiness"]["publish_blocked"] is True
+        assert data["boundaries"] == {
+            "writes_enabled": False,
+            "telegram_send_enabled": False,
+            "obsidian_authority_edit_enabled": False,
+            "cron_change_enabled": False,
+            "webui_mutation_enabled": False,
+        }
+        dumped = json.dumps(data).lower()
+        assert "private-target" not in dumped
+        assert "target_ref" not in dumped
+        assert "provider_message_ref" not in dumped
+        assert "error_summary" not in dumped
+        assert "provider_error_body" not in dumped
+        assert calls
+        sql = calls[0]["cmd"][-1].lower()
+        assert "from hermes_projection.morning_brief_cockpit_v2" in sql
+        assert "gate-g-real-source-packet-dry-run" in sql
+        assert "insert into" not in sql
+        assert "update " not in sql
+        assert "delete from" not in sql
+        assert "drop " not in sql
+        assert "alter " not in sql
+        assert "target_ref" not in sql
+        assert "provider_message_ref" not in sql
+        assert "error_summary" not in sql
+        assert "provider_error_body" not in sql
+
+    def test_control_plane_safety_preview_propagates_disabled_state_without_raw_error(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.shutil, "which", lambda _: None)
+
+        resp = self.client.get("/api/control-plane/morning-brief-canary/safety-preview")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is False
+        assert data["reason"] == "supabase_cli_missing"
+        dumped = json.dumps(data).lower()
+        assert "postgresql://" not in dumped
+        assert "service_role" not in dumped
+        assert "eyj" not in dumped
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")

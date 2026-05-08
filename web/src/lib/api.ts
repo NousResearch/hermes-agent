@@ -65,9 +65,15 @@ export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getMorningBriefCanary: () =>
     fetchJSON<MorningBriefCanaryResponse>("/api/control-plane/morning-brief-canary"),
+  getMorningBriefV0Canary: () =>
+    fetchJSON<MorningBriefV0CanaryResponse>("/api/control-plane/morning-brief-v0/canary"),
   getMorningBriefTelegramPreview: () =>
     fetchJSON<MorningBriefTelegramPreviewResponse>(
       "/api/control-plane/morning-brief-canary/telegram-preview",
+    ),
+  getMorningBriefSafetyPreview: () =>
+    fetchJSON<MorningBriefSafetyPreviewResponse>(
+      "/api/control-plane/morning-brief-canary/safety-preview",
     ),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
@@ -679,6 +685,25 @@ export interface MorningBriefCanaryResponse {
   };
 }
 
+export interface MorningBriefV0CanaryResponse {
+  enabled: boolean;
+  reason?: string;
+  safe_next_action?: string;
+  canary_key?: "morning-brief-v0.2-preview-canary" | string;
+  report_kind?: "morning_brief" | string;
+  verification_status?: "verified" | string;
+  rollback_status?: "ready_not_needed" | string;
+  gateb_verification_result?: "pass" | string;
+  hermes_direct_db_verification?: boolean;
+  verification_source?: "hermes_supabase_cli_readback" | string;
+  report_snapshot_ref?: string;
+  preview_payload_present?: boolean;
+  source_quality_present?: boolean;
+  boundaries?: MorningBriefCanaryResponse["boundaries"] & {
+    webui_mutation_enabled?: boolean;
+  };
+}
+
 export interface MorningBriefTelegramPreviewResponse {
   enabled: boolean;
   reason?: string;
@@ -707,6 +732,75 @@ export interface MorningBriefTelegramPreviewResponse {
     control_plane_mode?: string;
   };
   boundaries?: MorningBriefCanaryResponse["boundaries"];
+}
+
+export interface MorningBriefSafetyRun {
+  run_ref?: string;
+  title?: string;
+  status?: string;
+  lifecycle_state?: string;
+  report_date?: string;
+  paperclip_parent_ref?: string | null;
+}
+
+export interface MorningBriefSourceSafetyRef {
+  claim_key?: string;
+  section_key?: string;
+  source_title?: string | null;
+  publisher?: string | null;
+  source_tier?: string | null;
+  quality_label?: string | null;
+  timing_label?: string | null;
+  is_quarantined?: boolean;
+  quarantine_reason?: string | null;
+}
+
+export interface MorningBriefSourceSafetySummary {
+  state?: "clean" | "has_quarantine" | string;
+  source_count?: number;
+  quarantined_source_count?: number;
+  summary_kr?: string | null;
+  refs?: MorningBriefSourceSafetyRef[];
+}
+
+export interface MorningBriefNotificationReadiness {
+  action_state?: "preview_only" | "blocked" | string;
+  latest_channel?: string | null;
+  latest_delivery_mode?: string | null;
+  latest_send_result?: string | null;
+  latest_approval_state?: string | null;
+  delivery_browser_safe?: boolean | null;
+  latest_redaction_class?: string | null;
+  latest_provider_error_class?: string | null;
+}
+
+export interface MorningBriefAuthorityBoundary {
+  state?: "no_obsidian_ref" | string;
+  obsidian_ref_present?: boolean;
+  supabase_is_authority?: false;
+  requires_obsidian_merge_review_before_authority?: boolean;
+}
+
+export interface MorningBriefRollbackReadiness {
+  available?: boolean;
+  publish_blocked?: boolean;
+  publish_block_reason_kr?: string | null;
+}
+
+export interface MorningBriefSafetyPreviewResponse {
+  enabled: boolean;
+  reason?: string;
+  message?: string;
+  status?: string;
+  mode?: "read_only_safety_preview" | string;
+  run?: MorningBriefSafetyRun;
+  source_safety?: MorningBriefSourceSafetySummary;
+  notification_readiness?: MorningBriefNotificationReadiness;
+  authority_boundary?: MorningBriefAuthorityBoundary;
+  rollback_readiness?: MorningBriefRollbackReadiness;
+  boundaries?: MorningBriefCanaryResponse["boundaries"] & {
+    webui_mutation_enabled?: boolean;
+  };
 }
 
 // ── Model info types ──────────────────────────────────────────────────

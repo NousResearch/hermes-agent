@@ -40,6 +40,7 @@ def _make_adapter(routes, **extra_kw) -> WebhookAdapter:
 def _create_app(adapter: WebhookAdapter) -> web.Application:
     app = web.Application()
     app.router.add_get("/health", adapter._handle_health)
+    app.router.add_get("/ready", adapter._handle_ready)
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     return app
 
@@ -47,6 +48,8 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
 def _wire_mock_target(adapter: WebhookAdapter, platform_name: str = "telegram"):
     """Attach a gateway_runner with a mocked target adapter."""
     mock_target = AsyncMock()
+    mock_target._running = True
+    mock_target.has_fatal_error = False
     mock_target.send = AsyncMock(return_value=SendResult(success=True))
 
     mock_runner = MagicMock()
@@ -174,6 +177,89 @@ class TestDeliverOnlyBypassesAgent:
         assert mock_target.send.await_args.kwargs["metadata"] == {
             "thread_id": "topic-42"
         }
+    @pytest.mark.asyncio
+    async def test_alert_event_formatter_renders_compact_digest(self):
+        """Structured alert-event formatter avoids raw JSON dumps."""
+        routes = {
+            "ops-digest": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "chat-1"},
+                "formatter": "alert_event",
+                "prompt": "ignored when formatter is set",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/ops-digest",
+                json={
+                    "source": "rack-util/librenms-heartbeat",
+                    "kind": "heartbeat_alive",
+                    "severity": "digest",
+                    "state": "summary",
+                    "summary": "LibreNMS heartbeat watcher alive on rack-util",
+                    "host": "rack-util",
+                    "details": {
+                        "target_ip": "10.10.99.60",
+                        "checked_at": "2026-05-07T22:44:04+00:00",
+                    },
+                },
+                headers={"X-GitHub-Delivery": "d-alert-format-1"},
+            )
+            assert resp.status == 200
+
+        content_arg = mock_target.send.await_args.args[1]
+        assert content_arg == (
+            "🟢 **LibreNMS heartbeat watcher alive on rack-util**\n"
+            "source: `rack-util/librenms-heartbeat` · host: `rack-util` · "
+            "kind: `heartbeat_alive`\n"
+            "target_ip: `10.10.99.60` · "
+            "checked_at: `2026-05-07T22:44:04+00:00`"
+        )
+        assert "{\n" not in content_arg
+
+    @pytest.mark.asyncio
+    async def test_alert_event_formatter_renders_firing_alert(self):
+        routes = {
+            "ops-alerts": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "chat-1"},
+                "formatter": "alert_event",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/ops-alerts",
+                json={
+                    "source": "rack-util/librenms-heartbeat",
+                    "kind": "monitor_target_down",
+                    "severity": "critical",
+                    "state": "firing",
+                    "summary": "LibreNMS heartbeat failed 3 consecutive checks on rack-util",
+                    "details": {"fails": 3, "threshold": 3, "target_ip": "10.10.99.60"},
+                },
+                headers={"X-GitHub-Delivery": "d-alert-format-2"},
+            )
+            assert resp.status == 200
+
+        content_arg = mock_target.send.await_args.args[1]
+        assert content_arg.startswith(
+            "🚨 **LibreNMS heartbeat failed 3 consecutive checks on rack-util**"
+        )
+        assert "state: `firing`" in content_arg
+        assert "target_ip: `10.10.99.60`" in content_arg
+        assert "fails: `3`" in content_arg
 
 
 # ===================================================================
@@ -431,6 +517,85 @@ class TestDeliverOnlySecurityInvariants:
                 headers={"X-GitHub-Delivery": "rl-3"},
             )
             assert r3.status == 429
+
+
+# ===================================================================
+# Readiness endpoint
+# ===================================================================
+class TestWebhookReadiness:
+
+    @pytest.mark.asyncio
+    async def test_ready_returns_200_when_direct_delivery_target_running(self):
+        routes = {
+            "ops-digest": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "chat-1"},
+                "formatter": "alert_event",
+            }
+        }
+        adapter = _make_adapter(routes)
+        _wire_mock_target(adapter, "telegram")
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/ready")
+            assert resp.status == 200
+            data = await resp.json()
+
+        assert data["status"] == "ready"
+        assert data["routes"]["ops-digest"] == {
+            "status": "ready",
+            "deliver": "telegram",
+            "reason": "ok",
+        }
+        assert data["targets"]["telegram"]["routes"] == ["ops-digest"]
+
+    @pytest.mark.asyncio
+    async def test_ready_returns_503_when_direct_delivery_target_missing(self):
+        routes = {
+            "ops-alerts": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "discord",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "alerts"},
+            }
+        }
+        adapter = _make_adapter(routes)
+        _wire_mock_target(adapter, "telegram")  # discord intentionally absent
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/ready")
+            assert resp.status == 503
+            data = await resp.json()
+
+        assert data["status"] == "not_ready"
+        assert data["routes"]["ops-alerts"]["status"] == "not_ready"
+        assert data["routes"]["ops-alerts"]["reason"] == "platform discord not connected"
+
+    @pytest.mark.asyncio
+    async def test_ready_returns_503_when_target_adapter_not_running(self):
+        routes = {
+            "ops-alerts": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "alerts"},
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter, "telegram")
+        mock_target._running = False
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/ready")
+            assert resp.status == 503
+            data = await resp.json()
+
+        assert data["routes"]["ops-alerts"]["reason"] == "platform telegram not running"
 
 
 # ===================================================================

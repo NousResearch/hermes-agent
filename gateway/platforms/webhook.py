@@ -215,6 +215,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # Content-Length and would otherwise bypass the header check below.
         app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
+        app.router.add_get("/ready", self._handle_ready)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
         # Multi-profile multiplexing: a /p/<profile>/webhooks/<route> prefix
         # routes the inbound event to that profile. Same handler; the profile is
@@ -373,6 +374,83 @@ class WebhookAdapter(BasePlatformAdapter):
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
 
+    async def _handle_ready(self, request: "web.Request") -> "web.Response":
+        """GET /ready — readiness check for direct delivery routes."""
+        self._reload_dynamic_routes()
+        payload = self._build_readiness_payload()
+        status = 200 if payload["status"] == "ready" else 503
+        return web.json_response(payload, status=status)
+
+    def _build_readiness_payload(self) -> dict:
+        """Return readiness for deliver_only routes that depend on delivery targets."""
+        routes: dict[str, dict[str, Any]] = {}
+        required_targets: dict[str, dict[str, Any]] = {}
+
+        for route_name, route in self._routes.items():
+            if not route.get("deliver_only"):
+                continue
+
+            deliver = str(route.get("deliver") or "log")
+            route_status = "ready"
+            route_reason = "ok"
+            target_ready = True
+
+            if deliver in {"", "log"}:
+                target_ready = False
+                route_reason = "deliver_only route has no delivery target"
+            elif deliver == "github_comment":
+                target_ready = True
+                route_reason = "github_comment uses gh CLI at delivery time"
+            else:
+                try:
+                    target_platform = Platform(deliver)
+                except ValueError:
+                    target_ready = False
+                    route_reason = f"unknown delivery platform: {deliver}"
+                else:
+                    target_adapter = None
+                    if self.gateway_runner:
+                        target_adapter = self.gateway_runner.adapters.get(target_platform)
+                    if target_adapter is None:
+                        target_ready = False
+                        route_reason = f"platform {deliver} not connected"
+                    elif getattr(target_adapter, "has_fatal_error", False):
+                        target_ready = False
+                        route_reason = f"platform {deliver} fatal error"
+                    elif not getattr(target_adapter, "_running", False):
+                        target_ready = False
+                        route_reason = f"platform {deliver} not running"
+                    else:
+                        route_reason = "ok"
+
+            if not target_ready:
+                route_status = "not_ready"
+
+            routes[route_name] = {
+                "status": route_status,
+                "deliver": deliver,
+                "reason": route_reason,
+            }
+
+            target = required_targets.setdefault(
+                deliver,
+                {"status": "ready", "routes": [], "reason": "ok"},
+            )
+            target["routes"].append(route_name)
+            if not target_ready:
+                target["status"] = "not_ready"
+                target["reason"] = route_reason
+
+        overall_ready = all(
+            route["status"] == "ready" for route in routes.values()
+        )
+        return {
+            "status": "ready" if overall_ready else "not_ready",
+            "platform": "webhook",
+            "routes": routes,
+            "targets": required_targets,
+        }
+
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
         from hermes_constants import get_hermes_home
@@ -517,8 +595,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": "Payload too large"}, status=413
             )
 
-        # Validate HMAC signature FIRST (skip only for the explicit local-test
-        # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
+        # Validate configured auth FIRST (skip only for the explicit local-test
+        # INSECURE_NO_AUTH mode). HMAC-SHA256 is the preferred mode; a static
+        # bearer token is accepted for producers that cannot compute HMACs
+        # (see _validate_auth). Missing/empty secrets must fail closed here,
         # not only during connect(), so direct handler reuse cannot turn a
         # network webhook route into an unauthenticated agent-dispatch surface.
         secret = route_config.get("secret", self._global_secret)
@@ -532,9 +612,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=403,
             )
         if secret != _INSECURE_NO_AUTH:
-            if not self._validate_signature(request, raw_body, secret):
+            if not self._validate_auth(request, raw_body, secret):
                 logger.warning(
-                    "[webhook] Invalid signature for route %s", route_name
+                    "[webhook] Invalid auth for route %s", route_name
                 )
                 return web.json_response(
                     {"error": "Invalid signature"}, status=401
@@ -622,11 +702,15 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
             payload = transformed_payload or payload
 
-        # Format prompt from template
-        prompt_template = route_config.get("prompt", "")
-        prompt = self._render_prompt(
-            prompt_template, payload, event_type, route_name
-        )
+        # Format prompt from a deterministic formatter or template.
+        formatter = route_config.get("formatter", "")
+        if formatter == "alert_event":
+            prompt = self._format_alert_event(payload, route_name)
+        else:
+            prompt_template = route_config.get("prompt", "")
+            prompt = self._render_prompt(
+                prompt_template, payload, event_type, route_name
+            )
 
         # Inject skill content if configured.
         # We call build_skill_invocation_message() directly rather than
@@ -892,6 +976,27 @@ class WebhookAdapter(BasePlatformAdapter):
     # Signature validation
     # ------------------------------------------------------------------
 
+    def _validate_auth(
+        self, request: "web.Request", body: bytes, secret: str
+    ) -> bool:
+        """Validate webhook auth.
+
+        Preferred mode is HMAC-SHA256 signatures. Some producers, including
+        Proxmox Backup Server native webhook targets, can template static
+        headers but cannot compute HMACs; for those, accept a static bearer
+        token over trusted LAN paths.
+        """
+        auth = request.headers.get("Authorization", "")
+        prefix = "Bearer "
+        if auth.startswith(prefix):
+            return hmac.compare_digest(auth[len(prefix) :], secret)
+
+        token = request.headers.get("X-Webhook-Token", "")
+        if token:
+            return hmac.compare_digest(token, secret)
+
+        return self._validate_signature(request, body, secret)
+
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
@@ -1100,6 +1205,83 @@ class WebhookAdapter(BasePlatformAdapter):
             return str(value)
 
         return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
+
+    def _format_alert_event(self, payload: dict, route_name: str) -> str:
+        """Format a structured operational alert event for chat delivery.
+
+        This is deterministic and zero-LLM, but more readable than raw JSON
+        template dumps.  It expects the lightweight alert schema used by
+        Hermes-owned ops routes: source/kind/severity/state/summary/details.
+        Unknown detail keys are still surfaced compactly instead of hidden.
+        """
+        source = str(payload.get("source") or route_name or "unknown")
+        kind = str(payload.get("kind") or "event")
+        severity = str(payload.get("severity") or "info").lower()
+        state = str(payload.get("state") or "event").lower()
+        summary = str(payload.get("summary") or kind.replace("_", " ").title())
+        host = payload.get("host")
+        details = payload.get("details")
+        if not isinstance(details, dict):
+            details = {}
+
+        icon = {
+            "critical": "🚨",
+            "error": "🚨",
+            "warning": "⚠️",
+            "warn": "⚠️",
+            "digest": "🟢",
+            "summary": "🟢",
+            "info": "ℹ️",
+            "ok": "✅",
+        }.get(severity, "ℹ️")
+        if state in {"recovered", "resolved", "ok"}:
+            icon = "✅"
+        elif state == "firing" and severity not in {"critical", "error"}:
+            icon = "⚠️"
+
+        def _inline(value: Any, limit: int = 300) -> str:
+            if isinstance(value, (dict, list)):
+                text = json.dumps(value, separators=(",", ":"))
+            else:
+                text = str(value)
+            return text.replace("`", "ʼ")[:limit]
+
+        meta_parts = [f"source: `{_inline(source, 120)}`"]
+        if host:
+            meta_parts.append(f"host: `{_inline(host, 120)}`")
+        if state and state != "summary":
+            meta_parts.append(f"state: `{_inline(state, 80)}`")
+        if kind:
+            meta_parts.append(f"kind: `{_inline(kind, 120)}`")
+
+        lines = [f"{icon} **{_inline(summary, 240)}**", " · ".join(meta_parts)]
+
+        preferred_keys = [
+            "target_ip",
+            "checked_at",
+            "since",
+            "recovered",
+            "downtime_since",
+            "fails",
+            "threshold",
+            "note",
+        ]
+        detail_parts: list[str] = []
+        seen: set[str] = set()
+        for key in preferred_keys:
+            if key in details and details[key] not in (None, ""):
+                detail_parts.append(f"{key}: `{_inline(details[key])}`")
+                seen.add(key)
+        for key in sorted(details):
+            if key in seen or details[key] in (None, ""):
+                continue
+            value = details[key]
+            detail_parts.append(f"{key}: `{_inline(value)}`")
+
+        if detail_parts:
+            lines.append(" · ".join(detail_parts[:8]))
+
+        return "\n".join(lines)
 
     def _render_delivery_extra(
         self, extra: dict, payload: dict

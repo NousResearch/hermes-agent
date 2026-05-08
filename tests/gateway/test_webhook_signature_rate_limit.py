@@ -287,3 +287,103 @@ class TestSignatureBeforeRateLimit:
             assert resp.status == 429
 
         assert len(captured_events) == 3
+
+
+class TestBearerTokenAuth:
+    """Static bearer-token auth for producers that cannot compute HMAC."""
+
+    @pytest.mark.asyncio
+    async def test_bearer_token_auth_accepts_valid_token(self):
+        secret = "test-bearer-token"
+        route_name = "pbs-alerts"
+        routes = {
+            route_name: {
+                "secret": secret,
+                "prompt": "Event: {event}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        captured_events = []
+
+        async def _capture(event):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+        body = json.dumps(SIMPLE_PAYLOAD).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/webhooks/{route_name}",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {secret}",
+                    "X-Request-ID": "bearer-good-001",
+                },
+            )
+            assert resp.status == 202
+
+        assert len(captured_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_query_token_auth_is_rejected(self):
+        secret = "test-query-token"
+        route_name = "pbs-alerts"
+        routes = {
+            route_name: {
+                "secret": secret,
+                "prompt": "Event: {event}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        captured_events = []
+
+        async def _capture(event):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+        body = json.dumps(SIMPLE_PAYLOAD).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/webhooks/{route_name}?token={secret}",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Request-ID": "query-token-rejected-001",
+                },
+            )
+            assert resp.status == 401
+
+        assert captured_events == []
+
+    @pytest.mark.asyncio
+    async def test_bearer_token_auth_rejects_wrong_token(self):
+        secret = "test-bearer-token"
+        route_name = "pbs-alerts"
+        routes = {
+            route_name: {
+                "secret": secret,
+                "prompt": "Event: {event}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        app = _create_app(adapter)
+        body = json.dumps(SIMPLE_PAYLOAD).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/webhooks/{route_name}",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer wrong-token",
+                    "X-Request-ID": "bearer-bad-001",
+                },
+            )
+            assert resp.status == 401

@@ -311,14 +311,52 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
 
     try:
         if is_windows():
-            result = subprocess.run(
-                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
-                timeout=10,
-            )
+            # Prefer wmic when present (fast, stable output format).  On
+            # modern Windows 11 / Win 10 late builds, wmic has been
+            # removed as part of the WMIC deprecation — fall back to
+            # PowerShell's Get-CimInstance.  Any OSError here (FileNotFoundError
+            # on missing wmic) trips the fallback.
+            wmic_path = shutil.which("wmic")
+            used_fallback = False
+            result = None
+            if wmic_path is not None:
+                try:
+                    result = subprocess.run(
+                        [wmic_path, "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="ignore",
+                        timeout=10,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    result = None
+            if result is None or result.returncode != 0 or not (result.stdout or ""):
+                # Fallback: PowerShell Get-CimInstance, emit LIST-style output
+                # so the downstream parser below doesn't need to branch.
+                powershell = shutil.which("powershell") or shutil.which("pwsh")
+                if powershell is None:
+                    return []
+                ps_cmd = (
+                    "Get-CimInstance Win32_Process | "
+                    "ForEach-Object { "
+                    "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
+                    "  'ProcessId=' + $_.ProcessId; "
+                    "  '' "
+                    "}"
+                )
+                try:
+                    result = subprocess.run(
+                        [powershell, "-NoProfile", "-Command", ps_cmd],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="ignore",
+                        timeout=15,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    return []
+                used_fallback = True
             if result.returncode != 0 or result.stdout is None:
                 return []
             current_cmd = ""
@@ -2860,6 +2898,35 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
 
+    # On Windows, when the gateway is launched as a detached background
+    # process (via ``hermes gateway install`` → Scheduled Task / Startup
+    # folder / direct pythonw.exe spawn) there is no console attached. In
+    # that case Windows can still deliver CTRL_C_EVENT / CTRL_BREAK_EVENT
+    # to the process group under some circumstances (e.g. when *another*
+    # process in the same group sends one), which Python 3.11 translates
+    # into KeyboardInterrupt inside asyncio.run(). The outer handler below
+    # catches that and exits cleanly — silently killing the gateway. On
+    # detached boots we must absorb those spurious signals so the gateway
+    # stays alive; real user Ctrl+C still comes through prompt_toolkit /
+    # the asyncio signal handler when running in a real console.
+    #
+    # Detection: sys.stdin is None / stdin-not-a-tty AND we're on Windows.
+    # This mirrors the same pattern as ``cli.py`` (commit 449ad952b).
+    if is_windows():
+        try:
+            _stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
+        except (ValueError, OSError):
+            _stdin_is_tty = False
+        if not _stdin_is_tty:
+            try:
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                if hasattr(signal, "SIGBREAK"):
+                    signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+            except (OSError, ValueError):
+                # SetConsoleCtrlHandler not available (rare on Windows) —
+                # best-effort, proceed either way.
+                pass
+
     # Refresh the systemd unit definition on every boot so that restart
     # settings (RestartSec, StartLimitIntervalSec, etc.) stay current even
     # when the process was respawned via exit-code-75 (stale-code or
@@ -2890,6 +2957,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     try:
         success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
     except KeyboardInterrupt:
+        # On Windows-detached runs this shouldn't fire (we absorb SIGINT above),
+        # but keep the handler for console runs.
         print("\nGateway stopped.")
         return
     if not success:
@@ -3741,6 +3810,9 @@ def _is_service_installed() -> bool:
         return get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()
     elif is_macos():
         return get_launchd_plist_path().exists()
+    elif is_windows():
+        from hermes_cli import gateway_windows
+        return gateway_windows.is_installed()
     return False
 
 
@@ -3782,6 +3854,12 @@ def _is_service_running() -> bool:
             return result.returncode == 0
         except subprocess.TimeoutExpired:
             return False
+    elif is_windows():
+        from hermes_cli import gateway_windows
+        if gateway_windows.is_installed():
+            # "installed" doesn't necessarily mean "running" on Windows. The
+            # canonical check is whether a gateway process actually exists.
+            return len(find_gateway_pids()) > 0
     # Check for manual processes
     return len(find_gateway_pids()) > 0
 
@@ -4630,6 +4708,9 @@ def _gateway_command_inner(args):
             systemd_install(force=force, system=system, run_as_user=run_as_user)
         elif is_macos():
             launchd_install(force)
+        elif is_windows():
+            from hermes_cli import gateway_windows
+            gateway_windows.install(force=force)
         elif is_wsl():
             print("WSL detected but systemd is not running.")
             print("Either enable systemd (add systemd=true to /etc/wsl.conf and restart WSL)")
@@ -4666,6 +4747,9 @@ def _gateway_command_inner(args):
             systemd_uninstall(system=system)
         elif is_macos():
             launchd_uninstall()
+        elif is_windows():
+            from hermes_cli import gateway_windows
+            gateway_windows.uninstall()
         elif is_container():
             print("Service uninstall is not applicable inside a Docker container.")
             print("To stop the gateway, stop or remove the container:")
@@ -4696,6 +4780,9 @@ def _gateway_command_inner(args):
             systemd_start(system=system)
         elif is_macos():
             launchd_start()
+        elif is_windows():
+            from hermes_cli import gateway_windows
+            gateway_windows.start()
         elif is_wsl():
             print("WSL detected but systemd is not available.")
             print("Run the gateway in foreground mode instead:")
@@ -4738,6 +4825,14 @@ def _gateway_command_inner(args):
                     service_available = True
                 except subprocess.CalledProcessError:
                     pass
+            elif is_windows():
+                from hermes_cli import gateway_windows
+                if gateway_windows.is_installed():
+                    try:
+                        gateway_windows.stop()
+                        service_available = True
+                    except (subprocess.CalledProcessError, RuntimeError):
+                        pass
             killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_available else 0)
             if total:
@@ -4759,9 +4854,17 @@ def _gateway_command_inner(args):
                     service_available = True
                 except subprocess.CalledProcessError:
                     pass
+            elif is_windows():
+                from hermes_cli import gateway_windows
+                if gateway_windows.is_installed():
+                    try:
+                        gateway_windows.stop()
+                        service_available = True
+                    except (subprocess.CalledProcessError, RuntimeError):
+                        pass
 
             if not service_available:
-                # No systemd/launchd — use profile-scoped PID file
+                # No systemd/launchd/schtasks service — use profile-scoped PID file
                 if stop_profile_gateway():
                     print("✓ Stopped gateway for this profile")
                 else:
@@ -4791,6 +4894,14 @@ def _gateway_command_inner(args):
                     service_stopped = True
                 except subprocess.CalledProcessError:
                     pass
+            elif is_windows():
+                from hermes_cli import gateway_windows
+                if gateway_windows.is_installed():
+                    try:
+                        gateway_windows.stop()
+                        service_stopped = True
+                    except (subprocess.CalledProcessError, RuntimeError):
+                        pass
             killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_stopped else 0)
             if total:
@@ -4803,6 +4914,12 @@ def _gateway_command_inner(args):
                 systemd_start(system=system)
             elif is_macos() and get_launchd_plist_path().exists():
                 launchd_start()
+            elif is_windows():
+                from hermes_cli import gateway_windows
+                if gateway_windows.is_installed():
+                    gateway_windows.start()
+                else:
+                    run_gateway(verbose=0)
             else:
                 run_gateway(verbose=0)
             return
@@ -4821,6 +4938,15 @@ def _gateway_command_inner(args):
                 service_available = True
             except subprocess.CalledProcessError:
                 pass
+        elif is_windows():
+            from hermes_cli import gateway_windows
+            if gateway_windows.is_installed():
+                service_configured = True
+                try:
+                    gateway_windows.restart()
+                    service_available = True
+                except (subprocess.CalledProcessError, RuntimeError):
+                    pass
         
         if not service_available:
             # systemd/launchd restart failed — check if linger is the issue
@@ -4863,11 +4989,19 @@ def _gateway_command_inner(args):
         snapshot = get_gateway_runtime_snapshot(system=system)
         
         # Check for service first
+        _windows_service_installed = False
+        if is_windows():
+            from hermes_cli import gateway_windows
+            _windows_service_installed = gateway_windows.is_installed()
         if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
             systemd_status(deep, system=system, full=full)
             _print_gateway_process_mismatch(snapshot)
         elif is_macos() and get_launchd_plist_path().exists():
             launchd_status(deep)
+            _print_gateway_process_mismatch(snapshot)
+        elif _windows_service_installed:
+            from hermes_cli import gateway_windows
+            gateway_windows.status(deep=deep)
             _print_gateway_process_mismatch(snapshot)
         else:
             # Check for manually running processes
@@ -4889,6 +5023,9 @@ def _gateway_command_inner(args):
                     print("WSL note:")
                     print("  The gateway is running in foreground/manual mode (recommended for WSL).")
                     print("  Use tmux or screen for persistence across terminal closes.")
+                elif is_windows():
+                    print("To install as a Windows Scheduled Task (auto-start on login):")
+                    print("  hermes gateway install")
                 else:
                     print("To install as a service:")
                     print("  hermes gateway install")
@@ -4909,6 +5046,8 @@ def _gateway_command_inner(args):
                 elif is_wsl():
                     print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
                     print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
+                elif is_windows():
+                    print("  hermes gateway install  # Install as Windows Scheduled Task (auto-start on login)")
                 else:
                     print("  hermes gateway install  # Install as user service")
                     print("  sudo hermes gateway install --system  # Install as boot-time system service")

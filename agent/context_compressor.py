@@ -415,7 +415,7 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
-        custom_providers: list | None = None,
+        custom_providers: Any = None,
     ):
         self.model = model
         self.base_url = base_url

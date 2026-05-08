@@ -892,6 +892,7 @@ def test_refresh_token_exchange_sends_refresh_token_header():
     )
 
     assert payload["access_token"] == "access-2"
+    assert payload["refresh_token"] == "refresh-2"
     assert client.kwargs is not None
     assert client.kwargs["headers"]["x-nous-refresh-token"] == "refresh-1"
     assert client.kwargs["data"] == {

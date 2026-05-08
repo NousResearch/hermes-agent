@@ -91,11 +91,12 @@ from typing import Any, Iterable, Optional
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
-# A running task's claim is valid for 15 minutes; after that the next
-# dispatcher tick reclaims it.  Workers that outlive this window should call
-# ``heartbeat_claim(task_id)`` periodically.  In practice most kanban
-# workloads either finish within 15m or set a longer claim explicitly.
-DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
+# A running task's claim is valid for 2 hours by default; after that the next
+# dispatcher tick reclaims it. Workers that outlive this window should call
+# ``heartbeat_claim(task_id)`` periodically. The longer default is intentional:
+# visual QA, browser probes, CI watches, and live-server checks regularly exceed
+# short leases, and a too-short lease causes the dispatcher to kill real progress.
+DEFAULT_CLAIM_TTL_SECONDS = 2 * 60 * 60
 
 
 # Worker-context caps so build_worker_context() stays bounded on
@@ -1883,7 +1884,7 @@ def heartbeat_claim(
 ) -> bool:
     """Extend a running claim.  Returns True if we still own it.
 
-    Workers that know they'll exceed 15 minutes should call this every
+    Workers that know they'll exceed the default lease should call this every
     few minutes to keep ownership.
     """
     expires = int(time.time()) + int(ttl_seconds)
@@ -2951,15 +2952,15 @@ def heartbeat_worker(
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
+                "UPDATE tasks SET last_heartbeat_at = ?, claim_expires = ? "
                 "WHERE id = ? AND status = 'running'",
-                (now, task_id),
+                (now, now + DEFAULT_CLAIM_TTL_SECONDS, task_id),
             )
         else:
             cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
+                "UPDATE tasks SET last_heartbeat_at = ?, claim_expires = ? "
                 "WHERE id = ? AND status = 'running' AND current_run_id = ?",
-                (now, task_id, int(expected_run_id)),
+                (now, now + DEFAULT_CLAIM_TTL_SECONDS, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -2970,8 +2971,8 @@ def heartbeat_worker(
         )
         if run_id is not None:
             conn.execute(
-                "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
-                (now, run_id),
+                "UPDATE task_runs SET last_heartbeat_at = ?, claim_expires = ? WHERE id = ?",
+                (now, now + DEFAULT_CLAIM_TTL_SECONDS, run_id),
             )
         _append_event(
             conn, task_id, "heartbeat",

@@ -1011,6 +1011,8 @@ def test_heartbeat_on_running_task(kanban_home):
         assert ok is True
         task = kb.get_task(conn, tid)
         assert task.last_heartbeat_at is not None
+        assert task.claim_expires is not None
+        assert task.claim_expires - int(time.time()) >= kb.DEFAULT_CLAIM_TTL_SECONDS - 5
         events = kb.list_events(conn, tid)
         hb = [e for e in events if e.kind == "heartbeat"]
         assert len(hb) == 1
@@ -1297,6 +1299,24 @@ def test_run_created_on_claim(kanban_home):
         assert r.outcome is None
         assert r.ended_at is None
         assert r.claim_lock is not None and r.claim_expires is not None
+    finally:
+        conn.close()
+
+
+def test_default_claim_ttl_is_long_enough_for_visual_qa(kanban_home):
+    """Default claim lease should not reclaim long Visual QA/browser work quickly."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="visual qa", assignee="qa-eng")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        task = kb.get_task(conn, tid)
+        now = int(time.time())
+        assert kb.DEFAULT_CLAIM_TTL_SECONDS == 2 * 60 * 60
+        assert task.claim_expires is not None
+        assert task.claim_expires - now >= (2 * 60 * 60) - 5
+        run = kb.latest_run(conn, tid)
+        assert run.claim_expires == task.claim_expires
     finally:
         conn.close()
 

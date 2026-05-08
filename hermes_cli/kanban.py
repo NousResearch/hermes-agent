@@ -402,7 +402,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_claim.add_argument("task_id")
     p_claim.add_argument("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS,
-                         help="Claim TTL in seconds (default: 900)")
+                         help=f"Claim TTL in seconds (default: {kb.DEFAULT_CLAIM_TTL_SECONDS})")
 
     # --- comment / complete / block / unblock / archive ---
     p_comment = sub.add_parser("comment", help="Append a comment")

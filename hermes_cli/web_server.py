@@ -106,6 +106,7 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
     "/api/dashboard/plugins/rescan",
+    "/api/local-token",
 })
 
 
@@ -479,6 +480,21 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
+
+
+@app.get("/api/local-token")
+async def get_local_token(request: Request):
+    """Return session token for localhost clients only — no auth required."""
+    client_ip = (request.client.host if request.client else "") or ""
+    if client_ip not in ("127.0.0.1", "::1", "localhost", ""):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return {"token": _SESSION_TOKEN}
+
+
+@app.get("/health")
+async def health_check():
+    """Health check for hermes-web-ui compatibility."""
+    return {"status": "ok"}
 
 
 @app.get("/api/status")

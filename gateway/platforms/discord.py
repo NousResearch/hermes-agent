@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Discord platform adapter.
 
@@ -9,21 +7,60 @@ Uses discord.py library for:
 - Handling threads and channels
 """
 
+from __future__ import annotations
+
 import asyncio
+import fcntl
+import json
 import logging
 import os
+import re
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from collections import defaultdict
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from contextlib import contextmanager
+from pathlib import Path as _Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+
+from gateway.config import Platform, PlatformConfig  # noqa: E402
+from gateway.platforms.base import (  # noqa: E402
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SUPPORTED_DOCUMENT_TYPES,
+    SendResult,
+    cache_audio_from_bytes,
+    cache_audio_from_url,
+    cache_document_from_bytes,
+    cache_image_from_bytes,
+    cache_image_from_url,
+)
+from gateway.platforms.helpers import (  # noqa: E402
+    MessageDeduplicator,
+    ThreadParticipationTracker,
+)
+from tools.url_safety import is_safe_url  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
+LINKEDIN_DRAFT_CUSTOM_ID_PREFIX = "linkedin_draft"
+_LINKEDIN_DRAFT_ALLOWED_ACTIONS = {
+    "approve",
+    "changes",
+    "preview",
+    "publish",
+    "confirm_publish",
+    "archive",
+}
 
 try:
     import discord
@@ -36,29 +73,6 @@ except ImportError:
     DiscordMessage = Any
     Intents = Any
     commands = None
-
-import sys
-from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-
-from gateway.config import Platform, PlatformConfig
-import re
-
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
-from gateway.platforms.base import (
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    ProcessingOutcome,
-    SendResult,
-    cache_image_from_url,
-    cache_image_from_bytes,
-    cache_audio_from_url,
-    cache_audio_from_bytes,
-    cache_document_from_bytes,
-    SUPPORTED_DOCUMENT_TYPES,
-)
-from tools.url_safety import is_safe_url
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -81,6 +95,880 @@ def _clean_discord_id(entry: str) -> str:
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
+
+
+def _linkedin_draft_store_dir() -> _Path:
+    """Return the profile-aware directory for Discord LinkedIn draft records.
+
+    Returns
+    -------
+    pathlib.Path
+        Directory under ``HERMES_HOME`` where draft workflow records are stored.
+
+    Notes
+    -----
+    Draft records live in Hermes state, not in the Git repository, because they
+    contain user-authored post text and Discord message IDs that are runtime
+    workflow data.
+
+    Examples
+    --------
+    Resolve a record directory before building a draft-specific path::
+
+        store_dir = _linkedin_draft_store_dir()
+    """
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "social_media" / "linkedin_drafts"
+
+
+def _linkedin_draft_record_path(draft_id: str) -> _Path:
+    """Return the JSON record path for a validated draft ID.
+
+    Parameters
+    ----------
+    draft_id
+        Opaque workflow draft identifier embedded in Discord button custom IDs.
+
+    Returns
+    -------
+    pathlib.Path
+        Full path to the JSON record for ``draft_id``.
+
+    Raises
+    ------
+    ValueError
+        Raised when ``draft_id`` contains characters outside the conservative
+        filesystem/custom-ID allowlist.
+
+    Notes
+    -----
+    The same validation protects both filesystem paths and Discord component
+    IDs. Keep it narrow so a crafted button cannot escape the draft store.
+
+    Examples
+    --------
+    Validate and locate a record path::
+
+        path = _linkedin_draft_record_path("ld_123_456")
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", draft_id or ""):
+        raise ValueError("Invalid LinkedIn draft ID")
+    return _linkedin_draft_store_dir() / f"{draft_id}.json"
+
+
+def save_linkedin_draft_record(record: dict[str, Any]) -> None:
+    """Persist a LinkedIn workflow draft record for later button handling.
+
+    Parameters
+    ----------
+    record
+        JSON-serializable workflow record containing the draft ID, Discord stage
+        metadata, exact draft body, and current publishing status.
+
+    Returns
+    -------
+    None
+        The record is written with an atomic ``os.replace`` so concurrent button
+        handlers never observe a partially-written JSON document.
+
+    Notes
+    -----
+    The record stores the exact draft body at card-creation time so button
+    approval never needs to regenerate or summarize the approved copy. That is
+    the integrity boundary for the Discord review workflow.
+
+    Examples
+    --------
+    Persist a draft after creating the Discord card::
+
+        save_linkedin_draft_record({"draft_id": "ld_123", "draft_body": "..."})
+    """
+    draft_id: str = str(record.get("draft_id") or "").strip()
+    path: _Path = _linkedin_draft_record_path(draft_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: str = json.dumps(record, ensure_ascii=False, indent=2)
+
+    # Button interactions can arrive close together when Discord retries or a
+    # user double-clicks.  Write to a temporary sibling and atomically replace
+    # the record so every reader sees either the old complete JSON or the new
+    # complete JSON, never an in-progress write.
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=str(path.parent),
+        prefix=f".{path.stem}.",
+        suffix=".tmp",
+        delete=False,
+    ) as tmp_file:
+        tmp_file.write(payload)
+        tmp_name = tmp_file.name
+    os.replace(tmp_name, path)
+
+
+def load_linkedin_draft_record(draft_id: str) -> dict[str, Any]:
+    """Load a persisted LinkedIn workflow draft record.
+
+    Parameters
+    ----------
+    draft_id
+        Valid workflow draft identifier.
+
+    Returns
+    -------
+    dict[str, Any]
+        Parsed JSON record for the draft.
+
+    Notes
+    -----
+    Button handlers load the record instead of trusting Discord message content;
+    this ensures the approved/published text is the exact stored body.
+
+    Examples
+    --------
+    Load a record from a button handler::
+
+        record = load_linkedin_draft_record("ld_123")
+    """
+    path: _Path = _linkedin_draft_record_path(draft_id)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@contextmanager
+def _locked_linkedin_draft_record(draft_id: str):
+    """Yield a draft record while holding an exclusive per-draft file lock.
+
+    Parameters
+    ----------
+    draft_id
+        Valid workflow draft identifier.
+
+    Yields
+    ------
+    dict[str, Any]
+        Current persisted workflow record. Callers may mutate and save it before
+        the context exits.
+
+    Notes
+    -----
+    Discord can deliver duplicate interactions when a button is clicked twice or
+    a request is retried. Holding this lock across state transition and publish
+    network I/O makes the LinkedIn publish path single-flight per draft.
+
+    Examples
+    --------
+    Guard a terminal state transition::
+
+        with _locked_linkedin_draft_record("ld_123") as record:
+            record["status"] = "published"
+            save_linkedin_draft_record(record)
+    """
+    path: _Path = _linkedin_draft_record_path(draft_id)
+    lock_path: _Path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield load_linkedin_draft_record(draft_id)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _sanitize_linkedin_workflow_error(error_text: str) -> str:
+    """Return a redacted, user-safe summary of workflow/helper errors.
+
+    Parameters
+    ----------
+    error_text
+        Raw exception text, stdout, or stderr from local workflow helpers.
+
+    Returns
+    -------
+    str
+        Sanitized text capped for Discord messages and JSON audit records.
+
+    Notes
+    -----
+    Publish failures may include HTTP diagnostics. Redacting common token/secret
+    patterns before persisting or sending to Discord prevents accidental leakage
+    from helper output.
+
+    Examples
+    --------
+    Sanitize helper stderr before showing it to a user::
+
+        safe = _sanitize_linkedin_workflow_error(raw_error)
+    """
+    text: str = str(error_text or "LinkedIn workflow failed")
+    redactions: list[tuple[str, str]] = [
+        (r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s'\"]+", r"\1[REDACTED]"),
+        (r"(?i)((?:access|refresh|id)?_?token\s*[:=]\s*)['\"]?[^\s,'\"]+", r"\1[REDACTED]"),
+        (r"(?i)((?:client_)?secret\s*[:=]\s*)['\"]?[^\s,'\"]+", r"\1[REDACTED]"),
+        (r"(?i)(password\s*[:=]\s*)['\"]?[^\s,'\"]+", r"\1[REDACTED]"),
+    ]
+    for pattern, replacement in redactions:
+        text = re.sub(pattern, replacement, text)
+    return text.strip()[-1200:] or "LinkedIn workflow failed"
+
+
+def _is_linkedin_terminal_status(status: str) -> bool:
+    """Return whether a workflow status should reject stale button actions.
+
+    Parameters
+    ----------
+    status
+        Current persisted workflow state.
+
+    Returns
+    -------
+    bool
+        ``True`` for states where another button click must not mutate or
+        republish the draft.
+
+    Notes
+    -----
+    This small state-machine guard prevents stale Discord buttons from reviving
+    cancelled items or duplicating posts after publication.
+
+    Examples
+    --------
+    Check before acting on a button::
+
+        if _is_linkedin_terminal_status(record["status"]):
+            return
+    """
+    return status in {"published", "cancelled", "publish_in_progress"}
+
+
+def _parse_linkedin_draft_custom_id(custom_id: str) -> Optional[Tuple[str, str]]:
+    """Parse a LinkedIn workflow Discord component custom ID.
+
+    Parameters
+    ----------
+    custom_id
+        Discord component custom ID from an interaction payload.
+
+    Returns
+    -------
+    Optional[Tuple[str, str]]
+        ``(action, draft_id)`` for recognized LinkedIn workflow buttons;
+        otherwise ``None`` so unrelated components continue through discord.py.
+
+    Notes
+    -----
+    Parsing is intentionally fail-closed. Unknown actions, malformed IDs, and
+    IDs with unsafe characters are ignored rather than handled as workflow
+    actions.
+
+    Examples
+    --------
+    Parse a valid approval button ID::
+
+        _parse_linkedin_draft_custom_id("linkedin_draft:approve:ld_123")
+    """
+    parts = (custom_id or "").split(":", 2)
+    if len(parts) != 3 or parts[0] != LINKEDIN_DRAFT_CUSTOM_ID_PREFIX:
+        return None
+    action, draft_id = parts[1], parts[2]
+    if action not in _LINKEDIN_DRAFT_ALLOWED_ACTIONS:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", draft_id or ""):
+        return None
+    return action, draft_id
+
+
+def _format_approved_linkedin_draft(record: dict[str, Any], approver_name: str) -> str:
+    """Build the approved-channel message around the unchanged draft body.
+
+    Parameters
+    ----------
+    record
+        Stored workflow record containing source metadata and the exact draft
+        body captured when the draft card was created.
+    approver_name
+        Discord display name of the user who approved the draft.
+
+    Returns
+    -------
+    str
+        Human-readable approved-stage Discord message with metadata wrapped
+        around the unchanged draft body.
+
+    Notes
+    -----
+    The approved message deliberately says that the item is not yet published.
+    Workflow approval and public LinkedIn publishing are separate stages.
+
+    Examples
+    --------
+    Format an approval message without mutating the record::
+
+        message = _format_approved_linkedin_draft(record, approver_name="Roger")
+    """
+    draft_body: str = str(record.get("draft_body") or "")
+    source_channel_id: str = str(record.get("source_channel_id") or "unknown")
+    source_message_id: str = str(record.get("source_message_id") or "unknown")
+    draft_id: str = str(record.get("draft_id") or "unknown")
+    return (
+        "APPROVED LINKEDIN DRAFT\n\n"
+        f"Approved by: {approver_name}\n"
+        f"Source: <#{source_channel_id}> message `{source_message_id}`\n"
+        f"Draft ID: `{draft_id}`\n"
+        "Status: Approved for workflow stage only — not published to LinkedIn\n\n"
+        "Exact approved draft follows:\n\n"
+        f"{draft_body}"
+    )
+
+
+def _build_linkedin_draft_button_components(
+    draft_id: str,
+    include_publish: bool = False,
+) -> list[dict[str, Any]]:
+    """Build Discord REST component rows for a LinkedIn draft workflow card.
+
+    Parameters
+    ----------
+    draft_id
+        Valid workflow draft identifier to embed in button custom IDs.
+    include_publish
+        Whether to include a publish button on the draft card. The production
+        workflow keeps this ``False`` so first-stage approval cannot publish.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Discord REST component rows suitable for the message ``components``
+        payload.
+
+    Notes
+    -----
+    First-stage review cards should expose approval, changes, and preview only.
+    Publishing belongs in the approved-posts stage after exact-copy approval.
+
+    Examples
+    --------
+    Build safe first-stage buttons::
+
+        components = _build_linkedin_draft_button_components("ld_123")
+    """
+    _linkedin_draft_record_path(draft_id)  # validation only
+    buttons: list[dict[str, Any]] = [
+        {
+            "type": 2,
+            "style": 3,
+            "label": "Approve for next stage",
+            "custom_id": f"{LINKEDIN_DRAFT_CUSTOM_ID_PREFIX}:approve:{draft_id}",
+        },
+        {
+            "type": 2,
+            "style": 2,
+            "label": "Request changes",
+            "custom_id": f"{LINKEDIN_DRAFT_CUSTOM_ID_PREFIX}:changes:{draft_id}",
+        },
+        {
+            "type": 2,
+            "style": 1,
+            "label": "Preview LinkedIn post",
+            "custom_id": f"{LINKEDIN_DRAFT_CUSTOM_ID_PREFIX}:preview:{draft_id}",
+        },
+    ]
+    if include_publish:
+        buttons.append(
+            {
+                "type": 2,
+                "style": 4,
+                "label": "Publish to LinkedIn",
+                "custom_id": f"{LINKEDIN_DRAFT_CUSTOM_ID_PREFIX}:publish:{draft_id}",
+            }
+        )
+    return [{"type": 1, "components": buttons}]
+
+
+def _build_linkedin_approved_stage_button_components(draft_id: str) -> list[dict[str, Any]]:
+    """Build button rows for a draft that is already workflow-approved.
+
+    Parameters
+    ----------
+    draft_id
+        Valid workflow draft identifier to embed in approved-stage button IDs.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Discord REST component rows with publish, final-changes, preview, and
+        archive controls.
+
+    Notes
+    -----
+    The publish button is only rendered after the draft has been copied to the
+    approved-posts channel. Clicking it now calls the guarded LinkedIn publisher,
+    which itself requires the exact approval phrase internally before it loads
+    tokens or performs network I/O.
+
+    Examples
+    --------
+    Build approved-stage controls::
+
+        components = _build_linkedin_approved_stage_button_components("ld_123")
+    """
+    _linkedin_draft_record_path(draft_id)  # validation only
+    return [
+        {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2,
+                    "style": 4,
+                    "label": "Publish to LinkedIn",
+                    "custom_id": f"{LINKEDIN_DRAFT_CUSTOM_ID_PREFIX}:publish:{draft_id}",
+                },
+                {
+                    "type": 2,
+                    "style": 2,
+                    "label": "Request final changes",
+                    "custom_id": f"{LINKEDIN_DRAFT_CUSTOM_ID_PREFIX}:changes:{draft_id}",
+                },
+                {
+                    "type": 2,
+                    "style": 1,
+                    "label": "Preview API-ready post",
+                    "custom_id": f"{LINKEDIN_DRAFT_CUSTOM_ID_PREFIX}:preview:{draft_id}",
+                },
+                {
+                    "type": 2,
+                    "style": 2,
+                    "label": "Archive / cancel",
+                    "custom_id": f"{LINKEDIN_DRAFT_CUSTOM_ID_PREFIX}:archive:{draft_id}",
+                },
+            ],
+        }
+    ]
+
+
+def _format_linkedin_publish_confirmation_message(
+    record: dict[str, Any],
+    requester_name: str,
+) -> str:
+    """Build the guarded publish-confirmation text for an approved draft.
+
+    Parameters
+    ----------
+    record
+        Stored workflow record containing approved-stage metadata and draft body.
+    requester_name
+        Discord display name of the user requesting publication.
+
+    Returns
+    -------
+    str
+        Confirmation copy that shows the exact proposed post text and the guard
+        phrase required by the underlying LinkedIn helper.
+
+    Notes
+    -----
+    This formatter remains useful for audit messages and tests even though the
+    approved-stage publish button now invokes the guarded publisher directly.
+
+    Examples
+    --------
+    Produce a publish-confirmation message::
+
+        text = _format_linkedin_publish_confirmation_message(record, "Roger")
+    """
+    draft_body: str = str(record.get("draft_body") or "")
+    draft_id: str = str(record.get("draft_id") or "unknown")
+    approved_message_id: str = str(record.get("approved_message_id") or "unknown")
+    return (
+        "PUBLISH CONFIRMATION REQUIRED\n\n"
+        f"Requested by: {requester_name}\n"
+        f"Draft ID: `{draft_id}`\n"
+        f"Approved-stage message: `{approved_message_id}`\n"
+        "Status: publish requested — this has not been published to LinkedIn.\n\n"
+        "To publish publicly, run the guarded LinkedIn publishing workflow with the exact phrase:\n"
+        "`APPROVED FOR LINKEDIN PERSONAL POST`\n\n"
+        "Exact post text proposed for LinkedIn:\n\n"
+        f"{draft_body}"
+    )
+
+
+def _mark_linkedin_publish_requested(
+    record: dict[str, Any],
+    requester_name: str,
+    requested_at: Optional[int] = None,
+) -> dict[str, Any]:
+    """Return a record updated for the guarded publish-request stage.
+
+    Parameters
+    ----------
+    record
+        Mutable workflow record to update.
+    requester_name
+        Discord display name of the user who clicked the publish button.
+    requested_at
+        Optional Unix timestamp override for deterministic tests.
+
+    Returns
+    -------
+    dict[str, Any]
+        The same record object with status and requester metadata updated.
+
+    Notes
+    -----
+    This stage is written before the network call so a failed publish attempt is
+    still auditable as an intentional publish request.
+
+    Examples
+    --------
+    Mark a draft as requested for publish::
+
+        record = _mark_linkedin_publish_requested(record, "Roger")
+    """
+    record["previous_status"] = str(record.get("status") or "")
+    record["status"] = "publish_confirmation_requested"
+    record["publish_requested_by"] = requester_name
+    record["publish_requested_at"] = int(requested_at if requested_at is not None else time.time())
+    return record
+
+
+def _mark_linkedin_draft_archived(
+    record: dict[str, Any],
+    actor_name: str,
+    archived_at: Optional[int] = None,
+) -> dict[str, Any]:
+    """Return a record updated for the cancelled/archive workflow stage.
+
+    Parameters
+    ----------
+    record
+        Mutable workflow record to update.
+    actor_name
+        Discord display name of the user who archived or cancelled the item.
+    archived_at
+        Optional Unix timestamp override for deterministic tests.
+
+    Returns
+    -------
+    dict[str, Any]
+        The same record object marked as cancelled.
+
+    Notes
+    -----
+    Archiving is a workflow cancellation only. It never calls LinkedIn and never
+    removes the original draft body from the audit record.
+
+    Examples
+    --------
+    Cancel a workflow item::
+
+        record = _mark_linkedin_draft_archived(record, "Roger")
+    """
+    record["previous_status"] = str(record.get("status") or "")
+    record["status"] = "cancelled"
+    record["archived_by"] = actor_name
+    record["archived_at"] = int(archived_at if archived_at is not None else time.time())
+    return record
+
+
+def _extract_linkedin_api_post_text(draft_body: str) -> str:
+    """Extract the API-ready LinkedIn post text from a structured draft body.
+
+    Parameters
+    ----------
+    draft_body
+        Stored draft body from the Discord review card. It may be a full review
+        template or a plain final post.
+
+    Returns
+    -------
+    str
+        Text that should be sent as LinkedIn UGC ``shareCommentary``.
+
+    Notes
+    -----
+    Discord review cards include workflow metadata, hooks, visual ideas, polls,
+    sources, and hashtags. The LinkedIn API should publish only the text inside
+    the ``Draft post`` section when that section is present. If a caller stores a
+    plain post body instead of the structured template, return it unchanged.
+
+    Examples
+    --------
+    Extract from the structured review template::
+
+        post_text = _extract_linkedin_api_post_text(draft_body)
+    """
+    text: str = str(draft_body or "").strip()
+    patterns: list[tuple[str, str]] = [
+        (r"\*\*Draft post\*\*\s*", r"\n\s*\*\*Three alternative hooks\*\*"),
+        (r"^Draft post\s*\n", r"\n\s*Three alternative hooks\s*\n"),
+    ]
+    for start_pattern, end_pattern in patterns:
+        start_match = re.search(start_pattern, text, flags=re.IGNORECASE | re.MULTILINE)
+        if not start_match:
+            continue
+        remainder = text[start_match.end():]
+        end_match = re.search(end_pattern, remainder, flags=re.IGNORECASE | re.MULTILINE)
+        return (remainder[:end_match.start()] if end_match else remainder).strip()
+    return text
+
+
+def _linkedin_publish_project_dir() -> _Path:
+    """Return the local LinkedIn publishing helper project directory.
+
+    Returns
+    -------
+    pathlib.Path
+        Directory containing the ``linkedin-share-assistant`` CLI project.
+
+    Notes
+    -----
+    The path is configurable for deployments, but defaults to the user's social
+    media project directory. Keeping the API client in that project avoids
+    storing LinkedIn OAuth code or secrets inside the gateway adapter.
+
+    Examples
+    --------
+    Resolve the helper before running a publish command::
+
+        project_dir = _linkedin_publish_project_dir()
+    """
+    return _Path(
+        os.getenv(
+            "LINKEDIN_SHARE_ASSISTANT_DIR",
+            "/root/projects/social-media/linkedin-share-assistant",
+        )
+    )
+
+
+def _write_linkedin_publish_draft_file(record: dict[str, Any]) -> _Path:
+    """Write the API-ready post text to the share assistant drafts directory.
+
+    Parameters
+    ----------
+    record
+        Stored workflow record containing ``draft_id`` and ``draft_body``.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the temporary draft file consumed by the guarded publisher CLI.
+
+    Raises
+    ------
+    RuntimeError
+        Raised when the stored record contains no publishable post text.
+
+    Notes
+    -----
+    This file is an integration handoff between Hermes gateway state and the
+    existing LinkedIn helper. The helper still owns OAuth token loading, approval
+    enforcement, and the network boundary.
+
+    Examples
+    --------
+    Create a helper draft file from an approved workflow record::
+
+        draft_path = _write_linkedin_publish_draft_file(record)
+    """
+    draft_id: str = str(record.get("draft_id") or "").strip()
+    _linkedin_draft_record_path(draft_id)  # validation only
+    post_text: str = _extract_linkedin_api_post_text(str(record.get("draft_body") or ""))
+    if not post_text:
+        raise RuntimeError("Stored LinkedIn draft has no API-ready post text.")
+    project_dir = _linkedin_publish_project_dir()
+    draft_path = project_dir / "drafts" / f"{draft_id}-api-post.txt"
+    draft_path.parent.mkdir(parents=True, exist_ok=True)
+    draft_path.write_text(post_text + "\n", encoding="utf-8")
+    return draft_path
+
+
+def _run_guarded_linkedin_publish(record: dict[str, Any]) -> dict[str, Any]:
+    """Publish a workflow-approved draft through the guarded LinkedIn helper.
+
+    Parameters
+    ----------
+    record
+        Workflow record that has reached the approved-posts publish stage.
+
+    Returns
+    -------
+    dict[str, Any]
+        Safe JSON response summary from the LinkedIn helper. Token values and
+        local secrets are never returned.
+
+    Raises
+    ------
+    RuntimeError
+        Raised when the helper project is missing, the helper exits non-zero, or
+        the helper returns malformed output.
+
+    Notes
+    -----
+    The helper CLI still receives the exact approval phrase, so all existing
+    token-loading and API-posting guardrails remain centralized in the
+    linkedin-share-assistant project.
+
+    The subprocess call intentionally passes arguments as a list with
+    ``shell=False``. The draft ID is validated before it becomes a filename, and
+    no user-controlled value is interpolated into a shell command.
+
+    Examples
+    --------
+    Publish an approved record and capture the safe API response::
+
+        result = _run_guarded_linkedin_publish(record)
+    """
+    project_dir = _linkedin_publish_project_dir()
+    if not project_dir.exists():
+        raise RuntimeError(f"LinkedIn share assistant project not found: {project_dir}")
+    draft_path = _write_linkedin_publish_draft_file(record)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "src.main",
+            "post",
+            str(draft_path),
+            "--approval",
+            "APPROVED FOR LINKEDIN PERSONAL POST",
+        ],
+        cwd=str(project_dir),
+        text=True,
+        capture_output=True,
+        timeout=90,
+        check=False,
+    )
+    if result.returncode != 0:
+        safe_error = _sanitize_linkedin_workflow_error(
+            result.stderr or result.stdout or "LinkedIn publish helper failed"
+        )
+        raise RuntimeError(safe_error)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("LinkedIn publish helper returned non-JSON output.") from exc
+
+
+def _mark_linkedin_draft_published(
+    record: dict[str, Any],
+    publisher_name: str,
+    publish_result: dict[str, Any],
+    published_at: Optional[int] = None,
+) -> dict[str, Any]:
+    """Return a record updated after a successful LinkedIn publish.
+
+    Parameters
+    ----------
+    record
+        Mutable workflow record to update.
+    publisher_name
+        Discord display name associated with the publish action.
+    publish_result
+        Safe response summary returned by the guarded LinkedIn helper.
+    published_at
+        Optional Unix timestamp override for deterministic tests.
+
+    Returns
+    -------
+    dict[str, Any]
+        The same record object marked as published with non-secret API metadata.
+
+    Notes
+    -----
+    Only safe LinkedIn response fields are persisted. OAuth access tokens,
+    client secrets, and raw request headers never enter the workflow record.
+
+    Examples
+    --------
+    Mark a draft after a successful API response::
+
+        record = _mark_linkedin_draft_published(record, "Roger", result)
+    """
+    record["previous_status"] = str(record.get("status") or "")
+    record["status"] = "published"
+    record["published_by"] = publisher_name
+    record["published_at"] = int(published_at if published_at is not None else time.time())
+    record["linkedin_publish_result"] = {
+        "status_code": publish_result.get("status_code"),
+        "linkedin_id": publish_result.get("linkedin_id"),
+        "response_text": publish_result.get("response_text"),
+    }
+    return record
+
+
+def _publish_linkedin_record_under_lock(
+    draft_id: str,
+    publisher_name: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Publish a draft while holding the per-draft workflow lock.
+
+    Parameters
+    ----------
+    draft_id
+        Valid workflow draft identifier from the Discord button custom ID.
+    publisher_name
+        Discord display name associated with the publish click.
+
+    Returns
+    -------
+    tuple[dict[str, Any], dict[str, Any]]
+        Updated workflow record and safe LinkedIn helper response.
+
+    Raises
+    ------
+    RuntimeError
+        Raised when the draft is not in a publishable state or the helper fails.
+
+    Notes
+    -----
+    The lock intentionally spans the network call. That is conservative, but it
+    guarantees a Discord retry or double-click cannot run two concurrent
+    LinkedIn API posts for the same approved draft.
+
+    Examples
+    --------
+    Run from the async Discord handler without blocking the event loop::
+
+        record, result = await asyncio.to_thread(
+            _publish_linkedin_record_under_lock, draft_id, "Roger"
+        )
+    """
+    with _locked_linkedin_draft_record(draft_id) as record:
+        current_status: str = str(record.get("status") or "")
+        if current_status == "published":
+            raise RuntimeError("This draft is already marked as published. I did not post it again.")
+        if current_status == "publish_in_progress":
+            raise RuntimeError("This draft is already being published. I did not start a duplicate post.")
+        if current_status not in {
+            "approved_for_workflow_stage",
+            "publish_confirmation_requested",
+            "failed_publish",
+        }:
+            raise RuntimeError("This draft is not in the approved-posts stage, so I did not publish it.")
+
+        # Mark in-progress before the external API call. If Discord sends a
+        # duplicate interaction while LinkedIn is processing, that second path
+        # will stop here instead of creating a second public post.
+        record = _mark_linkedin_publish_requested(record, requester_name=publisher_name)
+        record["status"] = "publish_in_progress"
+        save_linkedin_draft_record(record)
+
+        try:
+            publish_result = _run_guarded_linkedin_publish(record)
+        except Exception as exc:
+            safe_error = _sanitize_linkedin_workflow_error(str(exc))
+            record["previous_status"] = str(record.get("status") or "")
+            record["status"] = "failed_publish"
+            record["publish_error"] = safe_error
+            save_linkedin_draft_record(record)
+            raise RuntimeError(safe_error) from exc
+
+        record = _mark_linkedin_draft_published(
+            record,
+            publisher_name=publisher_name,
+            publish_result=publish_result,
+        )
+        save_linkedin_draft_record(record)
+        return record, publish_result
 
 
 def _build_allowed_mentions():
@@ -727,6 +1615,23 @@ class DiscordAdapter(BasePlatformAdapter):
                         return
 
                 await self._handle_message(message)
+
+            @self._client.listen("on_interaction")
+            async def linkedin_draft_on_interaction(interaction):
+                """Handle stateless Discord component interactions.
+
+                Most component views in this adapter are stateful discord.py
+                Views. LinkedIn draft workflow buttons are created via REST so
+                they can survive process boundaries; route those custom IDs
+                explicitly and leave all unrelated interactions alone.  Use a
+                listener instead of overriding ``on_interaction`` so slash
+                commands and normal discord.py Views keep their default
+                dispatch path.
+                """
+                data = getattr(interaction, "data", None)
+                custom_id = data.get("custom_id") if isinstance(data, dict) else None
+                if _parse_linkedin_draft_custom_id(custom_id):
+                    await adapter_self._handle_linkedin_draft_interaction(interaction)
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -3712,6 +4617,211 @@ class DiscordAdapter(BasePlatformAdapter):
                 if resp.status != 200:
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
+
+    async def _send_discord_rest_message(
+        self,
+        channel_id: str,
+        content: str,
+        components: Optional[list[dict]] = None,
+    ) -> dict:
+        """Send a Discord message through REST so raw components can be attached."""
+        import aiohttp
+
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+
+        if not self.config.token:
+            raise RuntimeError("Discord token is not configured")
+        payload = {
+            "content": content,
+            "allowed_mentions": {"parse": []},
+        }
+        if components:
+            payload["components"] = components
+        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+        headers = {
+            "Authorization": f"Bot {self.config.token}",
+            "Content-Type": "application/json",
+        }
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            **_sess_kw,
+        ) as session:
+            async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
+                body = await resp.text()
+                if resp.status not in (200, 201):
+                    raise RuntimeError(f"Discord API error ({resp.status}): {body}")
+                return json.loads(body)
+
+    async def _handle_linkedin_draft_interaction(self, interaction) -> None:
+        """Handle LinkedIn draft workflow buttons created with REST components."""
+        data = getattr(interaction, "data", {}) or {}
+        custom_id = data.get("custom_id") if isinstance(data, dict) else None
+        parsed = _parse_linkedin_draft_custom_id(custom_id)
+        if not parsed:
+            return
+
+        action, draft_id = parsed
+        if not _component_check_auth(
+            interaction, self._allowed_user_ids, self._allowed_role_ids,
+        ):
+            await interaction.response.send_message(
+                "You're not authorized to manage this LinkedIn draft~",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            record = load_linkedin_draft_record(draft_id)
+        except Exception as exc:
+            logger.warning("LinkedIn draft record %s could not be loaded: %s", draft_id, exc)
+            await interaction.response.send_message(
+                "I couldn't find the stored exact draft for this button, so I did not approve it.",
+                ephemeral=True,
+            )
+            return
+
+        if action == "approve":
+            approved_channel_id = str(record.get("approved_channel_id") or "").strip()
+            if not approved_channel_id:
+                await interaction.response.send_message(
+                    "No approved-posts channel is configured for this draft.",
+                    ephemeral=True,
+                )
+                return
+
+            approver_name = (
+                getattr(getattr(interaction, "user", None), "display_name", None)
+                or getattr(getattr(interaction, "user", None), "name", "Unknown")
+            )
+            approved_text = _format_approved_linkedin_draft(record, approver_name=approver_name)
+            try:
+                channel = self._client.get_channel(int(approved_channel_id)) if self._client else None
+                if channel is None and self._client:
+                    channel = await self._client.fetch_channel(int(approved_channel_id))
+                if channel is None:
+                    raise RuntimeError(f"Could not resolve Discord channel {approved_channel_id}")
+                # Keep the exact draft body in the approved channel. Short
+                # drafts are posted inline; over-limit drafts are attached as
+                # a UTF-8 Markdown file instead of being truncated or
+                # regenerated. The attachment body is the exact approved draft.
+                if len(approved_text) > self.MAX_MESSAGE_LENGTH:
+                    attachment_dir = _linkedin_draft_store_dir() / "approved_attachments"
+                    attachment_dir.mkdir(parents=True, exist_ok=True)
+                    attachment_path = attachment_dir / f"{draft_id}.md"
+                    attachment_path.write_text(approved_text, encoding="utf-8")
+                    sent = await channel.send(
+                        (
+                            "APPROVED LINKEDIN DRAFT\n\n"
+                            f"Approved by: {approver_name}\n"
+                            "Status: Approved for workflow stage only — not published to LinkedIn\n\n"
+                            "The exact approved draft was over Discord's inline text limit, "
+                            "so it is attached as Markdown without changes. Use the guarded "
+                            "publish workflow manually if this should be posted."
+                        ),
+                        file=discord.File(str(attachment_path)),
+                    )
+                else:
+                    sent_data = await self._send_discord_rest_message(
+                        approved_channel_id,
+                        approved_text,
+                        components=_build_linkedin_approved_stage_button_components(draft_id),
+                    )
+                    class _Sent:
+                        id = sent_data.get("id", "")
+
+                    sent = _Sent()
+                record["approved_message_id"] = str(getattr(sent, "id", ""))
+                record["approved_by"] = approver_name
+                record["status"] = "approved_for_workflow_stage"
+                save_linkedin_draft_record(record)
+            except Exception as exc:
+                logger.error("LinkedIn draft approval failed for %s: %s", draft_id, exc, exc_info=True)
+                await interaction.response.send_message(
+                    f"Approval failed: {exc}",
+                    ephemeral=True,
+                )
+                return
+
+            for child in getattr(self, "children", []):
+                child.disabled = True
+            await interaction.response.send_message(
+                f"Approved for next stage and copied unchanged to <#{approved_channel_id}>.",
+                ephemeral=True,
+            )
+            return
+
+        if action == "changes":
+            await interaction.response.send_message(
+                "Change request noted. Reply in this channel/thread with what should change.",
+                ephemeral=True,
+            )
+            return
+
+        if action == "preview":
+            draft_body = str(record.get("draft_body") or "")
+            preview = draft_body if len(draft_body) <= 1900 else draft_body[:1900] + "…"
+            await interaction.response.send_message(
+                f"LinkedIn preview — exact stored draft:\n\n{preview}",
+                ephemeral=True,
+            )
+            return
+
+        if action == "publish":
+            requester_name = (
+                getattr(getattr(interaction, "user", None), "display_name", None)
+                or getattr(getattr(interaction, "user", None), "name", "Unknown")
+            )
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                record, publish_result = await asyncio.to_thread(
+                    _publish_linkedin_record_under_lock,
+                    draft_id,
+                    requester_name,
+                )
+            except Exception as exc:
+                safe_error = _sanitize_linkedin_workflow_error(str(exc))
+                await interaction.followup.send(
+                    f"LinkedIn publish failed or was skipped. Error: {safe_error}",
+                    ephemeral=True,
+                )
+                return
+
+            linkedin_id = publish_result.get("linkedin_id") or "not returned by LinkedIn"
+            await interaction.followup.send(
+                (
+                    "Published to LinkedIn successfully.\n"
+                    f"Draft ID: `{draft_id}`\n"
+                    f"LinkedIn response ID: `{linkedin_id}`"
+                ),
+                ephemeral=True,
+            )
+            return
+
+        if action == "archive":
+            actor_name = (
+                getattr(getattr(interaction, "user", None), "display_name", None)
+                or getattr(getattr(interaction, "user", None), "name", "Unknown")
+            )
+            record = _mark_linkedin_draft_archived(record, actor_name=actor_name)
+            save_linkedin_draft_record(record)
+            await interaction.response.send_message(
+                "Archived/cancelled this LinkedIn draft workflow item. Nothing was published.",
+                ephemeral=True,
+            )
+            return
+
+        if action == "confirm_publish":
+            await interaction.response.send_message(
+                (
+                    "Final LinkedIn publishing still requires the guarded publishing helper "
+                    "and exact approval phrase `APPROVED FOR LINKEDIN PERSONAL POST`; "
+                    "no LinkedIn API call was made from this button."
+                ),
+                ephemeral=True,
+            )
+            return
 
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""

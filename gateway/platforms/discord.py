@@ -785,6 +785,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._handle_message(message)
 
             @self._client.event
+            async def on_message_edit(before: DiscordMessage, after: DiscordMessage):
+                # Delegate to the adapter method so the routing logic
+                # is unit-testable without spinning up a Discord client.
+                await adapter_self._handle_message_edit(before, after)
+
+            @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
                 # Only track channels where the bot is connected
@@ -4329,6 +4335,71 @@ class DiscordAdapter(BasePlatformAdapter):
             await self.handle_message(event)
 
     # ------------------------------------------------------------------
+    async def _handle_message_edit(
+        self,
+        before: "DiscordMessage",
+        after: "DiscordMessage",
+    ) -> None:
+        """Forward an edited Discord message when a fresh @-mention is added.
+
+        Discord fires ``MESSAGE_UPDATE`` for any edit, including auto-generated
+        link-preview embeds. We treat the edit like a new user turn only when
+        the user actually changed the text AND newly @-mentioned the bot (in
+        guild channels) or simply changed content (in DMs). Without this,
+        typo-fixes on already-answered messages would trigger duplicate replies.
+
+        Edits share ``message.id`` with the original, so the existing message-id
+        dedup cannot be reused. We use a separate ``edit:<id>:<edited_at>`` key so
+        a second genuine edit can re-trigger but RESUME-replays of the same edit
+        are still suppressed.
+        """
+        if not self._ready_event.is_set():
+            try:
+                await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
+            except asyncio.TimeoutError:
+                pass
+
+        # Embed-only edit (Discord auto-resolves link previews) -> ignore.
+        if before.content == after.content:
+            return
+
+        if after.author == self._client.user:
+            return
+        if after.type not in (discord.MessageType.default, discord.MessageType.reply):
+            return
+
+        if getattr(after.author, "bot", False):
+            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+            if allow_bots == "none":
+                return
+            if allow_bots == "mentions" and (
+                not self._client.user or self._client.user not in after.mentions
+            ):
+                return
+        else:
+            if not self._is_allowed_user(str(after.author.id), after.author):
+                return
+
+        # Trigger only when the bot is newly @-mentioned. In DMs every user
+        # message is for us, so any genuine content change suffices.
+        if not isinstance(after.channel, discord.DMChannel):
+            mentioned_before = (
+                self._client.user is not None
+                and self._client.user in before.mentions
+            )
+            mentioned_after = (
+                self._client.user is not None
+                and self._client.user in after.mentions
+            )
+            if mentioned_before or not mentioned_after:
+                return
+
+        edited_at = after.edited_at.isoformat() if after.edited_at else "0"
+        if self._dedup.is_duplicate(f"edit:{after.id}:{edited_at}"):
+            return
+
+        await self._handle_message(after)
+
     # Text message aggregation (handles Discord client-side splits)
     # ------------------------------------------------------------------
 

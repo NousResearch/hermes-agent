@@ -261,6 +261,11 @@ class TelegramAdapter(BasePlatformAdapter):
     - Media messages
     """
 
+    # Telegram Bot API chat actions are one-shot and cannot be explicitly
+    # cleared.  Stop the base refresh loop before sending the final response so
+    # a late sendChatAction("typing") cannot outlive the reply in the client UI.
+    TYPING_CLEARED_BY_OUTBOUND_MESSAGE = True
+
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
     # Threshold for detecting Telegram client-side message splits.

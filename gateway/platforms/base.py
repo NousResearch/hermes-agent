@@ -1213,6 +1213,11 @@ class BasePlatformAdapter(ABC):
     - Sending messages/responses
     - Handling media
     """
+
+    # Some platforms expose typing as an uncancellable one-shot status that is
+    # cleared only when the bot sends a message.  For those adapters, stop the
+    # refresh loop before final delivery so a late tick cannot outlive the reply.
+    TYPING_CLEARED_BY_OUTBOUND_MESSAGE = False
     
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
@@ -2844,6 +2849,8 @@ class BasePlatformAdapter(ABC):
                 response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+            elif getattr(self, "TYPING_CLEARED_BY_OUTBOUND_MESSAGE", False):
+                await _stop_typing_task()
             if response:
                 # Capture [[as_document]] before extract_media strips it, so the
                 # dispatch partition below can route image-extension files

@@ -1158,6 +1158,7 @@ class GatewayRunner:
     _restart_task_started: bool = False
     _restart_detached: bool = False
     _restart_via_service: bool = False
+    _restart_after_idle: bool = False
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -1200,6 +1201,7 @@ class GatewayRunner:
         self._restart_task_started = False
         self._restart_detached = False
         self._restart_via_service = False
+        self._restart_after_idle = False
         self._stop_task: Optional[asyncio.Task] = None
         
         # Track running agents per session for interrupt support
@@ -2457,6 +2459,74 @@ class GatewayRunner:
             if agent is not _AGENT_PENDING_SENTINEL
         }
 
+    @staticmethod
+    def _redact_session_key_for_logs(session_key: str) -> str:
+        parsed = _parse_session_key(session_key)
+        if not parsed:
+            return "unknown-session"
+        platform = parsed.get("platform") or "unknown"
+        chat_type = parsed.get("chat_type") or "unknown"
+        chat_id = str(parsed.get("chat_id") or "")
+        suffix = chat_id[-4:] if chat_id else "?"
+        thread_suffix = ":thread" if parsed.get("thread_id") else ""
+        return f"{platform}:{chat_type}:…{suffix}{thread_suffix}"
+
+    def _active_agent_diagnostics(
+        self,
+        *,
+        now: Optional[float] = None,
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        current = time.time() if now is None else float(now)
+        rows: list[dict[str, Any]] = []
+        for session_key, agent in self._snapshot_running_agents().items():
+            started = float(self._running_agents_ts.get(session_key, current))
+            elapsed = max(0, int(current - started))
+            rows.append(
+                {
+                    "session": self._redact_session_key_for_logs(session_key),
+                    "elapsed": elapsed,
+                    "state": "running",
+                    "session_id": str(getattr(agent, "session_id", "") or ""),
+                    "model": str(getattr(agent, "model", "") or ""),
+                }
+            )
+        rows.sort(key=lambda row: row["elapsed"], reverse=True)
+        return rows[: max(0, int(limit))]
+
+    @staticmethod
+    def _format_active_agent_diagnostics(rows: list[dict[str, Any]]) -> str:
+        if not rows:
+            return "none"
+        parts: list[str] = []
+        for idx, row in enumerate(rows, 1):
+            sid = f" session_id={row['session_id']}" if row.get("session_id") else ""
+            model = f" model={row['model']}" if row.get("model") else ""
+            parts.append(
+                f"#{idx} session={row.get('session', 'unknown')} "
+                f"state={row.get('state', 'unknown')} elapsed={int(row.get('elapsed', 0))}s"
+                f"{sid}{model}"
+            )
+        return "; ".join(parts)
+
+    def _log_drain_agent_diagnostics(
+        self,
+        phase: str,
+        *,
+        timeout: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> None:
+        rows = self._active_agent_diagnostics(now=now)
+        formatted = self._format_active_agent_diagnostics(rows)
+        timeout_part = f" timeout={float(timeout):.1f}s" if timeout is not None else ""
+        log_fn = logger.warning if phase == "timeout" else logger.info
+        log_fn(
+            "Gateway restart drain %s active-agent diagnostics:%s %s",
+            phase,
+            timeout_part,
+            formatted,
+        )
+
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
@@ -2479,6 +2549,20 @@ class GatewayRunner:
                 session_key,
             )
             return True  # handled (silently dropped); do not fall through
+
+        # --- Draining / queued-restart cases (gateway restarting/stopping) ---
+        if self._restart_requested and not self._draining:
+            adapter = self.adapters.get(event.source.platform)
+            if not adapter:
+                return True
+            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content="⏳ Gateway restart is queued; current work will finish before restart. New input is paused.",
+                reply_to=event.message_id,
+                metadata=thread_meta,
+            )
+            return True
 
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
@@ -3100,16 +3184,31 @@ class GatewayRunner:
                 start_new_session=True,
             )
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+    def request_restart(
+        self,
+        *,
+        detached: bool = False,
+        via_service: bool = False,
+        after_idle: bool = False,
+    ) -> bool:
         if self._restart_task_started:
             return False
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service
+        self._restart_after_idle = after_idle
         self._restart_task_started = True
 
         async def _run_restart() -> None:
             await asyncio.sleep(0.05)
+            if after_idle:
+                logger.info(
+                    "Gateway restart queued until idle; active_agents=%d",
+                    self._running_agent_count(),
+                )
+                while self._running_agent_count() > 0:
+                    self._update_runtime_status("restart_queued")
+                    await asyncio.sleep(0.1)
             await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
 
         task = asyncio.create_task(_run_restart())
@@ -4899,6 +4998,7 @@ class GatewayRunner:
 
             timeout = self._restart_drain_timeout
             _drain_started_at = time.monotonic()
+            self._log_drain_agent_diagnostics("start", timeout=timeout)
             active_agents, timed_out = await self._drain_active_agents(timeout)
             logger.info(
                 "Shutdown phase: drain done at +%.2fs (drain took %.2fs, "
@@ -4910,6 +5010,7 @@ class GatewayRunner:
                 self._running_agent_count(),
             )
             if timed_out:
+                self._log_drain_agent_diagnostics("timeout", timeout=timeout)
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
                     timeout,
@@ -6631,6 +6732,9 @@ class GatewayRunner:
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        if self._restart_requested and not self._draining:
+            return "⏳ Gateway restart is queued and is not accepting new work right now."
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -8673,6 +8777,13 @@ class GatewayRunner:
             logger.debug("Failed to write restart dedup marker: %s", e)
 
         active_agents = self._running_agent_count()
+        args_text = event.get_command_args().strip()
+        try:
+            restart_args = shlex.split(args_text)
+        except ValueError:
+            restart_args = args_text.split()
+        force_restart = any(arg in ("--force", "-f") for arg in restart_args)
+        after_idle = active_agents > 0 and not force_restart
         # When running under a service manager (systemd/launchd), use the
         # service restart path: exit with code 75 so the service manager
         # restarts us.  The detached subprocess approach (setsid + bash)
@@ -8680,10 +8791,15 @@ class GatewayRunner:
         # processes in the cgroup, including the detached helper.
         _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
         if _under_service:
-            self.request_restart(detached=False, via_service=True)
+            self.request_restart(detached=False, via_service=True, after_idle=after_idle)
         else:
-            self.request_restart(detached=True, via_service=False)
+            self.request_restart(detached=True, via_service=False, after_idle=after_idle)
         if active_agents:
+            if after_idle:
+                return (
+                    f"⏳ Restart queued; waiting for {active_agents} active agent(s) to finish. "
+                    "Use `/restart --force` to drain now and interrupt after timeout."
+                )
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))
 

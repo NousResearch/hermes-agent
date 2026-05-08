@@ -32,9 +32,117 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
 
     result = await runner._handle_message(event)
 
+    assert result == (
+        "⏳ Restart queued; waiting for 1 active agent(s) to finish. "
+        "Use `/restart --force` to drain now and interrupt after timeout."
+    )
+    running_agent.interrupt.assert_not_called()
+    runner.request_restart.assert_called_once_with(
+        detached=True, via_service=False, after_idle=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_force_while_busy_uses_existing_drain_path(monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    event = MessageEvent(
+        text="/restart --force",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(),
+        message_id="m1",
+    )
+    session_key = build_session_key(event.source)
+    running_agent = MagicMock()
+    runner._running_agents[session_key] = running_agent
+
+    result = await runner._handle_message(event)
+
     assert result == "⏳ Draining 1 active agent(s) before restart..."
     running_agent.interrupt.assert_not_called()
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+    runner.request_restart.assert_called_once_with(
+        detached=True, via_service=False, after_idle=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_after_idle_restart_waits_until_active_agents_finish():
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+
+    assert runner.request_restart(detached=True, via_service=False, after_idle=True) is True
+    first_task = next(iter(runner._background_tasks))
+    await asyncio.sleep(0.08)
+    runner.stop.assert_not_awaited()
+
+    runner._running_agents.clear()
+    await asyncio.wait_for(first_task, timeout=1.0)
+
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=True, service_restart=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_queued_rejects_new_non_command_work():
+    runner, _adapter = make_restart_runner()
+    runner._restart_requested = True
+    event = MessageEvent(
+        text="start another thing",
+        message_type=MessageType.TEXT,
+        source=make_restart_source("fresh"),
+        message_id="m3",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "⏳ Gateway restart is queued and is not accepting new work right now."
+
+
+def test_active_agent_diagnostics_are_redacted_and_actionable():
+    runner, _adapter = make_restart_runner()
+    session_key = "agent:main:telegram:dm:123456:thread789"
+    agent = MagicMock()
+    agent.session_id = "sess-123"
+    agent.model = "model-x"
+    runner._running_agents[session_key] = agent
+    runner._running_agents_ts[session_key] = 100.0
+
+    rows = runner._active_agent_diagnostics(now=165.0)
+
+    assert rows == [
+        {
+            "session": "telegram:dm:…3456:thread",
+            "elapsed": 65,
+            "state": "running",
+            "session_id": "sess-123",
+            "model": "model-x",
+        }
+    ]
+    assert "123456" not in rows[0]["session"]
+    assert "thread789" not in rows[0]["session"]
+
+
+def test_log_drain_agent_diagnostics_includes_timeout_and_rows(caplog):
+    runner, _adapter = make_restart_runner()
+    session_key = "agent:main:telegram:dm:999999"
+    agent = MagicMock()
+    agent.session_id = "sess-timeout"
+    agent.model = "model-y"
+    runner._running_agents[session_key] = agent
+    runner._running_agents_ts[session_key] = 10.0
+
+    with caplog.at_level("WARNING"):
+        runner._log_drain_agent_diagnostics("timeout", timeout=180.0, now=70.0)
+
+    assert "Gateway restart drain timeout active-agent diagnostics" in caplog.text
+    assert "timeout=180.0s" in caplog.text
+    assert "telegram:dm:…9999" in caplog.text
+    assert "sess-timeout" in caplog.text
+    assert "model-y" in caplog.text
+    assert "999999" not in caplog.text
 
 
 @pytest.mark.asyncio

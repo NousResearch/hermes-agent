@@ -541,9 +541,16 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
             proc.kill()
         return
 
+    import psutil
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
+        parent = psutil.Process(proc.pid)
+        for child in parent.children(recursive=True):
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        parent.terminate()
+    except psutil.NoSuchProcess:
         return
     except Exception:
         proc.terminate()
@@ -555,8 +562,14 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
         pass
 
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
+        parent = psutil.Process(proc.pid)
+        for child in parent.children(recursive=True):
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+        parent.kill()
+    except psutil.NoSuchProcess:
         return
     except Exception:
         proc.kill()

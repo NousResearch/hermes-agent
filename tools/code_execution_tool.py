@@ -1450,14 +1450,24 @@ def execute_code(
 
 
 def _kill_process_group(proc, escalate: bool = False):
-    """Kill the child and its entire process group."""
+    """Kill the child and its entire process tree (cross-platform via psutil)."""
+    import psutil
     try:
-        if _IS_WINDOWS:
-            proc.terminate()
-        else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError) as e:
-        logger.debug("Could not kill process group: %s", e, exc_info=True)
+        parent = psutil.Process(proc.pid)
+        children = parent.children(recursive=True)
+        for child in children:
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        try:
+            parent.terminate()
+        except psutil.NoSuchProcess:
+            pass
+    except psutil.NoSuchProcess:
+        pass
+    except (PermissionError, OSError) as e:
+        logger.debug("Could not terminate process tree: %s", e, exc_info=True)
         try:
             proc.kill()
         except Exception as e2:
@@ -1469,12 +1479,20 @@ def _kill_process_group(proc, escalate: bool = False):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             try:
-                if _IS_WINDOWS:
-                    proc.kill()
-                else:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError) as e:
-                logger.debug("Could not kill process group with SIGKILL: %s", e, exc_info=True)
+                parent = psutil.Process(proc.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                try:
+                    parent.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            except psutil.NoSuchProcess:
+                pass
+            except (PermissionError, OSError) as e:
+                logger.debug("Could not kill process tree: %s", e, exc_info=True)
                 try:
                     proc.kill()
                 except Exception as e2:

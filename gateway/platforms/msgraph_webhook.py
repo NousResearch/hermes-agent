@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
+import ipaddress
 import json
 import logging
 from collections import deque
@@ -60,6 +62,9 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._max_seen_receipts = max(
             1, int(extra.get("max_seen_receipts", DEFAULT_MAX_SEEN_RECEIPTS))
         )
+        self._allowed_source_networks: list[ipaddress._BaseNetwork] = (
+            self._parse_allowed_source_cidrs(extra.get("allowed_source_cidrs"))
+        )
         self._runner = None
         self._notification_scheduler: Optional[NotificationScheduler] = None
         self._seen_receipts: set[str] = set()
@@ -90,13 +95,47 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
     def _normalize_resource_value(resource: str) -> str:
         return str(resource or "").strip().strip("/")
 
+    @staticmethod
+    def _parse_allowed_source_cidrs(
+        raw: Any,
+    ) -> list[ipaddress._BaseNetwork]:
+        """Parse an optional list of CIDR ranges allowed to POST to the webhook.
+
+        An empty or missing value means "allow everything" (same behavior as
+        before this field existed). When populated, requests from source IPs
+        outside every listed CIDR are rejected with 403 before the body is
+        parsed. Use this to restrict the endpoint to Microsoft Graph's
+        published webhook source ranges in production deployments.
+        """
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            candidates = [chunk.strip() for chunk in raw.split(",")]
+        elif isinstance(raw, (list, tuple, set)):
+            candidates = [str(chunk).strip() for chunk in raw]
+        else:
+            return []
+
+        networks: list[ipaddress._BaseNetwork] = []
+        for chunk in candidates:
+            if not chunk:
+                continue
+            try:
+                networks.append(ipaddress.ip_network(chunk, strict=False))
+            except ValueError:
+                logger.warning(
+                    "[msgraph_webhook] Ignoring invalid allowed_source_cidrs entry: %r",
+                    chunk,
+                )
+        return networks
+
     def set_notification_scheduler(self, scheduler: Optional[NotificationScheduler]) -> None:
         self._notification_scheduler = scheduler
 
     async def connect(self) -> bool:
         app = web.Application()
         app.router.add_get(self._health_path, self._handle_health)
-        app.router.add_get(self._webhook_path, self._handle_notification)
+        app.router.add_get(self._webhook_path, self._handle_validation)
         app.router.add_post(self._webhook_path, self._handle_notification)
 
         self._runner = web.AppRunner(app)
@@ -142,7 +181,28 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             }
         )
 
+    async def _handle_validation(self, request: "web.Request") -> "web.Response":
+        """Handle Microsoft Graph subscription validation handshake.
+
+        Graph validates a subscription endpoint by sending a GET with
+        ``validationToken`` in the query string; the service must echo the
+        token verbatim as ``text/plain`` within 10 seconds. Anything else
+        (bare GET, GET without the token) is rejected so the endpoint can't
+        be enumerated or mistakenly used for data exfiltration.
+        """
+        if not self._source_ip_allowed(request):
+            return web.Response(status=403)
+        validation_token = request.query.get("validationToken", "")
+        if not validation_token:
+            return web.Response(status=400)
+        return web.Response(text=validation_token, content_type="text/plain")
+
     async def _handle_notification(self, request: "web.Request") -> "web.Response":
+        if not self._source_ip_allowed(request):
+            return web.Response(status=403)
+
+        # Graph never sends validationToken on POST, but tolerate it for
+        # defensive clients that replay the handshake in-band.
         validation_token = request.query.get("validationToken", "")
         if validation_token:
             return web.Response(text=validation_token, content_type="text/plain")
@@ -150,27 +210,31 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         try:
             body = await request.json()
         except Exception:
-            return web.json_response({"error": "Invalid JSON body"}, status=400)
+            return web.Response(status=400)
 
         notifications = body.get("value")
         if not isinstance(notifications, list):
-            return web.json_response({"error": "Missing notification batch"}, status=400)
+            return web.Response(status=400)
 
         accepted = 0
         duplicates = 0
-        rejected = 0
-        scheduled = 0
+        auth_rejected = 0
+        other_rejected = 0
 
         for raw_notification in notifications:
             if not isinstance(raw_notification, dict):
-                rejected += 1
+                other_rejected += 1
                 continue
             notification = dict(raw_notification)
             if not self._resource_accepted(str(notification.get("resource") or "")):
-                rejected += 1
+                other_rejected += 1
                 continue
             if not self._verify_client_state(notification):
-                rejected += 1
+                # Treat bad clientState as an auth failure: if the whole
+                # batch is forged, we want to signal 403 so the sender
+                # stops retrying. Legitimate Graph retries have valid
+                # clientState and hit the accepted/duplicate paths.
+                auth_rejected += 1
                 continue
 
             receipt_key = self._build_receipt_key(notification)
@@ -181,23 +245,39 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
                 self._remember_receipt(receipt_key)
 
             accepted += 1
-            scheduled += 1
             self._accepted_count += 1
             event = self._build_message_event(notification, receipt_key)
             self._schedule_notification(notification, event)
 
         self._duplicate_count += duplicates
-        status = 202 if accepted or duplicates else 403
-        return web.json_response(
-            {
-                "status": "accepted" if accepted or duplicates else "rejected",
-                "accepted": accepted,
-                "duplicates": duplicates,
-                "rejected": rejected,
-                "scheduled": scheduled,
-            },
-            status=status,
-        )
+        # If anything ingested OR deduped, return 202 with empty body so
+        # Graph acks successfully and we don't leak internal counters. If
+        # every item failed auth, return 403 so an attacker POSTing fake
+        # notifications gets a clear reject. Other failures (malformed,
+        # resource-not-accepted) are the sender's configuration problem,
+        # so 400.
+        if accepted or duplicates:
+            return web.Response(status=202)
+        if auth_rejected and not other_rejected:
+            return web.Response(status=403)
+        return web.Response(status=400)
+
+    def _source_ip_allowed(self, request: "web.Request") -> bool:
+        """Return True if the request's source IP is in the configured allowlist.
+
+        When ``allowed_source_cidrs`` is empty (the default), everything is
+        allowed — preserves behavior for dev tunnels / localhost setups.
+        """
+        if not self._allowed_source_networks:
+            return True
+        peer = request.remote or ""
+        if not peer:
+            return False
+        try:
+            peer_addr = ipaddress.ip_address(peer)
+        except ValueError:
+            return False
+        return any(peer_addr in network for network in self._allowed_source_networks)
 
     def _resource_accepted(self, resource: str) -> bool:
         if not self._accepted_resources:
@@ -220,11 +300,21 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         return False
 
     def _verify_client_state(self, notification: Dict[str, Any]) -> bool:
+        """Verify the Graph-supplied clientState matches the configured secret.
+
+        Uses ``hmac.compare_digest`` instead of ``==`` so that a mismatch
+        doesn't leak how many leading characters matched via string-compare
+        timing. The configured client_state is a shared secret (documented in
+        the setup guide as "generate with ``openssl rand -hex 32``"), so a
+        timing-safe compare is the right primitive.
+        """
         expected = self._client_state
         if expected is None:
             return True
         provided = self._string_or_none(notification.get("clientState"))
-        return provided == expected
+        if provided is None:
+            return False
+        return hmac.compare_digest(provided, expected)
 
     def _has_seen_receipt(self, receipt_key: str) -> bool:
         return receipt_key in self._seen_receipts

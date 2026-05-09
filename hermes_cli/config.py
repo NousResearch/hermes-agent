@@ -424,6 +424,15 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Eager-fallback on stream-stall / call timeouts (#22277).  When
+        # true AND `fallback_providers` is configured, a classified
+        # FailoverReason.timeout (typically a stale-detector-killed hung
+        # stream) immediately activates the next fallback provider instead
+        # of retrying the same broken primary.  Default false to preserve
+        # historical behavior; flip to true if you've seen multi-minute
+        # silent hangs against a degraded primary while a healthy fallback
+        # was sitting idle.
+        "eager_fallback_on_timeout": False,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.

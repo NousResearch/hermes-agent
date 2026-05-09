@@ -1747,6 +1747,23 @@ class AIAgent:
         self._fallback_activated = getattr(self, "_fallback_activated", False)
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+
+        # Eager fallback on stream-stall / connection timeouts (#22277).
+        # Default off to preserve historical behavior; users with paid
+        # primaries + OAuth-backed fallbacks (e.g. Anthropic + openai-codex)
+        # opt in via `agent.eager_fallback_on_timeout: true` so a degraded
+        # primary doesn't cause 15+ min silent hangs from retry-loop pile-up.
+        try:
+            from hermes_cli.config import load_config as _load_eft_config
+            _eft_cfg = _load_eft_config() or {}
+            _eft_agent = _eft_cfg.get("agent", {}) or {}
+            self._eager_fallback_on_timeout = bool(
+                _eft_agent.get("eager_fallback_on_timeout", False)
+            )
+        except Exception:
+            self._eager_fallback_on_timeout = False
+
+
         if self._fallback_chain and not self.quiet_mode:
             if len(self._fallback_chain) == 1:
                 fb = self._fallback_chain[0]
@@ -13057,6 +13074,31 @@ class AIAgent:
                                 compression_attempts = 0
                                 primary_recovery_attempted = False
                                 continue
+
+                    # Eager fallback for stream-stall / connection timeouts
+                    # (issue #22277).  When the stale detector kills a hung
+                    # stream, the error classifies as FailoverReason.timeout
+                    # and the loop normally retries the same broken primary
+                    # — burning the full retry budget (3+ stale kills × 5min
+                    # each = 15+ min silent hang).  When the user has
+                    # configured a fallback chain AND opted in via
+                    # `agent.eager_fallback_on_timeout`, switch to fallback
+                    # after the first stale kill instead of compounding.
+                    is_timeout_eager = (
+                        classified.reason == FailoverReason.timeout
+                        and self._eager_fallback_on_timeout
+                        and self._fallback_index < len(self._fallback_chain)
+                    )
+                    if is_timeout_eager:
+                        self._emit_status(
+                            "⚠️ Provider stalled (stream/call timeout) — "
+                            "switching to fallback provider..."
+                        )
+                        if self._try_activate_fallback(reason=classified.reason):
+                            retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
+                            continue
 
                     # ── Nous Portal: record rate limit & skip retries ─────
                     # When Nous returns a 429 that is a genuine account-

@@ -15,6 +15,7 @@ class HermesAutomationReceiver : BroadcastReceiver() {
                 HermesAutomationScheduler.scheduleAll(context.applicationContext)
                 HermesLogcatWatcherService.startIfDesired(context.applicationContext)
                 HermesSensorWatcherService.startIfDesired(context.applicationContext)
+                HermesCalendarWatcherService.startIfDesired(context.applicationContext)
                 HermesAutomationBridge.runTriggerJson(context.applicationContext, TRIGGER_BOOT)
             }
             Intent.ACTION_POWER_CONNECTED -> runAsync {

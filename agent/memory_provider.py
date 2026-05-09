@@ -103,6 +103,25 @@ class MemoryProvider(ABC):
         """
         return ""
 
+    def recall_now(
+        self,
+        query: str,
+        *,
+        mode: str = "auto",
+        depth: str = "light",
+        sources: Optional[List[str]] = None,
+        budget: str = "tiny",
+        provenance: str = "ids",
+        session_id: str = "",
+    ) -> str:
+        """Current-turn recall with explicit strategy metadata.
+
+        Providers can override this to distinguish cheap automatic recall from
+        manual/deep recall.  The default preserves backward compatibility by
+        delegating to ``prefetch()``.
+        """
+        return self.prefetch(query, session_id=session_id)
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Queue a background recall for the NEXT turn.
 

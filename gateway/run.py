@@ -460,6 +460,7 @@ if _config_path.exists():
                 "container_disk": "TERMINAL_CONTAINER_DISK",
                 "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
                 "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+                "docker_env": "TERMINAL_DOCKER_ENV",
                 "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
                 "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
@@ -478,7 +479,7 @@ if _config_path.exists():
                     # receives a literal "~/" which the kernel rejects.
                     if _cfg_key == "cwd" and isinstance(_val, str):
                         _val = os.path.expanduser(_val)
-                    if isinstance(_val, list):
+                    if isinstance(_val, (list, dict)):
                         os.environ[_env_var] = json.dumps(_val)
                     else:
                         os.environ[_env_var] = str(_val)

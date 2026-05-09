@@ -147,6 +147,9 @@ _YB_RES_REF_RE = re.compile(
     r"\[(image|voice|video|file(?::[^|\]]*)?)\|ybres:([A-Za-z0-9_\-]+)\]"
 )
 
+# Media kinds that can be resolved and injected into the model context
+_RESOLVABLE_MEDIA_KINDS = frozenset({"image", "file"})
+
 # Strip page indicators like (1/3) appended by BasePlatformAdapter
 _INDICATOR_RE = re.compile(r'\s*\(\d+/\d+\)$')
 
@@ -2217,33 +2220,6 @@ class QuoteContextMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         ctx.reply_to_message_id, ctx.reply_to_text, ctx.quote_media_refs = self._extract_quote_context(ctx.cloud_custom_data)
 
-        # Fallback: if quote has a message_id but no media_refs extracted from desc,
-        # look up the quoted message in transcript history by message_id to find ybres anchors.
-        if ctx.reply_to_message_id and not ctx.quote_media_refs:
-            store = getattr(ctx.adapter, "_session_store", None)
-            if store:
-                try:
-                    session_entry = store.get_or_create_session(ctx.source)
-                    history = store.load_transcript(session_entry.session_id)
-                    for msg in (history or []):
-                        mid = msg.get("message_id", "")
-                        if mid and mid == ctx.reply_to_message_id:
-                            content = msg.get("content", "")
-                            if isinstance(content, str) and "|ybres:" in content:
-                                for m in _YB_RES_REF_RE.finditer(content):
-                                    head = m.group(1)
-                                    rid = m.group(2)
-                                    kind, _, filename = head.partition(":")
-                                    kind = kind.strip()
-                                    if kind in ("image", "file"):
-                                        ctx.quote_media_refs.append((rid, kind, filename.strip()))
-                            break
-                except Exception as exc:
-                    logger.warning(
-                        "[%s] QuoteContext transcript lookup failed: %s",
-                        ctx.adapter.name, exc,
-                    )
-
         await next_fn()
 
 
@@ -2412,7 +2388,7 @@ class MediaResolveMiddleware(InboundMiddleware):
         for ref in media_refs:
             kind = str(ref.get("kind") or "").strip().lower()
             url = str(ref.get("url") or "").strip()
-            if kind not in {"image", "file"} or not url:
+            if kind not in _RESOLVABLE_MEDIA_KINDS or not url:
                 continue
 
             try:
@@ -2471,7 +2447,7 @@ class MediaResolveMiddleware(InboundMiddleware):
                 rid = m.group(2)
                 kind, _, filename = head.partition(":")
                 kind = kind.strip()
-                if kind not in {"image", "file"}:
+                if kind not in _RESOLVABLE_MEDIA_KINDS:
                     continue
                 if rid in seen:
                     continue
@@ -2542,9 +2518,34 @@ class DispatchMiddleware(InboundMiddleware):
             # quote_media_refs to avoid injecting unrelated history media.
             # Otherwise, backfill observed media from recent transcript history.
             if ctx.reply_to_message_id is not None:
+                # Fallback: if desc didn't contain ybres refs, look up transcript
+                if not ctx.quote_media_refs:
+                    try:
+                        store = getattr(adapter, "_session_store", None)
+                        if store:
+                            session_entry = store.get_or_create_session(ctx.source)
+                            history = store.load_transcript(session_entry.session_id)
+                            for msg in reversed(history or []):
+                                mid = msg.get("message_id", "")
+                                if mid and mid == ctx.reply_to_message_id:
+                                    _content = msg.get("content", "")
+                                    if isinstance(_content, str) and "|ybres:" in _content:
+                                        for m in _YB_RES_REF_RE.finditer(_content):
+                                            head = m.group(1)
+                                            rid = m.group(2)
+                                            kind, _, filename = head.partition(":")
+                                            kind = kind.strip()
+                                            if kind in _RESOLVABLE_MEDIA_KINDS:
+                                                ctx.quote_media_refs.append((rid, kind, filename.strip()))
+                                    break
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] quote transcript lookup failed: %s",
+                            adapter.name, exc,
+                        )
                 # User quoted a message — resolve only media from the quote
                 for rid, kind, filename in ctx.quote_media_refs:
-                    if kind not in ("image", "file"):
+                    if kind not in _RESOLVABLE_MEDIA_KINDS:
                         continue
                     try:
                         fresh_url = await MediaResolveMiddleware._resolve_by_resource_id(adapter, rid)
@@ -2619,7 +2620,7 @@ class DispatchMiddleware(InboundMiddleware):
                 text=_patched_event_text,
                 message_type=(
                     MessageType.DOCUMENT
-                    if any(not mt.startswith("image/") for mt in media_types)
+                    if any(mt.startswith(("application/", "text/")) for mt in media_types)
                     else ctx.msg_type
                 ),
                 source=ctx.source,

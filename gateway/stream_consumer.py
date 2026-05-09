@@ -365,7 +365,7 @@ class GatewayStreamConsumer:
                             self._accumulated, _safe_limit
                         )
                         chunks_delivered = False
-                        reply_to = self._message_id
+                        reply_to = self._message_id or self._initial_reply_to_id
                         for chunk in chunks:
                             new_id = await self._send_new_chunk(chunk, reply_to)
                             if new_id is not None and new_id != reply_to:

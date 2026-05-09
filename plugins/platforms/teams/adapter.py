@@ -30,7 +30,14 @@ import os
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
-import httpx
+# httpx is imported lazily — only the ``_write_summary_via_incoming_webhook``
+# code path actually constructs an ``AsyncClient``. Top-level import here
+# pulled in the entire httpx + httpcore stack (~37 ms, ~15 MB) on every
+# process that triggered plugin discovery, even ones that never instantiate
+# the Teams adapter. ``from __future__ import annotations`` above keeps the
+# ``httpx.AsyncBaseTransport`` parameter annotation valid as a string at
+# runtime; nothing in the codebase calls ``typing.get_type_hints()`` on
+# this class so the annotation never has to resolve to a real symbol.
 
 try:
     from aiohttp import web
@@ -199,6 +206,10 @@ class TeamsSummaryWriter:
         payload: Any,
         config: dict[str, Any],
     ) -> dict[str, Any]:
+        # Lazy import — see module-level note. The teams plugin loads on
+        # every CLI invocation as a side effect of plugin discovery, but
+        # 99% of those processes never reach this method.
+        import httpx
         webhook_url = str(config.get("incoming_webhook_url") or "").strip()
         if not webhook_url:
             raise ValueError("TEAMS_INCOMING_WEBHOOK_URL is required for incoming_webhook mode.")

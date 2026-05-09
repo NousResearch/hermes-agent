@@ -579,11 +579,21 @@ class ProcessRegistry:
 
             self._write_checkpoint()
         except Exception:
-            # Post-Popen setup failed — kill the orphaned subprocess before
-            # re-raising so it does not leak as an untracked background process.
+            # Post-Popen setup failed — kill the orphaned subprocess (and any
+            # descendants spawned via setsid) before re-raising so they do not
+            # leak as untracked background processes.
             try:
-                proc.kill()
-                proc.wait()
+                if not _IS_WINDOWS:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        proc.kill()
+                else:
+                    proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5)
             except Exception:
                 pass
             raise

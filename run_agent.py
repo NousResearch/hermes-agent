@@ -10334,6 +10334,19 @@ class AIAgent:
             effective_system = self._cached_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            # Inject current server time (same as main loop)
+            try:
+                from hermes_time import now as _hermes_now
+                _now = _hermes_now()
+                _time_hint = (
+                    f"\n\n[SYSTEM NOTE] Current server time: "
+                    f"{_now.strftime('%A, %B %d, %Y %I:%M:%S %p')} "
+                    f"({_now.strftime('%Y-%m-%d %H:%M:%S %Z')}). "
+                    f"Use this for any time-dependent operations."
+                )
+                effective_system = (effective_system + _time_hint).strip()
+            except Exception:
+                pass
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             if self.prefill_messages:
@@ -11065,6 +11078,23 @@ class AIAgent:
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            # Inject current server time on every API call so the agent always
+            # knows the real time — even in long-running sessions where the
+            # "Conversation started" timestamp in the cached system prompt is
+            # stale.  Appended to the END of the effective system prompt to
+            # preserve the stable prefix for prompt caching.
+            try:
+                from hermes_time import now as _hermes_now
+                _now = _hermes_now()
+                _time_hint = (
+                    f"\n\n[SYSTEM NOTE] Current server time: "
+                    f"{_now.strftime('%A, %B %d, %Y %I:%M:%S %p')} "
+                    f"({_now.strftime('%Y-%m-%d %H:%M:%S %Z')}). "
+                    f"Use this for any time-dependent operations."
+                )
+                effective_system = (effective_system + _time_hint).strip()
+            except Exception:
+                pass  # Non-critical — never break the conversation over a timestamp
             # NOTE: Plugin context from pre_llm_call hooks is injected into the
             # user message (see injection block above), NOT the system prompt.
             # This is intentional — system prompt modifications break the prompt

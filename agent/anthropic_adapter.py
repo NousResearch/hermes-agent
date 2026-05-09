@@ -530,7 +530,7 @@ def build_anthropic_client(
 
     If *default_headers* is provided, these are merged (last-write-wins) with
     headers from ``model.custom_headers`` in config.yaml.  This lets callers
-    pass provider-specific headers (e.g. from ``custom_providers[].headers``)
+    pass provider-specific headers (e.g. from ``custom_providers[].custom_headers``)
     that are not available in the global config.
 
     ``drop_context_1m_beta=True`` strips ``context-1m-2025-08-07`` from the
@@ -2088,5 +2088,4 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
 

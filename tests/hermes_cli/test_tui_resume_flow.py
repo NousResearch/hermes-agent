@@ -319,6 +319,43 @@ def test_oneshot_rejects_invalid_only_toolsets(monkeypatch, capsys):
     assert "did not contain any valid toolsets" in err
 
 
+def test_oneshot_passes_runtime_default_headers_to_aiagent(monkeypatch):
+    captured = {}
+
+    class _FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def chat(self, prompt):
+            return "ok"
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "m", "provider": "custom"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://example.test/v1",
+            "api_key": "test-key",
+            "default_headers": {"X-Test": "value"},
+        },
+    )
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *a, **k: set())
+    monkeypatch.setattr("run_agent.AIAgent", _FakeAgent)
+
+    from hermes_cli.oneshot import _run_agent
+
+    result = _run_agent("hello", model="m", provider="custom", use_config_toolsets=False)
+
+    assert result == "ok"
+    assert captured["provider"] == "custom"
+    assert captured["base_url"] == "https://example.test/v1"
+    assert captured["default_headers"] == {"X-Test": "value"}
+
+
 def test_oneshot_filters_invalid_toolsets_before_redirect(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)
     from hermes_cli.oneshot import _validate_explicit_toolsets

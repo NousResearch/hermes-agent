@@ -462,6 +462,7 @@ class TestCustomProviderCompatibility:
                             "api_key": "test-key",
                             "api_mode": "codex_responses",
                             "model": "gpt-5-mini",
+                            "custom_headers": {"X-Test": "value"},
                         }
                     ],
                     "fallback_providers": [
@@ -484,6 +485,7 @@ class TestCustomProviderCompatibility:
             "default_model": "gpt-5-mini",
             "name": "OpenAI Direct",
             "transport": "codex_responses",
+            "custom_headers": {"X-Test": "value"},
         }
         # custom_providers removed by migration — runtime reads via compat layer
         assert "custom_providers" not in raw

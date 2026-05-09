@@ -86,6 +86,51 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _sanitize_custom_headers(raw_headers: Any) -> Dict[str, str]:
+    """Return sanitized provider-level custom headers."""
+    if not isinstance(raw_headers, dict):
+        return {}
+    sanitized: Dict[str, str] = {}
+    for key, value in raw_headers.items():
+        header_key = str(key).strip() if key else ""
+        header_value = str(value).strip() if value is not None else ""
+        if header_key and header_value:
+            sanitized[header_key] = header_value
+    return sanitized
+
+
+def _attach_custom_headers(result: Dict[str, Any], raw_headers: Any) -> None:
+    """Attach sanitized provider-level custom headers as SDK default_headers."""
+    sanitized = _sanitize_custom_headers(raw_headers)
+    if sanitized:
+        result["default_headers"] = sanitized
+
+
+def _find_custom_provider_by_base_url(base_url: str) -> Optional[Dict[str, Any]]:
+    """Find a custom provider entry by endpoint URL.
+
+    This covers routes that resolve as bare ``custom`` with an explicit base_url
+    (for example direct aliases or model-switch state) where the named provider
+    slug is no longer available but the endpoint URL still identifies the
+    configured provider.
+    """
+    target = (base_url or "").strip().rstrip("/")
+    if not target:
+        return None
+    try:
+        config = load_config()
+        entries = get_compatible_custom_providers(config)
+    except Exception:
+        return None
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        candidate = str(entry.get("base_url") or entry.get("api") or entry.get("url") or "").strip().rstrip("/")
+        if candidate == target:
+            return entry
+    return None
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -400,7 +445,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
-                        "headers": entry.get("headers"),
+                        "custom_headers": entry.get("custom_headers"),
                     }
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
@@ -426,7 +471,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "base_url": base_url.strip(),
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
-                            "headers": entry.get("headers"),
+                            "custom_headers": entry.get("custom_headers"),
                         }
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
@@ -477,9 +522,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
-        headers = entry.get("headers")
-        if headers and isinstance(headers, dict):
-            result["headers"] = headers
+        custom_headers = entry.get("custom_headers")
+        if custom_headers and isinstance(custom_headers, dict):
+            result["custom_headers"] = custom_headers
         return result
 
     return None
@@ -497,8 +542,11 @@ def _resolve_named_custom_runtime(
     requested_norm = (requested_provider or "").strip().lower()
     if requested_norm == "custom" and explicit_base_url:
         base_url = explicit_base_url.strip().rstrip("/")
+        matched_provider = _find_custom_provider_by_base_url(base_url)
         api_key_candidates = [
             (explicit_api_key or "").strip(),
+            str((matched_provider or {}).get("api_key", "") or "").strip(),
+            os.getenv(str((matched_provider or {}).get("key_env", "") or "").strip(), "").strip(),
             os.getenv("OPENAI_API_KEY", "").strip(),
             os.getenv("OPENROUTER_API_KEY", "").strip(),
         ]
@@ -506,14 +554,19 @@ def _resolve_named_custom_runtime(
             (c for c in api_key_candidates if has_usable_secret(c)),
             "",
         ) or "no-key-required"
-        return {
+        result = {
             "provider": "custom",
-            "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
+            "api_mode": (matched_provider or {}).get("api_mode") or _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
             "api_key": api_key,
             "source": "direct-alias",
             "requested_provider": requested_provider,
         }
+        if matched_provider and matched_provider.get("model"):
+            result["model"] = matched_provider["model"]
+        if matched_provider:
+            _attach_custom_headers(result, matched_provider.get("custom_headers"))
+        return result
 
     custom_provider = _get_named_custom_provider(requested_provider)
     if not custom_provider:
@@ -534,6 +587,7 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        _attach_custom_headers(pool_result, custom_provider.get("custom_headers"))
         return pool_result
 
     api_key_candidates = [
@@ -558,18 +612,10 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
-    # Propagate provider-specific custom headers (from custom_providers[].headers
-    # or providers[].headers in config.yaml).
-    _raw_headers = custom_provider.get("headers")
-    if _raw_headers and isinstance(_raw_headers, dict):
-        _sanitized = {}
-        for _k, _v in _raw_headers.items():
-            _k = str(_k).strip() if _k else ""
-            _v = str(_v).strip() if _v is not None else ""
-            if _k and _v:
-                _sanitized[_k] = _v
-        if _sanitized:
-            result["default_headers"] = _sanitized
+    # Propagate provider-specific custom headers (from
+    # custom_providers[].custom_headers or providers[].custom_headers in
+    # config.yaml).
+    _attach_custom_headers(result, custom_provider.get("custom_headers"))
     return result
 
 

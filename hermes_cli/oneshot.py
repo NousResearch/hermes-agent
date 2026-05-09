@@ -291,6 +291,7 @@ def _run_agent(
         api_mode=runtime.get("api_mode"),
         model=effective_model,
         enabled_toolsets=toolsets_list,
+        default_headers=runtime.get("default_headers"),
         quiet_mode=True,
         platform="cli",
         credential_pool=runtime.get("credential_pool"),

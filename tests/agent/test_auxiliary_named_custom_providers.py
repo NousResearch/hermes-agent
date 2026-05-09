@@ -174,6 +174,54 @@ class TestResolveProviderClientNamedCustom:
         client, model = resolve_provider_client("coffee", "test")
         assert client is None
 
+    def test_named_custom_chat_completions_uses_custom_headers(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "test"},
+            "custom_providers": [
+                {
+                    "name": "beans",
+                    "base_url": "http://beans.local/v1",
+                    "api_key": "k",
+                    "custom_headers": {"X-Test": "value"},
+                    "headers": {"X-Legacy": "must-not-propagate"},
+                },
+            ],
+        })
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("beans", "my-model")
+
+        assert client is not None
+        assert model == "my-model"
+        kwargs = mock_openai.call_args.kwargs
+        assert kwargs["default_headers"] == {"X-Test": "value"}
+        assert "X-Legacy" not in kwargs["default_headers"]
+
+    def test_named_custom_codex_responses_keeps_custom_headers(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "test"},
+            "custom_providers": [
+                {
+                    "name": "beans",
+                    "base_url": "http://beans.local/v1",
+                    "api_key": "k",
+                    "api_mode": "codex_responses",
+                    "custom_headers": {"X-Test": "value"},
+                },
+            ],
+        })
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("beans", "my-model", raw_codex=True)
+
+        assert client is not None
+        assert model == "my-model"
+        assert mock_openai.call_args.kwargs["default_headers"] == {"X-Test": "value"}
+
 
 class TestResolveProviderClientModelNormalization:
     """Direct-provider auxiliary routing should normalize models like main runtime."""
@@ -370,6 +418,33 @@ class TestProvidersDictApiModeAnthropicMessages:
             f"expected AsyncAnthropicAuxiliaryClient, got {type(async_client).__name__}"
         )
         assert async_model == "claude-opus-4-7"
+
+    def test_anthropic_messages_passes_custom_headers(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MYRELAY_API_KEY", "sk-test")
+        _write_config(tmp_path, {
+            "providers": {
+                "myrelay": {
+                    "name": "myrelay",
+                    "base_url": "https://example-relay.test/anthropic",
+                    "key_env": "MYRELAY_API_KEY",
+                    "api_mode": "anthropic_messages",
+                    "default_model": "claude-opus-4-7",
+                    "custom_headers": {"X-Test": "value"},
+                    "headers": {"X-Legacy": "must-not-propagate"},
+                },
+            },
+        })
+        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("myrelay", async_mode=False)
+
+        assert client is not None
+        assert model == "claude-opus-4-7"
+        kwargs = mock_build.call_args.kwargs
+        assert kwargs["default_headers"] == {"X-Test": "value"}
+        assert "X-Legacy" not in kwargs["default_headers"]
 
     def test_aux_task_override_routes_named_provider_to_anthropic(self, tmp_path, monkeypatch):
         """The full chain: auxiliary.<task>.provider: myrelay with

@@ -1628,7 +1628,7 @@ class AIAgent:
                         custom_headers,
                     )
                 # Merge provider-specific headers passed via __init__ (e.g. from
-                # custom_providers[].headers or gateway runtime resolution).
+                # custom_providers[].custom_headers or gateway runtime resolution).
                 if self._default_headers:
                     client_kwargs["default_headers"] = merge_default_headers(
                         client_kwargs.get("default_headers"),
@@ -6697,7 +6697,7 @@ class AIAgent:
 
         # Always merge user-configured custom headers (model.custom_headers
         # from config.yaml) and provider-specific headers (e.g. from
-        # custom_providers[].headers).  Without this, credential rotation
+        # custom_providers[].custom_headers).  Without this, credential rotation
         # via _swap_credential() drops custom headers, causing subagents
         # that share a credential pool to lose them.
         _custom = get_model_custom_headers()

@@ -108,7 +108,7 @@ from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_
 logger = logging.getLogger(__name__)
 
 # Module-level context for propagating default_headers (from
-# custom_providers[].headers or runtime resolution) through the
+# custom_providers[].custom_headers or runtime resolution) through the
 # auto-detection chain.  Set by _resolve_auto() / resolve_provider_client()
 # before invoking the chain; read by _try_anthropic().  This avoids changing
 # the _get_provider_chain() callback interface for all _try_* functions.
@@ -2511,13 +2511,11 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
-                _openai_kwargs.update(_extra2)
-                _provider_headers = custom_entry.get("headers")
+                _openai_kwargs = {"api_key": custom_key, "base_url": _clean_base2, **_extra2}
+                _provider_headers = custom_entry.get("custom_headers")
                 _merged = _headers_with_config(_provider_headers if isinstance(_provider_headers, dict) else None)
                 if _merged:
                     _openai_kwargs["default_headers"] = _merged
-                client = OpenAI(**_openai_kwargs)
-                client = _wrap_if_needed(client, final_model, custom_base)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -2527,7 +2525,11 @@ def resolve_provider_client(
                 if entry_api_mode == "anthropic_messages":
                     try:
                         from agent.anthropic_adapter import build_anthropic_client
-                        real_client = build_anthropic_client(custom_key, custom_base)
+                        real_client = build_anthropic_client(
+                            custom_key,
+                            custom_base,
+                            default_headers=_merged or None,
+                        )
                     except ImportError:
                         logger.warning(
                             "Named custom provider %r declares api_mode="
@@ -2540,7 +2542,10 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
-                        client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
+                        _fb_kwargs = {"api_key": custom_key, "base_url": _fb_clean, **_fb_extra}
+                        if _merged:
+                            _fb_kwargs["default_headers"] = _merged
+                        client = OpenAI(**_fb_kwargs)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
@@ -2549,7 +2554,7 @@ def resolve_provider_client(
                     if async_mode:
                         return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
                     return sync_anthropic, final_model
-                client = OpenAI(api_key=custom_key, base_url=_clean_base2, **_extra2)
+                client = OpenAI(**_openai_kwargs)
                 # codex_responses or inherited auto-detect (via _wrap_if_needed).
                 # _wrap_if_needed reads the closed-over `api_mode` (the task-level
                 # override). Named-provider entry api_mode=codex_responses also
@@ -2588,7 +2593,7 @@ def resolve_provider_client(
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
             # Propagate default_headers from main_runtime so provider-specific
-            # headers (e.g. custom_providers[].headers) reach the Anthropic client.
+            # headers (e.g. custom_providers[].custom_headers) reach the Anthropic client.
             _mr_headers = None
             if isinstance(main_runtime, dict):
                 _mr_headers = main_runtime.get("default_headers")

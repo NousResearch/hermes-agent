@@ -864,6 +864,48 @@ def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     assert resolved["requested_provider"] == "custom:local-llm"
 
 
+def test_named_custom_provider_custom_headers_become_default_headers(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Local LLM",
+                    "base_url": "http://localhost:1234/v1",
+                    "custom_headers": {
+                        " X-Test ": " value ",
+                        "X-Empty": "",
+                        "": "bad",
+                        "X-Num": 123,
+                    },
+                    "headers": {"X-Legacy": "must-not-propagate"},
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:local-llm")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://localhost:1234/v1"
+    assert resolved["requested_provider"] == "custom:local-llm"
+    assert resolved["default_headers"] == {"X-Test": "value", "X-Num": "123"}
+    assert "headers" not in resolved
+    assert "X-Legacy" not in resolved["default_headers"]
+
+
 def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     monkeypatch.setattr(
         rp,
@@ -1652,6 +1694,69 @@ def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
         "model must be injected into pool result"
     )
     assert resolved["api_key"] == "pool-key", "pool credentials should be used"
+
+
+def test_named_custom_runtime_propagates_custom_headers_pool_path(monkeypatch):
+    """Provider-level custom_headers should survive pool credential resolution."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "custom_headers": {" X-Test ": " value ", "X-Empty": ""},
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "pool-key",
+            "source": "pool:custom:my-server",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+
+    assert resolved["api_key"] == "pool-key"
+    assert resolved["default_headers"] == {"X-Test": "value"}
+
+
+def test_bare_custom_explicit_base_url_uses_matching_provider_custom_headers(monkeypatch):
+    """Direct-alias/model-switch bare custom paths should recover headers by URL."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "my-server",
+                    "base_url": "http://localhost:8000/v1",
+                    "api_key": "provider-key",
+                    "api_mode": "chat_completions",
+                    "model": "qwen3.6-plus",
+                    "custom_headers": {"X-Test": "value"},
+                }
+            ]
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom",
+        explicit_base_url="http://localhost:8000/v1/",
+    )
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "provider-key"
+    assert resolved["model"] == "qwen3.6-plus"
+    assert resolved["default_headers"] == {"X-Test": "value"}
 
 
 def test_named_custom_runtime_no_model_when_absent(monkeypatch):

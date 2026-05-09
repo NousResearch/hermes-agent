@@ -879,7 +879,7 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
-    # Provider-specific custom headers (e.g. from custom_providers[].headers)
+    # Provider-specific custom headers (e.g. from custom_providers[].custom_headers)
     override_default_headers: Optional[dict] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -1029,7 +1029,7 @@ def _build_child_agent(
         else (getattr(parent_agent, "acp_args", []) or [])
     )
     # Resolve provider-specific custom headers: delegation override > parent inherit.
-    # Ensures custom_providers[].headers propagate to subagents in inherit mode.
+    # Ensures custom_providers[].custom_headers propagate to subagents in inherit mode.
     effective_default_headers = override_default_headers or getattr(parent_agent, "_default_headers", None)
 
     # When override_provider is set (e.g. delegation.provider: minimax-cn),

@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with ten providers:
+Convert text to speech with eleven providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -28,6 +28,7 @@ Convert text to speech with ten providers:
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
+| **Kokoro** | Excellent | Free (local, Apple Silicon) | None needed |
 
 ### Platform Delivery
 
@@ -43,7 +44,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper" | "kokoro"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -93,6 +94,11 @@ tts:
     # noise_w_scale: 0.8
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
+  kokoro:
+    voice: af_bella                              # American female; or am_*, bf_*, bm_* — see Kokoro voices
+    speed: 1.0                                   # 0.5 - 2.0
+    # model: mlx-community/Kokoro-82M-bf16       # default; HuggingFace repo for model + voice files
+    # lang_code: a                               # 'a'=American (default), 'b'=British, etc.
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
@@ -205,6 +211,35 @@ tts:
 ```
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
+
+### Kokoro (local, Apple Silicon, ~38× real-time)
+
+[Kokoro 82M](https://huggingface.co/hexgrad/Kokoro-82M) is an Apache-2.0 neural TTS model running on Apple's MLX framework. **Apple Silicon only** (M1/M2/M3/M4/M5) — installs as a no-op on Linux/Windows. On an M5 Pro it achieves ~38× real-time steady-state synthesis with ~200 MB peak memory and produces 24 kHz mono audio.
+
+The model loads once per Hermes process and stays resident — first call pays a ~2 s warmup (model + spaCy phonemizer), subsequent calls are ~400 ms for ~15 s of audio.
+
+**Install:**
+
+```bash
+pip install 'hermes-agent[kokoro]'
+brew install espeak-ng   # optional — phonemizer fallback for OOD words
+```
+
+**Switch to Kokoro:**
+
+```yaml
+tts:
+  provider: kokoro
+  kokoro:
+    voice: af_bella                              # American female; or am_*, bf_*, bm_*
+    speed: 1.0                                   # 0.5 - 2.0
+    # model: mlx-community/Kokoro-82M-bf16       # default; HuggingFace repo
+    # lang_code: a                               # 'a'=American (default), 'b'=British
+```
+
+**Voice IDs follow Kokoro's convention:** prefix encodes language + gender. American English: `af_bella`, `af_heart`, `af_sky` (female); `am_adam`, `am_michael` (male). British English: `bf_alice`, `bf_emma`, `bm_daniel`, `bm_lewis`. Plus Japanese (`jf_*`/`jm_*`), Chinese (`zf_*`/`zm_*`), Spanish, French, Italian, Portuguese, Hindi. Full list at [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M).
+
+The first call downloads the model (~325 MB) into the HuggingFace cache and the spaCy `en_core_web_sm` phonemizer (~13 MB). Both are one-time costs.
 
 ### Custom command providers
 

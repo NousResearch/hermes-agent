@@ -292,6 +292,7 @@ class TestCheckTtsRequirementsPiper:
         monkeypatch.setattr(tts_tool, "_import_mistral_client", lambda: (_ for _ in ()).throw(ImportError()))
         monkeypatch.setattr(tts_tool, "_check_neutts_available", lambda: False)
         monkeypatch.setattr(tts_tool, "_check_kittentts_available", lambda: False)
+        monkeypatch.setattr(tts_tool, "_check_kokoro_available", lambda: False)
         monkeypatch.setattr(tts_tool, "_has_any_command_tts_provider", lambda: False)
         monkeypatch.setattr(tts_tool, "_has_openai_audio_backend", lambda: False)
         for env in ("MINIMAX_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY",

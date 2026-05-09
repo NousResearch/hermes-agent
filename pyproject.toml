@@ -61,6 +61,16 @@ slack = ["slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
 matrix = ["mautrix[encryption]>=0.20,<1", "Markdown>=3.6,<4", "aiosqlite>=0.20", "asyncpg>=0.29", "aiohttp-socks>=0.10,<1"]
 cli = ["simple-term-menu>=1.0,<2"]
 tts-premium = ["elevenlabs>=1.0,<2"]
+# Kokoro 82M MLX TTS — fully local on-device synthesis, Apache-2.0 weights,
+# ~38x real-time steady-state on Apple M5 Pro (in-process). Requires mlx-audio
+# (the MLX runtime + Kokoro implementation) and misaki (G2P phonemizer).
+# Gated to Darwin since MLX is Apple Silicon only — installing this extra on
+# Linux/Windows is a no-op rather than an error.
+# Optional: ``brew install espeak-ng`` for OOD-word phonemization fallback.
+kokoro = [
+  "mlx-audio>=0.4.0,<1; platform_system == 'Darwin'",
+  "misaki[en]>=0.9.0; platform_system == 'Darwin'",
+]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime),
   # so keep it out of the base install for source-build packagers like Homebrew.

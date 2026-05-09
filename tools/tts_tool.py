@@ -122,6 +122,25 @@ def _import_piper():
     return PiperVoice
 
 
+def _import_kokoro():
+    """Lazy import Kokoro. Returns (KokoroPipeline, load_model, snapshot_download).
+
+    Kokoro is a local Apache-2.0 82M-parameter TTS model running on Apple's
+    MLX framework (Apple Silicon only — M1/M2/M3/M4/M5). On M5 Pro it
+    achieves ~38x real-time steady-state synthesis with a 24 kHz output and
+    ~200 MB peak memory.
+
+    Requires both ``mlx-audio`` (the MLX runtime + Kokoro implementation)
+    and ``misaki`` (the G2P phonemizer KokoroPipeline calls into).
+    Install with: ``pip install 'hermes-agent[kokoro]'``.
+    Optional: ``brew install espeak-ng`` for OOD-word phonemization fallback.
+    """
+    from mlx_audio.tts.models.kokoro import KokoroPipeline
+    from mlx_audio.tts.utils import load_model
+    from huggingface_hub import snapshot_download
+    return KokoroPipeline, load_model, snapshot_download
+
+
 # ===========================================================================
 # Defaults
 # ===========================================================================
@@ -134,6 +153,9 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
+DEFAULT_KOKORO_REPO = "mlx-community/Kokoro-82M-bf16"
+DEFAULT_KOKORO_VOICE = "af_bella"  # American female; well-rated by listeners
+DEFAULT_KOKORO_LANG_CODE = "a"  # 'a' = American English, 'b' = British English
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-01"
@@ -178,6 +200,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "kokoro": 5000,       # local Kokoro 82M MLX (Apple Silicon), practical cap
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -324,6 +347,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "neutts",
     "kittentts",
     "piper",
+    "kokoro",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -1478,6 +1502,136 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
 
 # ===========================================================================
+# Provider: Kokoro (local, MLX-accelerated 82M, Apache-2.0, 32+ voices)
+# ===========================================================================
+
+# Module-level cache for loaded KokoroPipeline instances. Keyed by
+# (repo_id, lang_code) so a user switching language doesn't invalidate
+# the existing pipeline and vice versa. Voice is per-call, not per-pipeline.
+_kokoro_pipeline_cache: Dict[str, Any] = {}
+
+
+def _check_kokoro_available() -> bool:
+    """Check whether mlx-audio + misaki are importable.
+
+    Both are required: mlx-audio exposes the Kokoro model classes,
+    misaki provides the G2P phonemizer KokoroPipeline calls into.
+    """
+    try:
+        import importlib.util
+        return (
+            importlib.util.find_spec("mlx_audio") is not None
+            and importlib.util.find_spec("misaki") is not None
+        )
+    except Exception:
+        return False
+
+
+def _generate_kokoro_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using the local Kokoro 82M MLX engine.
+
+    Loads the pipeline once per process (cached by repo_id+lang_code) and
+    writes a 24 kHz mono WAV. Caller converts to MP3/Opus via ffmpeg
+    when a different output format is required (matches Piper pattern).
+
+    Measured on M5 Pro (in-process, after warmup): TTFC ~97 ms,
+    ~38x steady-state real-time factor for a 211-char fixture producing
+    ~15 s of audio. The subprocess command-provider path that this
+    replaces is ~5.5x real-time cold-per-call, so the resident-model
+    win is roughly 7x throughput per turn before any streaming work.
+
+    Config keys (all under ``tts.kokoro.*``):
+        model       — HuggingFace repo (default: ``mlx-community/Kokoro-82M-bf16``)
+        voice       — voice ID (default: ``af_bella``)
+        speed       — speaking rate multiplier (default: ``1.0``)
+        lang_code   — ``a`` for American English (default), ``b`` for British, etc.
+    """
+    KokoroPipeline, load_model, snapshot_download = _import_kokoro()
+    import wave
+
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise ImportError(
+            "Kokoro provider requires numpy. Install with: "
+            "pip install 'hermes-agent[kokoro]'"
+        ) from exc
+
+    kokoro_config = (
+        tts_config.get("kokoro", {}) if isinstance(tts_config, dict) else {}
+    )
+    repo_id = kokoro_config.get("model") or DEFAULT_KOKORO_REPO
+    voice = kokoro_config.get("voice") or DEFAULT_KOKORO_VOICE
+    speed = float(kokoro_config.get("speed", 1.0))
+    lang_code = kokoro_config.get("lang_code") or DEFAULT_KOKORO_LANG_CODE
+
+    cache_key = f"{repo_id}::lang={lang_code}"
+    global _kokoro_pipeline_cache
+    if cache_key not in _kokoro_pipeline_cache:
+        logger.info("[Kokoro] Downloading + loading model: %s", repo_id)
+        model_path = Path(snapshot_download(repo_id=repo_id))
+        model = load_model(model_path)
+        pipeline = KokoroPipeline(lang_code=lang_code, model=model, repo_id=repo_id)
+        _kokoro_pipeline_cache[cache_key] = pipeline
+        logger.info("[Kokoro] Pipeline loaded")
+    pipeline = _kokoro_pipeline_cache[cache_key]
+
+    # Kokoro yields one Result per phoneme chunk. Each Result carries an
+    # mx.array of float32 samples at 24 kHz mono. Accumulate, then write
+    # a single WAV at the end. (Streaming the chunks out as they're
+    # produced is intentionally out of scope here — stream_tts_to_speaker
+    # is hardcoded to ElevenLabs today; per-provider streaming dispatch
+    # is a separate refactor.)
+    sample_rate = 24_000
+    chunks = []
+    for result in pipeline(text=text, voice=voice, speed=speed):
+        if result.output is None or result.output.audio is None:
+            continue
+        # mx.array shape (1, N) → flat float32 numpy array.
+        audio = np.asarray(result.output.audio).reshape(-1).astype(np.float32)
+        chunks.append(audio)
+
+    if not chunks:
+        raise RuntimeError(
+            f"Kokoro produced no audio for text (voice={voice}, "
+            f"lang_code={lang_code}). Check that the voice ID matches the "
+            "language (e.g. af_*/am_* for American English, bf_*/bm_* for British)."
+        )
+
+    audio_array = np.concatenate(chunks)
+    # float32 [-1, 1] → int16 PCM
+    audio_int16 = np.clip(audio_array * 32767.0, -32768, 32767).astype(np.int16)
+
+    # Kokoro outputs WAV. Caller handles downstream MP3/Opus conversion.
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    with wave.open(wav_path, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)  # 16-bit PCM
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(audio_int16.tobytes())
+
+    # Convert to desired format if caller requested mp3/ogg
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            conv_cmd = [
+                ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path,
+            ]
+            subprocess.run(conv_cmd, check=True, timeout=30)
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+        else:
+            os.rename(wav_path, output_path)
+
+    return output_path
+
+
+# ===========================================================================
 # Provider: KittenTTS (local, lightweight)
 # ===========================================================================
 
@@ -1714,6 +1868,22 @@ def text_to_speech_tool(
             logger.info("Generating speech with Piper (local)...")
             _generate_piper_tts(text, file_str, tts_config)
 
+        elif provider == "kokoro":
+            try:
+                _import_kokoro()
+            except ImportError as exc:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "Kokoro provider selected but mlx-audio + misaki are not installed. "
+                        "Install with: pip install 'hermes-agent[kokoro]' "
+                        "(Apple Silicon only — MLX is macOS-only on M1/M2/M3/M4/M5). "
+                        f"Detail: {exc}"
+                    ),
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Kokoro 82M MLX (local, ~38x real-time)...")
+            _generate_kokoro_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -1855,6 +2025,8 @@ def check_tts_requirements() -> bool:
     if _check_kittentts_available():
         return True
     if _check_piper_available():
+        return True
+    if _check_kokoro_available():
         return True
     return False
 
@@ -2154,6 +2326,8 @@ if __name__ == "__main__":
     )
     print(f"  MiniMax:    {'API key set' if get_env_value('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
+    _kokoro_status = "installed" if _check_kokoro_available() else "not installed (pip install 'hermes-agent[kokoro]', Apple Silicon only)"
+    print(f"  Kokoro:     {_kokoro_status}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 

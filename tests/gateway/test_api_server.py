@@ -2419,6 +2419,109 @@ class TestTruncation:
 
 
 # ---------------------------------------------------------------------------
+# Response-side truncation / failure handling (issue #22496)
+# ---------------------------------------------------------------------------
+
+
+class TestChatCompletionsAgentIncomplete:
+    """When the agent run yields a partial / failed result, the API server
+    must NOT pretend it succeeded. Either signal truncation via
+    finish_reason='length' (with the partial text), or 502 with an OpenAI
+    error envelope (no usable text). Issue #22496."""
+
+    @pytest.mark.asyncio
+    async def test_truncation_with_partial_text_uses_length_finish_reason(self, adapter):
+        """Partial text + truncation marker → finish_reason='length', 200 OK,
+        plus hermes extras + headers."""
+        mock_result = {
+            "final_response": "Here is part one of the answer",
+            "completed": False,
+            "partial": True,
+            "error": "Response truncated due to output length limit",
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "tell me everything"}]},
+                )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["choices"][0]["finish_reason"] == "length"
+            assert data["choices"][0]["message"]["content"] == "Here is part one of the answer"
+            assert data["hermes"]["partial"] is True
+            assert data["hermes"]["completed"] is False
+            assert data["hermes"]["error_code"] == "output_truncated"
+            assert resp.headers.get("X-Hermes-Completed") == "false"
+            assert resp.headers.get("X-Hermes-Partial") == "true"
+
+    @pytest.mark.asyncio
+    async def test_failure_with_no_text_returns_502_error_envelope(self, adapter):
+        """No usable assistant text + failure → 502 with OpenAI error envelope.
+
+        Pre-fix behavior: the failure string ('Response remained truncated...')
+        was substituted into message.content with finish_reason='stop',
+        making API clients think the agent had answered.
+        """
+        mock_result = {
+            "final_response": None,
+            "completed": False,
+            "partial": True,
+            "failed": True,
+            "error": "Response remained truncated after 3 continuation attempts",
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "x"}]},
+                )
+            # Hard fail: SDK clients will raise on this status
+            assert resp.status == 502
+            data = await resp.json()
+            assert data["error"]["code"] == "agent_incomplete"
+            assert "truncated" in data["error"]["message"].lower()
+            assert data["error"]["hermes"]["partial"] is True
+            assert data["error"]["hermes"]["failed"] is True
+            assert resp.headers.get("X-Hermes-Completed") == "false"
+
+    @pytest.mark.asyncio
+    async def test_normal_completion_unchanged(self, adapter):
+        """Sanity: a completed-True result still returns finish_reason='stop'
+        and no hermes extras (preserves the existing happy-path contract)."""
+        mock_result = {
+            "final_response": "All good.",
+            "completed": True,
+            "partial": False,
+            "failed": False,
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["choices"][0]["finish_reason"] == "stop"
+            assert data["choices"][0]["message"]["content"] == "All good."
+            assert "hermes" not in data
+            assert "X-Hermes-Completed" not in resp.headers
+
+
+# ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
 

@@ -402,11 +402,16 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         return bare
 
     # --- Anthropic: strip matching provider prefix, dots -> hyphens ---
+    # Only Claude models need dots→hyphens (claude-sonnet-4.6 → claude-sonnet-4-6).
+    # Third-party models served over Anthropic-compatible endpoints (e.g.
+    # Xiaomi MiMo's mimo-v2.5-pro) must keep their dots unchanged.
     if provider in _DOT_TO_HYPHEN_PROVIDERS:
         bare = _strip_matching_provider_prefix(name, provider)
         if "/" in bare:
             return bare
-        return _dots_to_hyphens(bare)
+        if bare.lower().startswith("claude-"):
+            return _dots_to_hyphens(bare)
+        return bare
 
     # --- Copilot / Copilot ACP: delegate to the Copilot-specific
     #     normalizer.  It knows about the alias table (vendor-prefix

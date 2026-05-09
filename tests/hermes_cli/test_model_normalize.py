@@ -53,6 +53,42 @@ class TestAnthropicDotToHyphen:
         assert result == "claude-sonnet-4-6"
 
 
+# ── Regression: issue #22196 ───────────────────────────────────────────
+
+class TestIssue22196AnthropicNonClaudeModelPreservation:
+    """Third-party models on Anthropic-compatible endpoints must keep dots.
+
+    When provider=anthropic with a custom base_url (e.g. Xiaomi MiMo),
+    non-Claude model IDs like mimo-v2.5-pro must NOT have dots converted
+    to hyphens. Only Claude models need the dot-to-hyphen transformation.
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        ("mimo-v2.5-pro", "mimo-v2.5-pro"),
+        ("MiMo-V2.5-Pro", "MiMo-V2.5-Pro"),
+        ("qwen3.5-plus", "qwen3.5-plus"),
+        ("MiniMax-M2.7", "MiniMax-M2.7"),
+        ("glm-4.7", "glm-4.7"),
+    ])
+    def test_anthropic_preserves_dots_for_non_claude(self, model, expected):
+        result = normalize_model_for_provider(model, "anthropic")
+        assert result == expected, f"Expected {expected!r}, got {result!r}"
+
+    @pytest.mark.parametrize("model,expected", [
+        ("anthropic/mimo-v2.5-pro", "mimo-v2.5-pro"),
+        ("anthropic/qwen3.5-plus", "qwen3.5-plus"),
+    ])
+    def test_anthropic_strips_prefix_for_non_claude(self, model, expected):
+        result = normalize_model_for_provider(model, "anthropic")
+        assert result == expected
+
+    def test_anthropic_still_converts_claude_dots(self):
+        """Claude models must still get dots→hyphens."""
+        result = normalize_model_for_provider("claude-sonnet-4.6", "anthropic")
+        assert result == "claude-sonnet-4-6"
+
+
+
 # ── OpenCode Zen regression ────────────────────────────────────────────
 
 class TestOpenCodeZenModelNormalization:

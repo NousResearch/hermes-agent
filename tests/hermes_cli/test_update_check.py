@@ -151,3 +151,23 @@ def test_invalidate_update_cache_no_profiles_dir(tmp_path):
         _invalidate_update_cache()
 
     assert not (default_home / ".update_check").exists()
+
+
+def test_invalidate_update_cache_clears_external_hermes_home(tmp_path):
+    """Clear the active external HERMES_HOME cache in addition to the default tree."""
+    from hermes_cli.main import _invalidate_update_cache
+
+    default_home = tmp_path / ".hermes"
+    default_home.mkdir()
+    (default_home / ".update_check").write_text('{"ts":1,"behind":5}')
+
+    external_home = tmp_path / "custom-home"
+    external_home.mkdir()
+    (external_home / ".update_check").write_text('{"ts":1,"behind":7}')
+
+    with patch("hermes_constants.get_default_hermes_root", return_value=default_home), \
+         patch.dict(os.environ, {"HERMES_HOME": str(external_home)}):
+        _invalidate_update_cache()
+
+    assert not (default_home / ".update_check").exists()
+    assert not (external_home / ".update_check").exists()

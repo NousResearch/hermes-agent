@@ -6422,14 +6422,26 @@ def _invalidate_update_cache():
 
     default_home = get_default_hermes_root()
     homes.append(default_home)
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    if env_home:
+        env_path = Path(env_home).expanduser()
+        try:
+            env_path.resolve().relative_to(default_home.resolve())
+        except ValueError:
+            homes.append(env_path)
     # Named profiles under <root>/profiles/
     profiles_root = default_home / "profiles"
     if profiles_root.is_dir():
         for entry in profiles_root.iterdir():
             if entry.is_dir():
                 homes.append(entry)
+    seen = set()
     for home in homes:
         try:
+            resolved = home.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
             cache_file = home / ".update_check"
             if cache_file.exists():
                 cache_file.unlink()

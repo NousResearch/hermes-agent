@@ -426,22 +426,31 @@ def session_search(
                 continue
             if resolved_sid not in seen_sessions:
                 result = dict(result)
-                result["session_id"] = resolved_sid
+                # Preserve the original child session_id for content retrieval —
+                # FTS5 matched in the child, not necessarily in the parent (#22150).
+                # Track the resolved parent separately for dedup + metadata lookup.
+                if resolved_sid != raw_sid:
+                    result["resolved_session_id"] = resolved_sid
                 seen_sessions[resolved_sid] = result
             if len(seen_sessions) >= limit:
                 break
 
         # Prepare all sessions for parallel summarization
         tasks = []
-        for session_id, match_info in seen_sessions.items():
+        for resolved_sid, match_info in seen_sessions.items():
+            # Fetch content from the original session that produced the FTS5 hit,
+            # not the parent — children can carry text the parent never had.
+            content_sid = match_info.get("session_id", resolved_sid)
             try:
-                messages = db.get_messages_as_conversation(session_id)
+                messages = db.get_messages_as_conversation(content_sid)
                 if not messages:
                     continue
-                session_meta = db.get_session(session_id) or {}
+                # Metadata (started_at, source, model) lives on the parent for
+                # delegation chains; keep that lookup on resolved_sid.
+                session_meta = db.get_session(resolved_sid) or {}
                 conversation_text = _format_conversation(messages)
                 conversation_text = _truncate_around_matches(conversation_text, query)
-                tasks.append((session_id, match_info, conversation_text, session_meta))
+                tasks.append((resolved_sid, match_info, conversation_text, session_meta))
             except Exception as e:
                 logging.warning(
                     "Failed to prepare session %s: %s",
@@ -486,27 +495,31 @@ def session_search(
             }, ensure_ascii=False)
 
         summaries = []
-        for (session_id, match_info, conversation_text, session_meta), result in zip(tasks, results):
+        for (resolved_sid, match_info, conversation_text, session_meta), result in zip(tasks, results):
             if isinstance(result, Exception):
                 logging.warning(
                     "Failed to summarize session %s: %s",
-                    session_id, result, exc_info=True,
+                    resolved_sid, result, exc_info=True,
                 )
                 result = None
 
             # Prefer resolved parent session metadata over FTS5 match metadata.
             # match_info carries source/model from the *child* session that contained
-            # the FTS5 hit; after _resolve_to_parent() the session_id points to the
-            # root, so session_meta has the authoritative platform/source for the
-            # session the user actually cares about (#15909).
+            # the FTS5 hit; session_meta has the authoritative platform/source for
+            # the lineage root (#15909). session_id points back at the child where
+            # the text actually lives so callers can reopen the right transcript
+            # (#22150).
+            content_sid = match_info.get("session_id", resolved_sid)
             entry = {
-                "session_id": session_id,
+                "session_id": content_sid,
                 "when": _format_timestamp(
                     session_meta.get("started_at") or match_info.get("session_started")
                 ),
                 "source": session_meta.get("source") or match_info.get("source", "unknown"),
                 "model": session_meta.get("model") or match_info.get("model"),
             }
+            if resolved_sid != content_sid:
+                entry["resolved_session_id"] = resolved_sid
 
             if result:
                 entry["summary"] = result

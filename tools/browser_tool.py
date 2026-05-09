@@ -447,19 +447,24 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
                 )
                 return None
     except Exception as e:
+        # Config file may be temporarily unreadable; still try auto-detect so
+        # env-based / managed-gateway credentials can resolve. Don't pin cache.
         logger.debug("Could not read cloud_provider from config: %s", e)
-        return None
 
     if resolved is None:
         # Prefer Browser Use (managed Nous gateway or direct API key),
         # fall back to Browserbase (direct credentials only).
-        fallback_provider = BrowserUseProvider()
-        if fallback_provider.is_configured():
-            resolved = fallback_provider
-        else:
-            fallback_provider = BrowserbaseProvider()
+        try:
+            fallback_provider = BrowserUseProvider()
             if fallback_provider.is_configured():
                 resolved = fallback_provider
+            else:
+                fallback_provider = BrowserbaseProvider()
+                if fallback_provider.is_configured():
+                    resolved = fallback_provider
+        except Exception:  # pragma: no cover - defensive: never poison cache
+            logger.debug("Cloud provider auto-detect failed", exc_info=True)
+            return None
 
     if resolved is None:
         # Transient None — credentials may self-heal. Don't poison the cache.

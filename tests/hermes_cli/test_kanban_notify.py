@@ -23,7 +23,7 @@ def kanban_home(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_notifier_unsubs_after_completed_event(kanban_home):
     """
-    completed 事件送出後，subscription 應該被移除（event_terminal 邏輯）。
+    Subscription should be remove after completed event
     """
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner

@@ -1,6 +1,7 @@
 name: Tests
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths-ignore:
@@ -80,3 +81,5 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+# Temporary no-op touch to force Python + web checks on this PR.

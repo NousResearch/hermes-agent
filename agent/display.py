@@ -94,20 +94,21 @@ class LocalEditSnapshot:
     before: dict[str, str | None] = field(default_factory=dict)
 
 # =========================================================================
-# Configurable tool preview length (0 = no limit)
+# Configurable tool preview length. 0 = use compact per-tool defaults for
+# completion lines; positive values set a custom cap.
 # Set once at startup by CLI or gateway from display.tool_preview_length config.
 # =========================================================================
-_tool_preview_max_len: int = 0  # 0 = unlimited
+_tool_preview_max_len: int = 0  # 0 = compact per-tool defaults
 
 
 def set_tool_preview_max_len(n: int) -> None:
-    """Set the global max length for tool call previews. 0 = no limit."""
+    """Set the global max length for tool call previews. 0 = compact defaults."""
     global _tool_preview_max_len
     _tool_preview_max_len = max(int(n), 0) if n else 0
 
 
 def get_tool_preview_max_len() -> int:
-    """Return the configured max preview length (0 = unlimited)."""
+    """Return the configured max preview length (0 = compact defaults)."""
     return _tool_preview_max_len
 
 
@@ -852,19 +853,31 @@ def get_cute_tool_message(
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     skin_prefix = get_skin_tool_prefix()
 
+    def _ellipsis(limit: int) -> str:
+        return "." * max(limit, 0)
+
     def _trunc(s, n=40):
-        s = str(s)
-        if _tool_preview_max_len == 0:
-            return s  # no limit
-        limit = _tool_preview_max_len
-        return (s[:limit-3] + "...") if len(s) > limit else s
+        # Completion lines must remain single-line even when the underlying
+        # tool argument is a heredoc, pasted code block, or otherwise contains
+        # embedded newlines.  For completion lines, display.tool_preview_length=0
+        # means "use the tool-specific compact default"; positive values opt in
+        # to a custom cap.
+        s = _oneline(str(s))
+        limit = _tool_preview_max_len or n
+        if len(s) <= limit:
+            return s
+        if limit <= 3:
+            return _ellipsis(limit)
+        return s[:limit - 3] + "..."
 
     def _path(p, n=35):
-        p = str(p)
-        if _tool_preview_max_len == 0:
-            return p  # no limit
-        limit = _tool_preview_max_len
-        return ("..." + p[-(limit-3):]) if len(p) > limit else p
+        p = _oneline(str(p))
+        limit = _tool_preview_max_len or n
+        if len(p) <= limit:
+            return p
+        if limit <= 3:
+            return _ellipsis(limit)
+        return "..." + p[-(limit - 3):]
 
     def _wrap(line: str) -> str:
         """Apply skin tool prefix and failure suffix."""

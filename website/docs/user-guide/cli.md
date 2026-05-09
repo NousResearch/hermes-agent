@@ -304,12 +304,12 @@ Cycle through display modes with `/verbose`: `off → new → all → verbose`. 
 
 ### Tool Preview Length
 
-The `display.tool_preview_length` config key controls the maximum number of characters shown in tool call preview lines (e.g. file paths, terminal commands). The default is `0`, which means no limit — full paths and commands are shown.
+The `display.tool_preview_length` config key controls the maximum number of characters shown in tool call preview lines (e.g. file paths, terminal commands). The default is `0`, which uses compact per-tool defaults for normal completion lines. Set a positive value to choose a wider or narrower cap. Verbose mode can still show full tool details.
 
 ```yaml
 # ~/.hermes/config.yaml
 display:
-  tool_preview_length: 80   # Truncate tool previews to 80 chars (0 = no limit)
+  tool_preview_length: 80   # Truncate normal tool previews to 80 chars (0 = compact defaults)
 ```
 
 This is useful on narrow terminals or when tool arguments contain very long file paths.

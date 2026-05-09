@@ -854,7 +854,7 @@ DEFAULT_CONFIG = {
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
-        "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        "tool_preview_length": 0,  # Max chars for normal tool previews (0 = compact per-tool defaults)
         # Auto-delete system-notice replies (e.g. "✨ New session started!",
         # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
         # that support message deletion (currently Telegram; other platforms

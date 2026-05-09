@@ -1080,6 +1080,13 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Gate for autonomous skill evolution by background review.
+        # "auto"     — direct write (current behaviour, backward compatible)
+        # "confirm"  — redirect to pending queue for human approval
+        # "readonly" — suppress all background-review skill mutations
+        "evolution_mode": "auto",
+        # Days before a pending skill change is auto-discarded (0 = never).
+        "pending_ttl_days": 7,
     },
 
     # Curator — background skill maintenance.
@@ -3065,6 +3072,24 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    default: your-model-name\n"
             "    base_url: https://...",
         ))
+
+    # ── skills.evolution_mode must be auto|confirm|readonly ────────────
+    skills_cfg = config.get("skills")
+    if isinstance(skills_cfg, dict):
+        mode = skills_cfg.get("evolution_mode", "auto")
+        if mode not in {"auto", "confirm", "readonly"}:
+            issues.append(ConfigIssue(
+                "error",
+                f"skills.evolution_mode must be one of auto/confirm/readonly, got '{mode}'",
+                "Change to: evolution_mode: auto  (or confirm / readonly)",
+            ))
+        ttl = skills_cfg.get("pending_ttl_days", 7)
+        if not isinstance(ttl, int) or ttl < 0:
+            issues.append(ConfigIssue(
+                "error",
+                f"skills.pending_ttl_days must be a non-negative integer, got {ttl!r}",
+                "Change to: pending_ttl_days: 7  (or 0 for never expire)",
+            ))
 
     # ── Root-level keys that look misplaced ──────────────────────────────
     for key in config:

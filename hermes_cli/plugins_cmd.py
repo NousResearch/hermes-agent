@@ -27,6 +27,24 @@ class PluginOperationError(Exception):
     """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx)."""
 
 
+def _find_git() -> str:
+    """Return the absolute path to the git executable.
+
+    Resolves via shutil.which() first, then falls back to common absolute
+    paths for runtime environments (dashboard, systemd) where PATH may be
+    minimal.  Returns the bare string "git" as a last resort so the
+    downstream FileNotFoundError still surfaces the original error message.
+    See issue #22583.
+    """
+    found = shutil.which("git")
+    if found:
+        return found
+    for candidate in ("/usr/bin/git", "/usr/local/bin/git", "/bin/git"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return "git"
+
+
 # Minimum manifest version this installer understands.
 # Plugins may declare ``manifest_version: 1`` in plugin.yaml;
 # future breaking changes to the manifest schema bump this.
@@ -326,7 +344,7 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
 
         try:
             result = subprocess.run(
-                ["git", "clone", "--depth", "1", git_url, str(tmp_target)],
+                [_find_git(), "clone", "--depth", "1", git_url, str(tmp_target)],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -1474,7 +1492,7 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     try:
         result = subprocess.run(
-            ["git", "pull", "--ff-only"],
+            [_find_git(), "pull", "--ff-only"],
             capture_output=True,
             text=True,
             timeout=60,

@@ -597,6 +597,43 @@ class TestProviderDiscovery:
 # ── Auto-activation fix ──────────────────────────────────────────────────
 
 
+class TestFindGit:
+    """Regression tests for _find_git() (issue #22583).
+
+    Dashboard/systemd runtimes may run with a minimal PATH so shutil.which("git")
+    returns None even when git exists at an absolute path.  _find_git() must fall
+    back to known absolute locations before giving up.
+    """
+
+    def test_find_git_uses_which_when_available(self, monkeypatch):
+        """shutil.which result is returned directly."""
+        import shutil as _shutil
+        from hermes_cli.plugins_cmd import _find_git
+        monkeypatch.setattr(_shutil, "which", lambda _: "/usr/local/bin/git")
+        assert _find_git() == "/usr/local/bin/git"
+
+    def test_find_git_falls_back_to_absolute_path_when_which_fails(self, monkeypatch):
+        """When shutil.which returns None, the first accessible absolute path wins."""
+        import shutil as _shutil
+        import os as _os
+        from hermes_cli.plugins_cmd import _find_git
+        monkeypatch.setattr(_shutil, "which", lambda _: None)
+        monkeypatch.setattr(_os.path, "isfile", lambda p: p in ("/usr/local/bin/git",))
+        monkeypatch.setattr(_os, "access", lambda p, _m: p in ("/usr/local/bin/git",))
+        assert _find_git() == "/usr/local/bin/git"
+
+    def test_find_git_returns_bare_git_when_not_found_anywhere(self, monkeypatch):
+        """When git is nowhere to be found, return bare 'git' so FileNotFoundError
+        message is preserved downstream."""
+        import shutil as _shutil
+        import os as _os
+        from hermes_cli.plugins_cmd import _find_git
+        monkeypatch.setattr(_shutil, "which", lambda _: None)
+        monkeypatch.setattr(_os.path, "isfile", lambda _p: False)
+        monkeypatch.setattr(_os, "access", lambda _p, _m: False)
+        assert _find_git() == "git"
+
+
 class TestNoAutoActivation:
     """Verify that plugin engines don't auto-activate when config says 'compressor'."""
 

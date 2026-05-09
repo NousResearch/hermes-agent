@@ -13,6 +13,7 @@ Covers:
 """
 
 import os
+import socket
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -492,7 +493,7 @@ class TestDispatchMessage(unittest.TestCase):
                 del os.environ["EMAIL_ALLOWED_USERS"]
 
             adapter = self._make_adapter()
-            adapter._message_handler = MagicMock()
+            adapter._message_handler = AsyncMock(return_value=None)
 
             msg_data = {
                 "uid": b"101",
@@ -627,20 +628,35 @@ class TestSendMethods(unittest.TestCase):
         """send() should use SMTP to deliver email."""
         import asyncio
         adapter = self._make_adapter()
+        calls = {}
 
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_server = MagicMock()
-            mock_smtp.return_value = mock_server
+        class FakeSMTP:
+            def __init__(self, host, port, timeout=None):
+                calls["init"] = (host, port, timeout)
 
+            def starttls(self, context=None):
+                calls["starttls"] = context
+
+            def login(self, user, password):
+                calls["login"] = (user, password)
+
+            def send_message(self, msg):
+                calls["send_message"] = msg
+
+            def quit(self):
+                calls["quit"] = True
+
+        with patch("smtplib.SMTP", FakeSMTP):
             result = asyncio.run(
                 adapter.send("user@test.com", "Hello from Hermes!")
             )
 
-            self.assertTrue(result.success)
-            mock_server.starttls.assert_called_once()
-            mock_server.login.assert_called_once_with("hermes@test.com", "secret")
-            mock_server.send_message.assert_called_once()
-            mock_server.quit.assert_called_once()
+        self.assertTrue(result.success)
+        self.assertEqual(calls["init"], ("smtp.test.com", 587, 30))
+        self.assertIsNotNone(calls["starttls"])
+        self.assertEqual(calls["login"], ("hermes@test.com", "secret"))
+        self.assertEqual(calls["send_message"]["To"], "user@test.com")
+        self.assertTrue(calls["quit"])
 
     def test_send_failure_returns_error(self):
         """SMTP failure should return SendResult with error."""
@@ -870,6 +886,56 @@ class TestFetchNewMessages(unittest.TestCase):
             results = adapter._fetch_new_messages()
 
         self.assertEqual(results, [])
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_IMAP_FETCH_ATTEMPTS": "3",
+        "EMAIL_IMAP_RETRY_DELAY": "0",
+    }, clear=False)
+    def test_fetch_retries_transient_timeout(self):
+        """Transient IMAP timeouts should retry before giving up."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", side_effect=[socket.timeout("timed out"), mock_imap]) as mock_factory:
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        self.assertEqual(mock_factory.call_count, 2)
+        mock_imap.logout.assert_called_once()
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_IMAP_FETCH_ATTEMPTS": "3",
+        "EMAIL_IMAP_RETRY_DELAY": "0",
+    }, clear=False)
+    def test_fetch_does_not_mark_uid_seen_until_fetch_succeeds(self):
+        """UIDs should not be marked seen when fetch times out mid-message."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"9"])
+            if command == "fetch":
+                raise socket.timeout("timed out")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        self.assertNotIn(b"9", adapter._seen_uids)
 
     def test_fetch_extracts_sender_name(self):
         """Sender name should be extracted from 'Name <addr>' format."""

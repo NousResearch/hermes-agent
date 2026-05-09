@@ -41,14 +41,17 @@ def validate_within_dir(path: Path, root: Path) -> Optional[str]:
     # Reject URL-encoded traversal. pathlib does not decode percent-encoding,
     # so %2e%2e would pass the resolve() check as a literal directory name
     # but could be decoded upstream to ".." by a web layer.
+    # Also catches double-encoded sequences (%252e%252e → %2e%2e → ..)
+    # mirroring the double-decode logic already in has_traversal_component().
     decoded = urllib.parse.unquote(path_str)
-    if decoded != path_str:
-        decoded_parts = Path(decoded).parts
-        if ".." in decoded_parts:
-            return (
-                f"URL-decoded path contains traversal component: {decoded!r}. "
-                "Pass a plain (non-percent-encoded) path."
-            )
+    decoded_twice = urllib.parse.unquote(decoded)
+    for _decoded, _label in ((decoded, "URL-decoded"), (decoded_twice, "Double-URL-decoded")):
+        if _decoded != path_str:
+            if ".." in Path(_decoded).parts:
+                return (
+                    f"{_label} path contains traversal component: {_decoded!r}. "
+                    "Pass a plain (non-percent-encoded) path."
+                )
 
     try:
         resolved = path.resolve()

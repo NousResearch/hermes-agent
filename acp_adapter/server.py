@@ -594,6 +594,26 @@ class HermesACPAgent(acp.Agent):
             from hermes_cli.models import detect_provider_for_model, parse_model_input
 
             target_provider, new_model = parse_model_input(new_model, current_provider)
+
+            # parse_model_input only recognises built-in providers (openrouter,
+            # anthropic, etc.).  Custom providers declared under ``providers:``
+            # in config.yaml (e.g. BitFun) are invisible to it.  When the
+            # resolved model still contains a colon we check whether the
+            # left-hand side matches a user-declared custom provider.
+            if ":" in new_model:
+                colon = new_model.find(":")
+                candidate_prov = new_model[:colon].strip()
+                if candidate_prov:
+                    from hermes_cli.config import load_config
+
+                    providers = load_config().get("providers") or {}
+                    if isinstance(providers, dict):
+                        for key in providers:
+                            if key.lower() == candidate_prov.lower():
+                                target_provider = key
+                                new_model = new_model[colon + 1:].strip()
+                                break
+
             if target_provider == current_provider:
                 detected = detect_provider_for_model(new_model, current_provider)
                 if detected:

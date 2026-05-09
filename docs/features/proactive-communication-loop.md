@@ -68,8 +68,8 @@ With BartokGraph, the synthesis pass can answer:
 | Type | Example message |
 |------|----------------|
 | **Temporal bridge** | "Hey — you worked on this exact problem 3 weeks ago. The approach you used then applies here." |
-| **Cross-domain connection** | "Your regime detection work and your soil carbon research share the same underlying structure — both are looking for state transitions in noisy signals." |
-| **Person-knowledge bridge** | "Alice mentioned the Kenya soil project last week. You're working on bioavailability today. These connect to Guruji's objective #6 directly." |
+| **Cross-domain connection** | "Your anomaly detection work and your energy monitoring research share the same underlying structure — both are looking for state transitions in noisy time-series signals." |
+| **Person-knowledge bridge** | "Sarah mentioned the renewable energy project last week. You're working on grid optimization today. These connect to your Q3 objective directly." |
 
 Without BartokGraph: Hermes sees a *transcript snippet*.  
 With BartokGraph: Hermes sees a *web of weighted, time-stamped knowledge* — and can ask
@@ -290,7 +290,7 @@ tests/
 > The regime detector could gate the funding arb bot."
 
 **With BartokGraph (cross-domain):**
-> "Your soil carbon work and your trading bot regime detection share an interesting structure.
+> "Your anomaly detection work and your energy monitoring research share an interesting structure.
 > Both are looking for state transitions in noisy time-series signals.
 > The HMM you built for BTC markets could potentially be adapted for soil health monitoring."
 

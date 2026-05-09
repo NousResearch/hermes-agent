@@ -88,19 +88,19 @@ def test_prompt_without_graph_has_no_bartokgraph_section():
 
 def test_prompt_with_graph_connections_includes_bartokgraph_section():
     conn = BartokGraphConnection(
-        node_a_content="soil carbon",
-        node_b_content="Kenya soil project",
+        node_a_content="anomaly detection",
+        node_b_content="grid monitoring project",
         connection_type="temporal_bridge",
         strength=0.8,
         days_apart=21,
-        explanation="both discuss soil carbon",
+        explanation="both discuss state transitions in time-series",
     )
     graph_ctx = BartokGraphContext(connections=[conn], provider_name="mock")
     prompt = _build_synthesis_prompt("user: soil", "(none)", graph_ctx=graph_ctx)
     assert "BARTOKGRAPH CONNECTIONS" in prompt
     assert "TEMPORAL_BRIDGE" in prompt
-    assert "soil carbon" in prompt
-    assert "Kenya" in prompt
+    assert "anomaly detection" in prompt
+    assert "grid monitoring" in prompt
 
 
 def test_prompt_with_empty_connections_has_no_bartokgraph_section():
@@ -272,7 +272,7 @@ def test_bartokgraph_temporal_bridge_triggers_send():
     """A BartokGraph temporal bridge with high scores → sends."""
     db = MagicMock()
     db.get_messages_since.return_value = [
-        {"role": "user", "content": "working on soil carbon analysis today"},
+        {"role": "user", "content": "working on anomaly detection in time-series today"},
     ]
     db.get_proactive_sent.return_value = []
     cfg = MagicMock()
@@ -286,8 +286,8 @@ def test_bartokgraph_temporal_bridge_triggers_send():
     mock_graph = MagicMock()
     mock_graph.get_connections = AsyncMock(return_value=BartokGraphContext(
         connections=[BartokGraphConnection(
-            node_a_content="soil carbon",
-            node_b_content="Kenya soil project from 3 weeks ago",
+            node_a_content="anomaly detection",
+            node_b_content="grid monitoring project from 3 weeks ago",
             connection_type="temporal_bridge",
             strength=0.85,
             days_apart=21,
@@ -301,18 +301,18 @@ def test_bartokgraph_temporal_bridge_triggers_send():
 
     bridge_msg = json.dumps({
         "should_send": True,
-        "message": "You worked on soil carbon 3 weeks ago in the Kenya project. The approach you found then applies here.",
+        "message": "You worked on anomaly detection 3 weeks ago in the grid monitoring project. The approach you found then applies here.",
         "novelty": 0.88, "relevance": 0.85,
         "connection_type": "temporal_bridge",
         "reasoning": "BartokGraph temporal bridge — high novelty.",
-        "candidates": ["Kenya soil project"],
+        "candidates": ["grid monitoring project"],
     })
     with patch.object(loop, "_call_synthesis_model", new=AsyncMock(return_value=bridge_msg)):
         result = asyncio.run(loop.run_synthesis("session-bridge"))
 
     assert result.should_send is True
     assert result.connection_type == "temporal_bridge"
-    assert "Kenya" in (result.message or "")
+    assert "anomaly detection" in (result.message or "")
 
 
 # ──────────────────────────────────────────────────────────────────────

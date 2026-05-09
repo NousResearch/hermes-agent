@@ -31,7 +31,7 @@ Two synthesis modes
   Three new message types only BartokGraph enables:
     TEMPORAL_BRIDGE   — "You worked on this exact problem 3 weeks ago."
     CROSS_DOMAIN      — "Your X work and your Y work share the same structure."
-    PERSON_KNOWLEDGE  — "Alice mentioned X. You asked about Y. These converge."
+    PERSON_KNOWLEDGE  — "Sarah mentioned X. You asked about Y. These converge."
 
 Design invariants
 -----------------
@@ -493,7 +493,7 @@ THE BAR IS HIGH. Prefer silence. If you're uncertain, set should_send=false.
 
 COMPOSE THE MESSAGE naturally — as if continuing a conversation.
   Good: "Hey — just connected something. Your regime detection work and your 
-         soil carbon research are solving the same problem: detecting state 
+         anomaly detection and your energy monitoring are solving the same problem: detecting state 
          transitions in noisy signals."
   Bad:  "BARTOKGRAPH ANALYSIS: cross-domain connection detected between..."
 

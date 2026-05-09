@@ -365,7 +365,10 @@ class GatewayStreamConsumer:
                             self._accumulated, _safe_limit
                         )
                         for chunk in chunks:
-                            await self._send_new_chunk(chunk, self._message_id)
+                            await self._send_new_chunk(
+                                chunk,
+                                self._message_id or self._initial_reply_to_id,
+                            )
                         self._accumulated = ""
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()

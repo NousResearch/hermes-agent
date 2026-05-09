@@ -6648,6 +6648,46 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+
+        # Check for pending CLI handoff
+        if _is_new_session and self._session_db:
+            try:
+                platform_key = source.platform.value if source.platform else ""
+                handoff = self._session_db.find_pending_handoff(platform_key)
+                if handoff:
+                    cli_session_id = handoff["id"]
+                    cli_messages = self._session_db.get_messages(cli_session_id)
+                    if cli_messages:
+                        # Cap to last 200 messages to avoid context blowup
+                        cli_messages = cli_messages[-200:]
+                        transcript = []
+                        for msg in cli_messages:
+                            role = msg.get("role", "unknown")
+                            content = str(msg.get("content") or "")
+                            if content.strip():
+                                label = {"user": "User", "assistant": "Assistant",
+                                         "system": "System", "tool": "Tool"}.get(role, role.title())
+                                transcript.append(f"{label}: {content}")
+                        if transcript:
+                            handoff_title = handoff.get("title") or "untitled"
+                            handoff_context = (
+                                f"[Handoff from CLI session '{handoff_title}'. "
+                                f"Continue the conversation below where it left off.]"
+                            )
+                            context_prompt = (
+                                handoff_context
+                                + "\n\n--- Previous conversation ---\n"
+                                + "\n\n".join(transcript)
+                                + "\n--- End of previous conversation ---\n\n"
+                                + context_prompt
+                            )
+                    self._session_db.clear_handoff_pending(cli_session_id)
+                    logger.info(
+                        "Handoff: CLI session %s handed off to %s chat %s",
+                        cli_session_id, platform_key, source.chat_id,
+                    )
+            except Exception:
+                logger.debug("Handoff check failed", exc_info=True)
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).

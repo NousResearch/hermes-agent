@@ -215,6 +215,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     pricing_version TEXT,
     title TEXT,
     api_call_count INTEGER DEFAULT 0,
+    handoff_pending INTEGER DEFAULT 0,
+    handoff_platform TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -2860,4 +2862,47 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
+
+    # ── Handoff (cross-platform session transfer) ──────────────────────────
+
+    def set_handoff_pending(self, session_id: str, platform: str) -> bool:
+        """Mark a session as pending handoff to the given platform.
+
+        Returns True if the session was found and updated.
+        """
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions SET handoff_pending = 1, handoff_platform = ? "
+                "WHERE id = ? AND handoff_pending = 0",
+                (platform, session_id),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def find_pending_handoff(self, platform: str) -> Optional[Dict[str, Any]]:
+        """Find the most recent session pending handoff for a platform.
+
+        Returns the session dict or None.
+        """
+        try:
+            cur = self._conn.execute(
+                "SELECT * FROM sessions "
+                "WHERE handoff_pending = 1 AND handoff_platform = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (platform,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+        except Exception:
+            return None
+
+    def clear_handoff_pending(self, session_id: str) -> None:
+        """Clear the handoff_pending flag on a session."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET handoff_pending = 0, handoff_platform = NULL "
+                "WHERE id = ?",
+                (session_id,),
+            )
+        self._execute_write(_do)
 

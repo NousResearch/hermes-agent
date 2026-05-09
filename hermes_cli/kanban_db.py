@@ -1504,7 +1504,14 @@ def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
                 conn, child_id, "unlinked",
                 {"parent": parent_id, "child": child_id},
             )
-        return cur.rowcount > 0
+        removed = cur.rowcount > 0
+    if removed:
+        # Dependency edge removed — re-evaluate promotion eligibility for the
+        # child immediately.  Matches the contract of complete_task and
+        # unblock_task; without this the child stays stuck in todo until the
+        # next dispatcher tick or a manual `hermes kanban recompute` (issue #22459).
+        recompute_ready(conn)
+    return removed
 
 
 def parent_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:

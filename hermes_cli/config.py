@@ -731,6 +731,26 @@ DEFAULT_CONFIG = {
     # Empty model = use provider's default auxiliary model.
     # All tasks fall back to openrouter:google/gemini-3-flash-preview if
     # the configured provider is unavailable.
+    #
+    # extra_body: forwarded verbatim as request body fields on every aux call
+    # for that task. Use this to set provider-specific knobs (independent of
+    # main-agent settings). On OpenRouter you can set provider routing prefs
+    # and the Pareto Code coding-score floor here. Example:
+    #
+    #   auxiliary:
+    #     compression:
+    #       provider: openrouter
+    #       model: openrouter/pareto-code
+    #       extra_body:
+    #         provider:           # OpenRouter provider routing
+    #           order: [anthropic, google]
+    #           sort: throughput  # or price | latency
+    #         plugins:            # OpenRouter Pareto Code router
+    #           - id: pareto-router
+    #             min_coding_score: 0.5
+    #
+    # Each aux task is independent — main-agent provider_routing and
+    # openrouter.min_coding_score do NOT propagate to aux calls by design.
     "auxiliary": {
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom

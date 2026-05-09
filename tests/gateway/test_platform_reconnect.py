@@ -150,6 +150,24 @@ class TestStartupPlatformIsolation:
         with pytest.raises(TimeoutError, match="telegram connect timed out"):
             await runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM)
 
+    def test_discord_default_connect_timeout_higher_than_global(self, monkeypatch):
+        """Discord's connect path includes slash command registration, so its
+        default connect timeout must be longer than the global default
+        (#19776). The env var still overrides both when set."""
+        runner = _make_runner()
+        monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
+
+        global_default = runner._platform_connect_timeout_secs(Platform.TELEGRAM)
+        discord_default = runner._platform_connect_timeout_secs(Platform.DISCORD)
+
+        assert global_default == 30.0
+        assert discord_default >= 60.0
+        assert discord_default > global_default
+
+        monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "15")
+        assert runner._platform_connect_timeout_secs(Platform.DISCORD) == 15.0
+        assert runner._platform_connect_timeout_secs(Platform.TELEGRAM) == 15.0
+
 
 class TestStartupFailureQueuing:
     """Verify that failed platforms are queued during startup."""

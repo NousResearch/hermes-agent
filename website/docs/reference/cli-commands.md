@@ -342,15 +342,16 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 ## `hermes proactive`
 
 ```bash
-hermes proactive <prompt|install>
+hermes proactive <prompt|scan|install>
 ```
 
-Creates a conservative synthesis prompt for a recurring cron job that reviews recent sessions and only messages the user when there is one safe, timely, high-confidence nudge. If nothing is worth saying, the prompt tells the cron agent to return `[SILENT]`, which suppresses delivery while still saving output locally for audit.
+Creates a conservative personal-assistant-style cron job that first runs a fast structured signal scan, then asks the agent to judge whether exactly one safe, timely, high-confidence nudge is worth sending. If the scanner finds no candidate, it emits a wake gate so the cron job skips the LLM entirely. If the judge finds nothing worth interrupting the user for, it returns `[SILENT]`.
 
 | Subcommand | Description |
 |------------|-------------|
-| `prompt` | Print the prompt used by the proactive synthesis cron job. |
-| `install` | Create or update the idempotent `Proactive synthesis / safe nudges` cron job. |
+| `prompt` | Print the judgment prompt used by the proactive synthesis cron job. |
+| `scan` | Run the fast local signal scanner and print structured signals. |
+| `install` | Create or update the idempotent `Proactive synthesis / safe nudges` cron job, including its pre-run scanner script. |
 
 Common options:
 

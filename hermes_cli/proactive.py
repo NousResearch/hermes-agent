@@ -1,23 +1,61 @@
-"""Safe proactive reflection helpers for Hermes.
+"""Safe proactive personal-assistant helpers for Hermes.
 
 This module intentionally does not make the agent proactive by itself. It builds
-and installs a cron prompt with strong safety boundaries so users can opt in to
-periodic synthesis without granting the job permission to act externally.
+and installs a cron job with a fast structured signal scan plus a small judgment
+prompt so users can opt in to periodic synthesis without granting permission to
+act externally.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
-from typing import Any, Dict, Literal
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Literal
 
 from cron.jobs import create_job, list_jobs, update_job
+from hermes_constants import get_hermes_home
 
 DEFAULT_JOB_NAME = "Proactive synthesis / safe nudges"
 DEFAULT_SCHEDULE = "0 9 * * *"
 DEFAULT_DELIVER = "local"
-DEFAULT_ENABLED_TOOLSETS = ["session_search", "memory", "todo"]
+# The pre-run scanner handles session search. Keep the agent's tool surface small
+# so cron runs do not wander for minutes through session_search.
+DEFAULT_ENABLED_TOOLSETS = ["memory"]
+DEFAULT_SCANNER_SCRIPT = "proactive_signal_scan.py"
 _ALLOWED_CONFIDENCE = {"medium", "high"}
+_MAX_EXCERPT_CHARS = 280
+
+_SCAN_BUCKETS = [
+    {
+        "kind": "content_opportunity",
+        "query": '"meeting notes" OR speech OR "sales team" OR critique OR "X posts" OR delivery OR Notion',
+        "mode": "offer_to_produce",
+        "reason": "fresh notes/content may create a useful draft, critique, or synthesis opportunity",
+    },
+    {
+        "kind": "blocker_or_waiting",
+        "query": 'blocked OR blocker OR waiting OR failed OR failure OR TestFlight OR "Xcode ready" OR gateway',
+        "mode": "ask_or_checked",
+        "reason": "possible blocker or waiting item that may need a next action",
+    },
+    {
+        "kind": "follow_up_or_watch",
+        "query": '"want me" OR "look into" OR "follow up" OR reminder OR proactive OR "More Info"',
+        "mode": "ask_to_investigate",
+        "reason": "possible user-requested follow-up, watch item, or permission-shaped opportunity",
+    },
+    {
+        "kind": "external_risk",
+        "query": 'Stripe OR payment OR purchase OR order OR email OR post OR DM OR calendar OR "App Store Connect"',
+        "mode": "ask_first",
+        "reason": "external/money/reputation risk; draft or ask only, never act externally",
+    },
+]
+
+_SUPPRESSION_QUERY = 'OwnerPath OR "on hold" OR paused OR "do not nudge" OR "don\'t nudge" OR "not useful"'
 
 
 @dataclass(frozen=True)
@@ -39,6 +77,55 @@ class ProactivePromptOptions:
         )
 
 
+def _clip(value: Any, limit: int = _MAX_EXCERPT_CHARS) -> str:
+    text = " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _looks_machine_text(value: Any) -> bool:
+    text = _clip(value, 500).lstrip()
+    lower = text.lower()
+    if not text:
+        return True
+    if text.startswith(("{", "[{", "[TOOL]", "[Called:")):
+        return True
+    machine_markers = (
+        '"success":',
+        '"call_id"',
+        '"tool_call_id"',
+        '"bytes_written"',
+        '"exit_code"',
+        '"files_modified"',
+        "response_item_id",
+        "tool_use",
+    )
+    return any(marker in lower for marker in machine_markers)
+
+
+def _iso(ts: Any) -> str | None:
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _recent(ts: Any, cutoff: float) -> bool:
+    try:
+        return float(ts) >= cutoff
+    except Exception:
+        return True
+
+
+def _signal_key(signal: Dict[str, Any]) -> tuple:
+    return (
+        signal.get("kind"),
+        signal.get("session_id"),
+        _clip(signal.get("excerpt"), 100).lower(),
+    )
+
+
 def build_reflection_prompt(
     *,
     lookback_days: int = 7,
@@ -47,9 +134,9 @@ def build_reflection_prompt(
 ) -> str:
     """Build the self-contained prompt used by the proactive cron job.
 
-    The prompt is deliberately conservative: it asks Hermes to synthesize recent
-    interactions, but to return ``[SILENT]`` unless there is one concrete,
-    safe, timely thing worth sending to the user.
+    The cron job injects structured script output before this prompt. The model's
+    job is judgment, not open-ended research: decide whether to send one tiny
+    proactive PA-style message or stay silent.
     """
 
     opts = ProactivePromptOptions(
@@ -58,7 +145,9 @@ def build_reflection_prompt(
         min_confidence=min_confidence,  # type: ignore[arg-type]
     ).normalized()
 
-    return f"""You are Hermes running a safe proactive reflection pass for Charles.
+    return f"""You are Hermes running a safe proactive personal-assistant pass for Charles.
+
+You should receive a structured "Proactive signal scan" in the script output above. Use that scan as your primary context. Do not wander through session history; the scanner already did the broad pass. If the scan has no strong candidate, say nothing.
 
 Role:
 - Act like a friendly, competent personal assistant, not an alert bot.
@@ -68,11 +157,10 @@ Outcome:
 - Either send one sharp, useful nudge Charles would be glad to receive, or say nothing.
 - Silence is the correct answer unless the best candidate clears the bar.
 
-Discovery:
-1. Use session_search first: browse recent sessions, then search targeted terms if needed. Review up to {opts.max_sessions} relevant sessions from the last {opts.lookback_days} days.
-2. Check current todos if available, but do not treat a stale todo as enough by itself.
-3. Use memory/user preferences as binding constraints, especially paused/on-hold work and topics Charles said not to nudge.
-4. Infer what Hermes has access to from available tools and prior sessions; do not pretend to have access you have not verified.
+Discovery already performed:
+- Recent sessions: up to {opts.max_sessions} sessions from the last {opts.lookback_days} days.
+- Signal buckets: content opportunities, blockers/waiting items, follow-ups/watch items, external-risk items, cron health, and suppressed topics.
+- Available access/boundaries are listed in the scan. Do not pretend Hermes has access that the scan did not verify.
 
 Proactive modes:
 - Already checked: "I looked into X because I thought it would help; here's the useful bit."
@@ -116,6 +204,227 @@ Output rules:
 """.strip()
 
 
+def collect_proactive_signals(
+    *,
+    lookback_days: int = 7,
+    max_sessions: int = 30,
+) -> Dict[str, Any]:
+    """Collect fast, structured proactive signals without invoking an LLM.
+
+    This intentionally uses local state and cron metadata instead of the
+    ``session_search`` tool so scheduled proactive runs stay bounded and cheap.
+    """
+
+    opts = ProactivePromptOptions(lookback_days=lookback_days, max_sessions=max_sessions).normalized()
+    now = time.time()
+    cutoff = now - opts.lookback_days * 86400
+    report: Dict[str, Any] = {
+        "generated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        "lookback_days": opts.lookback_days,
+        "max_sessions": opts.max_sessions,
+        "available_access": [
+            "local Hermes session history (state.db)",
+            "local Hermes cron job metadata",
+            "built-in memory/user preferences available to the judge",
+        ],
+        "boundaries": {
+            "can_observe": True,
+            "can_summarize": True,
+            "can_draft_internally": True,
+            "must_ask_before_external_action": True,
+            "external_send_allowed_from_cron": False,
+        },
+        "recent_sessions": [],
+        "signals": [],
+        "suppressed_topics": [],
+        "scan_errors": [],
+    }
+
+    seen: set[tuple] = set()
+
+    def add_signal(signal: Dict[str, Any]) -> None:
+        key = _signal_key(signal)
+        if key in seen:
+            return
+        seen.add(key)
+        report["signals"].append(signal)
+
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            sessions = db.list_sessions_rich(
+                limit=opts.max_sessions,
+                order_by_last_active=True,
+                include_children=False,
+                exclude_sources=["cron"],
+            )
+        except TypeError:
+            # Older/mocked SessionDB implementations may not accept newer args.
+            sessions = db.search_sessions(limit=opts.max_sessions)
+        for session in sessions:
+            ts = session.get("last_active") or session.get("started_at")
+            if not _recent(ts, cutoff):
+                continue
+            report["recent_sessions"].append(
+                {
+                    "id": session.get("id"),
+                    "source": session.get("source"),
+                    "title": session.get("title"),
+                    "last_active": _iso(ts),
+                    "preview": _clip(session.get("preview"), 160),
+                }
+            )
+
+        for bucket in _SCAN_BUCKETS:
+            try:
+                matches = db.search_messages(
+                    bucket["query"],
+                    role_filter=["user", "assistant"],
+                    exclude_sources=["cron"],
+                    limit=max(20, opts.max_sessions * 2),
+                )
+            except Exception as exc:
+                report["scan_errors"].append(f"{bucket['kind']} search failed: {exc}")
+                continue
+            for match in matches:
+                ts = match.get("timestamp") or match.get("session_started")
+                if not _recent(ts, cutoff):
+                    continue
+                snippet = str(match.get("snippet") or "").strip()
+                context_text = " ".join(
+                    _clip((ctx or {}).get("content"), 120)
+                    for ctx in (match.get("context") or [])
+                    if (ctx or {}).get("content") and not _looks_machine_text((ctx or {}).get("content"))
+                ).strip()
+                if _looks_machine_text(snippet) and not context_text:
+                    continue
+                content = context_text if _looks_machine_text(snippet) else (snippet or context_text)
+                if not content:
+                    continue
+                add_signal(
+                    {
+                        "kind": bucket["kind"],
+                        "mode": bucket["mode"],
+                        "reason": bucket["reason"],
+                        "session_id": match.get("session_id"),
+                        "source": match.get("source"),
+                        "timestamp": _iso(ts),
+                        "excerpt": _clip(content),
+                    }
+                )
+                if len(report["signals"]) >= 12:
+                    break
+            if len(report["signals"]) >= 12:
+                break
+
+        try:
+            suppressed = db.search_messages(
+                _SUPPRESSION_QUERY,
+                role_filter=["user", "assistant"],
+                exclude_sources=["cron"],
+                limit=20,
+            )
+            for match in suppressed:
+                ts = match.get("timestamp") or match.get("session_started")
+                if not _recent(ts, cutoff):
+                    continue
+                snippet = str(match.get("snippet") or "").strip()
+                context_text = " ".join(
+                    _clip((ctx or {}).get("content"), 120)
+                    for ctx in (match.get("context") or [])
+                    if (ctx or {}).get("content") and not _looks_machine_text((ctx or {}).get("content"))
+                ).strip()
+                if _looks_machine_text(snippet) and not context_text:
+                    continue
+                excerpt = context_text if _looks_machine_text(snippet) else (snippet or context_text)
+                if not excerpt:
+                    continue
+                report["suppressed_topics"].append(
+                    {
+                        "session_id": match.get("session_id"),
+                        "source": match.get("source"),
+                        "timestamp": _iso(ts),
+                        "excerpt": _clip(excerpt, 220),
+                    }
+                )
+                if len(report["suppressed_topics"]) >= 5:
+                    break
+        except Exception as exc:
+            report["scan_errors"].append(f"suppression search failed: {exc}")
+    except Exception as exc:
+        report["scan_errors"].append(f"session scan unavailable: {exc}")
+
+    try:
+        for job in list_jobs(include_disabled=True):
+            last_error = job.get("last_error")
+            delivery_error = job.get("last_delivery_error")
+            last_status = str(job.get("last_status") or "").lower()
+            state = str(job.get("state") or "").lower()
+            if last_error or delivery_error or last_status in {"error", "failed"} or state in {"error", "failed"}:
+                add_signal(
+                    {
+                        "kind": "cron_failure",
+                        "mode": "already_checked",
+                        "reason": "scheduled job reports an error or failed delivery",
+                        "job_id": job.get("id"),
+                        "name": job.get("name"),
+                        "state": job.get("state"),
+                        "last_status": job.get("last_status"),
+                        "excerpt": _clip(last_error or delivery_error or "cron job failed"),
+                    }
+                )
+    except Exception as exc:
+        report["scan_errors"].append(f"cron scan unavailable: {exc}")
+
+    # Keep prompt injection compact and stable.
+    report["recent_sessions"] = report["recent_sessions"][:10]
+    report["signals"] = report["signals"][:12]
+    report["suppressed_topics"] = report["suppressed_topics"][:5]
+    report["wakeAgent"] = bool(report["signals"] or report["scan_errors"])
+    return report
+
+
+def render_signal_scan(report: Dict[str, Any], *, include_wake_gate: bool = True) -> str:
+    """Render a scan report for cron script stdout.
+
+    The scheduler treats a final JSON line with ``{"wakeAgent": false}`` as a
+    gate to skip the LLM entirely, so keep that object as the last non-empty line.
+    """
+
+    wake = bool(report.get("wakeAgent", True))
+    if include_wake_gate and not wake:
+        return json.dumps({"wakeAgent": False}, sort_keys=True)
+    body = "## Proactive signal scan\n" + json.dumps(report, indent=2, sort_keys=True)
+    if include_wake_gate:
+        body += "\n" + json.dumps({"wakeAgent": wake}, sort_keys=True)
+    return body
+
+
+def _ensure_scanner_script() -> str:
+    scripts_dir = get_hermes_home() / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    path = scripts_dir / DEFAULT_SCANNER_SCRIPT
+    module_root = Path(__file__).resolve().parents[1]
+    path.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(module_root)!r})\n"
+        "from hermes_cli.proactive import cmd_scan_script\n"
+        "raise SystemExit(cmd_scan_script())\n",
+        encoding="utf-8",
+    )
+    return DEFAULT_SCANNER_SCRIPT
+
+
+def cmd_scan_script() -> int:
+    """Entrypoint used by the cron pre-run scanner script."""
+
+    report = collect_proactive_signals()
+    print(render_signal_scan(report, include_wake_gate=True))
+    return 0
+
+
 def _find_existing_job() -> Dict[str, Any] | None:
     for job in list_jobs(include_disabled=True):
         if job.get("name") == DEFAULT_JOB_NAME:
@@ -144,12 +453,14 @@ def install_proactive_job(
         max_sessions=max_sessions,
         min_confidence=min_confidence,
     )
+    script = _ensure_scanner_script()
     existing = _find_existing_job()
     updates = {
         "schedule": schedule,
         "prompt": prompt,
         "name": DEFAULT_JOB_NAME,
         "deliver": deliver,
+        "script": script,
         "enabled_toolsets": list(DEFAULT_ENABLED_TOOLSETS),
     }
 
@@ -162,6 +473,7 @@ def install_proactive_job(
             schedule=schedule,
             name=DEFAULT_JOB_NAME,
             deliver=deliver,
+            script=script,
             enabled_toolsets=list(DEFAULT_ENABLED_TOOLSETS),
         )
         action = "created"
@@ -194,6 +506,8 @@ def _print_report(report: Dict[str, Any], *, as_json: bool = False) -> None:
         print(f"  Schedule: {job.get('schedule_display') or job.get('schedule')}")
         print(f"  Deliver: {job.get('deliver')}")
         print(f"  State: {job.get('state')}")
+        print(f"  Script: {job.get('script')}")
+        print(f"  Toolsets: {', '.join(job.get('enabled_toolsets') or []) or 'default'}")
 
 
 def cmd_proactive(args) -> int:
@@ -223,6 +537,17 @@ def cmd_proactive(args) -> int:
             print(prompt)
         return 0
 
+    if subcmd == "scan":
+        report = collect_proactive_signals(
+            lookback_days=getattr(args, "lookback_days", 7),
+            max_sessions=getattr(args, "max_sessions", 30),
+        )
+        if getattr(args, "json", False):
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(render_signal_scan(report, include_wake_gate=False))
+        return 0
+
     if subcmd == "install":
         report = install_proactive_job(
             schedule=getattr(args, "schedule", DEFAULT_SCHEDULE),
@@ -235,5 +560,5 @@ def cmd_proactive(args) -> int:
         _print_report(report, as_json=getattr(args, "json", False))
         return 0
 
-    print("Usage: hermes proactive [prompt|install]")
+    print("Usage: hermes proactive [prompt|scan|install]")
     return 2

@@ -9662,6 +9662,14 @@ def main():
     )
     proactive_prompt.add_argument("--json", action="store_true", help="Print JSON output")
 
+    proactive_scan = proactive_subparsers.add_parser(
+        "scan",
+        help="Run the fast structured proactive signal scanner",
+    )
+    proactive_scan.add_argument("--lookback-days", type=int, default=7)
+    proactive_scan.add_argument("--max-sessions", type=int, default=30)
+    proactive_scan.add_argument("--json", action="store_true", help="Print JSON output")
+
     proactive_install = proactive_subparsers.add_parser(
         "install",
         help="Create or update the safe proactive synthesis cron job",

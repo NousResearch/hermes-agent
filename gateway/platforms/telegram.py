@@ -3147,8 +3147,9 @@ class TelegramAdapter(BasePlatformAdapter):
     def _telegram_allowed_chats(self) -> set[str]:
         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
 
-        When non-empty, group messages from chats NOT in this set are silently
-        ignored — even if the bot is @mentioned.  DMs are never filtered.
+        When non-empty, group messages from chats NOT in this set are
+        silently ignored unless ``guest_mode`` is enabled and the bot is
+        explicitly @mentioned.  DMs are never filtered.
         Empty set means no restriction (fully backward compatible).
         """
         raw = self.config.extra.get("allowed_chats")
@@ -3296,12 +3297,12 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     def _is_guest_mention(self, message: Message) -> bool:
-        """Return True for the narrow guest-mode bypass: group + explicit bot mention."""
-        return (
-            self._telegram_guest_mode()
-            and self._is_group_chat(message)
-            and self._message_mentions_bot(message)
-        )
+        """Return True for the narrow guest-mode bypass: explicit bot mention.
+
+        The caller (:meth:`_should_process_message`) has already verified
+        the message is a group chat, so that check is not repeated here.
+        """
+        return self._telegram_guest_mode() and self._message_mentions_bot(message)
 
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
         if not text or not self._bot or not getattr(self._bot, "username", None):
@@ -3344,6 +3345,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
 
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+
+        # Resolve guest-mode mention bypass once so _message_mentions_bot
+        # is not called redundantly in the normal flow below.
         guest_mention = self._is_guest_mention(message)
 
         # allowed_chats check (whitelist). When set, group messages from chats
@@ -3352,6 +3356,7 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed = self._telegram_allowed_chats()
         if allowed and chat_id_str not in allowed:
             return guest_mention
+
         if guest_mention:
             return True
         if chat_id_str in self._telegram_free_response_chats():
@@ -3360,7 +3365,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         if self._is_reply_to_bot(message):
             return True
-        if self._message_mentions_bot(message):
+        # When guest_mode is True, _is_guest_mention already called
+        # _message_mentions_bot above — skip the redundant second call.
+        if not self._telegram_guest_mode() and self._message_mentions_bot(message):
             return True
         return self._message_matches_mention_patterns(message)
 

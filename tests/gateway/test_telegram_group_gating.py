@@ -186,6 +186,23 @@ def test_guest_mode_defaults_to_false_for_allowed_chat_bypass():
     assert adapter._should_process_message(mentioned) is False
 
 
+def test_guest_mode_mention_dropped_in_ignored_thread():
+    """A guest mention in an ignored thread is still dropped — thread gate runs first."""
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-200"],
+        guest_mode=True,
+        ignored_threads=[42],
+    )
+    mentioned = _group_message(
+        "hi @hermes_bot",
+        chat_id=-201,
+        entities=[_mention_entity("hi @hermes_bot")],
+        thread_id=42,
+    )
+    assert adapter._should_process_message(mentioned) is False
+
+
 def test_ignored_threads_drop_group_messages_before_other_gates():
     adapter = _make_adapter(require_mention=False, free_response_chats=["-200"], ignored_threads=[31, "42"])
 

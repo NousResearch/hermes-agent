@@ -69,6 +69,7 @@ ROOT_FHS_LAYOUT=false
 USE_VENV=true
 RUN_SETUP=true
 BRANCH="main"
+BROWSER_INSTALL_MODE="auto"
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -94,6 +95,19 @@ while [[ $# -gt 0 ]]; do
             BRANCH="$2"
             shift 2
             ;;
+        --browser-install-mode)
+            case "${2:-}" in
+                auto|user|skip)
+                    BROWSER_INSTALL_MODE="$2"
+                    ;;
+                *)
+                    echo "Invalid value for --browser-install-mode: ${2:-}"
+                    echo "Expected one of: auto, user, skip"
+                    exit 1
+                    ;;
+            esac
+            shift 2
+            ;;
         --dir)
             INSTALL_DIR="$2"
             INSTALL_DIR_EXPLICIT=true
@@ -112,6 +126,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --browser-install-mode MODE  Playwright browser install mode:"
+            echo "                   auto = install browser + system deps when supported"
+            echo "                   user = install browser only, never use sudo/system pkg mgr"
+            echo "                   skip = skip Playwright browser install entirely"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -1323,59 +1341,72 @@ install_node_deps() {
         # Playwright's --with-deps only supports apt-based systems natively.
         # For Arch/Manjaro we install the system libs via pacman first.
         # Other systems must install Chromium dependencies manually.
-        log_info "Installing browser engine (Playwright Chromium)..."
-        case "$DISTRO" in
-            ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
-                log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
-                log_info "This is standard Playwright setup — Hermes itself does not require root access."
-                cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — browser tools will not work."
-                    log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
-                }
-                ;;
-            arch|manjaro)
-                if command -v pacman &> /dev/null; then
-                    log_info "Arch/Manjaro detected — installing Chromium system dependencies via pacman..."
-                    if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
-                        sudo NEEDRESTART_MODE=a pacman -S --noconfirm --needed \
-                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
-                    elif [ "$(id -u)" -eq 0 ]; then
-                        pacman -S --noconfirm --needed \
-                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
-                    else
-                        log_warn "Cannot install browser deps without sudo. Run manually:"
-                        log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
-                    fi
-                fi
+        if [ "$BROWSER_INSTALL_MODE" = "skip" ]; then
+            log_info "Skipping browser engine install (--browser-install-mode skip)"
+        else
+            log_info "Installing browser engine (Playwright Chromium)..."
+            if [ "$BROWSER_INSTALL_MODE" = "user" ]; then
+                log_info "Installing browser only (--browser-install-mode user); system dependencies are not modified."
+                log_info "If browser tools fail later, install Playwright system dependencies separately as an admin."
                 cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
                     log_warn "Playwright browser installation failed — browser tools will not work."
+                    log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install chromium"
                 }
-                ;;
-            fedora|rhel|centos|rocky|alma)
-                log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
-                log_info "Install Chromium system dependencies manually before using browser tools:"
-                log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — install dependencies above and retry."
-                }
-                ;;
-            opensuse*|sles)
-                log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
-                log_info "Install Chromium system dependencies manually before using browser tools:"
-                log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — install dependencies above and retry."
-                }
-                ;;
-            *)
-                log_warn "Playwright does not support automatic dependency installation on $DISTRO."
-                log_info "Install Chromium/browser system dependencies for your distribution, then run:"
-                log_info "  cd $INSTALL_DIR && npx playwright install chromium"
-                log_info "Browser tools will not work until dependencies are installed."
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || true
-                ;;
-        esac
-        log_success "Browser engine setup complete"
+            else
+                case "$DISTRO" in
+                    ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
+                        log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
+                        log_info "This is standard Playwright setup — Hermes itself does not require root access."
+                        cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || {
+                            log_warn "Playwright browser installation failed — browser tools will not work."
+                            log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
+                        }
+                        ;;
+                    arch|manjaro)
+                        if command -v pacman &> /dev/null; then
+                            log_info "Arch/Manjaro detected — installing Chromium system dependencies via pacman..."
+                            if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+                                sudo NEEDRESTART_MODE=a pacman -S --noconfirm --needed \
+                                    nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
+                            elif [ "$(id -u)" -eq 0 ]; then
+                                pacman -S --noconfirm --needed \
+                                    nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
+                            else
+                                log_warn "Cannot install browser deps without sudo. Run manually:"
+                                log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
+                            fi
+                        fi
+                        cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
+                            log_warn "Playwright browser installation failed — browser tools will not work."
+                        }
+                        ;;
+                    fedora|rhel|centos|rocky|alma)
+                        log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
+                        log_info "Install Chromium system dependencies manually before using browser tools:"
+                        log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
+                        cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
+                            log_warn "Playwright browser installation failed — install dependencies above and retry."
+                        }
+                        ;;
+                    opensuse*|sles)
+                        log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
+                        log_info "Install Chromium system dependencies manually before using browser tools:"
+                        log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
+                        cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
+                            log_warn "Playwright browser installation failed — install dependencies above and retry."
+                        }
+                        ;;
+                    *)
+                        log_warn "Playwright does not support automatic dependency installation on $DISTRO."
+                        log_info "Install Chromium/browser system dependencies for your distribution, then run:"
+                        log_info "  cd $INSTALL_DIR && npx playwright install chromium"
+                        log_info "Browser tools will not work until dependencies are installed."
+                        cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || true
+                        ;;
+                esac
+            fi
+            log_success "Browser engine setup complete"
+        fi
     fi
 
     # Install TUI dependencies

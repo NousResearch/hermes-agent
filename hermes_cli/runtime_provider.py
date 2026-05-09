@@ -492,6 +492,13 @@ def _resolve_named_custom_runtime(
     requested_norm = (requested_provider or "").strip().lower()
     if requested_norm == "custom" and explicit_base_url:
         base_url = explicit_base_url.strip().rstrip("/")
+        # Check credential pool first — mirrors the named-custom-provider path
+        # so bare `provider: custom` with a configured custom_providers entry
+        # also gets its api_key from the pool instead of env var fallbacks.
+        pool_result = _try_resolve_from_custom_pool(base_url, "custom", None)
+        if pool_result:
+            pool_result["source"] = "direct-alias"
+            return pool_result
         api_key_candidates = [
             (explicit_api_key or "").strip(),
             os.getenv("OPENAI_API_KEY", "").strip(),

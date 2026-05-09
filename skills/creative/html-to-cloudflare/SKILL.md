@@ -199,11 +199,36 @@ See `references/wiki-content-strategy.md` for the full guide. Key rules:
 - **Skip** trivial one-off facts, generic advice, anything outdated in 6 months.
 - **Understate rather than overstate** — Gordon corrects overstatements. "A hobby project" is safe; "a viable career option" gets corrected. Use "hobby" as the load-bearing word for Sidekick Studio.
 
+### Wiki index page structure
+
+**Prefer a plain vertical link list over a categorized/summarized index.** The index at `wiki/index.md` should just be `[[pagename]]` links, one per line. Keep it simple — the nav bar shows categories, the index doesn't need to. Gordon preferred the simple list over the structured/summarized version.
+
 ### Nav bar organization
 
-The nav bar in `md2html.py` mirrors the category hierarchy. When adding new page categories, add them to the nav list. The current order: Home → Gordon → KLA → Ventura → Sidekick → Fishing → Hiking → Backpacking → Fitness → Style → London → Log. Do not add "Health" as a separate nav item — health habits (alcohol, etc.) live inline in the Fitness page.
+**User preference: hide the top nav bar.** Set `.topbar { display: none; }` in the CSS. Gordon preferred a clean page without it.
 
-## Pitfalls
+The nav list is still generated (so `[[wikilinks]]` in content stay correct and `active` highlighting works), but the entire `.topbar` div is hidden via CSS:
+
+```python
+.topbar { display: none; }
+```
+
+If you need a visual separator between nav groups (e.g. between Ventura and Fishing to show "Hobbies" group), insert a `<li class="sep">|` after a known anchor in the nav HTML via string replacement after generation:
+
+```python
+nav_html = '\n'.join(
+    f'<li><a href="{href}" class="...">{label}</a></li>'
+    for href, label in nav_items
+)
+nav_html = nav_html.replace(
+    'Ventura</a></li>',
+    'Ventura</a></li>\n        <li class="sep">|</li>'
+)
+```
+
+Current nav order: Home → Gordon → KLA → Ventura → Sidekick → Fishing → Hiking → Backpacking → Fitness → Style → London → Log. No "Health" separate nav item — health/alcohol content lives inline in Fitness.
+
+### Wiki content strategy (when adding from chat exports)
 
 - **Forgetting to update the index** — results in stale links on the hub page pointing to old filenames
 - **`GITHUB_TOKEN` not set** — `publish_html` returns `{"success": false, "error": "GITHUB_TOKEN is not set"}`. Fix: read from `/opt/data/.git-credentials` as shown above

@@ -168,6 +168,63 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("total_duration_seconds", result)
 
     @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_accepts_json_string_tasks(self, mock_run):
+        mock_run.side_effect = [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Result A",
+                "api_calls": 2,
+                "duration_seconds": 3.0,
+            },
+            {
+                "task_index": 1,
+                "status": "completed",
+                "summary": "Result B",
+                "api_calls": 4,
+                "duration_seconds": 6.0,
+            },
+        ]
+        parent = _make_mock_parent()
+        tasks = json.dumps(
+            [
+                {"goal": "Research topic A"},
+                {"goal": "Research topic B"},
+            ]
+        )
+
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(result["results"][0]["summary"], "Result A")
+        self.assertEqual(result["results"][1]["summary"], "Result B")
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_rejects_non_object_tasks(self, mock_run):
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(tasks=["not a task object"], parent_agent=parent)
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("Task 0 must be an object", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_rejects_malformed_json_string_tasks(self, mock_run):
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(tasks='[{"goal": "bad}', parent_agent=parent)
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("could not be parsed as JSON", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
     def test_batch_capped_at_3(self, mock_run):
         mock_run.return_value = {
             "task_index": 0, "status": "completed",

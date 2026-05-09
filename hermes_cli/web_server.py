@@ -533,7 +533,7 @@ async def get_status():
     remote_health_body: dict | None = None
 
     if not gateway_running and _GATEWAY_HEALTH_URL:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         alive, remote_health_body = await loop.run_in_executor(
             None, _probe_gateway_health
         )
@@ -1845,7 +1845,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
                     client_id=client_id,
                     scope=scope,
                 )
-        device_data = await asyncio.get_event_loop().run_in_executor(None, _do_nous_device_request)
+        device_data = await asyncio.get_running_loop().run_in_executor(None, _do_nous_device_request)
         sid, sess = _new_oauth_session("nous", "device_code")
         sess["device_code"] = str(device_data["device_code"])
         sess["interval"] = int(device_data["interval"])
@@ -2134,7 +2134,7 @@ async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Re
     """Submit the auth code for PKCE flows. Token-protected."""
     _require_token(request)
     if provider_id == "anthropic":
-        return await asyncio.get_event_loop().run_in_executor(
+        return await asyncio.get_running_loop().run_in_executor(
             None, _submit_anthropic_pkce, body.session_id, body.code,
         )
     raise HTTPException(status_code=400, detail=f"submit not supported for {provider_id}")

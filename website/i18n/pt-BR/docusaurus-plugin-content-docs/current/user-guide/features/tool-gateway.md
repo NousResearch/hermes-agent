@@ -91,13 +91,13 @@ A geração de imagens usa FLUX 2 Klein 9B como padrão, por velocidade. Sobresc
 | Modelo | ID | Melhor pra |
 |---|---|---|
 | FLUX 2 Klein 9B | `fal-ai/flux-2/klein/9b` | Rápido, bom padrão |
-| FLUX 2 Pro | `fal-ai/flux-2/pro` | FLUX de fidelidade maior |
+| FLUX 2 Pro | `fal-ai/flux-2-pro` | FLUX de fidelidade maior |
 | Z-Image Turbo | `fal-ai/z-image/turbo` | Estilizado, rápido |
-| Nano Banana Pro | `fal-ai/gemini-3-pro-image` | Google Gemini 3 Pro Image |
-| GPT Image 1.5 | `fal-ai/gpt-image-1/5` | Geração de imagem da OpenAI, texto+imagem |
+| Nano Banana Pro | `fal-ai/nano-banana-pro` | Google Gemini 3 Pro Image |
+| GPT Image 1.5 | `fal-ai/gpt-image-1.5` | Geração de imagem da OpenAI, texto+imagem |
 | GPT Image 2 | `fal-ai/gpt-image-2` | OpenAI mais recente |
 | Ideogram V3 | `fal-ai/ideogram/v3` | Boa aderência a prompt + tipografia |
-| Recraft V4 Pro | `fal-ai/recraft/v4/pro` | Estilo vetorial, design gráfico |
+| Recraft V4 Pro | `fal-ai/recraft/v4/pro/text-to-image` | Estilo vetorial, design gráfico |
 | Qwen Image | `fal-ai/qwen-image` | Multimodal da Alibaba |
 
 O conjunto evolui — `hermes tools` → Image Generation mostra a lista atual ao vivo.

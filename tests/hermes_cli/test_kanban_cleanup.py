@@ -72,7 +72,7 @@ def test_teardown_reports_broad_matches_but_only_kills_db_workers(monkeypatch, t
     monkeypatch.setattr(kc, "find_killable_worker_processes", lambda board: [ProcessInfo(pid=111, command="hermes worker", source="worker_pid:t1")])
     monkeypatch.setattr(kc, "find_relevant_processes", lambda board, policy: [
         ProcessInfo(pid=111, command="hermes worker", source="worker_pid:t1"),
-        ProcessInfo(pid=222, command="vim /home/it/Projects/demo", source="broad_match"),
+        ProcessInfo(pid=222, command="vim /projects/demo", source="broad_match"),
     ])
     monkeypatch.setattr(kc, "stop_processes", lambda processes: killed.extend([p.pid for p in processes]) or [p.pid for p in processes])
     monkeypatch.setattr(kc, "list_registered_worktrees", lambda root: [])

@@ -1,10 +1,10 @@
 {
-  "project_root": "/home/it/Projects/TrainingBuddy",
+  "project_root": "/path/to/projects/example-app",
   "base_branch": "main",
-  "worktree_root": "/home/it/Projects/TrainingBuddy/.worktrees",
+  "worktree_root": "/path/to/projects/example-app/.worktrees",
   "denied_workspace_roots": [
-    "/home/it/.hermes/kanban",
-    "/home/it/.hermes/scripts",
+    "~/.hermes/kanban",
+    "~/.hermes/scripts",
     "/tmp"
   ],
   "shared_project_root_writable": false,

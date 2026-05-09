@@ -96,6 +96,28 @@ def check_irc_requirements() -> bool:
     return True
 
 
+# Module-level reference to the running adapter instance.
+# Set on connect, cleared on disconnect.  Allows send_message_tool
+# to reach the adapter without needing the GatewayRunner.
+_running_adapter: Optional["IRCAdapter"] = None
+
+
+async def send_to_channel(channel: str, content: str) -> Dict[str, Any]:
+    """Send a message to a named IRC channel via the running adapter.
+
+    Only channels (starting with ``#``) are accepted.
+    Returns a dict with ``success`` and optional ``error`` keys.
+    """
+    if not _running_adapter:
+        return {"error": "IRC adapter not connected"}
+    if not channel.startswith("#"):
+        return {"error": f"Invalid IRC target '{channel}' — must be a channel starting with #"}
+    result = await _running_adapter.send(channel, content)
+    if result.success:
+        return {"success": True, "channel": channel}
+    return {"success": False, "error": result.error or "send failed"}
+
+
 class IRCAdapter(BasePlatformAdapter):
     """Gateway adapter for IRC (any server)."""
 
@@ -305,6 +327,8 @@ class IRCAdapter(BasePlatformAdapter):
         self._ping_task = asyncio.create_task(self._ping_loop())
 
         self._mark_connected()
+        global _running_adapter
+        _running_adapter = self
         logger.info("IRC: connected to %s as %s", self._server, self._nick)
 
         # Start a heartbeat to check if reader is still alive
@@ -353,6 +377,9 @@ class IRCAdapter(BasePlatformAdapter):
         self._reader = None
         self._registered = False
         self._mark_disconnected()
+        global _running_adapter
+        if _running_adapter is self:
+            _running_adapter = None
         logger.info("IRC: disconnected")
 
     async def send(

@@ -10,13 +10,28 @@ class HermesTaskerConditionQueryReceiver : BroadcastReceiver() {
         if (intent.action != HermesTaskerConditionBridge.ACTION_QUERY_CONDITION) {
             return
         }
-        val query = HermesTaskerConditionBridge.queryCondition(
-            context = context.applicationContext,
-            bundle = HermesTaskerConditionBridge.bundleFromIntent(intent),
-        )
-        setResultCode(query.resultCode)
+        val bundle = HermesTaskerConditionBridge.bundleFromIntent(intent)
+        val resultCode: Int
+        val variables: Bundle
+        if (HermesTaskerEventBridge.isEventBundle(bundle)) {
+            val query = HermesTaskerEventBridge.queryEvent(
+                context = context.applicationContext,
+                hostIntent = intent,
+                bundle = bundle,
+            )
+            resultCode = query.resultCode
+            variables = query.variables
+        } else {
+            val query = HermesTaskerConditionBridge.queryCondition(
+                context = context.applicationContext,
+                bundle = bundle,
+            )
+            resultCode = query.resultCode
+            variables = query.variables
+        }
+        setResultCode(resultCode)
         setResultExtras(Bundle().apply {
-            putBundle(HermesTaskerConditionBridge.EXTRA_VARIABLES, query.variables)
+            putBundle(HermesTaskerConditionBridge.EXTRA_VARIABLES, variables)
         })
     }
 }

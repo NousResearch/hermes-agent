@@ -1475,6 +1475,9 @@ object HermesAutomationBridge {
         records.forEach { record ->
             results.put(runRecordJson(context, store, record, trigger))
         }
+        runCatching {
+            HermesTaskerEventBridge.notifyShizukuState(context, available, status)
+        }
         return JSONObject()
             .put("success", true)
             .put("trigger", trigger)
@@ -1535,6 +1538,15 @@ object HermesAutomationBridge {
             lastResult = resultText,
         )
         store.upsert(updated)
+        runCatching {
+            HermesTaskerEventBridge.notifyAutomationFinished(
+                context = context,
+                record = updated,
+                trigger = trigger,
+                success = success,
+                resultText = resultText,
+            )
+        }
         return JSONObject()
             .put("success", success)
             .put("trigger", trigger)

@@ -168,4 +168,79 @@ class HermesTaskerPluginBridgeTest {
         )
         assertEquals(HermesTaskerConditionBridge.RESULT_CONDITION_SATISFIED, failed.resultCode)
     }
+
+    @Test
+    fun taskerEventPluginMatchesVerifiedAutomationUpdates() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val record = HermesAutomationRecord(
+            id = "event-automation",
+            label = "Event automation",
+            actionType = "variable_action",
+            command = "{}",
+            useShizuku = false,
+            triggerType = "manual",
+            intervalMinutes = null,
+            enabled = true,
+            createdAtEpochMs = 1L,
+            updatedAtEpochMs = 1L,
+        )
+        val resultIntent = HermesTaskerEventBridge.buildResultIntent(
+            context = context,
+            eventType = HermesTaskerEventBridge.EVENT_AUTOMATION_SUCCEEDED,
+            automationId = record.id,
+            label = "Hermes success",
+        )
+        assertEquals("Hermes success", resultIntent.getStringExtra(HermesTaskerEventBridge.EXTRA_STRING_BLURB))
+
+        val payload = JSONObject()
+            .put(HermesTaskerEventBridge.PAYLOAD_EVENT_TYPE, HermesTaskerEventBridge.EVENT_AUTOMATION_FINISHED)
+            .put(HermesTaskerEventBridge.PAYLOAD_AUTOMATION_ID, record.id)
+            .put(HermesTaskerEventBridge.PAYLOAD_AUTOMATION_LABEL, record.label)
+            .put(HermesTaskerEventBridge.PAYLOAD_TRIGGER, "manual")
+            .put(HermesTaskerEventBridge.PAYLOAD_SUCCESS, true)
+            .put(HermesTaskerEventBridge.PAYLOAD_RESULT, "done")
+        val queryIntent = HermesTaskerEventBridge.buildRequestQueryIntent(context, payload)
+            .putExtra(HermesTaskerEventBridge.EXTRA_BUNDLE, HermesTaskerEventBridge.bundleFromIntent(resultIntent))
+        val event = HermesTaskerEventBridge.queryEvent(
+            context,
+            queryIntent,
+            HermesTaskerEventBridge.bundleFromIntent(resultIntent),
+        )
+
+        assertEquals(HermesTaskerConditionBridge.RESULT_CONDITION_SATISFIED, event.resultCode)
+        assertEquals("true", event.variables.getString("%hermes_satisfied"))
+        assertEquals("event-automation", event.variables.getString("%hermes_automation_id"))
+        assertEquals("manual", event.variables.getString("%hermes_trigger"))
+
+        val failedIntent = HermesTaskerEventBridge.buildResultIntent(
+            context = context,
+            eventType = HermesTaskerEventBridge.EVENT_AUTOMATION_FAILED,
+            automationId = record.id,
+        )
+        val failed = HermesTaskerEventBridge.queryEvent(
+            context,
+            queryIntent,
+            HermesTaskerEventBridge.bundleFromIntent(failedIntent),
+        )
+        assertEquals(HermesTaskerConditionBridge.RESULT_CONDITION_UNSATISFIED, failed.resultCode)
+    }
+
+    @Test
+    fun taskerEventPluginRejectsUnverifiedUpdates() {
+        val context = RuntimeEnvironment.getApplication()
+        val resultIntent = HermesTaskerEventBridge.buildResultIntent(
+            context = context,
+            eventType = HermesTaskerEventBridge.EVENT_SHIZUKU_AVAILABLE,
+        )
+        val unknown = HermesTaskerEventBridge.queryEvent(
+            context,
+            null,
+            HermesTaskerEventBridge.bundleFromIntent(resultIntent),
+        )
+
+        assertEquals(HermesTaskerConditionBridge.RESULT_CONDITION_UNKNOWN, unknown.resultCode)
+    }
 }

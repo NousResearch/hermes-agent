@@ -81,6 +81,17 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".device.HermesTaskerEventEditActivity"
+            android:exported="true"
+            android:label="@string/hermes_tasker_event_plugin_label">
+            <intent-filter>
+                <action android:name="net.dinglisch.android.tasker.ACTION_EDIT_EVENT" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".backend.HermesRuntimeService"
             android:exported="false"

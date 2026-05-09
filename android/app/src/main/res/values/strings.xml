@@ -33,4 +33,11 @@
     <string name="hermes_tasker_condition_blurb_label">Tasker condition label</string>
     <string name="hermes_tasker_condition_label_hint">Optional label shown in Tasker</string>
     <string name="hermes_tasker_condition_invalid">Choose a valid Hermes condition.</string>
+    <string name="hermes_tasker_event_plugin_label">Hermes event</string>
+    <string name="hermes_tasker_event_title">Hermes event</string>
+    <string name="hermes_tasker_event_summary">Choose a Hermes automation or Shizuku event that Tasker can use in a profile.</string>
+    <string name="hermes_tasker_event_type">Event</string>
+    <string name="hermes_tasker_event_blurb_label">Tasker event label</string>
+    <string name="hermes_tasker_event_label_hint">Optional label shown in Tasker</string>
+    <string name="hermes_tasker_event_invalid">Choose a valid Hermes event.</string>
 </resources>

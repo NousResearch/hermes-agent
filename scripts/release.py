@@ -170,6 +170,8 @@ AUTHOR_MAP = {
     "momowind@gmail.com": "momowind",
     "clockwork-codex@users.noreply.github.com": "misery-hl",
     "207811921+misery-hl@users.noreply.github.com": "misery-hl",
+    "20nik.nosov21@gmail.com": "nik1t7n",
+    "90299797+nik1t7n@users.noreply.github.com": "nik1t7n",
     "suncokret@protonmail.com": "suncokret12",
     "mio.imoto.ai@gmail.com": "mioimotoai-lgtm",
     "aamirjawaid@microsoft.com": "heyitsaamir",

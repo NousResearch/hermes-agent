@@ -1201,6 +1201,27 @@ def is_windows() -> bool:
     return sys.platform == 'win32'
 
 
+def _windows_gateway_should_absorb_console_controls() -> bool:
+    """Return True for detached Windows gateway runs that should ignore Ctrl+C.
+
+    Foreground ``hermes gateway run`` must remain interruptible from
+    PowerShell/CMD. Detached service-style launches opt in via
+    ``HERMES_GATEWAY_DETACHED=1``; older wrappers without the env marker are
+    treated as detached when no interactive stdin is attached.
+    """
+    if not is_windows():
+        return False
+
+    detached = os.getenv("HERMES_GATEWAY_DETACHED", "").strip().lower()
+    if detached in {"1", "true", "yes", "on"}:
+        return True
+
+    try:
+        return not bool(sys.stdin and sys.stdin.isatty())
+    except (ValueError, OSError):
+        return True
+
+
 # =============================================================================
 # Service Configuration
 # =============================================================================
@@ -3042,34 +3063,17 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
 
-    # On Windows, when the gateway is launched as a detached background
-    # process (via ``hermes gateway install`` → Scheduled Task / Startup
-    # folder / direct pythonw.exe spawn) there is no console attached. In
-    # that case Windows can still deliver CTRL_C_EVENT / CTRL_BREAK_EVENT
-    # to the process group under some circumstances (e.g. when *another*
-    # process in the same group sends one), which Python 3.11 translates
-    # into KeyboardInterrupt inside asyncio.run(). The outer handler below
-    # catches that and exits cleanly — silently killing the gateway. On
-    # detached boots we must absorb those spurious signals so the gateway
-    # stays alive; real user Ctrl+C still comes through prompt_toolkit /
-    # the asyncio signal handler when running in a real console.
-    #
-    # IMPORTANT lesson (May 2026): we originally gated this on "stdin is
-    # NOT a TTY" assuming only detached pythonw runs would be vulnerable.
-    # Wrong. When the user runs `hermes gateway start` from a PowerShell
-    # console, the gateway inherits that console and stdin IS a TTY —
-    # but it's STILL vulnerable to CTRL_C_EVENT broadcast by any sibling
-    # `hermes` invocation (like `hermes gateway status` 30 seconds later)
-    # because Windows routes console events to all processes sharing the
-    # console. Every hermes CLI process after that sibling fires is a
-    # potential drive-by killer. So on Windows, for `gateway run`
-    # specifically (never interactive by design), always install the
-    # SIGINT absorber regardless of TTY state.
+    # Detached Windows gateway runs must ignore console-control broadcasts
+    # from sibling CLI processes, but foreground `hermes gateway run` still
+    # needs to obey the banner's "Press Ctrl+C to stop" contract.
+    # Service-style launchers set HERMES_GATEWAY_DETACHED=1; older wrappers
+    # without the marker are handled by the non-TTY fallback.
     try:
         _stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
     except (ValueError, OSError):
         _stdin_is_tty = False
-    if is_windows():
+    _absorb_windows_console_controls = _windows_gateway_should_absorb_console_controls()
+    if _absorb_windows_console_controls:
         try:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             if hasattr(signal, "SIGBREAK"):
@@ -3167,6 +3171,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         replace=replace,
         argv=sys.argv,
         stdin_is_tty=_stdin_is_tty,
+        absorb_windows_console_controls=_absorb_windows_console_controls,
     )
 
     def _atexit_hook() -> None:

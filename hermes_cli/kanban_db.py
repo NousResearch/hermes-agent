@@ -2465,7 +2465,7 @@ def block_task(
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Transition ``blocked -> ready``.
+    """Transition ``blocked -> ready`` (or ``todo`` when parents not yet done).
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -2473,6 +2473,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    Lands the task in ``ready`` only when every parent (if any) is ``done``;
+    otherwise lands in ``todo`` so ``recompute_ready`` re-evaluates the
+    dependency gate on the next dispatcher tick. Without this check
+    ``unblock_task`` was the only path that could promote a task to
+    ``ready`` while parents were still open (#22375).
     """
     now = int(time.time())
     with write_txn(conn):
@@ -2492,10 +2498,17 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
                 """,
                 (now, int(stale["current_run_id"])),
             )
-        cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', current_run_id = NULL "
-            "WHERE id = ? AND status = 'blocked'",
+        parents = conn.execute(
+            "SELECT t.status FROM tasks t "
+            "JOIN task_links l ON l.parent_id = t.id "
+            "WHERE l.child_id = ?",
             (task_id,),
+        ).fetchall()
+        next_status = "ready" if all(p["status"] == "done" for p in parents) else "todo"
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, current_run_id = NULL "
+            "WHERE id = ? AND status = 'blocked'",
+            (next_status, task_id),
         )
         if cur.rowcount != 1:
             return False

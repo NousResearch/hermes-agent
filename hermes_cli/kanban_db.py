@@ -1763,7 +1763,7 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] == "done" for p in parents):
+            if all(p["status"] in ("done", "archived") for p in parents):
                 conn.execute(
                     "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
                     (task_id,),
@@ -2465,14 +2465,25 @@ def block_task(
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Transition ``blocked -> ready``.
+    """Transition ``blocked -> todo``, then re-run dependency gating.
 
-    Defensively closes any stale ``current_run_id`` pointer before flipping
-    status. In the common path (``block_task`` closed the run already) this
-    is a no-op. If a future or external write left the pointer dangling,
-    the leaked run is closed as ``reclaimed`` inside the same txn so the
-    runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
-    state) holds for the rest of this function's lifetime.
+    Instead of jumping directly to ``ready``, this sets the task to
+    ``todo`` and calls :func:`recompute_ready` so the parent-dependency
+    gate is re-evaluated.  If all parents are terminal (``done`` or
+    ``archived``) the task is promoted to ``ready`` in the same call;
+    otherwise it stays in ``todo`` until its remaining parents complete.
+
+    This avoids the ``unblock_task`` bypass of dependency gating and
+    naturally handles edge cases where parents were archived after the
+    task was last in ``ready`` / ``running``.
+
+    Defensively closes any stale ``current_run_id`` pointer before
+    flipping status. In the common path (``block_task`` closed the run
+    already) this is a no-op. If a future or external write left the
+    pointer dangling, the leaked run is closed as ``reclaimed`` inside
+    the same txn so the runs invariant (``current_run_id IS NULL`` ⇔ run
+    row in terminal state) holds for the rest of this function's
+    lifetime.
     """
     now = int(time.time())
     with write_txn(conn):
@@ -2493,14 +2504,18 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
                 (now, int(stale["current_run_id"])),
             )
         cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', current_run_id = NULL "
+            "UPDATE tasks SET status = 'todo', current_run_id = NULL "
             "WHERE id = ? AND status = 'blocked'",
             (task_id,),
         )
         if cur.rowcount != 1:
             return False
-        _append_event(conn, task_id, "unblocked", None)
-        return True
+        _append_event(conn, task_id, "unblocked", {"to_status": "todo"})
+    # Re-run dependency gating outside the txn (separate txn so
+    # recompute_ready sees the committed todo status).  Same pattern as
+    # complete_task at the end of its txn.
+    recompute_ready(conn)
+    return True
 
 
 def specify_triage_task(

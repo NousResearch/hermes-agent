@@ -2205,6 +2205,120 @@ def test_unblock_normal_path_no_spurious_run(kanban_home):
         conn.close()
 
 
+# ── unblock_task → todo + recompute_ready dependency gating ──────────────
+
+def test_unblock_rechecks_parent_dependencies(kanban_home):
+    """unblock_task must go through recompute_ready: blocked→todo,
+    then promoted to ready only when all parents are terminal."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="dep", assignee="worker")
+        child = kb.create_task(
+            conn, title="depends on dep", assignee="worker", parents=[parent],
+        )
+        # child starts as todo (parent not done), stays todo
+        assert kb.get_task(conn, child).status == "todo"
+
+        # Complete parent → recompute_ready promotes child to ready
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, summary="ok")
+        assert kb.get_task(conn, child).status == "ready"
+
+        # Block child, then unblock — parents are all done, so
+        # recompute_ready should promote todo→ready immediately.
+        kb.claim_task(conn, child)
+        kb.block_task(conn, child, reason="need clarification")
+        assert kb.get_task(conn, child).status == "blocked"
+
+        assert kb.unblock_task(conn, child) is True
+        assert kb.get_task(conn, child).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_unblock_stays_todo_when_parents_not_done(kanban_home):
+    """unblock_task must leave the task in todo when a parent is still
+    running (not done/archived)."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="slow parent", assignee="worker")
+        child = kb.create_task(
+            conn, title="depends on slow", assignee="worker", parents=[parent],
+        )
+        # child starts as todo because parent is not done
+        assert kb.get_task(conn, child).status == "todo"
+
+        # Force child to ready (simulate what happens after a human
+        # manually moves it), then block it.
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (child,))
+        conn.commit()
+        kb.claim_task(conn, child)
+        kb.block_task(conn, child, reason="need input")
+        assert kb.get_task(conn, child).status == "blocked"
+
+        # Unblock — parent is still in todo, so recompute_ready
+        # should leave child in todo.
+        assert kb.unblock_task(conn, child) is True
+        assert kb.get_task(conn, child).status == "todo", (
+            "child must stay todo when parent is not done"
+        )
+    finally:
+        conn.close()
+
+
+def test_unblock_promotes_when_parent_archived(kanban_home):
+    """archived parents satisfy dependencies (superset of done)."""
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="done-then-archived", assignee="worker")
+        child = kb.create_task(
+            conn, title="depends on archived", assignee="worker", parents=[parent],
+        )
+        assert kb.get_task(conn, child).status == "todo"
+
+        # Complete and archive parent.
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, summary="done")
+        assert kb.get_task(conn, parent).status == "done"
+        kb.archive_task(conn, parent)
+        assert kb.get_task(conn, parent).status == "archived"
+
+        # recompute_ready should now see parent as terminal and promote child.
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "ready", (
+            "archived parent must satisfy dependency"
+        )
+
+        # Block and unblock — should go todo→ready in one call.
+        kb.claim_task(conn, child)
+        kb.block_task(conn, child, reason="need input")
+        assert kb.get_task(conn, child).status == "blocked"
+
+        assert kb.unblock_task(conn, child) is True
+        assert kb.get_task(conn, child).status == "ready", (
+            "unblock must promote to ready when archived parent satisfies dep"
+        )
+    finally:
+        conn.close()
+
+
+def test_unblock_without_parents_still_goes_ready(kanban_home):
+    """Tasks with no parents go blocked→todo→ready (all([]) == True)."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="no deps", assignee="worker")
+        kb.claim_task(conn, tid)
+        kb.block_task(conn, tid, reason="need input")
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        assert kb.unblock_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "ready", (
+            "task with no parents must go ready after unblock"
+        )
+    finally:
+        conn.close()
+
+
 def test_migration_backfill_idempotent_under_re_run(tmp_path, monkeypatch):
     """init_db must be safe to re-run repeatedly. Each call should leave
     at most one run row per in-flight task, even if called while a

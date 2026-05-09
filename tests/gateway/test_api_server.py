@@ -512,7 +512,10 @@ class TestCapabilitiesEndpoint:
             assert data["auth"]["required"] is False
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
+            assert data["features"]["run_event_history"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["run_events_sanitized"] is True
+            assert data["features"]["run_reasoning_redacted"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
 

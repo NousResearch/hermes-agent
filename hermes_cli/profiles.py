@@ -64,12 +64,38 @@ _CLONE_SUBDIR_FILES = [
     "memories/USER.md",
 ]
 
-# Runtime files stripped after --clone-all (shouldn't carry over)
-_CLONE_ALL_STRIP = [
+# Runtime files stripped after --clone-all (shouldn't carry over).
+# Kept as a post-copy step rather than in the ignore filter because they
+# are created dynamically during normal use and may be absent at copy time.
+_CLONE_ALL_STRIP: list[str] = [
     "gateway.pid",
     "gateway_state.json",
     "processes.json",
 ]
+
+# Infrastructure artifacts excluded from --clone-all when the source is the
+# default profile (``~/.hermes``).  Named profiles never contain these
+# directories at root, so the exclusion is gated to avoid silently dropping
+# user data from a named-profile source.
+#
+# Rationale per item:
+#   hermes-agent  — git repo checkout (~84 MB source + ~3 GB venv)
+#   .worktrees    — git worktrees
+#   profiles      — sibling named profiles (recursive copy never intended)
+#   bin           — installed binaries (tirith etc., ~10 MB) shared per-host
+#   node_modules  — npm packages (hundreds of MB)
+#
+# See ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` below for the broader export-side
+# exclusion list (export drops state.db / logs / caches too because the
+# archive is a portable snapshot; clone-all keeps those because the cloned
+# profile is meant to keep working immediately).
+_CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
+    "hermes-agent",
+    ".worktrees",
+    "profiles",
+    "bin",
+    "node_modules",
+})
 
 # Marker file written by `hermes profile create --no-skills`.  When present in
 # a profile's root, callers of seed_profile_skills() (fresh-create, `hermes
@@ -89,23 +115,48 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
 
 
 def _clone_all_copytree_ignore(source_dir: Path):
-    """Ignore ``profiles/`` at the root of *source_dir* only.
+    """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
-    ``~/.hermes`` contains ``profiles/<name>/`` for sibling named profiles.
-    ``shutil.copytree`` would otherwise duplicate that entire tree inside the
-    new profile (recursive ``.../profiles/.../profiles/...``). Export already
-    excludes ``profiles`` via ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` — match that
-    behavior for ``--clone-all``.
+    Two categories:
+      1. Root-level entries in ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` — known
+         Hermes infrastructure directories that only the default profile
+         (``~/.hermes``) ever contains.  Gated on ``source_dir`` actually
+         being the default profile so a named-profile source never has its
+         own data silently dropped.
+      2. Universal exclusions at any depth — Python bytecode caches that
+         are stale or regenerable (``__pycache__``, ``*.pyc``, ``*.pyo``)
+         and runtime sockets / temp files (``*.sock``, ``*.tmp``).
+
+    The export-side ignore (``_default_export_ignore``) uses the same
+    two-tier pattern with the broader ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` set
+    because the export archive is a portable snapshot rather than a live
+    clone.
     """
     source_resolved = source_dir.resolve()
+    is_default_source = source_resolved == _get_default_hermes_home().resolve()
 
     def _ignore(directory: str, names: List[str]) -> List[str]:
-        try:
-            if Path(directory).resolve() == source_resolved:
-                return [n for n in names if n == "profiles"]
-        except (OSError, ValueError):
-            pass
-        return []
+        ignored: list[str] = []
+        for entry in names:
+            # Universal exclusions at any depth.
+            if (
+                entry == "__pycache__"
+                or entry.endswith((".pyc", ".pyo", ".sock", ".tmp"))
+            ):
+                ignored.append(entry)
+                continue
+            # Root-level exclusions only apply when cloning the default profile.
+            if is_default_source:
+                try:
+                    if Path(directory).resolve() == source_resolved:
+                        if entry in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT:
+                            ignored.append(entry)
+                except (OSError, ValueError):
+                    # ``resolve()`` can fail on unusual FS layouts (broken
+                    # symlinks, missing parents).  Fail open — better to
+                    # over-copy than silently drop user data.
+                    pass
+        return ignored
 
     return _ignore
 
@@ -221,6 +272,12 @@ def validate_profile_name(name: str) -> None:
     call :func:`normalize_profile_name` first. This separation keeps validate
     honest about what the on-disk directory name must look like, while
     ingress-point normalization handles UX flexibility (see #18498).
+
+    Also rejects names in :data:`_RESERVED_NAMES` (``hermes``, ``test``,
+    ``tmp``, ``root``, ``sudo``) that would create confusing on-disk
+    collisions (a ``hermes`` profile inside ``~/.hermes/``) or get refused
+    at alias-creation time anyway. ``default`` is a special pass-through —
+    it's a valid alias for the built-in root profile.
     """
     if name == "default":
         return  # special alias for ~/.hermes
@@ -228,6 +285,12 @@ def validate_profile_name(name: str) -> None:
         raise ValueError(
             f"Invalid profile name {name!r}. Must match "
             f"[a-z0-9][a-z0-9_-]{{0,63}}"
+        )
+    if name in _RESERVED_NAMES:
+        raise ValueError(
+            f"Profile name {name!r} is reserved — it collides with either "
+            f"the Hermes installation itself or a common system binary.  "
+            f"Pick a different name."
         )
 
 
@@ -345,6 +408,35 @@ class ProfileInfo:
     has_env: bool = False
     skill_count: int = 0
     alias_path: Optional[Path] = None
+    # Distribution metadata (None if the profile wasn't installed from a distribution).
+    distribution_name: Optional[str] = None
+    distribution_version: Optional[str] = None
+    distribution_source: Optional[str] = None
+
+
+def _read_distribution_meta(profile_dir: Path) -> tuple:
+    """Return ``(name, version, source)`` from the profile's ``distribution.yaml``
+    if present; ``(None, None, None)`` otherwise.
+
+    Failures (missing file, bad YAML) are swallowed — a bad manifest should
+    never break ``hermes profile list`` for an unrelated profile.
+    """
+    mf_path = profile_dir / "distribution.yaml"
+    if not mf_path.is_file():
+        return None, None, None
+    try:
+        import yaml
+        with open(mf_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            return None, None, None
+        return (
+            data.get("name"),
+            data.get("version"),
+            data.get("source"),
+        )
+    except Exception:
+        return None, None, None
 
 
 def _read_config_model(profile_dir: Path) -> tuple:
@@ -354,7 +446,7 @@ def _read_config_model(profile_dir: Path) -> tuple:
         return None, None
     try:
         import yaml
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
@@ -400,6 +492,7 @@ def list_profiles() -> List[ProfileInfo]:
     default_home = _get_default_hermes_home()
     if default_home.is_dir():
         model, provider = _read_config_model(default_home)
+        dist_name, dist_version, dist_source = _read_distribution_meta(default_home)
         profiles.append(ProfileInfo(
             name="default",
             path=default_home,
@@ -409,6 +502,9 @@ def list_profiles() -> List[ProfileInfo]:
             provider=provider,
             has_env=(default_home / ".env").exists(),
             skill_count=_count_skills(default_home),
+            distribution_name=dist_name,
+            distribution_version=dist_version,
+            distribution_source=dist_source,
         ))
 
     # Named profiles
@@ -422,6 +518,7 @@ def list_profiles() -> List[ProfileInfo]:
                 continue
             model, provider = _read_config_model(entry)
             alias_path = wrapper_dir / name
+            dist_name, dist_version, dist_source = _read_distribution_meta(entry)
             profiles.append(ProfileInfo(
                 name=name,
                 path=entry,
@@ -432,6 +529,9 @@ def list_profiles() -> List[ProfileInfo]:
                 has_env=(entry / ".env").exists(),
                 skill_count=_count_skills(entry),
                 alias_path=alias_path if alias_path.exists() else None,
+                distribution_name=dist_name,
+                distribution_version=dist_version,
+                distribution_source=dist_source,
             ))
 
     return profiles
@@ -640,6 +740,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     model, provider = _read_config_model(profile_dir)
     gw_running = _check_gateway_running(profile_dir)
     skill_count = _count_skills(profile_dir)
+    dist_name, dist_version, dist_source = _read_distribution_meta(profile_dir)
 
     print(f"\nProfile: {canon}")
     print(f"Path:    {profile_dir}")
@@ -647,6 +748,10 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         print(f"Model:   {model}" + (f" ({provider})" if provider else ""))
     if skill_count:
         print(f"Skills:  {skill_count}")
+    if dist_name:
+        print(f"Distribution: {dist_name}@{dist_version or '?'}")
+        if dist_source:
+            print(f"Installed from: {dist_source}")
 
     items = [
         "All config, API keys, memories, sessions, skills, cron jobs",
@@ -758,7 +863,6 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
 
 def _stop_gateway_process(profile_dir: Path) -> None:
     """Stop a running gateway process via its PID file."""
-    import signal as _signal
     import time as _time
 
     pid_file = profile_dir / "gateway.pid"
@@ -769,19 +873,25 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         raw = pid_file.read_text().strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
-        os.kill(pid, _signal.SIGTERM)
-        # Wait up to 10s for graceful shutdown
+        # Route through terminate_pid so Windows uses the appropriate
+        # primitive (taskkill / TerminateProcess) — raw os.kill with
+        # _signal.SIGKILL raises AttributeError at import time on Windows,
+        # and raw os.kill with SIGTERM doesn't cascade to child processes
+        # the same way taskkill /T does.
+        from gateway.status import terminate_pid as _terminate_pid
+        from gateway.status import _pid_exists
+        _terminate_pid(pid)  # graceful first
+        # Wait up to 10s for graceful shutdown. On Windows, os.kill(pid, 0)
+        # is NOT a no-op — use the handle-based existence check.
         for _ in range(20):
             _time.sleep(0.5)
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+            if not _pid_exists(pid):
                 print(f"✓ Gateway stopped (PID {pid})")
                 return
         # Force kill
         try:
-            os.kill(pid, _signal.SIGKILL)
-        except ProcessLookupError:
+            _terminate_pid(pid, force=True)
+        except (ProcessLookupError, OSError):
             pass
         print(f"✓ Gateway force-stopped (PID {pid})")
     except (ProcessLookupError, PermissionError):

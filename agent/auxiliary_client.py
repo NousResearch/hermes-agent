@@ -2141,6 +2141,20 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         )
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+    else:
+        # Fall back to profile.default_headers for providers that declare
+        # client-level headers on their ProviderProfile (e.g. attribution
+        # User-Agent strings). Provider is inferred from the hostname.
+        try:
+            from agent.model_metadata import _infer_provider_from_url
+            from providers import get_provider_profile as _gpf_async
+            _inferred = _infer_provider_from_url(sync_base_url)
+            if _inferred:
+                _ph_async = _gpf_async(_inferred)
+                if _ph_async and _ph_async.default_headers:
+                    async_kwargs["default_headers"] = dict(_ph_async.default_headers)
+        except Exception:
+            pass
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -2368,6 +2382,16 @@ def resolve_provider_client(
                 extra["default_headers"] = copilot_request_headers(
                     is_agent_turn=True, is_vision=is_vision
                 )
+            else:
+                # Fall back to profile.default_headers for providers that
+                # declare client-level attribution headers on their profile.
+                try:
+                    from providers import get_provider_profile as _gpf_custom
+                    _ph_custom = _gpf_custom(provider)
+                    if _ph_custom and _ph_custom.default_headers:
+                        extra["default_headers"] = dict(_ph_custom.default_headers)
+                except Exception:
+                    pass
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -2556,6 +2580,18 @@ def resolve_provider_client(
             headers.update(copilot_request_headers(
                 is_agent_turn=True, is_vision=is_vision
             ))
+        else:
+            # Fall back to profile.default_headers for providers that declare
+            # client-level attribution headers on their profile (e.g. GMI
+            # User-Agent for traffic identification, Vercel AI Gateway
+            # Referer/Title for analytics).
+            try:
+                from providers import get_provider_profile as _gpf_main
+                _ph_main = _gpf_main(provider)
+                if _ph_main and _ph_main.default_headers:
+                    headers.update(_ph_main.default_headers)
+            except Exception:
+                pass
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 

@@ -533,7 +533,7 @@ async def get_status():
     remote_health_body: dict | None = None
 
     if not gateway_running and _GATEWAY_HEALTH_URL:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         alive, remote_health_body = await loop.run_in_executor(
             None, _probe_gateway_health
         )
@@ -692,7 +692,7 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     if not path.exists():
         return []
     try:
-        text = path.read_text(errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     lines = text.splitlines()
@@ -1845,7 +1845,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
                     client_id=client_id,
                     scope=scope,
                 )
-        device_data = await asyncio.get_event_loop().run_in_executor(None, _do_nous_device_request)
+        device_data = await asyncio.get_running_loop().run_in_executor(None, _do_nous_device_request)
         sid, sess = _new_oauth_session("nous", "device_code")
         sess["device_code"] = str(device_data["device_code"])
         sess["interval"] = int(device_data["interval"])
@@ -2134,7 +2134,7 @@ async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Re
     """Submit the auth code for PKCE flows. Token-protected."""
     _require_token(request)
     if provider_id == "anthropic":
-        return await asyncio.get_event_loop().run_in_executor(
+        return await asyncio.get_running_loop().run_in_executor(
             None, _submit_anthropic_pkce, body.session_id, body.code,
         )
     raise HTTPException(status_code=400, detail=f"submit not supported for {provider_id}")
@@ -2979,7 +2979,20 @@ async def get_models_analytics(days: int = 30):
 import re
 import asyncio
 
-from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
+# PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
+# Windows the import raises; catch and leave PtyBridge=None so the rest of
+# the dashboard (sessions, jobs, metrics, config editor) still loads and the
+# /api/pty endpoint cleanly refuses with a WSL-suggested message.
+try:
+    from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
+    _PTY_BRIDGE_AVAILABLE = True
+except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
+    PtyBridge = None  # type: ignore[assignment]
+    _PTY_BRIDGE_AVAILABLE = False
+
+    class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
+        """Stub on platforms where pty_bridge can't be imported."""
+        pass
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
@@ -3112,6 +3125,18 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     await ws.accept()
+
+    # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
+    # client and close cleanly rather than pretending the feature works.
+    if not _PTY_BRIDGE_AVAILABLE:
+        await ws.send_text(
+            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
+            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
+            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
+            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
+        )
+        await ws.close(code=1011)
+        return
 
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None

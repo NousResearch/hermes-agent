@@ -550,6 +550,16 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                     # nullable "null" → None).
                     args[key] = coerced
                     continue
+                # If the string looks like a JSON array but _coerce_value
+                # failed to parse it, warn clearly instead of silently wrapping.
+                if value.strip().startswith("["):
+                    logger.warning(
+                        "coerce_tool_args: %s.%s looks like a JSON array string "
+                        "but could not be parsed — model may have emitted a "
+                        "JSON-encoded string instead of a native array. "
+                        "Falling back to single-element list.",
+                        tool_name, key,
+                    )
                 args[key] = [value]
                 logger.info(
                     "coerce_tool_args: wrapped bare string in list for %s.%s",
@@ -637,7 +647,12 @@ def _coerce_json(value: str, expected_python_type: type):
     """
     try:
         parsed = json.loads(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
+        logger.warning(
+            "coerce_tool_args: failed to parse string as JSON for expected type %s: %s",
+            expected_python_type.__name__,
+            exc,
+        )
         return value
     if isinstance(parsed, expected_python_type):
         logger.debug(
@@ -645,6 +660,11 @@ def _coerce_json(value: str, expected_python_type: type):
             expected_python_type.__name__,
         )
         return parsed
+    logger.warning(
+        "coerce_tool_args: JSON-parsed value is %s, expected %s — skipping coercion",
+        type(parsed).__name__,
+        expected_python_type.__name__,
+    )
     return value
 
 

@@ -7,11 +7,14 @@ keystrokes can be fed back in.  The only caller today is the
 
 Design constraints:
 
-* **POSIX-only.**  Hermes Agent supports Windows exclusively via WSL, which
-  exposes a native POSIX PTY via ``openpty(3)``.  Native Windows Python
-  has no PTY; :class:`PtyUnavailableError` is raised with a user-readable
-  install/platform message so the dashboard can render a banner instead of
-  crashing.
+* **POSIX-only.**  This module depends on ``fcntl``, ``termios``, and
+  ``ptyprocess``, none of which exist on native Windows Python.  Native
+  Windows ConPTY is a different API (Windows 10 build 17763+) and would
+  need a separate Windows implementation (``pywinpty``) — that's tracked
+  as a future enhancement.  On native Windows, importing this module
+  raises :class:`ImportError` and the dashboard's ``/chat`` tab shows a
+  WSL-recommended banner instead of crashing.  Every other feature in the
+  dashboard (sessions, jobs, metrics, config editor) works natively.
 * **Zero Node dependency on the server side.**  We use :mod:`ptyprocess`,
   which is a pure-Python wrapper around the OS calls.  The browser talks
   to the same ``hermes --tui`` binary it would launch from the CLI, so
@@ -210,7 +213,7 @@ class PtyBridge:
 
         # SIGHUP is the conventional "your terminal went away" signal.
         # We escalate if the child ignores it.
-        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):
+        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
             if not self._proc.isalive():
                 break
             try:

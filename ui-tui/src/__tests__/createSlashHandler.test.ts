@@ -34,6 +34,38 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('exits locally for /exit alias', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/exit')).toBe(true)
+    expect(ctx.session.die).toHaveBeenCalledTimes(1)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('exits locally for /q short alias', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/q')).toBe(true)
+    expect(ctx.session.die).toHaveBeenCalledTimes(1)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('quit aliases ignore trailing args without crashing', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/exit now')).toBe(true)
+    expect(ctx.session.die).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats /exit as case-insensitive', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/EXIT')).toBe(true)
+    expect(ctx.session.die).toHaveBeenCalledTimes(1)
+  })
+
   it('routes /status to live session.status instead of slash worker', async () => {
     patchUiState({ sid: 'sid-abc' })
     const rpc = vi.fn(() => Promise.resolve({ output: 'Hermes TUI Status' }))

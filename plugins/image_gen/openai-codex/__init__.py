@@ -20,7 +20,10 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+import base64
+import mimetypes
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -161,9 +164,57 @@ def _build_codex_client():
         return None
 
 
-def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _image_ref_to_input_item(reference: str) -> Dict[str, str]:
+    """Convert a local path or URL into a Responses ``input_image`` item."""
+    ref = str(reference or "").strip()
+    if not ref:
+        raise ValueError("reference_images entries must be non-empty strings")
+
+    if ref.startswith(("http://", "https://", "data:image/")):
+        image_url = ref
+    else:
+        path = Path(ref).expanduser()
+        if not path.exists() or not path.is_file():
+            raise ValueError(f"Reference image not found: {ref}")
+        mime = mimetypes.guess_type(path.name)[0] or "image/png"
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        image_url = f"data:{mime};base64,{encoded}"
+
+    return {"type": "input_image", "image_url": image_url}
+
+
+def _build_input_content(prompt: str, reference_images: Optional[Sequence[str]]) -> List[Dict[str, str]]:
+    content: List[Dict[str, str]] = [{"type": "input_text", "text": prompt}]
+    refs = list(reference_images or [])
+    if len(refs) > 16:
+        raise ValueError("gpt-image reference-image workflows support at most 16 images")
+    content.extend(_image_ref_to_input_item(ref) for ref in refs)
+    return content
+
+
+def _collect_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    reference_images: Optional[Sequence[str]] = None,
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
+
+    input_content = _build_input_content(prompt, reference_images)
+    tool: Dict[str, Any] = {
+        "type": "image_generation",
+        "model": API_MODEL,
+        "size": size,
+        "quality": quality,
+        "output_format": "png",
+        "background": "opaque",
+        "partial_images": 1,
+    }
+    if reference_images:
+        tool["action"] = "edit"
 
     with client.responses.stream(
         model=_CODEX_CHAT_MODEL,
@@ -172,17 +223,9 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
         input=[{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": input_content,
         }],
-        tools=[{
-            "type": "image_generation",
-            "model": API_MODEL,
-            "size": size,
-            "quality": quality,
-            "output_format": "png",
-            "background": "opaque",
-            "partial_images": 1,
-        }],
+        tools=[tool],
         tool_choice={
             "type": "allowed_tools",
             "mode": "required",
@@ -306,6 +349,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
 
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
+        reference_images = kwargs.get("reference_images")
 
         client = _build_codex_client()
         if client is None:
@@ -324,6 +368,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                reference_images=reference_images,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)

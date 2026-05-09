@@ -176,7 +176,7 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 # after subshell openers ( `$(` or backtick ), optionally consuming
 # leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid).
 _CMDPOS = (
-    r'(?:^|[;&|\n`]|\$\()'         # start position
+    r'(?:^|[;&|\n`{]|\$\()'         # start position; '{' catches brace-group commands
     r'\s*'                          # optional whitespace
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
     r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs

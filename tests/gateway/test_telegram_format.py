@@ -827,3 +827,40 @@ class TestTelegramGuestMentionGating:
         )
 
         assert adapter._should_process_message(message) is False
+
+    def test_guest_mode_allows_bot_command_entity_outside_allowed_chats(self):
+        """``/cmd@botname`` is a ``bot_command`` entity, not ``mention``."""
+        adapter = _guest_test_adapter(guest_mode=True, allowed_chats=["-100200"])
+        text = "/status@hermes_bot"
+        message = _guest_group_message(
+            text,
+            chat_id=-100201,
+            entities=[SimpleNamespace(type="bot_command", offset=0, length=len(text))],
+        )
+
+        assert adapter._should_process_message(message) is True
+
+    def test_guest_mode_allows_text_mention_entity_outside_allowed_chats(self):
+        """MessageEntity(type=text_mention) tags a user by ID — recognised as mention."""
+        adapter = _guest_test_adapter(guest_mode=True, allowed_chats=["-100200"])
+        message = _guest_group_message(
+            "hey there",
+            chat_id=-100201,
+            entities=[SimpleNamespace(type="text_mention", offset=0, length=3, user=SimpleNamespace(id=999))],
+        )
+
+        assert adapter._should_process_message(message) is True
+
+    def test_guest_mode_allows_mention_in_caption_outside_allowed_chats(self):
+        """Media caption @mention should bypass allowed_chats via guest_mode."""
+        adapter = _guest_test_adapter(guest_mode=True, allowed_chats=["-100200"])
+        text = "look @hermes_bot"
+        message = _guest_group_message(
+            text="",
+            chat_id=-100201,
+            entities=[],
+        )
+        message.caption = text
+        message.caption_entities = [_guest_mention_entity(text)]
+
+        assert adapter._should_process_message(message) is True

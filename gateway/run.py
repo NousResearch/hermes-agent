@@ -5776,7 +5776,18 @@ class GatewayRunner:
         if canonical == "new":
             if self._is_telegram_topic_root_lobby(source):
                 return self._telegram_topic_root_new_message()
-            return await self._handle_reset_command(event)
+            async def _do_reset():
+                return await self._handle_reset_command(event)
+            return await self._maybe_confirm_destructive_slash(
+                event=event,
+                command="new",
+                title="/new",
+                detail=(
+                    "This starts a fresh session and discards the current "
+                    "conversation history."
+                ),
+                execute=_do_reset,
+            )
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
@@ -5830,7 +5841,15 @@ class GatewayRunner:
             return await self._handle_retry_command(event)
         
         if canonical == "undo":
-            return await self._handle_undo_command(event)
+            async def _do_undo():
+                return await self._handle_undo_command(event)
+            return await self._maybe_confirm_destructive_slash(
+                event=event,
+                command="undo",
+                title="/undo",
+                detail="This removes the last user/assistant exchange from history.",
+                execute=_do_undo,
+            )
         
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
@@ -11304,6 +11323,93 @@ class GatewayRunner:
     #      /cancel; the early intercept in ``_handle_message`` matches
     #      those replies against ``tools.slash_confirm.get_pending()``.
 
+    async def _maybe_confirm_destructive_slash(
+        self,
+        *,
+        event: MessageEvent,
+        command: str,
+        title: str,
+        detail: str,
+        execute,
+    ) -> Union[str, "EphemeralReply", None]:
+        """Gate a destructive session slash command (/new, /reset, /undo).
+
+        ``execute`` is an async callable ``execute() -> str | EphemeralReply``
+        that performs the destructive action.  If the
+        ``approvals.destructive_slash_confirm`` config gate is off, ``execute``
+        runs immediately (returning its result).  Otherwise this routes
+        through ``_request_slash_confirm`` — native yes/no buttons on
+        Telegram/Discord/Slack, text fallback elsewhere.
+
+        Three-option resolution:
+
+          - ``once``  — run ``execute`` and return its result
+          - ``always`` — persist ``approvals.destructive_slash_confirm: false``,
+                        then run ``execute``
+          - ``cancel`` — return a "cancelled" message; do not run ``execute``
+        """
+        # Gate check.
+        confirm_required = True
+        try:
+            cfg = self._read_user_config()
+            approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
+            if isinstance(approvals, dict):
+                confirm_required = bool(approvals.get("destructive_slash_confirm", True))
+        except Exception:
+            pass
+
+        if not confirm_required:
+            return await execute()
+
+        session_key = self._session_key_for_source(event.source)
+
+        async def _on_confirm(choice: str):
+            if choice == "cancel":
+                return f"🟡 /{command} cancelled. Conversation unchanged."
+            if choice == "always":
+                try:
+                    from cli import save_config_value
+                    save_config_value("approvals.destructive_slash_confirm", False)
+                    logger.info(
+                        "User opted out of destructive slash confirm (session=%s)",
+                        session_key,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to persist destructive_slash_confirm=false: %s", exc,
+                    )
+            result = await execute()
+            if choice == "always":
+                note = (
+                    "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
+                    "without confirmation. Re-enable via "
+                    "`approvals.destructive_slash_confirm: true` in config.yaml."
+                )
+                if isinstance(result, str):
+                    return result + note
+                # EphemeralReply or other — leave untouched; the opt-out note
+                # would otherwise mangle structured replies.  The persist itself
+                # already happened above; user gets the same UX next time.
+                return result
+            return result
+
+        prompt_message = (
+            f"⚠️ **Confirm /{command}**\n\n"
+            f"{detail}\n\n"
+            "Choose:\n"
+            "• **Approve Once** — proceed this time only\n"
+            "• **Always Approve** — proceed and silence this prompt permanently\n"
+            "• **Cancel** — keep current conversation\n\n"
+            "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+        )
+        return await self._request_slash_confirm(
+            event=event,
+            command=command,
+            title=title,
+            message=prompt_message,
+            handler=_on_confirm,
+        )
+
     async def _request_slash_confirm(
         self,
         *,
@@ -11329,7 +11435,16 @@ class GatewayRunner:
 
         source = event.source
         session_key = self._session_key_for_source(source)
-        confirm_id = f"{next(self._slash_confirm_counter)}"
+        # Bare-runner test harnesses (object.__new__(GatewayRunner)) skip
+        # __init__ and don't have the counter attribute — fall back to a
+        # local counter so tests don't AttributeError.  Real runs always
+        # have the instance attribute.
+        counter = getattr(self, "_slash_confirm_counter", None)
+        if counter is None:
+            import itertools as _itertools
+            counter = _itertools.count(1)
+            self._slash_confirm_counter = counter
+        confirm_id = f"{next(counter)}"
 
         # Register the pending confirm FIRST so a super-fast button click
         # cannot race the send_slash_confirm return.

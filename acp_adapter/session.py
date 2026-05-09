@@ -604,6 +604,12 @@ class SessionManager:
             "model": model or default_model,
         }
 
+        # Fallback provider chain — same logic as cli.py
+        fb = config.get("fallback_providers") or config.get("fallback_model") or []
+        if isinstance(fb, dict):
+            fb = [fb] if fb.get("provider") and fb.get("model") else []
+        kwargs["fallback_model"] = fb
+
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
             kwargs.update(

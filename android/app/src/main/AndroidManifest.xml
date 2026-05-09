@@ -70,6 +70,17 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".device.HermesTaskerConditionEditActivity"
+            android:exported="true"
+            android:label="@string/hermes_tasker_condition_plugin_label">
+            <intent-filter>
+                <action android:name="com.twofortyfouram.locale.intent.action.EDIT_CONDITION" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".backend.HermesRuntimeService"
             android:exported="false"
@@ -158,6 +169,15 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="com.twofortyfouram.locale.intent.action.FIRE_SETTING" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".device.HermesTaskerConditionQueryReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.twofortyfouram.locale.intent.action.QUERY_CONDITION" />
             </intent-filter>
         </receiver>
 

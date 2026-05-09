@@ -970,10 +970,15 @@ export function TextInput({
           return
         }
 
-        // Right-click → route through the same path as Alt+V so the composer
-        // clipboard RPC (text or image) handles it.
+        // Right-click → copy active selection if any, otherwise paste.
         if (e.button === 2) {
           e.stopImmediatePropagation?.()
+          const decision = decideRightClickAction(vRef.current, selRange())
+          if (decision.action === 'copy') {
+            void writeClipboardText(decision.text)
+
+            return
+          }
           emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
 
           return
@@ -1043,6 +1048,34 @@ interface TextInputProps {
   placeholder?: string
   value: string
   voiceRecordKey?: ParsedVoiceRecordKey
+}
+
+export type RightClickDecision =
+  | { action: 'copy'; text: string }
+  | { action: 'paste' }
+
+/**
+ * Decide what right-click should do on the composer:
+ *   - non-empty selection → copy that text to the clipboard
+ *   - no selection (or empty/collapsed range) → fall through to paste
+ *
+ * Mirrors terminal-native behavior (xterm, iTerm, gnome-terminal) where
+ * right-click pastes only when there is nothing selected to copy.
+ *
+ * Callers pass the already-normalized range from `selRange()` (start <= end,
+ * or null when collapsed), so this helper does not need to re-normalize.
+ */
+export function decideRightClickAction(
+  value: string,
+  range: { end: number; start: number } | null
+): RightClickDecision {
+  if (range && range.end > range.start) {
+    const text = value.slice(range.start, range.end)
+    if (text) {
+      return { action: 'copy', text }
+    }
+  }
+  return { action: 'paste' }
 }
 
 export const shouldPassThroughToGlobalHandler = (

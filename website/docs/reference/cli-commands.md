@@ -1135,6 +1135,7 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, t
 Additional behavior:
 
 - **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
+- **Local branch reconciliation.** If you run `hermes update` from a local branch, Hermes checks the branch with `git cherry`. Commits whose patch already appears on upstream `main` are considered solved, so Hermes stays on `main`. Commits that are still local-only are rebased onto the updated `main`; Hermes creates a `hermes-update-snapshot/...` branch first so the pre-update branch tip is easy to recover.
 - **Legacy `hermes.service` warning.** If Hermes detects a pre-rename `hermes.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.
 - **Exit codes.** `0` on success, `1` on pull/install/post-install errors, `2` on unexpected working-tree changes that block `git pull`.
 

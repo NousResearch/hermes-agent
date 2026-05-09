@@ -25,7 +25,7 @@ This pulls the latest code, updates dependencies, and prompts you to configure a
 When you run `hermes update`, the following steps occur:
 
 1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.hermes/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Rollbackable via `hermes backup restore --state pre-update`.
-2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
+2. **Git pull** — pulls the latest code from the `main` branch and updates submodules. If you started on a local feature/fix branch, Hermes compares your branch's commits against the updated upstream by patch-id: equivalent patches are treated as already solved upstream, while still-local patches are rebased onto the new `main` with a safety branch created first.
 3. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 4. **Config migration** — detects new config options added since your version and prompts you to set them
 5. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.

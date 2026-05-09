@@ -62,6 +62,7 @@ except ModuleNotFoundError:
     pass
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 import shutil
@@ -6170,6 +6171,176 @@ def _restore_stashed_changes(
     return True
 
 
+@dataclass(frozen=True)
+class _LocalPatchStatus:
+    """Patch-id comparison for commits on a local branch during update."""
+
+    already_upstream: list[str]
+    local_only: list[str]
+
+    @property
+    def has_commits(self) -> bool:
+        return bool(self.already_upstream or self.local_only)
+
+    @property
+    def fully_upstream(self) -> bool:
+        return bool(self.already_upstream) and not self.local_only
+
+    @property
+    def needs_rebase(self) -> bool:
+        return bool(self.local_only)
+
+
+def _get_local_patch_status(
+    git_cmd: list[str], cwd: Path, base_ref: str, branch: str
+) -> _LocalPatchStatus:
+    """Compare a local branch to an updated base by patch-id.
+
+    ``git cherry`` marks commits with ``-`` when an equivalent patch already
+    exists upstream, and ``+`` when the patch is still local-only.  That lets
+    ``hermes update`` tell the difference between "my fix landed upstream" and
+    "keep carrying my local fix forward" without keyword or filename guesses.
+    """
+    try:
+        result = subprocess.run(
+            git_cmd + ["cherry", base_ref, branch],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return _LocalPatchStatus(already_upstream=[], local_only=[])
+
+    if result.returncode != 0:
+        return _LocalPatchStatus(already_upstream=[], local_only=[])
+
+    already_upstream: list[str] = []
+    local_only: list[str] = []
+    for line in result.stdout.splitlines():
+        marker, _, sha = line.strip().partition(" ")
+        sha = sha.strip()
+        if not sha:
+            continue
+        if marker == "-":
+            already_upstream.append(sha)
+        elif marker == "+":
+            local_only.append(sha)
+
+    return _LocalPatchStatus(
+        already_upstream=already_upstream,
+        local_only=local_only,
+    )
+
+
+def _update_snapshot_branch_name(branch: str) -> str:
+    from datetime import datetime, timezone
+
+    safe_branch = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in branch)
+    safe_branch = safe_branch.strip("-") or "branch"
+    suffix = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"hermes-update-snapshot/{safe_branch}-{suffix}"
+
+
+def _create_update_snapshot_branch(
+    git_cmd: list[str], cwd: Path, branch: str
+) -> Optional[str]:
+    snapshot = _update_snapshot_branch_name(branch)
+    try:
+        result = subprocess.run(
+            git_cmd + ["branch", snapshot, branch],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    if result.returncode == 0:
+        return snapshot
+    return None
+
+
+def _reconcile_local_branch_after_update(
+    git_cmd: list[str],
+    cwd: Path,
+    branch: str,
+    base_branch: str,
+    patch_status: _LocalPatchStatus,
+) -> bool:
+    """Move local branch patches onto the updated base when they still matter.
+
+    Returns True when it is sensible to restore an autostash onto the current
+    checkout.  Returns False when the stash should be left alone for manual
+    recovery, usually because the local committed patch already landed upstream
+    or because an automatic rebase could not be completed cleanly.
+    """
+    if not patch_status.has_commits:
+        return True
+
+    if patch_status.fully_upstream:
+        print()
+        print(
+            f"✓ Local branch '{branch}' has {len(patch_status.already_upstream)} commit(s) already covered by upstream."
+        )
+        print("  Staying on main; the local patch branch is no longer needed for this fix.")
+        return False
+
+    if not patch_status.needs_rebase:
+        return True
+
+    print()
+    print(
+        f"→ Local branch '{branch}' still has {len(patch_status.local_only)} local-only commit(s)."
+    )
+    snapshot = _create_update_snapshot_branch(git_cmd, cwd, branch)
+    if snapshot:
+        print(f"  ✓ Safety branch created: {snapshot}")
+
+    checkout = subprocess.run(
+        git_cmd + ["checkout", branch],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if checkout.returncode != 0:
+        print(f"  ⚠ Could not switch back to '{branch}'.")
+        if checkout.stderr.strip():
+            print(f"  {checkout.stderr.strip()}")
+        return False
+
+    rebase = subprocess.run(
+        git_cmd + ["rebase", base_branch],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if rebase.returncode == 0:
+        print(f"  ✓ Rebased '{branch}' onto updated {base_branch}.")
+        return True
+
+    print(f"  ⚠ Automatic rebase of '{branch}' hit conflicts.")
+    if rebase.stdout.strip():
+        print(rebase.stdout.strip())
+    if rebase.stderr.strip():
+        print(rebase.stderr.strip())
+    subprocess.run(
+        git_cmd + ["rebase", "--abort"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        git_cmd + ["checkout", base_branch],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    print("  Main was updated. Your branch was left untouched for manual rebase.")
+    if snapshot:
+        print(f"  Snapshot branch: {snapshot}")
+    print(f"  Try later: git checkout {branch} && git rebase {base_branch}")
+    return False
+
+
 # =========================================================================
 # Fork detection and upstream management for `hermes update`
 # =========================================================================
@@ -7181,6 +7352,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Always update against main
         branch = "main"
+        local_patch_status = _LocalPatchStatus(already_upstream=[], local_only=[])
 
         # If user is on a non-main branch or detached HEAD, switch to main
         if current_branch != "main":
@@ -7190,6 +7362,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 else f"branch '{current_branch}'"
             )
             print(f"  ⚠ Currently on {label} — switching to main for update...")
+            if current_branch != "HEAD":
+                local_patch_status = _get_local_patch_status(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    f"origin/{branch}",
+                    current_branch,
+                )
+                if local_patch_status.fully_upstream:
+                    print(
+                        f"  ✓ {len(local_patch_status.already_upstream)} local commit(s) already appear in origin/{branch}."
+                    )
+                elif local_patch_status.needs_rebase:
+                    print(
+                        f"  → {len(local_patch_status.local_only)} local commit(s) will be carried forward after update."
+                    )
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
             subprocess.run(
@@ -7260,6 +7447,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print("→ Pulling updates...")
         update_succeeded = False
+        restore_stash_after_update = True
         try:
             pull_result = subprocess.run(
                 git_cmd + ["pull", "--ff-only", "origin", branch],
@@ -7290,6 +7478,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     sys.exit(1)
             update_succeeded = True
         finally:
+            if update_succeeded and current_branch not in ("main", "HEAD"):
+                restore_stash_after_update = _reconcile_local_branch_after_update(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    current_branch,
+                    branch,
+                    local_patch_status,
+                )
             if auto_stash_ref is not None:
                 # Don't attempt stash restore if the code update itself failed —
                 # working tree is in an unknown state.
@@ -7298,6 +7494,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )
                     print(f"  Restore manually with: git stash apply")
+                elif not restore_stash_after_update:
+                    print(
+                        f"  ℹ️  Local uncommitted changes preserved in stash (ref: {auto_stash_ref})"
+                    )
+                    print(f"  Restore manually with: git stash apply {auto_stash_ref}")
                 else:
                     _restore_stashed_changes(
                         git_cmd,

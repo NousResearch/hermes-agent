@@ -409,6 +409,7 @@ def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch,
 def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
+    cherry_stdout="",
     ff_only_fails=False,
     reset_fails=False,
     fetch_fails=False,
@@ -426,6 +427,8 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
+        if "cherry" in joined:
+            return SimpleNamespace(stdout=cherry_stdout, stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
@@ -499,6 +502,83 @@ def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, 
     out = capsys.readouterr().out
     assert "fix/something" in out
     assert "switching to main" in out
+
+
+def test_get_local_patch_status_classifies_cherry_output(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return SimpleNamespace(
+            stdout="- abc123\n+ def456\n",
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    status = hermes_main._get_local_patch_status(
+        ["git"], tmp_path, "origin/main", "fix/something"
+    )
+
+    assert status.already_upstream == ["abc123"]
+    assert status.local_only == ["def456"]
+    assert status.needs_rebase is True
+    assert calls[0][0] == ["git", "cherry", "origin/main", "fix/something"]
+
+
+def test_cmd_update_drops_local_branch_when_patch_already_upstream(
+    monkeypatch, tmp_path, capsys
+):
+    """If git cherry says the local patch is upstream-equivalent, stay on main."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        current_branch="fix/something",
+        cherry_stdout="- abc123\n",
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    rebase_calls = [c for c in recorded if "rebase" in c]
+    checkout_back = [c for c in recorded if "checkout" in c and "fix/something" in c]
+    assert rebase_calls == []
+    assert checkout_back == []
+
+    out = capsys.readouterr().out
+    assert "already covered by upstream" in out
+    assert "Staying on main" in out
+
+
+def test_cmd_update_rebases_local_branch_when_patch_not_upstream(
+    monkeypatch, tmp_path, capsys
+):
+    """If local commits are still unique, carry the branch onto updated main."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        hermes_main,
+        "_update_snapshot_branch_name",
+        lambda branch: "hermes-update-snapshot/fix-something-test",
+    )
+
+    side_effect, recorded = _make_update_side_effect(
+        current_branch="fix/something",
+        cherry_stdout="+ abc123\n",
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert ["git", "branch", "hermes-update-snapshot/fix-something-test", "fix/something"] in recorded
+    assert ["git", "checkout", "fix/something"] in recorded
+    assert ["git", "rebase", "main"] in recorded
+
+    out = capsys.readouterr().out
+    assert "local-only commit" in out
+    assert "Rebased 'fix/something' onto updated main" in out
 
 
 def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, capsys):

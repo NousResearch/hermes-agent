@@ -12,6 +12,7 @@ the `platform_toolsets` key.
 import json as _json
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -1424,11 +1425,51 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     return visible
 
 
+_POST_SETUP_INSTALLED: dict = {
+    # post_setup_key -> predicate(): True when the install side-effect
+    # is already satisfied. Used by `_toolset_needs_configuration_prompt`
+    # to force the provider-setup flow when a no-key provider still needs
+    # a binary/dependency install (otherwise an already-configured user
+    # who toggles the toolset on via `hermes tools` gets a silent no-op
+    # because the gate sees "no env vars to ask about" and skips the
+    # provider-setup flow that would have run the post_setup hook).
+    #
+    # Only entries here are gated; other post_setup hooks (kittentts,
+    # piper, agent_browser, etc.) keep their existing behaviour. Add an
+    # entry when (a) the post_setup is the ONLY install side-effect for
+    # a no-key provider, and (b) an installed-state check is cheap and
+    # doesn't trigger a heavy import.
+    "cua_driver": lambda: bool(shutil.which("cua-driver")),
+}
+
+
+def _post_setup_already_installed(post_setup_key: str) -> bool:
+    """Return True when the post_setup install side-effect is satisfied."""
+    predicate = _POST_SETUP_INSTALLED.get(post_setup_key)
+    if predicate is None:
+        # No install-state check registered → assume satisfied (don't
+        # change behaviour for hooks we haven't explicitly opted in).
+        return True
+    try:
+        return bool(predicate())
+    except Exception:
+        return True
+
+
 def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
     """Return True when enabling this toolset should open provider setup."""
     cat = TOOL_CATEGORIES.get(ts_key)
     if not cat:
         return not _toolset_has_keys(ts_key, config)
+
+    # If any visible provider has a registered post_setup install-state
+    # check that hasn't been satisfied (e.g. cua-driver binary not on
+    # PATH yet), force the configuration flow so `_configure_provider`
+    # invokes `_run_post_setup` and the install actually runs.
+    for provider in _visible_providers(cat, config):
+        post_setup = provider.get("post_setup")
+        if post_setup and not _post_setup_already_installed(post_setup):
+            return True
 
     if ts_key == "tts":
         tts_cfg = config.get("tts", {})

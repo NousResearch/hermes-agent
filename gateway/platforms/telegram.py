@@ -15,6 +15,7 @@ import tempfile
 import html as _html
 import re
 import threading
+import time
 import uuid
 from typing import Dict, List, Optional, Any
 
@@ -417,6 +418,56 @@ class TelegramAdapter(BasePlatformAdapter):
         # provide durable liveness after the native typing bubble reaches its
         # safety cap.
         self._progress_indicator_tasks: Dict[str, asyncio.Task] = {}
+        # Shared Telegram flood-control gate.  Telegram RetryAfter is chat/bot
+        # scoped enough that concurrent progress/confirmation/final sends can
+        # otherwise stampede: each request independently hits RetryAfter and
+        # retries at the same time.  Serialize message-producing API calls and
+        # propagate the latest cooldown across sends/edits.
+        self._telegram_api_lock = asyncio.Lock()
+        self._telegram_flood_block_until: float = 0.0
+
+    def _telegram_retry_after_seconds(self, exc: Exception) -> Optional[float]:
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is not None:
+            try:
+                return max(0.0, float(retry_after))
+            except (TypeError, ValueError):
+                return 1.0
+        text = str(exc).lower()
+        if "retry after" not in text and "flood" not in text:
+            return None
+        match = re.search(r"retry\s+(?:in|after)\s+(\d+(?:\.\d+)?)", text)
+        if match:
+            try:
+                return max(0.0, float(match.group(1)))
+            except ValueError:
+                pass
+        return 1.0
+
+    def _set_telegram_flood_cooldown(self, wait_seconds: float) -> None:
+        # Add a small cushion so multiple queued sends do not resume on the
+        # exact same boundary and immediately trip RetryAfter again.
+        until = time.monotonic() + max(0.0, wait_seconds) + 0.25
+        self._telegram_flood_block_until = max(self._telegram_flood_block_until, until)
+
+    def _ensure_telegram_flood_state(self) -> None:
+        # Some focused tests instantiate TelegramAdapter via object.__new__ to
+        # avoid the full python-telegram-bot setup.  Lazily seed the flood-state
+        # fields so those tests — and any deserialized adapters — keep working.
+        if not hasattr(self, "_telegram_api_lock"):
+            self._telegram_api_lock = asyncio.Lock()
+        if not hasattr(self, "_telegram_flood_block_until"):
+            self._telegram_flood_block_until = 0.0
+
+    def _telegram_flood_gate_active(self) -> bool:
+        self._ensure_telegram_flood_state()
+        return self._telegram_flood_block_until > time.monotonic()
+
+    async def _wait_for_telegram_flood_gate(self) -> None:
+        self._ensure_telegram_flood_state()
+        wait = self._telegram_flood_block_until - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1642,6 +1693,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a message to a Telegram chat."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        self._ensure_telegram_flood_state()
         
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
@@ -1707,39 +1759,44 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
-                        try:
-                            msg = await self._bot.send_message(
-                                chat_id=int(chat_id),
-                                text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
-                                reply_to_message_id=reply_to_id,
-                                reply_markup=quick_action_markup,
-                                **thread_kwargs,
-                                **self._link_preview_kwargs(),
-                                **self._notification_kwargs(metadata),
-                            )
-                        except Exception as md_error:
-                            # Markdown parsing failed, try plain text
-                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                                plain_chunk = _strip_mdv2(chunk)
+                        # Try Markdown first, fall back to plain text if it fails.
+                        # Serialize sendMessage calls behind a shared flood gate
+                        # so progress/final/confirmation sends do not all retry
+                        # at once after Telegram returns RetryAfter.
+                        async with self._telegram_api_lock:
+                            await self._wait_for_telegram_flood_gate()
+                            try:
                                 msg = await self._bot.send_message(
                                     chat_id=int(chat_id),
-                                    text=plain_chunk,
-                                    parse_mode=None,
+                                    text=chunk,
+                                    parse_mode=ParseMode.MARKDOWN_V2,
                                     reply_to_message_id=reply_to_id,
                                     reply_markup=quick_action_markup,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
                                 )
-                            else:
-                                raise
+                            except Exception as md_error:
+                                # Markdown parsing failed, try plain text
+                                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                                    logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                                    plain_chunk = _strip_mdv2(chunk)
+                                    await self._wait_for_telegram_flood_gate()
+                                    msg = await self._bot.send_message(
+                                        chat_id=int(chat_id),
+                                        text=plain_chunk,
+                                        parse_mode=None,
+                                        reply_to_message_id=reply_to_id,
+                                        reply_markup=quick_action_markup,
+                                        **thread_kwargs,
+                                        **self._link_preview_kwargs(),
+                                        **self._notification_kwargs(metadata),
+                                    )
+                                else:
+                                    raise
                         break  # success
                     except _NetErr as send_err:
                         # BadRequest is a subclass of NetworkError in
-                        # python-telegram-bot but represents permanent errors
                         # (not transient network issues). Detect and handle
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
@@ -1792,10 +1849,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         else:
                             raise
                     except Exception as send_err:
-                        retry_after = getattr(send_err, "retry_after", None)
-                        if retry_after is not None or "retry after" in str(send_err).lower():
+                        wait = self._telegram_retry_after_seconds(send_err)
+                        if wait is not None:
+                            self._set_telegram_flood_cooldown(wait)
                             if _send_attempt < 2:
-                                wait = float(retry_after) if retry_after is not None else 1.0
                                 logger.warning(
                                     "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
                                     self.name,
@@ -1803,7 +1860,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     wait,
                                     send_err,
                                 )
-                                await asyncio.sleep(wait)
+                                await self._wait_for_telegram_flood_gate()
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
@@ -1880,22 +1937,26 @@ class TelegramAdapter(BasePlatformAdapter):
 
             formatted = self.format_message(content)
             try:
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=formatted,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                )
+                async with self._telegram_api_lock:
+                    await self._wait_for_telegram_flood_gate()
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        text=formatted,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
                 # Fallback: retry without markdown formatting
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=content,
-                )
+                async with self._telegram_api_lock:
+                    await self._wait_for_telegram_flood_gate()
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        text=content,
+                    )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -1916,22 +1977,24 @@ class TelegramAdapter(BasePlatformAdapter):
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.
-            retry_after = getattr(e, "retry_after", None)
-            if retry_after is not None or "retry after" in err_str:
-                wait = retry_after if retry_after else 1.0
+            wait = self._telegram_retry_after_seconds(e)
+            if wait is not None:
+                self._set_telegram_flood_cooldown(wait)
                 logger.warning(
                     "[%s] Telegram flood control, waiting %.1fs",
                     self.name, wait,
                 )
                 if wait > 5.0:
                     return SendResult(success=False, error=f"flood_control:{wait}")
-                await asyncio.sleep(wait)
+                await self._wait_for_telegram_flood_gate()
                 try:
-                    await self._bot.edit_message_text(
-                        chat_id=int(chat_id),
-                        message_id=int(message_id),
-                        text=content,
-                    )
+                    async with self._telegram_api_lock:
+                        await self._wait_for_telegram_flood_gate()
+                        await self._bot.edit_message_text(
+                            chat_id=int(chat_id),
+                            message_id=int(message_id),
+                            text=content,
+                        )
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     logger.error(
@@ -2556,13 +2619,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if confirmation_text:
             try:
-                await self._bot.send_message(
-                    chat_id=int(payload.get("chat_id") or query_chat_id),
-                    text=confirmation_text,
-                    message_thread_id=self._message_thread_id_for_send(payload.get("thread_id") or query_thread_id),
-                    reply_to_message_id=int(payload.get("message_id") or 0) or None,
-                )
-            except Exception:
+                async with self._telegram_api_lock:
+                    await self._wait_for_telegram_flood_gate()
+                    await self._bot.send_message(
+                        chat_id=int(payload.get("chat_id") or query_chat_id),
+                        text=confirmation_text,
+                        message_thread_id=self._message_thread_id_for_send(payload.get("thread_id") or query_thread_id),
+                        reply_to_message_id=int(payload.get("message_id") or 0) or None,
+                    )
+            except Exception as exc:
+                wait = self._telegram_retry_after_seconds(exc)
+                if wait is not None:
+                    self._set_telegram_flood_cooldown(wait)
                 logger.debug("[%s] Failed to send Quick Action confirmation", self.name, exc_info=True)
 
         if action == "delegate":
@@ -2690,11 +2758,16 @@ class TelegramAdapter(BasePlatformAdapter):
             if message_thread_id is not None:
                 kwargs["message_thread_id"] = message_thread_id
 
-            msg = await self._bot.send_message(**kwargs)
+            async with self._telegram_api_lock:
+                await self._wait_for_telegram_flood_gate()
+                msg = await self._bot.send_message(**kwargs)
             self._decision_card_state[decision_id] = dict(card)
             self._save_active_decision_card(decision_id, card)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            wait = self._telegram_retry_after_seconds(e)
+            if wait is not None:
+                self._set_telegram_flood_cooldown(wait)
             logger.warning("[%s] send_decision_card failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
@@ -4365,7 +4438,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # this guard, setting telegram.typing_indicator=false only disables the
         # hook-level refresh task, while the base keep-typing loop continues to
         # send chat_action=typing every few seconds.
-        if not self._typing_indicator_enabled():
+        if not self._typing_indicator_enabled() or self._telegram_flood_gate_active():
             return
         if self._bot:
             try:
@@ -5770,7 +5843,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _send_typing_action(self, event: MessageEvent) -> bool:
         """Best-effort Telegram-native typing indicator for the event's chat/topic."""
-        if not self._typing_indicator_enabled() or not self._bot:
+        if not self._typing_indicator_enabled() or not self._bot or self._telegram_flood_gate_active():
             return False
         source = getattr(event, "source", None)
         chat_id = getattr(source, "chat_id", None)
@@ -5921,14 +5994,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
-        if not self._bot:
+        if not self._bot or self._telegram_flood_gate_active():
             return False
         try:
-            await self._bot.set_message_reaction(
-                chat_id=int(chat_id),
-                message_id=int(message_id),
-                reaction=emoji,
-            )
+            async with self._telegram_api_lock:
+                if self._telegram_flood_gate_active():
+                    return False
+                await self._bot.set_message_reaction(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    reaction=emoji,
+                )
             return True
         except Exception as e:
             logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)

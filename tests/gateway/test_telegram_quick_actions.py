@@ -104,6 +104,31 @@ class TestTelegramQuickActionsSend:
         assert token in active
 
     @pytest.mark.asyncio
+    async def test_send_records_retry_after_as_shared_flood_gate(self, tmp_path):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 890
+
+        class RetryAfterError(Exception):
+            retry_after = 0.0
+
+        adapter._bot.send_message = AsyncMock(side_effect=[RetryAfterError("Flood control exceeded. Retry in 0 seconds"), mock_msg])
+        adapter._wait_for_telegram_flood_gate = AsyncMock()
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            result = await adapter.send(
+                chat_id="12345",
+                content="rate limited once",
+                metadata={"thread_id": "3220"},
+            )
+
+        assert result.success is True
+        assert result.message_id == "890"
+        assert adapter._bot.send_message.await_count == 2
+        assert adapter._telegram_flood_block_until > 0
+        assert adapter._wait_for_telegram_flood_gate.await_count >= 2
+
+    @pytest.mark.asyncio
     async def test_send_without_quick_action_metadata_has_no_keyboard(self, tmp_path):
         adapter = _make_adapter()
         mock_msg = MagicMock()

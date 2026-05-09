@@ -1075,6 +1075,7 @@ class AIAgent:
         provider_sort: str = None,
         provider_require_parameters: bool = False,
         provider_data_collection: str = None,
+        openrouter_min_coding_score: Optional[float] = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
         tool_start_callback: callable = None,
@@ -1137,6 +1138,9 @@ class AIAgent:
             providers_ignored (List[str]): OpenRouter providers to ignore (optional)
             providers_order (List[str]): OpenRouter providers to try in order (optional)
             provider_sort (str): Sort providers by price/throughput/latency (optional)
+            openrouter_min_coding_score (float): Coding-score floor (0.0-1.0) for the
+                openrouter/pareto-code router. Only applied when model == "openrouter/pareto-code".
+                None or empty = let OpenRouter pick the strongest available coder.
             session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
@@ -1356,6 +1360,7 @@ class AIAgent:
         self.provider_sort = provider_sort
         self.provider_require_parameters = provider_require_parameters
         self.provider_data_collection = provider_data_collection
+        self.openrouter_min_coding_score = openrouter_min_coding_score
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
@@ -9029,6 +9034,7 @@ class AIAgent:
                 ollama_num_ctx=self._ollama_num_ctx,
                 # Context forwarded to profile hooks:
                 provider_preferences=_prefs or None,
+                openrouter_min_coding_score=self.openrouter_min_coding_score,
                 anthropic_max_output=_ant_max,
                 supports_reasoning=self._supports_reasoning_extra_body(),
                 qwen_session_metadata=_qwen_meta,
@@ -9068,6 +9074,7 @@ class AIAgent:
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,
+            openrouter_min_coding_score=self.openrouter_min_coding_score,
             qwen_prepare_fn=self._qwen_prepare_chat_messages if _is_qwen else None,
             qwen_prepare_inplace_fn=self._qwen_prepare_chat_messages_inplace if _is_qwen else None,
             qwen_session_metadata=_qwen_meta,
@@ -10973,6 +10980,27 @@ class AIAgent:
                     or self._is_openrouter_url()
                 ):
                     summary_extra_body["provider"] = provider_preferences
+
+                # Pareto Code router plugin — model-gated. Same shape as
+                # the main-loop emission so summary calls on
+                # openrouter/pareto-code respect the user's coding-score floor.
+                if (
+                    self.model == "openrouter/pareto-code"
+                    and (
+                        (self.provider or "").strip().lower() == "openrouter"
+                        or self._is_openrouter_url()
+                    )
+                    and self.openrouter_min_coding_score is not None
+                    and self.openrouter_min_coding_score != ""
+                ):
+                    try:
+                        _ps = float(self.openrouter_min_coding_score)
+                    except (TypeError, ValueError):
+                        _ps = None
+                    if _ps is not None and 0.0 <= _ps <= 1.0:
+                        summary_extra_body["plugins"] = [
+                            {"id": "pareto-router", "min_coding_score": _ps}
+                        ]
 
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body

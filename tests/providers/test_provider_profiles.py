@@ -99,6 +99,46 @@ class TestOpenRouterProfile:
         body = p.build_extra_body()
         assert body == {}
 
+    def test_pareto_min_coding_score_emitted_for_pareto_model(self):
+        """min_coding_score → plugins block when model is openrouter/pareto-code."""
+        p = get_provider_profile("openrouter")
+        body = p.build_extra_body(
+            model="openrouter/pareto-code",
+            openrouter_min_coding_score=0.65,
+        )
+        assert body["plugins"] == [
+            {"id": "pareto-router", "min_coding_score": 0.65}
+        ]
+
+    def test_pareto_score_ignored_for_other_models(self):
+        """Score has no effect on any other model — plugins block must not appear."""
+        p = get_provider_profile("openrouter")
+        body = p.build_extra_body(
+            model="anthropic/claude-sonnet-4.6",
+            openrouter_min_coding_score=0.65,
+        )
+        assert "plugins" not in body
+
+    def test_pareto_score_unset_omits_plugins(self):
+        """Empty/None score → no plugins block (router uses its omission default)."""
+        p = get_provider_profile("openrouter")
+        for unset in (None, ""):
+            body = p.build_extra_body(
+                model="openrouter/pareto-code",
+                openrouter_min_coding_score=unset,
+            )
+            assert "plugins" not in body, f"unset={unset!r}"
+
+    def test_pareto_score_out_of_range_dropped(self):
+        """Invalid scores are silently dropped — never forwarded to OR."""
+        p = get_provider_profile("openrouter")
+        for bad in (1.5, -0.1, "not-a-number"):
+            body = p.build_extra_body(
+                model="openrouter/pareto-code",
+                openrouter_min_coding_score=bad,
+            )
+            assert "plugins" not in body, f"bad={bad!r}"
+
     def test_reasoning_full_config(self):
         p = get_provider_profile("openrouter")
         eb, _ = p.build_api_kwargs_extras(

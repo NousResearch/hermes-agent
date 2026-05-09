@@ -578,7 +578,24 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
+            send_metadata = {"thread_id": thread_id} if thread_id else {}
+            if platform_name.lower() == "telegram":
+                # Cron deliveries are often consumed from Telegram topics without
+                # an inbound event context, so BasePlatformAdapter's normal
+                # assistant-reply Quick Action injection path does not run here.
+                # Attach the same metadata explicitly when using the live
+                # Telegram adapter so actionable cron output gets one-tap
+                # Save/Todo/Delegate/Discard buttons.
+                send_metadata["quick_actions"] = {
+                    "content": cleaned_delivery_content.strip(),
+                    "source": {
+                        "type": "cron",
+                        "job_id": str(job.get("id", "")),
+                        "job_name": str(job.get("name", job.get("id", ""))),
+                    },
+                }
+            if not send_metadata:
+                send_metadata = None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()

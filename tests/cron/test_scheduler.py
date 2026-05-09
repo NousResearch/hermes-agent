@@ -726,6 +726,54 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in text_sent
         assert "Report" in text_sent
 
+    def test_live_telegram_cron_delivery_attaches_quick_actions_metadata(self):
+        """Telegram cron deliveries should get Quick Action metadata on the live adapter path."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        job = {
+            "id": "qa-job",
+            "name": "Actionable Digest",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "555", "thread_id": "42"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "Do this next.",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        metadata = adapter.send.call_args.kwargs["metadata"]
+        assert metadata["thread_id"] == "42"
+        assert metadata["quick_actions"]["content"] == "Do this next."
+        assert metadata["quick_actions"]["source"] == {
+            "type": "cron",
+            "job_id": "qa-job",
+            "job_name": "Actionable Digest",
+        }
+
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""
         from gateway.config import Platform

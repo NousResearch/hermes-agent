@@ -4843,6 +4843,7 @@ def set_config_value(key: str, value: str):
         "terminal.vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+        "terminal.docker_env": "TERMINAL_DOCKER_ENV",
         # terminal.cwd intentionally excluded — CLI resolves at runtime,
         # gateway bridges it in gateway/run.py. Persisting to .env causes
         # stale values to poison child processes.

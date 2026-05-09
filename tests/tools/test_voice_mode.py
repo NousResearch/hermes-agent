@@ -232,7 +232,7 @@ class TestDetectAudioEnvironment:
 
         assert result["available"] is True
         assert result["warnings"] == []
-        assert any("Docker" in n for n in result.get("notices", []))
+        assert any("container" in n.lower() for n in result.get("notices", []))
 
     def test_docker_with_pipewire_remote_allows_voice(self, monkeypatch):
         """Docker with PIPEWIRE_REMOTE set should NOT block voice mode (#21203)."""
@@ -250,7 +250,7 @@ class TestDetectAudioEnvironment:
 
         assert result["available"] is True
         assert result["warnings"] == []
-        assert any("Docker" in n for n in result.get("notices", []))
+        assert any("container" in n.lower() for n in result.get("notices", []))
 
     def test_docker_without_audio_forwarding_blocks_voice(self, monkeypatch):
         """Docker without PULSE_SERVER/PIPEWIRE_REMOTE keeps blocking voice mode."""
@@ -267,7 +267,7 @@ class TestDetectAudioEnvironment:
         result = detect_audio_environment()
 
         assert result["available"] is False
-        assert any("Docker" in w for w in result["warnings"])
+        assert any("container" in w.lower() for w in result["warnings"])
         assert any("PULSE_SERVER" in w or "PIPEWIRE_REMOTE" in w for w in result["warnings"])
 
     def test_termux_api_microphone_allows_voice_without_sounddevice(self, monkeypatch):

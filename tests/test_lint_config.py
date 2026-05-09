@@ -113,3 +113,61 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+
+class TestDevDependencies:
+    """Guard against dev-dependency omissions that break the canonical test runner.
+
+    pytest-split was missing from the dev extra, causing scripts/run_tests.sh
+    to attempt a runtime `pip install` that fails in uv-created venvs without
+    pip (issue #22401).
+    """
+
+    def test_pytest_split_declared_in_dev_extra(self):
+        """pytest-split must appear in [project.optional-dependencies].dev."""
+        cfg = _load_pyproject()
+        dev_deps = (
+            cfg.get("project", {})
+            .get("optional-dependencies", {})
+            .get("dev", [])
+        )
+        assert any("pytest-split" in dep for dep in dev_deps), (
+            "pytest-split is missing from [project.optional-dependencies].dev. "
+            "scripts/run_tests.sh requires it; without the declaration a fresh "
+            "`uv sync --extra dev` will not install it and the runtime bootstrap "
+            "in the script will attempt `pip install` which fails in uv-managed "
+            "venvs that do not include pip (issue #22401)."
+        )
+
+
+class TestRunTestsShScript:
+    """Guard against environment contamination in scripts/run_tests.sh.
+
+    HERMES_CRON_SESSION was not being unset, causing approval tests to see
+    cron-deny behavior when the test runner was invoked from a cron job
+    (issue #22400).
+    """
+
+    SCRIPT_PATH = REPO_ROOT / "scripts" / "run_tests.sh"
+
+    def test_hermes_cron_session_is_unset(self):
+        """HERMES_CRON_SESSION must appear in the unset list so cron-invoked
+        runs do not contaminate approval-gate tests."""
+        content = self.SCRIPT_PATH.read_text(encoding="utf-8")
+        assert "HERMES_CRON_SESSION" in content, (
+            "HERMES_CRON_SESSION is not unset in scripts/run_tests.sh. "
+            "When the test runner is invoked from a Hermes cron job this var "
+            "leaks into pytest and switches approval logic to cron-deny mode, "
+            "making approval tests fail (issue #22400)."
+        )
+
+    def test_bootstrap_supports_uv_pip(self):
+        """The pytest-split bootstrap must try `uv pip install` before falling
+        back to `python -m pip` so that uv-created venvs without pip work."""
+        content = self.SCRIPT_PATH.read_text(encoding="utf-8")
+        assert "uv pip install" in content, (
+            "scripts/run_tests.sh pytest-split bootstrap does not attempt "
+            "`uv pip install`. In uv-created venvs without pip the fallback "
+            "`python -m pip install` fails immediately (issue #22401). "
+            "Add a `uv pip install` path guarded by `command -v uv`."
+        )

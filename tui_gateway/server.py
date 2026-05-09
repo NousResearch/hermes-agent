@@ -180,10 +180,18 @@ sys.stdout = sys.stderr
 _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 
 
+_SLASH_WORKER_TOOLSETS_UNSET = object()
+
+
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str):
+    def __init__(
+        self,
+        session_key: str,
+        model: str,
+        enabled_toolsets=_SLASH_WORKER_TOOLSETS_UNSET,
+    ):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
@@ -198,6 +206,11 @@ class _SlashWorker:
         ]
         if model:
             argv += ["--model", model]
+        if enabled_toolsets is not _SLASH_WORKER_TOOLSETS_UNSET:
+            if enabled_toolsets is None:
+                argv += ["--toolsets", "all"]
+            else:
+                argv += ["--toolsets", ",".join(str(t) for t in enabled_toolsets)]
 
         self.proc = subprocess.Popen(
             argv,
@@ -559,7 +572,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["agent"] = agent
 
             try:
-                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                worker = _SlashWorker(
+                    key,
+                    getattr(agent, "model", _resolve_model()),
+                    getattr(agent, "enabled_toolsets", None),
+                )
                 current["slash_worker"] = worker
             except Exception:
                 pass
@@ -1030,6 +1047,13 @@ def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
+def _agent_toolsets_for_slash_worker(session: dict):
+    agent = session.get("agent")
+    if agent is None:
+        return _SLASH_WORKER_TOOLSETS_UNSET
+    return getattr(agent, "enabled_toolsets", None)
+
+
 def _restart_slash_worker(session: dict):
     worker = session.get("slash_worker")
     if worker:
@@ -1041,6 +1065,7 @@ def _restart_slash_worker(session: dict):
         session["slash_worker"] = _SlashWorker(
             session["session_key"],
             getattr(session.get("agent"), "model", _resolve_model()),
+            _agent_toolsets_for_slash_worker(session),
         )
     except Exception:
         session["slash_worker"] = None
@@ -1928,7 +1953,9 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     }
     try:
         _sessions[sid]["slash_worker"] = _SlashWorker(
-            key, getattr(agent, "model", _resolve_model())
+            key,
+            getattr(agent, "model", _resolve_model()),
+            getattr(agent, "enabled_toolsets", None),
         )
     except Exception:
         # Defer hard-failure to slash.exec; chat still works without slash worker.
@@ -5512,6 +5539,7 @@ def _(rid, params: dict) -> dict:
             worker = _SlashWorker(
                 session["session_key"],
                 getattr(session.get("agent"), "model", _resolve_model()),
+                _agent_toolsets_for_slash_worker(session),
             )
             session["slash_worker"] = worker
         except Exception as e:

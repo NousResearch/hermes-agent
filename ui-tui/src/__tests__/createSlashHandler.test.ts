@@ -454,6 +454,41 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).not.toHaveBeenCalledWith('too late')
   })
 
+  it('dispatches /toolsets through slash.exec so the gateway worker handles active toolsets', async () => {
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.resolve({ output: 'Active Toolsets\n  (*) web\n  (*) terminal' })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/toolsets')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+        command: 'toolsets',
+        session_id: null
+      })
+      expect(ctx.transcript.page).toHaveBeenCalledWith(
+        'Active Toolsets\n  (*) web\n  (*) terminal',
+        'Toolsets'
+      )
+    })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalledWith(
+      'command.dispatch',
+      expect.objectContaining({ name: 'toolsets' })
+    )
+  })
+
   it('dispatches command.dispatch with typed alias', async () => {
     const ctx = buildCtx({
       gateway: {

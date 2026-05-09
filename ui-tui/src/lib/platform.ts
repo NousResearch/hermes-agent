@@ -50,6 +50,32 @@ export const isCopyShortcut = (
     // even though raw Ctrl+C should remain interrupt on local macOS.
     (isMac && key.ctrl && (key.meta || key.super === true)))
 
+export const isPasteShortcut = (
+  key: { ctrl: boolean; meta: boolean; super?: boolean },
+  ch: string,
+  raw: string | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): boolean => {
+  if (raw === '\x16' || raw === '\x1bv' || raw === '\x1bV') {
+    return true
+  }
+
+  if (ch.toLowerCase() !== 'v') {
+    return false
+  }
+
+  return (
+    isAction(key, ch, 'v') ||
+    // Over SSH/tmux/cmux the client Cmd+V often arrives on the Linux host as
+    // a plain meta/super-modified "v" chord rather than ESC-v/bracketed
+    // paste. Treat that as paste so the composer can bridge to the clipboard.
+    (isRemoteShell(env) && (key.meta || key.super === true)) ||
+    // VS Code/Cursor/Windsurf terminal setup can forward Cmd+V with the super
+    // bit plus a benign ctrl bit, matching the copy-shortcut handling above.
+    (isMac && key.ctrl && (key.meta || key.super === true))
+  )
+}
+
 /**
  * Voice recording toggle key — configurable via ``voice.record_key`` in
  * ``config.yaml`` (default ``ctrl+b``).

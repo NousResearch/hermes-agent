@@ -10,6 +10,7 @@ import {
   isActionMod,
   isMac,
   isMacActionFallback,
+  isPasteShortcut,
   isVoiceToggleKey,
   type ParsedVoiceRecordKey
 } from '../lib/platform.js'
@@ -752,8 +753,7 @@ export function TextInput({
   useInput(
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
-      const actionPasteHotkey =
-        eventRaw === '\x1bv' || eventRaw === '\x1bV' || (isMac && isActionMod(k) && inp.toLowerCase() === 'v')
+      const actionPasteHotkey = isPasteShortcut(k, inp, eventRaw, process.env)
       const shouldBridgePasteHotkey = shouldTreatPasteHotkeyAsClipboardPaste({
         actionPasteHotkey,
         eventRaw,

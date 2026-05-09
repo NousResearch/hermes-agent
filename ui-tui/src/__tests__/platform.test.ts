@@ -59,6 +59,34 @@ describe('isCopyShortcut', () => {
   })
 })
 
+describe('isPasteShortcut', () => {
+  it('accepts Ctrl+V style raw paste forwarding everywhere', async () => {
+    const { isPasteShortcut } = await importPlatform('linux')
+
+    expect(isPasteShortcut({ ctrl: true, meta: false, super: false }, 'v', '\x16', {})).toBe(true)
+  })
+
+  it('accepts client Cmd+V over SSH even when running on Linux', async () => {
+    const { isPasteShortcut } = await importPlatform('linux')
+    const env = { SSH_CONNECTION: '1 2 3 4' } as NodeJS.ProcessEnv
+
+    expect(isPasteShortcut({ ctrl: false, meta: false, super: true }, 'v', 'v', env)).toBe(true)
+    expect(isPasteShortcut({ ctrl: false, meta: true, super: false }, 'v', 'v', env)).toBe(true)
+  })
+
+  it('does not treat local Linux Alt+V as paste', async () => {
+    const { isPasteShortcut } = await importPlatform('linux')
+
+    expect(isPasteShortcut({ ctrl: false, meta: true, super: false }, 'v', 'v', {})).toBe(false)
+  })
+
+  it('accepts the VS Code/Cursor forwarded Cmd+V paste shape on macOS', async () => {
+    const { isPasteShortcut } = await importPlatform('darwin')
+
+    expect(isPasteShortcut({ ctrl: true, meta: false, super: true }, 'v', 'v', {})).toBe(true)
+  })
+})
+
 describe('isVoiceToggleKey', () => {
   it('matches raw Ctrl+B on macOS (doc-default across platforms)', async () => {
     const { isVoiceToggleKey } = await importPlatform('darwin')

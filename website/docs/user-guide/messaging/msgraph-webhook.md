@@ -62,7 +62,7 @@ All settings go under `platforms.msgraph_webhook.extra`:
 | `port` | `8646` | Bind port. |
 | `webhook_path` | `/msgraph/webhook` | URL path Graph POSTs to. |
 | `health_path` | `/health` | Readiness endpoint. |
-| `client_state` | — | Shared secret Graph echoes in every notification. Compared with `hmac.compare_digest` — generate with `openssl rand -hex 32`. |
+| `client_state` | Required | Shared secret Graph echoes in every notification. The listener refuses to start and rejects notification POSTs without it. Compared with `hmac.compare_digest` — generate with `openssl rand -hex 32`. |
 | `accepted_resources` | `[]` (accept all) | Allowlist of Graph resource paths/patterns. Trailing `*` acts as prefix match. Leading `/` is tolerated. Example: `["communications/onlineMeetings", "chats/*/messages"]`. |
 | `max_seen_receipts` | `5000` | Dedupe cache size for notification IDs. Oldest entries evicted when the cap is hit. |
 | `allowed_source_cidrs` | `[]` (allow all) | Optional source-IP allowlist. See below. |
@@ -75,7 +75,7 @@ Each setting also has an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges in
 
 Every Graph notification includes the `clientState` string your subscription registered with. The listener rejects any notification whose `clientState` doesn't match, using timing-safe comparison. This is Microsoft's documented mechanism — treat the value as a strong shared secret.
 
-If `client_state` is unset, the listener accepts every well-formed POST. **Don't run without it in production.**
+`client_state` is required: the listener refuses to start without a non-empty value and notification POSTs fail closed if the value is missing. Generate a strong random value, keep it secret, and recreate Graph subscriptions if you rotate it.
 
 ### Source-IP allowlisting (production deployments)
 

@@ -100,6 +100,32 @@ class TestMSGraphValidationHandshake:
 
 class TestMSGraphNotifications:
     @pytest.mark.anyio
+    async def test_missing_client_state_configuration_rejects_notifications(self):
+        """Notification POSTs fail closed when no shared clientState is configured."""
+        adapter = _make_adapter(client_state=None)
+        payload = {
+            "value": [
+                {
+                    "id": "notif-no-secret",
+                    "subscriptionId": "sub-1",
+                    "changeType": "updated",
+                    "resource": "communications/onlineMeetings/meeting-0",
+                }
+            ]
+        }
+
+        resp = await adapter._handle_notification(_FakeRequest(json_payload=payload))
+        assert resp.status == 403
+
+    @pytest.mark.anyio
+    async def test_connect_requires_client_state_configuration(self):
+        """The listener should not start accepting POSTs without a clientState secret."""
+        adapter = _make_adapter(client_state=None)
+
+        with pytest.raises(ValueError, match="client_state"):
+            await adapter.connect()
+
+    @pytest.mark.anyio
     async def test_valid_notification_accepted_and_scheduled(self):
         adapter = _make_adapter()
         scheduled: list[tuple[dict, object]] = []

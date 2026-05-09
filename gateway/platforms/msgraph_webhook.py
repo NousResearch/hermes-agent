@@ -133,6 +133,8 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._notification_scheduler = scheduler
 
     async def connect(self) -> bool:
+        self._validate_security_config()
+
         app = web.Application()
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_validation)
@@ -150,6 +152,13 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             self._webhook_path,
         )
         return True
+
+    def _validate_security_config(self) -> None:
+        """Fail closed if POST notification authentication is not configured."""
+        if self._client_state is None:
+            raise ValueError(
+                "msgraph_webhook requires a non-empty client_state before it can accept notifications"
+            )
 
     async def disconnect(self) -> None:
         if self._runner is not None:
@@ -310,7 +319,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         """
         expected = self._client_state
         if expected is None:
-            return True
+            return False
         provided = self._string_or_none(notification.get("clientState"))
         if provided is None:
             return False

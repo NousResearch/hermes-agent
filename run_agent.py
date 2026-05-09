@@ -5066,13 +5066,26 @@ class AIAgent:
         """Trigger end-of-session extraction without tearing providers down.
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
-        session_id — they just flush pending extraction now."""
+        session_id — they just flush pending extraction now.
+
+        Also notifies the context engine of the session end so plugin
+        engines like LCM can flush the final turns and finalize the
+        old session in their lifecycle store before the rotation
+        completes (#22394). Mirrors ``shutdown_memory_provider``."""
         if not self._memory_manager:
             return
         try:
             self._memory_manager.on_session_end(messages or [])
         except Exception:
             pass
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            try:
+                self.context_compressor.on_session_end(
+                    self.session_id or "",
+                    messages or [],
+                )
+            except Exception:
+                pass
 
     def _sync_external_memory_for_turn(
         self,

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Hermes web dashboard, React/TypeScript, Vitest, CSS/SVG. Current web dependencies already include React, Tailwind, GSAP, Three/react-three stack for other web needs; Stage 11 does not add PixiJS, Phaser, canvas, sprites, or DeskRPG assets without explicit later approval.
 
-**Last updated:** 2026-05-09 13:03 KST
+**Last updated:** 2026-05-09 13:08 KST
 
 ---
 
@@ -328,6 +328,39 @@ Current Stage 11-B conclusion:
 - The first observed crowding issue was addressable through DOM/CSS polish.
 - Re-open renderer research only if a later smoke test records a measured problem that compact/minimal labels, grouping, rail detachment, and density modes cannot solve cleanly.
 
+
+## 4-C. Stage 11-C renderer decision checkpoint — 2026-05-09 13:08 KST
+
+Scope: decision checkpoint only. No code, dependency, renderer import, canvas path, sprite asset, DeskRPG code/asset copy, backend/API/schema change, mutation control, persistent browser storage, cron/Kanban/topic/gateway/NAS/Obsidian write, or raw record projection was added.
+
+Fresh checkpoint evidence:
+
+- Branch remained `ai-office-stage6-7-cleanup-20260508` with latest pushed commit `a7090c0e feat(office): polish CSS RPG map density` before this documentation pass.
+- Working tree was clean at checkpoint start; `git diff --check` passed.
+- Existing dashboard listener on `127.0.0.1:8765` was reused; no new server was started.
+- Browser URL: `http://127.0.0.1:8765/office?stage11c=decision`.
+- Standard mode evidence: `data-office-polish="true"`, label mode `compact`, rail mode `detached`, 4 jump targets, 12 safe character inspect buttons, recent target `#office-map-recent`, raw leak regex false.
+- Summary mode evidence after activating 요약: label mode `minimal`, 6 safe character inspect buttons, recent target `#office-map-recent-collapsed`, collapsed recent rail present.
+- Browser console JS errors: none.
+
+Decision:
+
+- Close Stage 11 renderer adoption for now with **CSS/SVG retained as the primary renderer path**.
+- Do not open a PixiJS, Phaser, custom canvas, hybrid overlay, sprite, or DeskRPG asset/code spike from the current evidence.
+- Stage 11-A identified density/readability as the main issue; Stage 11-B solved that class of issue with compact/minimal labels and a detached lower legend; Stage 11-C found no new measured blocker.
+
+Re-open criteria:
+
+1. A later browser smoke records unreadable safe character density after summary/standard/detail modes, compact/minimal labels, grouping, and rail detachment.
+2. The product requirement changes to true tile-map navigation, camera/pan/zoom, pathfinding, collision, or high-object-count animation beyond dashboard observability.
+3. A separate user-approved spike measures bundle impact and includes DOM accessibility equivalents, safe DTO-only renderer inputs, reduced-motion fallback, license review, and CSS/SVG fallback or explicit degradation approval.
+
+Recommended next phase:
+
+- Move out of renderer-gate work unless new evidence appears.
+- Prefer product/dashboard polish that preserves the current CSS/SVG, Korean-first, read-only, safe DTO projection boundary.
+- Good next candidates: responsive/mobile readability evidence, Office empty-source copy polish, or a small non-mutating UX handoff/PR summary pass.
+
 ## 5. Stage 11 decision rubric
 
 Score each option 1-5:
@@ -358,10 +391,10 @@ Do not install or import a renderer unless all are true:
 
 ## 7. Recommended next action
 
-Stage 11 should continue as a **decision and evidence pass**, not as dependency adoption:
+Stage 11 should close as a **decision and evidence pass**, not as dependency adoption:
 
 1. Keep CSS/SVG as the primary implementation.
-2. Treat Stage 11-C as a decision checkpoint unless new browser evidence finds remaining crowding.
+2. Stop renderer work for now; do not create PixiJS/Phaser/canvas/hybrid spike branches without a new measured blocker and explicit user approval.
 3. Re-open renderer research only if future evidence shows CSS/SVG cannot solve a measured readability, performance, or navigation problem cleanly.
 
-Current recommendation after Stage 11-B evidence: **do not add a renderer yet. Keep CSS/SVG as the primary implementation; the measured crowding concern was addressable with compact/minimal labels and a detached legend.**
+Current recommendation after Stage 11-C evidence: **do not add a renderer. Keep CSS/SVG as the primary implementation; Stage 11-A/B/C did not produce a measured performance, readability, or navigation blocker that justifies PixiJS, Phaser, custom canvas, sprites, or a hybrid overlay.**

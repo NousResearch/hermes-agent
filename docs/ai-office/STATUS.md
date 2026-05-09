@@ -1,6 +1,6 @@
 # Hermes AI Office — STATUS
 
-Last updated: 2026-05-09 13:03 KST
+Last updated: 2026-05-09 13:08 KST
 
 ## Current phase
 
@@ -34,11 +34,44 @@ Current Stage 11-A result: renderer decision gate planning and evidence collecti
 
 Current Stage 11-B result: `/office` applies a small CSS/SVG layout-density polish without adding a renderer. `OfficeMapPolishPlan` and `buildOfficeMapPolishPlan(densityPlan)` derive safe label/rail presentation from the existing density plan, compact crowded character nameplates in standard/detail conditions, use minimal labels in summary mode, and detach the bottom legend/rail from the map floor. The UI exposes `data-office-polish` and legend hooks for browser smoke.
 
-Next phase: Stage 11 can either stop at the CSS/SVG renderer decision gate or continue with another small CSS/SVG readability polish if browser evidence finds remaining crowding. Still no individual task identity, generated content-like speech bubbles, sprite assets, Phaser, PixiJS, canvas renderer, backend/API changes, mutation controls, persistent storage, or raw record projection. Stage 11 remains the separate renderer decision gate.
+Current Stage 11-C result: the renderer decision gate is closed for now. Fresh browser checkpoint evidence on `/office?stage11c=decision` showed compact standard labels, minimal summary labels, detached rail mode, working jump targets, safe character caps, raw leak regex false, and no console JS errors. The decision remains CSS/SVG primary; no PixiJS, Phaser, canvas, hybrid overlay, sprites, or DeskRPG code/assets should be added without new measured evidence and explicit user approval.
+
+Next phase: move out of renderer-gate work unless new evidence appears. Prefer product/dashboard polish that preserves the current CSS/SVG, Korean-first, read-only, safe DTO projection boundary. Still no individual task identity, generated content-like speech bubbles, sprite assets, Phaser, PixiJS, canvas renderer, backend/API changes, mutation controls, persistent storage, or raw record projection.
 
 Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
 
 
+
+
+## Stage 11-C renderer decision checkpoint documented
+
+Implemented files/changes:
+
+- `docs/ai-office/plans/2026-05-09-stage-11-renderer-decision-gate.md`
+  - Added Stage 11-C checkpoint evidence, decision, re-open criteria, and next-phase recommendation.
+- `docs/ai-office/STATUS.md` and `docs/ai-office/NEXT.md`
+  - Updated the handoff to close renderer work for now and recommend non-renderer dashboard/product polish next.
+
+Decision 2026-05-09 13:08 KST:
+
+- Keep CSS/SVG as the primary renderer path.
+- Do not add PixiJS, Phaser, custom canvas, hybrid renderer overlays, sprite assets, or DeskRPG code/assets from the current evidence.
+- Re-open renderer research only if later evidence shows a measured readability/performance/navigation blocker after current density modes, compact/minimal labels, grouping, and rail detachment.
+
+Evidence:
+
+- Browser URL: `http://127.0.0.1:8765/office?stage11c=decision`; existing dashboard listener reused.
+- Standard mode: polish hook present, label mode `compact`, rail mode `detached`, 4 jump targets, 12 safe character inspect buttons, recent target `#office-map-recent`, raw leak regex false.
+- 요약 mode: label mode `minimal`, 6 safe character inspect buttons, recent target `#office-map-recent-collapsed`, collapsed recent rail present.
+- Browser console JS errors: none.
+
+Safety notes:
+
+- Stage 11-C is documentation/decision only and did not add dependencies, renderer imports, canvas paths, sprites, DeskRPG assets/code, backend/API/schema changes, mutation controls, persistent browser storage, or raw record projection.
+
+Verification:
+
+- `git diff --check` passed before edits.
 
 ## Stage 11-B CSS/SVG layout-density polish implemented
 

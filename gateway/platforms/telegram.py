@@ -403,6 +403,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # Keyed by user/chat/thread so the next text message resolves the card
         # instead of being dispatched to the agent as a new prompt.
         self._decision_card_text_waiters: Dict[str, str] = {}
+        # Quick Action button state: token → compact response/action payload.
+        # Tokens keep Telegram callback_data under the 64-byte limit and active
+        # actions are persisted so one-tap follow-ups survive gateway restarts.
+        self._quick_action_state: Dict[str, Dict[str, Any]] = {}
+        self._supports_quick_actions = True
         # Telegram-native liveness indicator refresh tasks, keyed by the
         # inbound message context they belong to.  Telegram typing actions are
         # ephemeral, so long-running tool calls need periodic refreshes until
@@ -1693,6 +1698,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_message_id=reply_to_id,
                 )
                 effective_thread_id = thread_kwargs.get("message_thread_id")
+                quick_action_token = ""
+                quick_action_markup = None
+                if self._should_attach_quick_actions(metadata, i, len(chunks)):
+                    quick_action_token = uuid.uuid4().hex[:10]
+                    quick_action_markup = self._quick_action_keyboard(quick_action_token)
 
                 msg = None
                 for _send_attempt in range(3):
@@ -1704,6 +1714,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=quick_action_markup,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -1718,6 +1729,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=quick_action_markup,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -1795,6 +1807,16 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+                if quick_action_token:
+                    payload = self._build_quick_action_payload(
+                        token=quick_action_token,
+                        chat_id=chat_id,
+                        content=content,
+                        metadata=metadata,
+                        message_id=str(msg.message_id),
+                    )
+                    self._quick_action_state[quick_action_token] = payload
+                    self._save_active_quick_action(quick_action_token, payload)
             
             return SendResult(
                 success=True,
@@ -2248,6 +2270,219 @@ class TelegramAdapter(BasePlatformAdapter):
                 tmp.replace(path)
         except Exception:
             logger.debug("[%s] Failed to remove active DecisionCard %s", self.name, decision_id, exc_info=True)
+
+    def _quick_actions_path(self):
+        """Return the local JSON path for active Telegram Quick Actions."""
+        from hermes_constants import get_hermes_home
+
+        out_dir = get_hermes_home() / "telegram_quick_actions"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir / "active_actions.json"
+
+    def _save_active_quick_action(self, token: str, payload: Dict[str, Any]) -> None:
+        """Persist a Quick Action payload so callbacks survive restart."""
+        path = self._quick_actions_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except Exception:
+            data = {}
+        data[str(token)] = dict(payload)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+    def _load_active_quick_action(self, token: str) -> Optional[Dict[str, Any]]:
+        """Load an active Quick Action payload from memory or disk."""
+        payload = self._quick_action_state.get(str(token))
+        if payload:
+            return payload
+        try:
+            path = self._quick_actions_path()
+            if not path.exists():
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            payload = data.get(str(token))
+            if isinstance(payload, dict):
+                self._quick_action_state[str(token)] = payload
+                return payload
+        except Exception:
+            logger.debug("[%s] Failed to load active Quick Action %s", self.name, token, exc_info=True)
+        return None
+
+    def _remove_active_quick_action(self, token: str) -> None:
+        """Remove a resolved Quick Action from active state."""
+        self._quick_action_state.pop(str(token), None)
+        try:
+            path = self._quick_actions_path()
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if str(token) in data:
+                data.pop(str(token), None)
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                tmp.replace(path)
+        except Exception:
+            logger.debug("[%s] Failed to remove active Quick Action %s", self.name, token, exc_info=True)
+
+    def _record_quick_action(self, *, token: str, action: str, payload: Dict[str, Any], user_id: str, user_name: str) -> None:
+        """Append a Quick Action event to the local JSONL ledger."""
+        from hermes_constants import get_hermes_home
+        from datetime import datetime, timezone
+
+        out_dir = get_hermes_home() / "telegram_quick_actions"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "token": str(token),
+            "action": str(action),
+            "user_id": str(user_id),
+            "user_name": str(user_name),
+            "chat_id": str(payload.get("chat_id") or ""),
+            "thread_id": str(payload.get("thread_id") or ""),
+            "message_id": str(payload.get("message_id") or ""),
+            "content": str(payload.get("content") or ""),
+            "source": payload.get("source") or {},
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with (out_dir / "actions.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if action == "todo":
+            with (out_dir / "todos.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        elif action == "save":
+            with (out_dir / "saved_responses.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    @staticmethod
+    def _quick_action_keyboard(token: str):
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("💾 Save", callback_data=f"qa:{token}:save"),
+                InlineKeyboardButton("☑️ Todo", callback_data=f"qa:{token}:todo"),
+            ],
+            [
+                InlineKeyboardButton("🧑‍💻 Delegate", callback_data=f"qa:{token}:delegate"),
+                InlineKeyboardButton("✕ Discard", callback_data=f"qa:{token}:discard"),
+            ],
+        ])
+
+    def _build_quick_action_payload(self, *, token: str, chat_id: str, content: str, metadata: Optional[Dict[str, Any]], message_id: Optional[str] = None) -> Dict[str, Any]:
+        """Build the persisted payload for a sent assistant-response Quick Action."""
+        metadata = metadata or {}
+        source = metadata.get("quick_actions", {}).get("source") if isinstance(metadata.get("quick_actions"), dict) else {}
+        return {
+            "token": str(token),
+            "chat_id": str(chat_id),
+            "thread_id": str(self._metadata_thread_id(metadata) or ""),
+            "message_id": str(message_id or ""),
+            "content": str((metadata.get("quick_actions", {}) or {}).get("content") or content),
+            "source": source or {},
+        }
+
+    @staticmethod
+    def _should_attach_quick_actions(metadata: Optional[Dict[str, Any]], chunk_index: int, chunk_count: int) -> bool:
+        """Attach quick actions only to the final chunk of normal assistant replies."""
+        if chunk_index != chunk_count - 1:
+            return False
+        if not isinstance(metadata, dict):
+            return False
+        return isinstance(metadata.get("quick_actions"), dict)
+
+    async def _handle_quick_action_callback(self, query: Any, data: str) -> None:
+        """Handle one-tap Telegram Quick Actions for a prior assistant reply."""
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer(text="Invalid quick action.")
+            return
+        _, token, action = parts
+        if action not in {"save", "todo", "delegate", "discard"}:
+            await query.answer(text="Unknown quick action.")
+            return
+
+        query_message = getattr(query, "message", None)
+        query_chat_id = getattr(query_message, "chat_id", None)
+        query_chat = getattr(query_message, "chat", None)
+        query_chat_type = getattr(query_chat, "type", None)
+        query_thread_id = getattr(query_message, "message_thread_id", None)
+        query_user_name = getattr(query.from_user, "first_name", None)
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to use this quick action.")
+            return
+
+        payload = self._load_active_quick_action(token)
+        if not payload:
+            await query.answer(text="This quick action is no longer active.")
+            return
+
+        user_display = getattr(query.from_user, "first_name", "User")
+        if action == "discard":
+            await query.answer(text="Dismissed")
+        else:
+            self._record_quick_action(
+                token=token,
+                action=action,
+                payload=payload,
+                user_id=caller_id,
+                user_name=str(user_display),
+            )
+            label_map = {
+                "save": "💾 Saved",
+                "todo": "☑️ Todo captured",
+                "delegate": "🧑‍💻 Delegating follow-up",
+            }
+            await query.answer(text=label_map.get(action, "Recorded"))
+
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            try:
+                text = getattr(query_message, "text", None) or getattr(query_message, "caption", None) or "Quick action resolved."
+                await query.edit_message_text(text=text, reply_markup=None)
+            except Exception:
+                pass
+
+        self._remove_active_quick_action(token)
+
+        if action == "delegate":
+            try:
+                from gateway.platforms.base import MessageEvent, MessageType
+                from gateway.session import SessionSource
+
+                src = payload.get("source") or {}
+                source = SessionSource(
+                    platform=Platform.TELEGRAM,
+                    user_id=str(src.get("user_id") or caller_id),
+                    user_name=str(src.get("user_name") or user_display),
+                    chat_id=str(payload.get("chat_id") or query_chat_id or ""),
+                    chat_name=str(src.get("chat_name") or ""),
+                    chat_type=str(src.get("chat_type") or query_chat_type or ""),
+                    thread_id=str(payload.get("thread_id") or query_thread_id or "") or None,
+                )
+                prompt = (
+                    "Telegram Quick Action: delegate a follow-up from the previous assistant reply.\n\n"
+                    "Previous assistant reply:\n"
+                    f"{str(payload.get('content') or '').strip()}\n\n"
+                    "Continue autonomously with the most useful next action. If there is no useful follow-up, say so briefly."
+                )
+                event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, internal=True)
+                await self.handle_message(event)
+            except Exception as exc:
+                logger.error("[%s] Quick Action delegate failed: %s", self.name, exc, exc_info=True)
+                try:
+                    await self._bot.send_message(
+                        chat_id=int(query_chat_id),
+                        text=f"⚠️ Delegate quick action failed: {exc}",
+                        message_thread_id=self._message_thread_id_for_send(query_thread_id),
+                    )
+                except Exception:
+                    pass
 
     @staticmethod
     def _decision_card_text_waiter_key(
@@ -3139,6 +3374,11 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Quick Action callbacks (qa:token:action) ---
+        if data.startswith("qa:"):
+            await self._handle_quick_action_callback(query, data)
+            return
 
         # --- DecisionCard callbacks (dq:decision_id:choice) ---
         if data.startswith("dq:"):

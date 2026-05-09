@@ -3072,16 +3072,44 @@ class BasePlatformAdapter(ABC):
                     # response triggers a push notification.
                     # Clone to avoid mutating the metadata shared with the
                     # typing-indicator task (which must remain unmarked).
-                    if _thread_metadata is not None:
-                        _thread_metadata = dict(_thread_metadata)
-                        _thread_metadata["notify"] = True
-                    else:
-                        _thread_metadata = {"notify": True}
+                    _send_metadata = dict(_thread_metadata or {})
+                    _send_metadata["notify"] = True
+                    # Telegram v0 Quick Actions: attach a compact inline
+                    # keyboard to normal assistant replies so common follow-up
+                    # intents (save / todo / delegate / discard) are one tap.
+                    # Keep this opt-out via platform config and avoid slash
+                    # command/system notices to prevent noisy controls on every
+                    # status/help response.
+                    try:
+                        _platform_value = getattr(event.source.platform, "value", event.source.platform)
+                        _quick_actions_enabled = bool(
+                            getattr(self.config, "extra", {}).get("quick_actions", True)
+                        )
+                        if (
+                            str(_platform_value).lower() == "telegram"
+                            and bool(getattr(self, "_supports_quick_actions", False))
+                            and _quick_actions_enabled
+                            and not event.get_command()
+                        ):
+                            _send_metadata["quick_actions"] = {
+                                "content": text_content,
+                                "source": {
+                                    "platform": str(_platform_value),
+                                    "chat_id": event.source.chat_id,
+                                    "chat_type": event.source.chat_type,
+                                    "chat_name": event.source.chat_name,
+                                    "thread_id": event.source.thread_id,
+                                    "user_id": event.source.user_id,
+                                    "user_name": event.source.user_name,
+                                },
+                            }
+                    except Exception:
+                        pass
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=_reply_anchor,
-                        metadata=_thread_metadata,
+                        metadata=_send_metadata,
                     )
                     _record_delivery(result)
 

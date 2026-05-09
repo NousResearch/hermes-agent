@@ -916,6 +916,7 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
         assert kb.latest_summaries(conn, []) == {}
 
 
+
 def test_unlink_promotes_when_blocker_removed(kanban_home):
     """Unlinking the last blocking parent must trigger recompute_ready."""
     with kb.connect() as conn:
@@ -939,3 +940,54 @@ def test_unlink_promotes_when_blocker_removed(kanban_home):
         assert kb.get_task(conn, pb).status == "ready", (
             "unlink must trigger recompute_ready so child promotes"
         )
+
+
+# ---------------------------------------------------------------------------
+# NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
+# ---------------------------------------------------------------------------
+
+def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
+    """kanban_db.connect() must handle ``locking protocol`` on NFS/SMB.
+
+    Without this fallback, the gateway's kanban dispatcher crashes every
+    60s and the kanban migration (``consecutive_failures`` ADD COLUMN) is
+    retried forever — which is what the real-world user report shows
+    (see hermes-agent issue #22032).
+    """
+    import sqlite3 as _sqlite3
+    from unittest.mock import patch as _patch
+
+    # Clear module cache so a fresh connect() is attempted
+    kb._INITIALIZED_PATHS.clear()
+
+    real_connect = _sqlite3.connect
+
+    class _WalBlockingConnection(_sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                raise _sqlite3.OperationalError("locking protocol")
+            return super().execute(sql, *args, **kwargs)
+
+    def wal_blocking_connect(*args, **kwargs):
+        return real_connect(
+            *args, factory=_WalBlockingConnection, **kwargs
+        )
+
+    with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
+        with caplog.at_level("WARNING", logger="hermes_state"):
+            conn = kb.connect()
+
+    # One fallback warning, naming kanban.db
+    warnings = [
+        r for r in caplog.records
+        if r.levelname == "WARNING" and "kanban.db" in r.getMessage()
+    ]
+    assert len(warnings) >= 1, (
+        f"Expected a kanban.db WARNING, got: {[r.getMessage() for r in caplog.records]}"
+    )
+
+    # DB still usable end-to-end — create + list a task
+    t = kb.create_task(conn, title="post-fallback task")
+    tasks = kb.list_tasks(conn)
+    assert any(row.id == t for row in tasks)
+    conn.close()

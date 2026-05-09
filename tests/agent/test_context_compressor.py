@@ -400,6 +400,104 @@ class TestSummaryFallbackToMainModel:
         assert result is None
         assert c._summary_model_fallen_back is True
 
+    def test_json_decode_error_falls_back_to_main_and_succeeds(self):
+        """JSONDecodeError from the OpenAI SDK's ``response.json()`` (raised
+        when a misconfigured proxy returns HTML/plain-text with
+        ``Content-Type: application/json``) should trigger the same
+        retry-on-main path as 404/timeout.  Issue #22244."""
+        import json as _json
+
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        # Simulate the SDK raising a raw JSONDecodeError with a realistic
+        # error message ("Expecting value: line X column Y char Z").
+        err_json = _json.JSONDecodeError(
+            "Expecting value", "<!DOCTYPE html><html>...</html>", 0
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-via-broken-proxy",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_json, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "aux-via-broken-proxy"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model" in result
+        # Aux-model failure recorded so /usage / gateway warnings can surface it
+        assert c._last_aux_model_failure_model == "aux-via-broken-proxy"
+        assert c._last_aux_model_failure_error is not None
+        # The 220-char cap is shared with other fallback branches
+        assert len(c._last_aux_model_failure_error) <= 220
+
+    def test_json_decode_error_substring_match_in_wrapped_exception(self):
+        """When the OpenAI SDK wraps the raw JSONDecodeError inside its own
+        ``APIResponseValidationError`` (or similar), ``isinstance`` no longer
+        matches but the substring "expecting value" still appears in
+        ``str(e)``.  We detect this case by string match and fall back the
+        same way."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        # A plain Exception with the canonical JSON decode error text — what
+        # the SDK's APIResponseValidationError looks like at str() time.
+        err_wrapped = Exception("Expecting value: line 1 column 1 (char 0)")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_wrapped, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert result is not None
+        assert "summary via main model" in result
+
+    def test_json_decode_error_on_main_uses_short_cooldown(self):
+        """When already on the main model (no separate summary_model, or
+        fallback already happened), a JSONDecodeError should set the short
+        30s cooldown, not the default 60s — provider bodies tend to
+        recover quickly when an upstream proxy comes back online."""
+        import json as _json
+
+        err_json = _json.JSONDecodeError("Expecting value", "<html/>", 0)
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                # No summary_model_override → already on main, no fallback path.
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err_json,
+        ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+
+        assert result is None
+        # Short JSON-decode cooldown is 30s, not the default 60s.
+        assert c._summary_failure_cooldown_until == 1030.0
+
 
 class TestAuxModelFallbackSurfacedToCallers:
     """When summary_model fails but retry-on-main succeeds, compress() must

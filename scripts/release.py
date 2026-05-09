@@ -67,6 +67,7 @@ AUTHOR_MAP = {
     "44045911+kidonng@users.noreply.github.com": "kidonng",
     "daniellsmarta@gmail.com": "DanielLSM",
     "264291321+v1b3coder@users.noreply.github.com": "v1b3coder",
+    "silverchris@foxmail.com": "ming1523",
     "maksesipov@gmail.com": "Qwinty",
     "denisamania@gmail.com": "CalmProton",
     "308068+mbac@users.noreply.github.com": "mbac",

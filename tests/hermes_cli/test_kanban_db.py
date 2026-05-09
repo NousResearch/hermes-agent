@@ -1116,3 +1116,86 @@ def test_unlink_tasks_triggers_recompute_ready(kanban_home):
             "child should promote to ready immediately after unlink_tasks "
             "removes its last blocking dependency"
         )
+# ---------------------------------------------------------------------------
+# _add_column_if_missing / _migrate_add_optional_columns idempotency (#21708)
+# ---------------------------------------------------------------------------
+
+def test_add_column_if_missing_is_idempotent_on_race(kanban_home):
+    """``_add_column_if_missing`` must swallow 'duplicate column name' errors.
+
+    Regression for #21708: the kanban dispatcher opens the DB twice per tick
+    (once via _tick_once_for_board, once via init_db's discard-and-reconnect
+    path).  A second concurrent connection runs _migrate_add_optional_columns
+    before the first one commits, so ALTER TABLE raises OperationalError with
+    'duplicate column name: consecutive_failures'.  Without the idempotency
+    guard that crashes the dispatcher on the first tick after every restart.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL)"
+    )
+
+    # First call adds the column — returns True.
+    added = kb._add_column_if_missing(conn, "tasks", "extra_col", "extra_col TEXT")
+    assert added is True
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    assert "extra_col" in cols
+
+    # Second call on same connection — column already exists — must return
+    # False without raising, simulating the race the dispatcher hits.
+    added_again = kb._add_column_if_missing(
+        conn, "tasks", "extra_col", "extra_col TEXT"
+    )
+    assert added_again is False
+
+    conn.close()
+
+
+def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home):
+    """Full _migrate_add_optional_columns must not raise when columns already
+    exist (issue #21708 race window — two connections migrate concurrently)."""
+    import sqlite3
+
+    # Schema already in fully-migrated state (all optional columns present).
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE tasks (
+            id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL,
+            tenant TEXT,
+            result TEXT,
+            idempotency_key TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            worker_pid INTEGER,
+            last_failure_error TEXT,
+            max_runtime_seconds INTEGER,
+            last_heartbeat_at INTEGER,
+            current_run_id INTEGER,
+            workflow_template_id TEXT,
+            current_step_key TEXT,
+            skills TEXT,
+            max_retries INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE task_events (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id    TEXT NOT NULL DEFAULT '',
+            run_id     INTEGER,
+            kind       TEXT NOT NULL DEFAULT '',
+            payload    TEXT,
+            created_at INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+    # Running migration on an already-migrated schema must not raise.
+    kb._migrate_add_optional_columns(conn)
+    conn.close()

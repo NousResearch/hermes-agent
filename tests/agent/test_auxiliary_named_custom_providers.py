@@ -141,14 +141,15 @@ class TestResolveProviderClientNamedCustom:
         _write_config(tmp_path, {
             "model": {"default": "main-model"},
             "custom_providers": [
-                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
+                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k",
+                 "default_model": "provider-default"},
             ],
         })
         from agent.auxiliary_client import resolve_provider_client
         client, model = resolve_provider_client("beans")
         assert client is not None
-        # Should use _read_main_model() fallback
-        assert model == "main-model"
+        # Named custom provider: default_model should be used, not _read_main_model()
+        assert model == "provider-default"
 
     def test_named_custom_no_api_key_uses_fallback(self, tmp_path):
         _write_config(tmp_path, {
@@ -492,3 +493,52 @@ class TestCustomProviderAliasCollision:
         assert isinstance(client, OpenAI)
         assert "override.example.com" in str(client.base_url)
         assert client.api_key == "override-key"
+
+
+class TestResolveAutoPrefersProviderDefaultModel:
+    """_resolve_auto should prefer named custom provider's default_model
+    over the main chat model for auxiliary tasks (#22317)."""
+
+    def test_auto_uses_provider_default_model(self, tmp_path):
+        """Named custom provider with default_model: aux tasks should use it."""
+        _write_config(tmp_path, {
+            "model": {"default": "big-expensive-model", "provider": "my-llm"},
+            "providers": {
+                "my-llm": {
+                    "api": "http://localhost:11434/v1",
+                    "default_model": "small-aux-model",
+                },
+            },
+        })
+        from agent.auxiliary_client import _resolve_auto
+        client, model = _resolve_auto()
+        assert client is not None
+        assert model == "small-aux-model", (
+            f"Expected provider's default_model 'small-aux-model', got '{model}'"
+        )
+
+    def test_auto_falls_back_to_main_model_when_no_default(self, tmp_path):
+        """Named custom provider without default_model: should use main model."""
+        _write_config(tmp_path, {
+            "model": {"default": "big-model", "provider": "my-llm"},
+            "providers": {
+                "my-llm": {
+                    "api": "http://localhost:11434/v1",
+                },
+            },
+        })
+        from agent.auxiliary_client import _resolve_auto
+        client, model = _resolve_auto()
+        assert client is not None
+        assert model == "big-model"
+
+    def test_auto_standard_provider_uses_main_model(self, tmp_path, monkeypatch):
+        """Standard provider (not named custom): should use main model."""
+        _write_config(tmp_path, {
+            "model": {"default": "anthropic/claude-sonnet-4", "provider": "openrouter"},
+        })
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        from agent.auxiliary_client import _resolve_auto
+        client, model = _resolve_auto()
+        assert client is not None
+        assert model == "anthropic/claude-sonnet-4"

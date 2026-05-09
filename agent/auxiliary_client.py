@@ -2045,6 +2045,13 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     # on aggregators (OpenRouter, Nous) who previously got routed to a
     # cheap provider-side default.  Explicit per-task overrides set via
     # config.yaml (auxiliary.<task>.provider) still win over this.
+    #
+    # For named custom providers (defined in providers: dict or
+    # custom_providers: list), prefer the provider's own default_model
+    # over the main chat model.  Auxiliary tasks (compression, session
+    # search, title generation, …) don't need the user's heavyweight
+    # main model — the provider's lighter default_model is the right
+    # choice.  See hermes-agent#22317.
     main_provider = runtime_provider or _read_main_provider()
     main_model = runtime_model or _read_main_model()
     if (main_provider and main_model
@@ -2056,17 +2063,28 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        # For named custom providers, prefer the provider's default_model
+        # over the main chat model for auxiliary tasks.
+        aux_model = main_model
+        if not explicit_base_url:
+            try:
+                from hermes_cli.runtime_provider import _get_named_custom_provider
+                _ncp = _get_named_custom_provider(resolved_provider)
+                if _ncp and _ncp.get("model"):
+                    aux_model = _ncp["model"]
+            except (ImportError, Exception):
+                pass
         client, resolved = resolve_provider_client(
             resolved_provider,
-            main_model,
+            aux_model,
             explicit_base_url=explicit_base_url,
             explicit_api_key=explicit_api_key,
             api_mode=runtime_api_mode or None,
         )
         if client is not None:
             logger.info("Auxiliary auto-detect: using main provider %s (%s)",
-                        main_provider, resolved or main_model)
-            return client, resolved or main_model
+                        main_provider, resolved or aux_model)
+            return client, resolved or aux_model
 
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []

@@ -31,6 +31,8 @@ The user says any of:
 
 Pick `realtime` only when the user actually wants the agent to speak. It costs real money (OpenAI Realtime is pay-per-audio-minute) and requires a virtual audio device set up on the machine running the bot.
 
+Realtime mode connects to the OpenAI Realtime API. The model is configurable via `HERMES_MEET_REALTIME_MODEL` (default `gpt-realtime`). Set it to `gpt-realtime-2` for the GPT-5-class voice model, or pin to the snapshot `gpt-realtime-2025-08-28` for stable behavior. See `plugins/google_meet/README.md` for the full env-var table.
+
 ## Two locations
 
 | Location | When |

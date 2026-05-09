@@ -109,7 +109,30 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+    """Return the kernel start time for a process when available.
+
+    Prefers :mod:`psutil` so the call works on macOS and Windows in
+    addition to Linux.  Returns microseconds-since-epoch on the psutil
+    path; falls back to the historical Linux ``/proc/<pid>/stat`` clock
+    ticks if psutil is somehow unavailable.
+
+    Callers compare the value verbatim against the value previously
+    stored in a lock file written by the same process tree, so the
+    unit only needs to be stable per-PID across two reads — both
+    implementations satisfy that invariant.
+
+    Without this cross-platform path, ``/proc`` returned ``None`` on
+    macOS/Windows, which silently disabled PID-reuse detection for
+    stale gateway lock files (#21596) — `--replace` was a no-op once
+    the OS recycled a recorded PID.
+    """
+    try:
+        import psutil  # type: ignore
+        return int(psutil.Process(int(pid)).create_time() * 1_000_000)
+    except ImportError:
+        pass
+    except Exception:
+        return None
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).

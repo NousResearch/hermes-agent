@@ -787,3 +787,25 @@ class TestPlannedStopMarker:
         ok = status.write_planned_stop_marker(target_pid=12345)
 
         assert ok is False
+
+
+class TestGetProcessStartTimeCrossPlatform:
+    """Regression for #21596 — _get_process_start_time must work on macOS/Windows.
+
+    The previous implementation read /proc/<pid>/stat only.  On non-Linux
+    platforms it returned None, so PID-reuse detection in stale gateway
+    lock cleanup silently never fired and `--replace` became a no-op once
+    the OS recycled a recorded PID.
+    """
+
+    def test_returns_non_none_for_current_process_on_any_platform(self):
+        result = status._get_process_start_time(os.getpid())
+        assert result is not None
+        assert isinstance(result, int)
+        assert result > 0
+
+    def test_returns_none_for_nonexistent_pid(self):
+        # Maximum 32-bit PID — won't exist on any real system.  psutil
+        # raises NoSuchProcess; the function must swallow and return None.
+        result = status._get_process_start_time(2**31 - 1)
+        assert result is None

@@ -11127,7 +11127,29 @@ class AIAgent:
         # recover the todo state from the most recent todo tool response in history)
         if conversation_history and not self._todo_store.has_items():
             self._hydrate_todo_store(conversation_history)
-        
+
+        # Hydrate per-session nudge counters from persisted history.
+        # Gateway creates a fresh AIAgent per inbound message (cache miss /
+        # 1h idle eviction / config-signature mismatch / process restart), so
+        # _turns_since_memory and _user_turn_count start at 0 every turn and
+        # the memory.nudge_interval trigger may never be reached. Reconstruct
+        # an effective count from prior user turns in conversation_history.
+        # Idempotent: a cached agent that already accumulated counters keeps
+        # them; only a freshly-built agent with empty in-memory state hydrates.
+        # See issue #22357.
+        if conversation_history and self._user_turn_count == 0:
+            prior_user_turns = sum(
+                1 for m in conversation_history if m.get("role") == "user"
+            )
+            if prior_user_turns > 0:
+                self._user_turn_count = prior_user_turns
+                if self._memory_nudge_interval > 0 and self._turns_since_memory == 0:
+                    # % preserves original 1-in-N cadence rather than firing a
+                    # review immediately on resume (which would surprise users
+                    # whose session happened to land just past a multiple of N).
+                    self._turns_since_memory = prior_user_turns % self._memory_nudge_interval
+
+
         # Prefill messages (few-shot priming) are injected at API-call time only,
         # never stored in the messages list. This keeps them ephemeral: they won't
         # be saved to session DB, session logs, or batch trajectories, but they're

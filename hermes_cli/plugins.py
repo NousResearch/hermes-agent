@@ -22,8 +22,8 @@ Each directory plugin must contain a ``plugin.yaml`` manifest **and** an
 Lifecycle hooks
 ---------------
 Plugins may register callbacks for any of the hooks in ``VALID_HOOKS``.
-The agent core calls ``invoke_hook(name, **kwargs)`` at the appropriate
-points.
+The agent core calls ``invoke_hook(name, **kwargs)`` or
+``await invoke_hook_async(name, **kwargs)`` at the appropriate points.
 
 Tool registration
 -----------------
@@ -1192,6 +1192,31 @@ class PluginManager:
                 )
         return results
 
+    async def invoke_hook_async(self, hook_name: str, **kwargs: Any) -> List[Any]:
+        """Call registered callbacks for *hook_name*, awaiting async callbacks.
+
+        This mirrors ``invoke_hook`` but lets async gateway paths run
+        subprocess/IO-heavy plugin hooks without blocking the event loop.
+        Synchronous callbacks remain supported.
+        """
+        callbacks = self._hooks.get(hook_name, [])
+        results: List[Any] = []
+        for cb in callbacks:
+            try:
+                ret = cb(**kwargs)
+                if inspect.isawaitable(ret):
+                    ret = await ret
+                if ret is not None:
+                    results.append(ret)
+            except Exception as exc:
+                logger.warning(
+                    "Async hook '%s' callback %s raised: %s",
+                    hook_name,
+                    getattr(cb, "__name__", repr(cb)),
+                    exc,
+                )
+        return results
+
     # -----------------------------------------------------------------------
     # Introspection
     # -----------------------------------------------------------------------
@@ -1270,6 +1295,11 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+async def invoke_hook_async(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Invoke a lifecycle hook and await async plugin callbacks."""
+    return await get_plugin_manager().invoke_hook_async(hook_name, **kwargs)
 
 
 

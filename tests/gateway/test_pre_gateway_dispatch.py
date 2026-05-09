@@ -65,12 +65,12 @@ async def test_hook_skip_short_circuits_dispatch(monkeypatch):
     """A plugin returning {'action': 'skip'} drops the message before auth."""
     _clear_auth_env(monkeypatch)
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
             return [{"action": "skip", "reason": "plugin-handled"}]
         return []
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, adapter = _make_runner(Platform.WHATSAPP)
 
@@ -86,12 +86,12 @@ async def test_hook_respond_short_circuits_dispatch_before_auth(monkeypatch):
     """A trusted plugin can respond before auth/pairing and agent dispatch."""
     _clear_auth_env(monkeypatch)
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
             return [{"action": "respond", "response": "plugin response"}]
         return []
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, adapter = _make_runner(Platform.WHATSAPP)
 
@@ -110,7 +110,7 @@ async def test_hook_rewrite_replaces_event_text(monkeypatch):
 
     seen_text = {}
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
             return [{"action": "rewrite", "text": "REWRITTEN"}]
         return []
@@ -119,7 +119,7 @@ async def test_hook_rewrite_replaces_event_text(monkeypatch):
         seen_text["value"] = event.text
         return "ok"
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, _adapter = _make_runner(Platform.WHATSAPP)
     runner._handle_message_with_agent = _capture  # noqa: SLF001
@@ -136,12 +136,12 @@ async def test_hook_allow_falls_through_to_auth(monkeypatch):
     # No allowed users set → auth fails → pairing flow triggers.
     monkeypatch.delenv("WHATSAPP_ALLOWED_USERS", raising=False)
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
             return [{"action": "allow"}]
         return []
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, adapter = _make_runner(Platform.WHATSAPP)
     runner.pairing_store.generate_code.return_value = "12345"
@@ -159,10 +159,10 @@ async def test_hook_exception_does_not_break_dispatch(monkeypatch):
     _clear_auth_env(monkeypatch)
     monkeypatch.delenv("WHATSAPP_ALLOWED_USERS", raising=False)
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         raise RuntimeError("plugin blew up")
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, _adapter = _make_runner(Platform.WHATSAPP)
     runner.pairing_store.generate_code.return_value = None
@@ -180,14 +180,14 @@ async def test_internal_events_bypass_hook(monkeypatch):
 
     called = {"count": 0}
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         called["count"] += 1
         return [{"action": "skip"}]
 
     async def _capture(event, source, _quick_key, _run_generation):
         return "ok"
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, _adapter = _make_runner(Platform.WHATSAPP)
     runner._handle_message_with_agent = _capture  # noqa: SLF001

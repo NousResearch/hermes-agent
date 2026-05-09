@@ -361,6 +361,31 @@ class TestPluginHooks:
         assert len(results) == 1
         assert results[0] == {"action": "skip", "reason": "test"}
 
+    @pytest.mark.asyncio
+    async def test_invoke_hook_async_awaits_async_and_sync_callbacks(self):
+        """invoke_hook_async() awaits async callbacks and preserves sync hooks."""
+        mgr = PluginManager()
+
+        async def async_hook(**kwargs):
+            return {"action": "respond", "response": kwargs["event"]}
+
+        def sync_hook(**kwargs):
+            return {"action": "allow"}
+
+        mgr._hooks["pre_gateway_dispatch"] = [async_hook, sync_hook]
+
+        results = await mgr.invoke_hook_async(
+            "pre_gateway_dispatch",
+            event="async-response",
+            gateway=object(),
+            session_store=object(),
+        )
+
+        assert results == [
+            {"action": "respond", "response": "async-response"},
+            {"action": "allow"},
+        ]
+
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

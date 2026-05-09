@@ -5113,8 +5113,8 @@ class GatewayRunner:
         # without triggering the pairing flow.
         if not is_internal:
             try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _hook_results = _invoke_hook(
+                from hermes_cli.plugins import invoke_hook_async as _invoke_hook_async
+                _hook_results = await _invoke_hook_async(
                     "pre_gateway_dispatch",
                     event=event,
                     gateway=self,

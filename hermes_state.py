@@ -182,6 +182,17 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
         exc,
     )
 
+
+def _default_message_type(role: str) -> str:
+    """Default source/type label for messages when callers do not pass one."""
+    if role == "user":
+        return "real_user_prompt"
+    if role == "assistant":
+        return "model_assistant_content"
+    if role == "tool":
+        return "tool_result"
+    return "model"
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -233,7 +244,9 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
-    codex_message_items TEXT
+    codex_message_items TEXT,
+    message_type TEXT DEFAULT 'model',
+    continuity_frame TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -1442,6 +1455,8 @@ class SessionDB:
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
+        message_type: str = None,
+        continuity_frame: Any = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -1463,6 +1478,10 @@ class SessionDB:
             if codex_message_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        continuity_frame_json = (
+            json.dumps(continuity_frame) if continuity_frame else None
+        )
+        stored_message_type = message_type or _default_message_type(role)
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -1477,8 +1496,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, message_type, continuity_frame)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -1494,6 +1513,8 @@ class SessionDB:
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
+                    stored_message_type,
+                    continuity_frame_json,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -1555,13 +1576,18 @@ class SessionDB:
                     json.dumps(codex_message_items) if codex_message_items else None
                 )
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                continuity_frame_json = (
+                    json.dumps(msg.get("continuity_frame"))
+                    if msg.get("continuity_frame") else None
+                )
+                stored_message_type = msg.get("message_type") or _default_message_type(role)
 
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, message_type, continuity_frame)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -1577,6 +1603,8 @@ class SessionDB:
                         reasoning_details_json,
                         codex_items_json,
                         codex_message_items_json,
+                        stored_message_type,
+                        continuity_frame_json,
                     ),
                 )
                 total_messages += 1
@@ -1612,6 +1640,12 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
                     msg["tool_calls"] = []
+            if msg.get("continuity_frame"):
+                try:
+                    msg["continuity_frame"] = json.loads(msg["continuity_frame"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to deserialize continuity_frame in get_messages")
+                    msg["continuity_frame"] = None
             result.append(msg)
         return result
 
@@ -2835,4 +2869,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

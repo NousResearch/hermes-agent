@@ -1857,6 +1857,10 @@ class AIAgent:
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
+        self._compressed_this_turn = False
+        self._last_compression_task_frame = None
+        self._post_compression_task_conflict = None
+        self._current_real_user_message = ""
         
         # Load config once for memory, skills, and compression sections
         try:
@@ -4232,6 +4236,8 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    message_type=msg.get("message_type"),
+                    continuity_frame=msg.get("continuity_frame"),
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
@@ -9682,6 +9688,17 @@ class AIAgent:
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
             focus_topic,
         )
+        self._compressed_this_turn = True
+        try:
+            from agent.task_continuity import capture_current_task_frame
+            self._last_compression_task_frame = capture_current_task_frame(
+                messages,
+                current_todo_items=self._todo_store.read(),
+                compression_count=getattr(self.context_compressor, "compression_count", 0),
+                latest_real_user_message=getattr(self, "_current_real_user_message", ""),
+            )
+        except Exception as exc:
+            logger.debug("task-continuity frame capture failed: %s", exc)
 
         # Notify external memory provider before compression discards context
         if self._memory_manager:
@@ -9725,7 +9742,11 @@ class AIAgent:
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
+            compressed.append({
+                "role": "user",
+                "content": todo_snapshot,
+                "message_type": "preserved_task_list",
+            })
 
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
@@ -9835,6 +9856,54 @@ class AIAgent:
             f"{_compressed_est:,}",
         )
         return compressed, new_system_prompt
+
+    def _record_post_compression_task_conflict(
+        self,
+        messages: list,
+        *,
+        latest_real_user_message: str,
+        extra_structured_context: str = "",
+    ) -> None:
+        """Capture a pending no-tool continuity block after compression drift."""
+        self._post_compression_task_conflict = None
+        if not getattr(self, "_compressed_this_turn", False):
+            return
+        frame = getattr(self, "_last_compression_task_frame", None)
+        if frame is None:
+            return
+        try:
+            from agent.task_continuity import classify_message_type, detect_task_state_conflict
+
+            structured_contexts = []
+            background_notifications = []
+            for msg in messages or []:
+                kind = classify_message_type(msg) if isinstance(msg, dict) else ""
+                content = msg.get("content", "") if isinstance(msg, dict) else ""
+                if not isinstance(content, str):
+                    content = str(content)
+                if kind == "structured_context_injection" and content:
+                    structured_contexts.append(content)
+                elif kind == "background_process_notification" and content:
+                    background_notifications.append(content)
+            if extra_structured_context:
+                structured_contexts.append(str(extra_structured_context))
+
+            conflict = detect_task_state_conflict(
+                frame,
+                latest_real_user_message=latest_real_user_message or "",
+                preserved_active_task_list=self._todo_store.read(),
+                structured_context="\n\n".join(structured_contexts),
+                background_notifications=background_notifications,
+            )
+            if conflict.should_block_tools:
+                self._post_compression_task_conflict = conflict
+        except Exception as exc:
+            logger.debug("task-continuity conflict detection failed: %s", exc)
+
+    def _pop_post_compression_task_conflict(self):
+        conflict = getattr(self, "_post_compression_task_conflict", None)
+        self._post_compression_task_conflict = None
+        return conflict
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
@@ -11243,8 +11312,14 @@ class AIAgent:
         # be saved to session DB, session logs, or batch trajectories, but they're
         # automatically re-applied on every API call (including session continuations).
         
+        # Preserve the original user message (no nudge injection).
+        original_user_message = persist_user_message if persist_user_message is not None else user_message
+
         # Track user turns for memory flush and periodic nudge logic
         self._user_turn_count += 1
+        self._compressed_this_turn = False
+        self._post_compression_task_conflict = None
+        self._current_real_user_message = original_user_message if isinstance(original_user_message, str) else ""
 
         # Reset the streaming context scrubber at the top of each turn so a
         # hung span from a prior interrupted stream can't taint this turn's
@@ -11257,9 +11332,6 @@ class AIAgent:
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         if think_scrubber is not None:
             think_scrubber.reset()
-
-        # Preserve the original user message (no nudge injection).
-        original_user_message = persist_user_message if persist_user_message is not None else user_message
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on
@@ -11274,7 +11346,19 @@ class AIAgent:
                 self._turns_since_memory = 0
 
         # Add user message
-        user_msg = {"role": "user", "content": user_message}
+        user_msg = {"role": "user", "content": user_message, "message_type": "real_user_prompt"}
+        try:
+            from agent.task_continuity import capture_current_task_frame, task_frame_to_dict
+            user_msg["continuity_frame"] = task_frame_to_dict(
+                capture_current_task_frame(
+                    messages + [user_msg],
+                    current_todo_items=self._todo_store.read(),
+                    compression_count=getattr(self.context_compressor, "compression_count", 0),
+                    latest_real_user_message=original_user_message if isinstance(original_user_message, str) else "",
+                )
+            )
+        except Exception as exc:
+            logger.debug("task-continuity turn ledger capture failed: %s", exc)
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
@@ -11438,6 +11522,12 @@ class AIAgent:
                 _plugin_user_context = "\n\n".join(_ctx_parts)
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
+
+        self._record_post_compression_task_conflict(
+            messages,
+            latest_real_user_message=original_user_message if isinstance(original_user_message, str) else "",
+            extra_structured_context=_plugin_user_context,
+        )
 
         # Main conversation loop
         api_call_count = 0
@@ -11666,6 +11756,10 @@ class AIAgent:
                 # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
                 if "finish_reason" in api_msg:
                     api_msg.pop("finish_reason")
+                # Strip internal source/type marker — session persistence uses it,
+                # provider APIs must not see it.
+                api_msg.pop("message_type", None)
+                api_msg.pop("continuity_frame", None)
                 # Strip internal thinking-prefill marker
                 api_msg.pop("_thinking_prefill", None)
                 # Strip Codex Responses API fields (call_id, response_item_id) for
@@ -13142,6 +13236,10 @@ class AIAgent:
                                 approx_tokens=approx_tokens,
                                 task_id=effective_task_id,
                             )
+                            self._record_post_compression_task_conflict(
+                                messages,
+                                latest_real_user_message=original_user_message if isinstance(original_user_message, str) else "",
+                            )
                             # Compression created a new session — clear history
                             # so _flush_messages_to_session_db writes compressed
                             # messages to the new session, not skipping them.
@@ -13274,6 +13372,10 @@ class AIAgent:
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,
                             task_id=effective_task_id,
+                        )
+                        self._record_post_compression_task_conflict(
+                            messages,
+                            latest_real_user_message=original_user_message if isinstance(original_user_message, str) else "",
                         )
                         # Compression created a new session — clear history
                         # so _flush_messages_to_session_db writes compressed
@@ -13431,6 +13533,10 @@ class AIAgent:
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,
                             task_id=effective_task_id,
+                        )
+                        self._record_post_compression_task_conflict(
+                            messages,
+                            latest_real_user_message=original_user_message if isinstance(original_user_message, str) else "",
                         )
                         # Compression created a new session — clear history
                         # so _flush_messages_to_session_db writes compressed
@@ -14118,6 +14224,19 @@ class AIAgent:
                     # a LATER tool round.
                     self._post_tool_empty_retried = False
 
+                    continuity_conflict = self._pop_post_compression_task_conflict()
+                    if continuity_conflict is not None:
+                        from agent.task_continuity import format_continuity_check_response
+                        _turn_exit_reason = "task_continuity_check"
+                        final_response = format_continuity_check_response(continuity_conflict)
+                        self._emit_status("⚠️ Post-compression task conflict detected — blocked tool execution")
+                        messages.append({
+                            "role": "assistant",
+                            "content": final_response,
+                            "message_type": "model_assistant_content",
+                        })
+                        break
+
                     messages.append(assistant_msg)
                     self._emit_interim_assistant_message(assistant_msg)
 
@@ -14202,6 +14321,10 @@ class AIAgent:
                             messages, system_message,
                             approx_tokens=self.context_compressor.last_prompt_tokens,
                             task_id=effective_task_id,
+                        )
+                        self._record_post_compression_task_conflict(
+                            messages,
+                            latest_real_user_message=original_user_message if isinstance(original_user_message, str) else "",
                         )
                         # Compression created a new session — clear history so
                         # _flush_messages_to_session_db writes compressed messages

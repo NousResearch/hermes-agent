@@ -56,10 +56,12 @@ hermes auth add minimax-oauth
 
 ### China region
 
-If your account is on the China platform (`minimaxi.com`), pass `--region cn`:
+If your account is on the China platform (`minimaxi.com`), use the China-region OAuth provider id `minimax-cn` instead, or skip OAuth and configure `MINIMAX_CN_API_KEY` / `MINIMAX_CN_BASE_URL` directly. The `--region cn` flag described in older docs is **not** wired through the CLI's argument parser; use the `minimax-cn` provider instead:
 
 ```bash
-hermes auth add minimax-oauth --region cn
+hermes auth add minimax-cn --type oauth   # if OAuth is supported on your CN account
+# or simpler:
+echo 'MINIMAX_CN_API_KEY=your-key' >> ~/.hermes/.env
 ```
 
 ### Remote / headless sessions
@@ -128,12 +130,12 @@ model:
   base_url: https://api.minimax.io/anthropic
 ```
 
-### `--region` flag
+### Region endpoints
 
-| Value | Portal | Inference endpoint |
-|-------|--------|-------------------|
-| `global` (default) | `https://api.minimax.io` | `https://api.minimax.io/anthropic` |
-| `cn` | `https://api.minimaxi.com` | `https://api.minimaxi.com/anthropic` |
+| Provider id | Portal | Inference endpoint |
+|-------------|--------|-------------------|
+| `minimax-oauth` (global) | `https://api.minimax.io` | `https://api.minimax.io/anthropic` |
+| `minimax-cn` (China) | `https://api.minimaxi.com` | `https://api.minimaxi.com/anthropic` |
 
 ### Provider aliases
 

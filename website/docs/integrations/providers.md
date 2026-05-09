@@ -378,8 +378,8 @@ bedrock:
   # profile: "myprofile"       # or set AWS_PROFILE
   # discovery: true            # auto-discover region from IAM
   # guardrail:                 # optional Bedrock Guardrails
-  #   id: "your-guardrail-id"
-  #   version: "DRAFT"
+  #   guardrail_identifier: "your-guardrail-id"
+  #   guardrail_version: "DRAFT"
 ```
 
 Authentication uses the standard boto3 chain: explicit `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE` from `~/.aws/credentials`, IAM role on EC2/ECS/Lambda, IMDS, or SSO. No env var is required if you're already authenticated with the AWS CLI.
@@ -484,7 +484,7 @@ For on-prem deployments (DGX Spark, local GPU), set `NVIDIA_BASE_URL=http://loca
 
 ### GMI Cloud
 
-Open and reasoning models via [GMI Cloud](https://inference.gmi.ai) — OpenAI-compatible API, API key authentication.
+Open and reasoning models via [GMI Cloud](https://www.gmicloud.ai/) — OpenAI-compatible API, API key authentication.
 
 ```bash
 # GMI Cloud
@@ -499,7 +499,7 @@ model:
   default: "deepseek-ai/DeepSeek-R1"
 ```
 
-The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi.ai/v1`).
+The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-serving.com/v1`).
 
 ### StepFun
 
@@ -1393,24 +1393,34 @@ Notes:
 - See OpenRouter's [Pareto Router docs](https://openrouter.ai/docs/guides/routing/routers/pareto-router) for the full router behavior.
 - To use the Pareto Code router for a specific **auxiliary task** (compression, vision, etc.) instead of the main agent, set `extra_body.plugins` under that task — see [Auxiliary Models → OpenRouter routing & Pareto Code for auxiliary tasks](/docs/user-guide/configuration#openrouter-routing--pareto-code-for-auxiliary-tasks).
 
-## Fallback Model
+## Fallback Providers
 
-Configure a backup provider:model that Hermes switches to automatically when your primary model fails (rate limits, server errors, auth failures):
+Configure a chain of backup providers Hermes tries in order when the primary model fails (rate limits, server errors, auth failures). The canonical format is a top-level `fallback_providers:` list:
+
+```yaml
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
+  - provider: anthropic
+    model: claude-sonnet-4
+    # base_url: http://localhost:8000/v1    # optional, for custom endpoints
+    # api_mode: chat_completions           # optional override
+```
+
+The legacy single-pair `fallback_model:` dict is still accepted for back-compat:
 
 ```yaml
 fallback_model:
-  provider: openrouter                    # required
-  model: anthropic/claude-sonnet-4        # required
-  # base_url: http://localhost:8000/v1    # optional, for custom endpoints
-  # key_env: MY_CUSTOM_KEY               # optional, env var name for custom endpoint API key
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
 ```
 
-When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
+When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `alibaba`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
-Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
+Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
 :::
 
 ---

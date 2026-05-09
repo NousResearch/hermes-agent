@@ -108,7 +108,7 @@ hermes gateway
 You should see:
 
 ```
-[sms] Twilio webhook server listening on 0.0.0.0:8080, from: +1555***4567
+[sms] Twilio webhook server listening on 127.0.0.1:8080, from: +1555***4567
 ```
 
 If you see `Refusing to start: SMS_WEBHOOK_URL is required`, set `SMS_WEBHOOK_URL` to the public URL configured in your Twilio Console (see Step 3).

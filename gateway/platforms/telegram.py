@@ -320,11 +320,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
         # Notification mode for message sends.
-        # "all"      — every message triggers a push notification (default).
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
         #               messages are delivered silently via disable_notification.
-        self._notifications_mode: str = "all"
+        #               This is the default — Telegram users found per-tool-call
+        #               push notifications too noisy.
+        # "all"       — every message triggers a push notification (legacy
+        #               behavior; opt-in via display.platforms.telegram.notifications).
+        self._notifications_mode: str = "important"
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -335,7 +338,7 @@ class TelegramAdapter(BasePlatformAdapter):
         (disable_notification=True) unless the caller explicitly requests a
         notification by setting ``metadata["notify"] = True``.
         """
-        if getattr(self, "_notifications_mode", "all") != "important":
+        if getattr(self, "_notifications_mode", "important") != "important":
             return {}
         if (metadata or {}).get("notify"):
             return {}

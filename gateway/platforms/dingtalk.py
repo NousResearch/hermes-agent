@@ -916,6 +916,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """DingTalk webhook replies cannot send local image files directly."""
@@ -934,6 +935,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """DingTalk webhook replies cannot send local file attachments directly."""

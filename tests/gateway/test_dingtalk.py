@@ -256,7 +256,7 @@ class TestSend:
         result = await adapter.send_image_file("chat-123", "/tmp/demo.png")
 
         assert result.success is False
-        assert "do not support local image uploads" in result.error
+        assert result.error and "do not support local image uploads" in result.error
 
     @pytest.mark.asyncio
     async def test_send_document_returns_explicit_unsupported_error(self):
@@ -266,7 +266,7 @@ class TestSend:
         result = await adapter.send_document("chat-123", "/tmp/demo.pdf")
 
         assert result.success is False
-        assert "do not support local file attachments" in result.error
+        assert result.error and "do not support local file attachments" in result.error
 
 
 # ---------------------------------------------------------------------------

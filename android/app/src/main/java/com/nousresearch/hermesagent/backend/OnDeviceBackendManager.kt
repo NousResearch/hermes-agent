@@ -248,7 +248,9 @@ object OnDeviceBackendManager {
 
     private fun LocalModelDownloadRecord.supportsImageInput(): Boolean {
         val lower = modelIdentityText()
-        return "gemma-3n" in lower ||
+        return "gemma-4" in lower ||
+            "gemma4" in lower ||
+            "gemma-3n" in lower ||
             "gemma3-4b" in lower ||
             "gemma-3-4b" in lower ||
             "vision" in lower ||
@@ -257,7 +259,7 @@ object OnDeviceBackendManager {
 
     private fun LocalModelDownloadRecord.supportsAudioInput(): Boolean {
         val lower = modelIdentityText()
-        return "gemma-3n" in lower || "audio" in lower
+        return "gemma-4" in lower || "gemma4" in lower || "gemma-3n" in lower || "audio" in lower
     }
 
     private fun LocalModelDownloadRecord.modelIdentityText(): String {

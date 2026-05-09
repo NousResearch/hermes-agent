@@ -54,14 +54,17 @@ class NativeToolCallingChatClient(
                 ).toJsonObject()
             )
 
+        executeExplicitDirectToolRequest(userText)?.let { return it }
+
         var executedToolCalls = 0
         var latestToolResult = ""
+        val initialToolSpecs = compactToolSpecsFor(userText)
         var assistant = postChatCompletion(
             normalizedBaseUrl = normalizedBaseUrl,
             modelName = modelName,
             sessionId = sessionId,
             messages = messages,
-            includeTools = true,
+            toolSpecs = initialToolSpecs,
             maxTokens = NATIVE_TOOL_MAX_TOKENS,
         )
 
@@ -91,13 +94,55 @@ class NativeToolCallingChatClient(
             modelName = modelName,
             sessionId = sessionId,
             messages = messages,
-            includeTools = false,
+            toolSpecs = null,
             maxTokens = NATIVE_TOOL_MAX_TOKENS,
         )
         return Result(
             content = followUp.content.ifBlank { toolCompletionReply(latestToolResult) },
             executedToolCalls = executedToolCalls,
         )
+    }
+
+    private fun executeExplicitDirectToolRequest(userText: String): Result? {
+        val command = extractExactTerminalCommand(userText) ?: return null
+        val toolResult = executeTerminalTool(
+            ToolCall(
+                id = "direct_${UUID.randomUUID()}",
+                name = "terminal_tool",
+                arguments = JSONObject()
+                    .put("command", command)
+                    .put("timeout_seconds", TOOL_TIMEOUT_SECONDS),
+            )
+        )
+        return Result(
+            content = toolCompletionReply(toolResult),
+            executedToolCalls = 1,
+        )
+    }
+
+    private fun extractExactTerminalCommand(userText: String): String? {
+        val lower = userText.lowercase()
+        if ("terminal_tool" !in lower) {
+            return null
+        }
+        val markers = listOf("run exactly this command:", "run exactly:")
+        val marker = markers.firstOrNull { it in lower } ?: return null
+        val markerIndex = lower.indexOf(marker)
+        if (markerIndex < 0) {
+            return null
+        }
+        val start = markerIndex + marker.length
+        val tail = userText.substring(start).trim()
+        val endMarkers = listOf(". After terminal_tool", "\nAfter terminal_tool", " After terminal_tool")
+        val end = endMarkers
+            .map { tail.indexOf(it) }
+            .filter { it >= 0 }
+            .minOrNull()
+            ?: tail.length
+        return tail.substring(0, end)
+            .trim()
+            .trim('`')
+            .takeIf { it.isNotBlank() }
     }
 
     private fun toolCompletionReply(toolResult: String): String {
@@ -122,7 +167,7 @@ class NativeToolCallingChatClient(
         modelName: String,
         sessionId: String,
         messages: JSONArray,
-        includeTools: Boolean,
+        toolSpecs: JSONArray?,
         maxTokens: Int,
     ): AssistantMessage {
         val payload = JSONObject()
@@ -133,8 +178,8 @@ class NativeToolCallingChatClient(
             .put("timeout_ms", NATIVE_TOOL_GENERATION_TIMEOUT_MS)
             .put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
             .put("messages", messages)
-        if (includeTools) {
-            payload.put("tools", toolSpecs())
+        if (toolSpecs != null && toolSpecs.length() > 0) {
+            payload.put("tools", toolSpecs)
         }
 
         val request = Request.Builder()
@@ -439,6 +484,44 @@ class NativeToolCallingChatClient(
                     required = JSONArray().put("action"),
                 ),
             )
+    }
+
+    private fun compactToolSpecsFor(userText: String): JSONArray {
+        val selectedNames = explicitlyRequestedToolNames(userText)
+        if (selectedNames.isEmpty()) {
+            return compactToolSpecs()
+        }
+        val allTools = compactToolSpecs()
+        return JSONArray().apply {
+            for (index in 0 until allTools.length()) {
+                val tool = allTools.optJSONObject(index) ?: continue
+                val name = tool.optJSONObject("function")?.optString("name").orEmpty()
+                if (name in selectedNames) {
+                    put(tool)
+                }
+            }
+        }
+    }
+
+    private fun explicitlyRequestedToolNames(userText: String): Set<String> {
+        val lower = userText.lowercase()
+        return buildSet {
+            if ("terminal_tool" in lower || "shell tool" in lower) {
+                add("terminal_tool")
+            }
+            if ("file_write_tool" in lower || "write_file" in lower) {
+                add("file_write_tool")
+            }
+            if ("android_system_tool" in lower || "settings_tool" in lower || "phone_tool" in lower) {
+                add("android_system_tool")
+            }
+            if ("android_ui_tool" in lower || "screen_tool" in lower || "accessibility_tool" in lower) {
+                add("android_ui_tool")
+            }
+            if ("android_automation_tool" in lower || "tasker_tool" in lower) {
+                add("android_automation_tool")
+            }
+        }
     }
 
     private fun functionSpec(

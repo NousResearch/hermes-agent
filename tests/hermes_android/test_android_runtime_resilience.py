@@ -33,7 +33,7 @@ def test_android_boot_and_chat_paths_guard_local_backend_failures_instead_of_cra
     assert 'client.streamChatCompletion(' in chat_view_model
     assert 'error.message ?: error.javaClass.simpleName' in chat_view_model
 
-    assert "includeTools = false" in native_tool_client
+    assert "toolSpecs = null" in native_tool_client
     assert "followUp.content.ifBlank { toolCompletionReply(latestToolResult) }" in native_tool_client
 
     assert 'internal fun parseStream(' in sse_client
@@ -53,7 +53,8 @@ def test_android_chat_ui_and_native_tool_prompt_stay_compact_on_large_font_phone
     assert 'TextOverflow.Ellipsis' in chat_screen
     assert 'softWrap = false' in app_shell
     assert 'style = MaterialTheme.typography.labelSmall' in app_shell
-    assert 'return compactToolSpecs()' in native_tool_client
+    assert 'compactToolSpecsFor(userText)' in native_tool_client
+    assert 'explicitlyRequestedToolNames(userText)' in native_tool_client
     assert 'formatNativeChatError' in native_tool_client
     assert 'The local model ran out of context' in native_tool_client
     assert 'Native chat request failed: ${response.code} $body' not in native_tool_client

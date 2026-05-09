@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.util.Base64
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Capabilities
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
@@ -241,9 +242,9 @@ object LiteRtLmOpenAiProxy {
             supportAudio: Boolean,
         ): EngineInitResult {
             var lastError: Throwable? = null
-            val enableSpeculativeDecoding = shouldEnableSpeculativeDecoding(modelPath)
-            ExperimentalFlags.enableSpeculativeDecoding = enableSpeculativeDecoding
             val openClAvailable = hasLoadableOpenClLibrary()
+            val enableSpeculativeDecoding = shouldEnableSpeculativeDecoding(modelPath, openClAvailable)
+            ExperimentalFlags.enableSpeculativeDecoding = enableSpeculativeDecoding
             val backends = if (isTranslatedArm64OnX86(context) || !openClAvailable) {
                 listOf(Backend.CPU() to "cpu")
             } else {
@@ -291,8 +292,17 @@ object LiteRtLmOpenAiProxy {
             throw lastError ?: IllegalStateException("LiteRT-LM engine initialization failed")
         }
 
-        private fun shouldEnableSpeculativeDecoding(modelPath: String): Boolean {
-            return File(modelPath).name.lowercase(Locale.US).contains("gemma-4")
+        private fun shouldEnableSpeculativeDecoding(modelPath: String, openClAvailable: Boolean): Boolean {
+            if (!openClAvailable || Build.SUPPORTED_ABIS.any { it.startsWith("x86") }) {
+                return false
+            }
+            return runCatching {
+                Capabilities(modelPath).use { capabilities ->
+                    capabilities.hasSpeculativeDecodingSupport()
+                }
+            }.getOrElse {
+                File(modelPath).name.lowercase(Locale.US).contains("gemma-4")
+            }
         }
 
         private fun isTranslatedArm64OnX86(context: Context): Boolean {
@@ -350,6 +360,7 @@ object LiteRtLmOpenAiProxy {
                 )
             val initialMessages = if (mappedMessages.size > 1) mappedMessages.dropLast(1) else emptyList()
             val toolProviders = buildToolProviders(requestJson.optJSONArray("tools"))
+            val extraContext = chatTemplateExtraContext(requestJson)
             val conversation = engine.createConversation(
                 ConversationConfig(
                     systemInstruction = systemInstruction,
@@ -364,6 +375,7 @@ object LiteRtLmOpenAiProxy {
                     conversation = convo,
                     promptMessage = promptMessage,
                     timeoutMs = generationTimeoutMs(requestJson),
+                    extraContext = extraContext,
                 )
                 return if (requestJson.optBoolean("stream", false)) {
                     sseResponse(payload)
@@ -377,11 +389,12 @@ object LiteRtLmOpenAiProxy {
             conversation: Conversation,
             promptMessage: Message,
             timeoutMs: Long,
+            extraContext: Map<String, Any>,
         ): JSONObject {
             val executor = Executors.newSingleThreadExecutor()
             return try {
                 val future = executor.submit<Message> {
-                    conversation.sendMessage(promptMessage, emptyMap())
+                    conversation.sendMessage(promptMessage, extraContext)
                 }
                 val responseMessage = try {
                     future.get(timeoutMs, TimeUnit.MILLISECONDS)
@@ -397,6 +410,19 @@ object LiteRtLmOpenAiProxy {
                 )
             } finally {
                 executor.shutdownNow()
+            }
+        }
+
+        private fun chatTemplateExtraContext(requestJson: JSONObject): Map<String, Any> {
+            val contextJson = requestJson.optJSONObject("chat_template_kwargs")
+                ?: requestJson.optJSONObject("extra_context")
+                ?: return emptyMap()
+            return buildMap {
+                jsonObjectToMap(contextJson).forEach { (key, value) ->
+                    if (value != null) {
+                        put(key, value)
+                    }
+                }
             }
         }
 

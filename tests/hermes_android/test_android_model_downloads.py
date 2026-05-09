@@ -120,8 +120,9 @@ def test_litert_proxy_bounds_generation_with_executor_timeout_and_cancel():
     proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
 
     assert 'Executors.newSingleThreadExecutor()' in proxy
-    assert 'conversation.sendMessage(promptMessage, emptyMap())' in proxy
+    assert 'conversation.sendMessage(promptMessage, extraContext)' in proxy
     assert 'future.get(timeoutMs, TimeUnit.MILLISECONDS)' in proxy
+    assert 'chatTemplateExtraContext(requestJson)' in proxy
     assert 'generationTimeoutMs(requestJson)' in proxy
     assert 'conversation.cancelProcess()' in proxy
     assert 'executor.shutdownNow()' in proxy
@@ -159,6 +160,9 @@ def test_native_tool_loop_allows_long_file_generation_prompts():
     assert 'private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L' in native_client
     assert 'private const val NATIVE_TOOL_MAX_TOKENS = 512' in native_client
     assert 'toolCompletionReply(latestToolResult)' in native_client
+    assert 'executeExplicitDirectToolRequest(userText)' in native_client
+    assert 'extractExactTerminalCommand(userText)' in native_client
+    assert '"run exactly this command:"' in native_client
 
 
 def test_native_tool_loop_has_structured_file_write_tool():

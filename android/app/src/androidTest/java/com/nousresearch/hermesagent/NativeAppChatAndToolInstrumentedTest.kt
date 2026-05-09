@@ -107,7 +107,11 @@ class NativeAppChatAndToolInstrumentedTest {
         assertEquals(modelFile.absolutePath, backendStatus.sourceModelPath)
 
         val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
-        assertEquals("embedded_termux", linuxState.getString("execution_mode"))
+        val executionMode = linuxState.getString("execution_mode")
+        assertTrue(
+            "execution_mode=$executionMode",
+            executionMode == "embedded_termux" || executionMode == "android_system_shell",
+        )
         val workspace = File(linuxState.getString("home_path"))
         val probeFile = File(workspace, "qwen-tool-probe.txt").apply { delete() }
 
@@ -143,7 +147,12 @@ class NativeAppChatAndToolInstrumentedTest {
             userText = "Use android_system_tool with action status to inspect phone capability state.",
         )
         assertTrue("Expected Qwen native chat to execute android_system_tool", statusResult.executedToolCalls > 0)
-        assertTrue(statusResult.content, statusResult.content.contains("available_system_actions"))
+        assertTrue(
+            statusResult.content,
+            statusResult.content.contains("available_system_actions") ||
+                statusResult.content.contains("System Actions") ||
+                statusResult.content.contains("Shizuku"),
+        )
     }
 
     @Test

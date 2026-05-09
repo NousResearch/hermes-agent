@@ -426,6 +426,8 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
+        if "rev-parse" in joined and "origin/patched-main" in joined:
+            return SimpleNamespace(stdout="abc123\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
@@ -499,6 +501,26 @@ def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, 
     out = capsys.readouterr().out
     assert "fix/something" in out
     assert "switching to main" in out
+
+
+
+
+def test_cmd_update_preserves_patched_main_branch(monkeypatch, tmp_path, capsys):
+    """patched-main is a stable fork fleet branch and should not switch to main."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(current_branch="patched-main")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert ["git", "checkout", "main"] not in recorded
+    assert ["git", "rev-list", "HEAD..origin/patched-main", "--count"] in recorded
+    assert ["git", "pull", "--ff-only", "origin", "patched-main"] in recorded
+
+    out = capsys.readouterr().out
+    assert "Staying on patched-main" in out
 
 
 def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, capsys):

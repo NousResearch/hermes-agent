@@ -7152,21 +7152,36 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
-        # Always update against main
+        # Default updater behavior tracks main. For Kamell-style fork fleets,
+        # keep agents on a stable patched-main branch when that branch exists
+        # remotely instead of silently switching them back to unpatched main.
         branch = "main"
+        preserve_current_branch = False
+        if current_branch == "patched-main":
+            patched_remote = subprocess.run(
+                git_cmd + ["rev-parse", "--verify", "origin/patched-main"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if patched_remote.returncode == 0:
+                branch = "patched-main"
+                preserve_current_branch = True
+                print("  ✓ Staying on patched-main for fork patch updates")
 
         # If user is on a non-main branch or detached HEAD, switch to main
-        if current_branch != "main":
+        # unless this is the stable patched-main fleet branch.
+        if current_branch != branch and not preserve_current_branch:
             label = (
                 "detached HEAD"
                 if current_branch == "HEAD"
                 else f"branch '{current_branch}'"
             )
-            print(f"  ⚠ Currently on {label} — switching to main for update...")
+            print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
             subprocess.run(
-                git_cmd + ["checkout", "main"],
+                git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -7258,7 +7273,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
                     print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
+                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
                     )
                     sys.exit(1)
             update_succeeded = True

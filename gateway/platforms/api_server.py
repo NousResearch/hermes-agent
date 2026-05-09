@@ -254,6 +254,11 @@ _FILE_PART_TYPES = frozenset({"file", "input_file"})
 # Only success=true JSON results are unpacked.  Non-JSON results, failures,
 # and tools not in the whitelist emit the base {tool, toolCallId, status}
 # payload unchanged.
+#
+# Note: forwarded field values are sent verbatim in every SSE event.  Do
+# not whitelist fields that can carry large payloads (base64 blobs, long
+# text).  Keep forwarded values to identifier-sized data (URLs, IDs, short
+# tags).
 _TOOL_RESULT_FIELDS: dict[str, frozenset[str]] = {
     "image_generate": frozenset({"image"}),
 }
@@ -2782,6 +2787,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         parsed = None
                     if isinstance(parsed, dict) and parsed.get("success") is True:
                         for key in fields:
+                            if key in {"tool", "toolCallId", "status"}:
+                                continue  # never overwrite base payload keys
                             value = parsed.get(key)
                             if value is not None:
                                 payload[key] = value

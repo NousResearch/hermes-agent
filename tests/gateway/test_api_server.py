@@ -1623,7 +1623,6 @@ class TestChatCompletionsEndpoint:
     @pytest.mark.asyncio
     async def test_tool_complete_forwards_image_url(self, adapter):
         """image_generate completed events carry the ``image`` field when success=true."""
-        import asyncio
         import json as _json
 
         app = _create_app(adapter)
@@ -1681,7 +1680,6 @@ class TestChatCompletionsEndpoint:
     @pytest.mark.asyncio
     async def test_tool_complete_skips_result_on_failure(self, adapter):
         """Failed tool results are not forwarded."""
-        import asyncio
         import json as _json
 
         app = _create_app(adapter)
@@ -1738,7 +1736,6 @@ class TestChatCompletionsEndpoint:
     @pytest.mark.asyncio
     async def test_tool_complete_skips_non_json_results(self, adapter):
         """Non-JSON tool results don't crash the completed event."""
-        import asyncio
         import json as _json
 
         app = _create_app(adapter)
@@ -1794,7 +1791,6 @@ class TestChatCompletionsEndpoint:
     async def test_tool_complete_does_not_forward_for_non_whitelisted_tools(self, adapter):
         """Tools not in _TOOL_RESULT_FIELDS never forward result data, even
         when the result JSON happens to contain whitelisted field names."""
-        import asyncio
         import json as _json
 
         app = _create_app(adapter)
@@ -1848,6 +1844,117 @@ class TestChatCompletionsEndpoint:
             assert "image" not in found, (
                 "non-whitelisted tool must not forward result fields even when "
                 "the result JSON contains them"
+            )
+
+    @pytest.mark.asyncio
+    async def test_tool_complete_skips_json_null_literal(self, adapter):
+        """JSON `null` literal (json.dumps(None) → "null") is not a dict,
+        so no fields are forwarded."""
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                ts_cb = kwargs.get("tool_start_callback")
+                tc_cb = kwargs.get("tool_complete_callback")
+                cb = kwargs.get("stream_delta_callback")
+                if ts_cb:
+                    ts_cb("call_img_1", "image_generate",
+                          {"prompt": "a cat"})
+                if tc_cb:
+                    tc_cb("call_img_1", "image_generate",
+                          {"prompt": "a cat"},
+                          _json.dumps(None))
+                if cb:
+                    cb("done.")
+                return (
+                    {"final_response": "done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            found = None
+            for i, line in enumerate(body.splitlines()):
+                if "event: hermes.tool.progress" not in line:
+                    continue
+                for follow in body.splitlines()[i + 1: i + 4]:
+                    if follow.startswith("data: "):
+                        data = _json.loads(follow[len("data: "):])
+                        if (data.get("status") == "completed"
+                                and data.get("tool") == "image_generate"):
+                            found = data
+                            break
+
+            assert found is not None, "no completed event"
+            assert set(found.keys()) == {"tool", "toolCallId", "status"}, (
+                f"null result must not produce forwarded fields; "
+                f"got keys: {set(found.keys())}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_tool_complete_skips_missing_whitelisted_field(self, adapter):
+        """When a whitelisted tool returns success=true but the field is absent,
+        the completed event carries only base keys."""
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                ts_cb = kwargs.get("tool_start_callback")
+                tc_cb = kwargs.get("tool_complete_callback")
+                cb = kwargs.get("stream_delta_callback")
+                if ts_cb:
+                    ts_cb("call_img_1", "image_generate",
+                          {"prompt": "a cat"})
+                if tc_cb:
+                    tc_cb("call_img_1", "image_generate",
+                          {"prompt": "a cat"},
+                          _json.dumps({"success": True}))
+                if cb:
+                    cb("done.")
+                return (
+                    {"final_response": "done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            found = None
+            for i, line in enumerate(body.splitlines()):
+                if "event: hermes.tool.progress" not in line:
+                    continue
+                for follow in body.splitlines()[i + 1: i + 4]:
+                    if follow.startswith("data: "):
+                        data = _json.loads(follow[len("data: "):])
+                        if (data.get("status") == "completed"
+                                and data.get("tool") == "image_generate"):
+                            found = data
+                            break
+
+            assert found is not None, "no completed event"
+            assert "image" not in found, (
+                "missing whitelisted field must not appear in payload"
             )
 
     @pytest.mark.asyncio

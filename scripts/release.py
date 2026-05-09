@@ -755,6 +755,7 @@ AUTHOR_MAP = {
     "17683456+wanazhar@users.noreply.github.com": "wanazhar",
     "26782336+cixuuz@users.noreply.github.com": "cixuuz",
     "aleksandr.pasevin@openzeppelin.com": "pasevin",
+    "pasevin@gmail.com": "pasevin",
     "ubuntu@localhost.localdomain": "holynn-q",
     "holynn@placeholder.local": "holynn-q",
     "agent@hermes.local": "jacdevos",

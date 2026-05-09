@@ -115,86 +115,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # every subsequent ``os.getenv("HERMES_HOME", ...)`` resolves correctly.
 # The flag is stripped from sys.argv so argparse never sees it.
 # Falls back to ~/.hermes/active_profile for sticky default.
+# Shared with gateway/run.py via profile_env_bootstrap (Issue #22502).
 # ---------------------------------------------------------------------------
-def _apply_profile_override() -> None:
-    """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
-    argv = sys.argv[1:]
-    profile_name = None
-    consume = 0
+from hermes_cli.profile_env_bootstrap import apply_profile_env_override
 
-    # 1. Check for explicit -p / --profile flag
-    for i, arg in enumerate(argv):
-        if arg in ("--profile", "-p") and i + 1 < len(argv):
-            profile_name = argv[i + 1]
-            consume = 2
-            break
-        elif arg.startswith("--profile="):
-            profile_name = arg.split("=", 1)[1]
-            consume = 1
-            break
-
-    # 1b. Reject values that can't be valid profile names (e.g. pytest's
-    # "-p no:xdist" would be misread as profile "no:xdist" otherwise).
-    # Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never call
-    # resolve_profile_env() with a value it must reject + sys.exit on.
-    if profile_name is not None and consume == 2:
-        import re as _re
-
-        if not _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile_name):
-            profile_name = None
-            consume = 0
-
-    # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it.
-    # This lets child processes (relaunch, subprocess) inherit the parent's
-    # profile choice without having to pass --profile again.
-    if profile_name is None and os.environ.get("HERMES_HOME"):
-        return
-
-    # 2. If no flag, check active_profile in the hermes root
-    if profile_name is None:
-        try:
-            from hermes_constants import get_default_hermes_root
-
-            active_path = get_default_hermes_root() / "active_profile"
-            if active_path.exists():
-                name = active_path.read_text().strip()
-                if name and name != "default":
-                    profile_name = name
-                    consume = 0  # don't strip anything from argv
-        except (UnicodeDecodeError, OSError):
-            pass  # corrupted file, skip
-
-    # 3. If we found a profile, resolve and set HERMES_HOME
-    if profile_name is not None:
-        try:
-            from hermes_cli.profiles import resolve_profile_env
-
-            hermes_home = resolve_profile_env(profile_name)
-        except (ValueError, FileNotFoundError) as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(1)
-        except Exception as exc:
-            # A bug in profiles.py must NEVER prevent hermes from starting
-            print(
-                f"Warning: profile override failed ({exc}), using default",
-                file=sys.stderr,
-            )
-            return
-        os.environ["HERMES_HOME"] = hermes_home
-        # Strip the flag from argv so argparse doesn't choke
-        if consume > 0:
-            for i, arg in enumerate(argv):
-                if arg in ("--profile", "-p"):
-                    start = i + 1  # +1 because argv is sys.argv[1:]
-                    sys.argv = sys.argv[:start] + sys.argv[start + consume :]
-                    break
-                elif arg.startswith("--profile="):
-                    start = i + 1
-                    sys.argv = sys.argv[:start] + sys.argv[start + 1 :]
-                    break
-
-
-_apply_profile_override()
+apply_profile_env_override()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.

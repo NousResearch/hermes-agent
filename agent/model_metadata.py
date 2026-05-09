@@ -1254,10 +1254,10 @@ def get_model_context_length(
     2. Active endpoint metadata (/models for explicit custom endpoints)
     3. Local server query (for local endpoints)
     4. Anthropic /v1/models API (API-key users only, not OAuth)
-    5. OpenRouter live API metadata
-    6. Nous suffix-match via OpenRouter cache
-    7. models.dev registry lookup (provider-aware)
-    8. Thin hardcoded defaults (broad family patterns)
+    5. Provider-aware lookups
+    6. Exact curated defaults
+    7. OpenRouter live API metadata (provider-unaware fallback)
+    8. Fuzzy hardcoded defaults (broad family patterns)
     9. Default fallback (256K)
     """
     # 0. Explicit config override — user knows best
@@ -1414,12 +1414,19 @@ def get_model_context_length(
         if ctx:
             return ctx
 
-    # 6. OpenRouter live API metadata (provider-unaware fallback)
+    # 6. Exact curated defaults. Provider-aware branches above still win, but
+    # an exact local entry is more specific than provider-unaware OpenRouter
+    # metadata for bare model IDs like "hy3-preview".
+    exact_default = DEFAULT_CONTEXT_LENGTHS.get(model.lower())
+    if exact_default:
+        return exact_default
+
+    # 7. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
     if model in metadata:
         return metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
 
-    # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
+    # 8. Fuzzy hardcoded defaults (longest key first for specificity)
     # Only check `default_model in model` (is the key a substring of the input).
     # The reverse (`model in default_model`) causes shorter names like
     # "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.

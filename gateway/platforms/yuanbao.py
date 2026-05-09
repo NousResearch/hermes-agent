@@ -2510,26 +2510,57 @@ class DispatchMiddleware(InboundMiddleware):
             media_urls = list(ctx.media_urls)
             media_types = list(ctx.media_types)
 
-            # Backfill observed media from recent transcript history
-            extra_img_urls: List[str] = []
-            extra_img_mimes: List[str] = []
-            try:
-                extra_img_urls, extra_img_mimes = await MediaResolveMiddleware._collect_observed_media(
-                    adapter, ctx.source,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[%s] observed-image hydration raised, continuing anyway: %s",
-                    adapter.name, exc,
-                )
-            if extra_img_urls:
-                current = set(media_urls)
-                for u, m in zip(extra_img_urls, extra_img_mimes):
-                    if u in current:
+            # If user quoted a message (reply_to_message_id is set), resolve only
+            # quote_media_refs to avoid injecting unrelated history media.
+            # Otherwise, backfill observed media from recent transcript history.
+            if ctx.reply_to_message_id is not None:
+                # User quoted a message — resolve only media from the quote
+                for rid, kind, filename in ctx.quote_media_refs:
+                    if kind not in ("image", "file"):
                         continue
-                    media_urls.append(u)
-                    media_types.append(m)
-                    current.add(u)
+                    try:
+                        fresh_url = await MediaResolveMiddleware._resolve_by_resource_id(adapter, rid)
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] quote media resolve failed: rid=%s kind=%s err=%s",
+                            adapter.name, rid, kind, exc,
+                        )
+                        continue
+                    cached = await MediaResolveMiddleware._download_and_cache(
+                        adapter,
+                        fetch_url=fresh_url,
+                        kind=kind,
+                        file_name=filename or None,
+                        log_tag=f"quote rid={rid}",
+                    )
+                    if cached is None:
+                        continue
+                    path, mime = cached
+                    # Avoid duplicates
+                    if path not in media_urls:
+                        media_urls.append(path)
+                        media_types.append(mime)
+            else:
+                # No quote — backfill observed media from recent transcript history
+                extra_img_urls: List[str] = []
+                extra_img_mimes: List[str] = []
+                try:
+                    extra_img_urls, extra_img_mimes = await MediaResolveMiddleware._collect_observed_media(
+                        adapter, ctx.source,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] observed-image hydration raised, continuing anyway: %s",
+                        adapter.name, exc,
+                    )
+                if extra_img_urls:
+                    current = set(media_urls)
+                    for u, m in zip(extra_img_urls, extra_img_mimes):
+                        if u in current:
+                            continue
+                        media_urls.append(u)
+                        media_types.append(m)
+                        current.add(u)
 
             # Replace [kind|ybres:xxx] anchors with local cache paths so
             # the transcript records usable paths for the model.

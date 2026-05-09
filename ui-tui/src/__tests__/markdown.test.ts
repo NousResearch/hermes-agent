@@ -1,8 +1,47 @@
+import { PassThrough } from 'stream'
+
+import { Box, renderSync } from '@hermes/ink'
+import React from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { AUDIO_DIRECTIVE_RE, INLINE_RE, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
+import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
+import { stripAnsi } from '../lib/text.js'
+import { DEFAULT_THEME } from '../theme.js'
 
 const matches = (text: string) => [...text.matchAll(INLINE_RE)].map(m => m[0])
+const BEL = String.fromCharCode(7)
+const ESC = String.fromCharCode(27)
+const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
+const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
+
+const renderPlain = (node: React.ReactNode) => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+  let output = ''
+
+  Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  const instance = renderSync(node, {
+    patchConsole: false,
+    stderr: stderr as NodeJS.WriteStream,
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream
+  })
+
+  instance.unmount()
+  instance.cleanup()
+
+  return output
+    .replace(OSC_RE, '')
+    .split('\n')
+    .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
+}
 
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
@@ -142,5 +181,39 @@ describe('protocol sentinels', () => {
     expect(AUDIO_DIRECTIVE_RE.test('[[audio_as_voice]]')).toBe(true)
     expect(AUDIO_DIRECTIVE_RE.test('  [[audio_as_voice]]  ')).toBe(true)
     expect(AUDIO_DIRECTIVE_RE.test('audio_as_voice')).toBe(false)
+  })
+})
+
+describe('Md wrapping', () => {
+  it('trims spaces from word-wrap continuation lines', () => {
+    const lines = renderPlain(
+      React.createElement(Box, { width: 5 }, React.createElement(Md, { t: DEFAULT_THEME, text: 'Let me' }))
+    )
+
+    expect(lines).toContain('Let')
+    expect(lines).toContain('me')
+    expect(lines).not.toContain(' me')
+  })
+
+  it('keeps nested list and quote indentation out of trim-sensitive text', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { flexDirection: 'column', width: 24 },
+        React.createElement(Md, { t: DEFAULT_THEME, text: '  - nested bullet' }),
+        React.createElement(Md, { t: DEFAULT_THEME, text: '>> nested quote' })
+      )
+    )
+
+    expect(lines).toContain('  • nested bullet')
+    expect(lines).toContain('  │ nested quote')
+  })
+
+  it('preserves original inline-code edge spaces', () => {
+    const lines = renderPlain(
+      React.createElement(Box, { width: 24 }, React.createElement(Md, { t: DEFAULT_THEME, text: '` hi ` ok' }))
+    )
+
+    expect(lines.some(line => line.startsWith(' hi  ok'))).toBe(true)
   })
 })

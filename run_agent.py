@@ -1879,6 +1879,7 @@ class AIAgent:
         self._memory_nudge_interval = 10
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        mem_config = {}
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -1900,6 +1901,11 @@ class AIAgent:
         # Memory provider plugin (external — one at a time, alongside built-in)
         # Reads memory.provider from config to select which plugin to activate.
         self._memory_manager = None
+        _recall_router_cfg = mem_config.get("recall_router", {}) if isinstance(mem_config, dict) else {}
+        if not isinstance(_recall_router_cfg, dict):
+            _recall_router_cfg = {}
+        self._memory_recall_router_cfg = _recall_router_cfg
+        self._memory_recall_recent_keys = {}
         if not skip_memory:
             try:
                 _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
@@ -11351,18 +11357,97 @@ class AIAgent:
             except Exception:
                 pass
 
-        # External memory provider: prefetch once before the tool loop.
+        # External memory provider: recall once before the tool loop.
         # Reuse the cached result on every iteration to avoid re-calling
-        # prefetch_all() on each tool call (10 tool calls = 10x latency + cost).
+        # provider recall on each tool call (10 tool calls = 10x latency + cost).
         # Use original_user_message (clean input) — user_message may contain
         # injected skill content that bloats / breaks provider queries.
         _ext_prefetch_cache = ""
         if self._memory_manager:
             try:
                 _query = original_user_message if isinstance(original_user_message, str) else ""
-                _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
-            except Exception:
-                pass
+                _router_cfg = getattr(self, "_memory_recall_router_cfg", {}) or {}
+                _router_enabled = str(_router_cfg.get("enabled", True)).lower() not in ("0", "false", "no", "off")
+                if not _router_enabled:
+                    _ext_prefetch_cache = self._memory_manager.prefetch_all(
+                        _query, session_id=self.session_id or "") or ""
+                else:
+                    from agent.memory_router import (
+                        build_recall_gate_context,
+                        decide_recall,
+                        stable_recall_key,
+                    )
+
+                    _platform_ctx = {
+                        "platform": self.platform or "cli",
+                        "user_id": self._user_id or "",
+                        "chat_id": self._chat_id or "",
+                        "thread_id": self._thread_id or "",
+                        "gateway_session_key": self._gateway_session_key or "",
+                    }
+                    _session_meta = {
+                        "session_id": self.session_id or "",
+                        "turn_number": self._user_turn_count,
+                    }
+                    _gate_ctx = build_recall_gate_context(
+                        _query,
+                        messages[:current_turn_user_idx],
+                        platform_context=_platform_ctx,
+                        session_metadata=_session_meta,
+                        max_turns=int(_router_cfg.get("recent_turns", 6) or 6),
+                        max_chars=int(_router_cfg.get("max_context_chars", 4000) or 4000),
+                    )
+                    _decision = decide_recall(
+                        _gate_ctx,
+                        strategy=str(_router_cfg.get("strategy", "hybrid") or "hybrid"),
+                        max_depth=str(_router_cfg.get("max_depth", "standard") or "standard"),
+                        max_budget=str(_router_cfg.get("max_budget", "small") or "small"),
+                    )
+                    if _decision.should_recall:
+                        _recall_query = _decision.query or _query
+                        _recall_key = stable_recall_key(
+                            _recall_query,
+                            mode="auto",
+                            depth=_decision.depth,
+                            sources=_decision.sources,
+                        )
+                        _ttl = max(0, int(_router_cfg.get("dedupe_ttl_turns", 2) or 0))
+                        _recent = getattr(self, "_memory_recall_recent_keys", {})
+                        _last_seen = _recent.get(_recall_key)
+                        if _last_seen is None or (self._user_turn_count - int(_last_seen)) > _ttl:
+                            _ext_prefetch_cache = self._memory_manager.recall_now_all(
+                                _recall_query,
+                                mode="auto",
+                                depth=_decision.depth,
+                                sources=_decision.sources,
+                                budget=_decision.budget,
+                                provenance=_decision.provenance,
+                                session_id=self.session_id or "",
+                            ) or ""
+                            _recent[_recall_key] = self._user_turn_count
+                            # Clear old duplicate-suppression entries so the
+                            # router does not permanently suppress a topic.
+                            for _k, _turn in list(_recent.items()):
+                                try:
+                                    if self._user_turn_count - int(_turn) > max(_ttl, 1) + 2:
+                                        _recent.pop(_k, None)
+                                except Exception:
+                                    _recent.pop(_k, None)
+                            self._memory_recall_recent_keys = _recent
+                        else:
+                            logger.debug(
+                                "Suppressed duplicate auto memory recall key=%s depth=%s sources=%s",
+                                _recall_key,
+                                _decision.depth,
+                                _decision.sources,
+                            )
+            except Exception as _recall_err:
+                logger.debug("Memory recall router failed; falling back to provider prefetch: %s", _recall_err)
+                try:
+                    _ext_prefetch_cache = self._memory_manager.prefetch_all(
+                        _query, session_id=self.session_id or "") or ""
+                except Exception:
+                    pass
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot

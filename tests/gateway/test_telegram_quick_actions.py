@@ -193,6 +193,13 @@ class TestTelegramQuickActionsCallback:
 
         query.answer.assert_called_once_with(text="💾 Saved")
         query.edit_message_reply_markup.assert_called_once_with(reply_markup=None)
+        adapter._bot.send_message.assert_called_once()
+        confirm_kwargs = adapter._bot.send_message.call_args.kwargs
+        assert confirm_kwargs["chat_id"] == 12345
+        assert confirm_kwargs["message_thread_id"] == 3220
+        assert confirm_kwargs["reply_to_message_id"] == 888
+        assert "Saved as routing candidate" in confirm_kwargs["text"]
+        assert "cortex_memory" in confirm_kwargs["text"]
         assert "abc123def4" not in adapter._quick_action_state
 
         records_path = tmp_path / "telegram_quick_actions" / "actions.jsonl"
@@ -251,6 +258,13 @@ class TestTelegramQuickActionsCallback:
                 await restarted_adapter._handle_callback_query(update, MagicMock())
 
         query.answer.assert_called_once_with(text="☑️ Todo captured")
+        restarted_adapter._bot.send_message.assert_called_once()
+        confirm_kwargs = restarted_adapter._bot.send_message.call_args.kwargs
+        assert confirm_kwargs["chat_id"] == 12345
+        assert confirm_kwargs["message_thread_id"] == 3220
+        assert confirm_kwargs["reply_to_message_id"] == 888
+        assert "Todo captured as routing candidate" in confirm_kwargs["text"]
+        assert "cortex_todo" in confirm_kwargs["text"]
         active_path = tmp_path / "telegram_quick_actions" / "active_actions.json"
         active = json.loads(active_path.read_text())
         assert "abc123def4" not in active

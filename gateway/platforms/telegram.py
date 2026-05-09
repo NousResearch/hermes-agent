@@ -2437,6 +2437,23 @@ class TelegramAdapter(BasePlatformAdapter):
         if candidate:
             with (out_dir / "routing_candidates.jsonl").open("a", encoding="utf-8") as f:
                 f.write(json.dumps(candidate, ensure_ascii=False) + "\n")
+        return candidate
+
+    @staticmethod
+    def _quick_action_confirmation_text(action: str, candidate: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Return a persistent Telegram confirmation for captured Quick Actions."""
+        if action not in {"save", "todo"} or not candidate:
+            return None
+        title = str(candidate.get("title") or "Captured").strip()
+        if len(title) > 80:
+            title = title[:77].rstrip() + "…"
+        targets = candidate.get("recommended_targets") or []
+        target_text = ", ".join(str(t) for t in targets) if targets else "candidate"
+        if action == "save":
+            return f"💾 Saved as routing candidate\n- Title: {title}\n- Target: {target_text}"
+        todo = candidate.get("todo") if isinstance(candidate.get("todo"), dict) else {}
+        priority = str(todo.get("priority") or "P2")
+        return f"☑️ Todo captured as routing candidate\n- Title: {title}\n- Target: {target_text}\n- Priority: {priority}"
 
     @staticmethod
     def _quick_action_keyboard(token: str):
@@ -2507,16 +2524,18 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         user_display = getattr(query.from_user, "first_name", "User")
+        confirmation_text = None
         if action == "discard":
             await query.answer(text="Dismissed")
         else:
-            self._record_quick_action(
+            candidate = self._record_quick_action(
                 token=token,
                 action=action,
                 payload=payload,
                 user_id=caller_id,
                 user_name=str(user_display),
             )
+            confirmation_text = self._quick_action_confirmation_text(action, candidate)
             label_map = {
                 "save": "💾 Saved",
                 "todo": "☑️ Todo captured",
@@ -2534,6 +2553,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 pass
 
         self._remove_active_quick_action(token)
+
+        if confirmation_text:
+            try:
+                await self._bot.send_message(
+                    chat_id=int(payload.get("chat_id") or query_chat_id),
+                    text=confirmation_text,
+                    message_thread_id=self._message_thread_id_for_send(payload.get("thread_id") or query_thread_id),
+                    reply_to_message_id=int(payload.get("message_id") or 0) or None,
+                )
+            except Exception:
+                logger.debug("[%s] Failed to send Quick Action confirmation", self.name, exc_info=True)
 
         if action == "delegate":
             try:

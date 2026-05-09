@@ -39,9 +39,11 @@ object HermesAutomationBridge {
             "create_wait_task", "create_wait", "wait_task", "delay_task" -> createWaitTaskJson(context, arguments)
             "create_clipboard_task", "create_set_clipboard_task", "set_clipboard_task", "clipboard_task" -> createClipboardTaskJson(context, arguments)
             "create_vibration_task", "create_vibrate_task", "vibrate_task", "vibration_task" -> createVibrationTaskJson(context, arguments)
+            "create_audio_action_task", "create_audio_task", "audio_task", "create_volume_task", "volume_task", "create_sound_mode_task" -> createAudioActionTaskJson(context, arguments)
             "create_overlay_scene_task", "create_scene_task", "overlay_scene_task", "scene_task" -> createOverlaySceneTaskJson(context, arguments)
             "create_toast_task", "create_flash_task", "toast_task", "flash_task" -> createToastTaskJson(context, arguments)
             "show_toast", "toast", "flash_message", "flash" -> showToastJson(context, arguments)
+            "perform_audio_action", "audio_action", "set_audio_volume", "set_sound_mode", "set_ringer_mode", "set_microphone_mute", "set_speakerphone" -> performAudioActionJson(context, action, arguments)
             "overlay_scene_status", "scene_status", "overlay_status", "show_overlay_scene", "show_scene", "overlay_scene", "hide_overlay_scene", "dismiss_overlay_scene", "clear_overlay_scene", "hide_scene" -> HermesOverlaySceneBridge.performSceneJson(context, action, arguments)
             "create_launcher_shortcut", "create_shortcut", "create_home_screen_shortcut", "pin_automation_shortcut" -> HermesLauncherShortcutBridge.createShortcutJson(context, arguments)
             "list_launcher_shortcuts", "list_shortcuts", "launcher_shortcuts" -> HermesLauncherShortcutBridge.listShortcutsJson(context)
@@ -768,6 +770,19 @@ object HermesAutomationBridge {
         )
     }
 
+    fun createAudioActionTaskJson(context: Context, arguments: JSONObject): String {
+        val payload = runCatching { audioPayloadFromArguments(arguments) }.getOrElse { error ->
+            return errorJson(error.message ?: "create_audio_action_task arguments are invalid")
+        }
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_AUDIO_ACTION,
+            payload = payload.toString(),
+            defaultLabel = "Hermes audio automation",
+        )
+    }
+
     fun createOverlaySceneTaskJson(context: Context, arguments: JSONObject): String {
         val payload = runCatching { HermesOverlaySceneBridge.payloadFromArguments(arguments) }.getOrElse { error ->
             return errorJson(error.message ?: "create_overlay_scene_task arguments are invalid")
@@ -799,6 +814,22 @@ object HermesAutomationBridge {
             return errorJson(error.message ?: "show_toast arguments are invalid")
         }
         return HermesToastActionBridge.showToastJson(context, payload).toString()
+    }
+
+    fun performAudioActionJson(context: Context, requestedAction: String, arguments: JSONObject): String {
+        val directArguments = JSONObject(arguments.toString())
+        if (!directArguments.has("audio_action")) {
+            when (requestedAction.lowercase().replace("-", "_")) {
+                "set_audio_volume" -> directArguments.put("audio_action", "set_volume")
+                "set_sound_mode", "set_ringer_mode" -> directArguments.put("audio_action", "set_ringer_mode")
+                "set_microphone_mute" -> directArguments.put("audio_action", "set_microphone_mute")
+                "set_speakerphone" -> directArguments.put("audio_action", "set_speakerphone")
+            }
+        }
+        val payload = runCatching { audioPayloadFromArguments(directArguments) }.getOrElse { error ->
+            return errorJson(error.message ?: "audio_action arguments are invalid")
+        }
+        return HermesAudioActionBridge.performAudioActionJson(context, payload).toString()
     }
 
     private fun createRecordJson(
@@ -1433,6 +1464,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_WAIT -> runWaitRecord(record, variables)
             ACTION_TYPE_CLIPBOARD_ACTION -> runClipboardActionRecord(context, record, variables)
             ACTION_TYPE_VIBRATION_ACTION -> runVibrationActionRecord(context, record, variables)
+            ACTION_TYPE_AUDIO_ACTION -> runAudioActionRecord(context, record, variables)
             ACTION_TYPE_OVERLAY_SCENE -> runOverlaySceneRecord(context, record, variables)
             ACTION_TYPE_TOAST_ACTION -> runToastActionRecord(context, record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
@@ -1697,6 +1729,17 @@ object HermesAutomationBridge {
             ?: return JSONObject(errorJson("Saved vibration_action automation payload is invalid"))
         val expanded = expandVibrationPayload(payload, variables)
         return HermesVibrationActionBridge.vibrateJson(context, expanded)
+    }
+
+    private fun runAudioActionRecord(
+        context: Context,
+        record: HermesAutomationRecord,
+        variables: JSONObject,
+    ): JSONObject {
+        val payload = runCatching { JSONObject(record.command) }.getOrNull()
+            ?: return JSONObject(errorJson("Saved audio_action automation payload is invalid"))
+        val expanded = expandAudioPayload(payload, variables)
+        return HermesAudioActionBridge.performAudioActionJson(context, expanded)
     }
 
     fun deleteJson(context: Context, id: String): String {
@@ -2894,6 +2937,97 @@ object HermesAutomationBridge {
         return vibrationPayloadFromArguments(expanded)
     }
 
+    private fun expandAudioPayload(payload: JSONObject, variables: JSONObject): JSONObject {
+        val expanded = JSONObject()
+        payload.keys().forEach { key ->
+            when (val value = payload.opt(key)) {
+                is String -> expanded.put(key, expandVariables(value, variables))
+                else -> expanded.put(key, value)
+            }
+        }
+        return audioPayloadFromArguments(expanded)
+    }
+
+    private fun audioPayloadFromArguments(arguments: JSONObject): JSONObject {
+        val rawAction = stringArgument(
+            arguments,
+            "audio_action",
+            "audioAction",
+            "volume_action",
+            "sound_action",
+            "operation",
+            "mode",
+        ) ?: inferAudioAction(arguments)
+            ?: throw IllegalArgumentException("create_audio_action_task requires audio_action")
+        val audioAction = HermesAudioActionBridge.normalizeAudioAction(rawAction)
+            ?: throw IllegalArgumentException("Unsupported audio action: $rawAction")
+        val payload = JSONObject().put("audio_action", audioAction)
+        when (audioAction) {
+            "set_volume" -> {
+                val stream = HermesAudioActionBridge.normalizeAudioStream(
+                    stringArgument(arguments, "stream", "audio_stream", "volume_stream", "channel")
+                        .orEmpty()
+                        .ifBlank { "media" },
+                ) ?: throw IllegalArgumentException("set_volume requires a supported audio stream")
+                val level = audioLevelArgument(arguments, "level", "volume_level", "volume", "stream_volume")
+                    ?: throw IllegalArgumentException("set_volume requires level")
+                payload.put("stream", stream)
+                    .put("level", level)
+            }
+            "set_ringer_mode" -> {
+                val mode = HermesAudioActionBridge.normalizeRingerMode(
+                    stringArgument(arguments, "ringer_mode", "sound_mode", "target_mode", "state").orEmpty(),
+                ) ?: throw IllegalArgumentException("set_ringer_mode requires normal, vibrate, or silent")
+                payload.put("ringer_mode", mode)
+            }
+            "set_microphone_mute",
+            "set_speakerphone" -> {
+                val enabled = booleanArgument(arguments, "target_enabled", "enabled", "state")
+                    ?: throw IllegalArgumentException("$audioAction requires target_enabled")
+                payload.put("target_enabled", enabled)
+            }
+        }
+        return payload
+    }
+
+    private fun audioLevelArgument(arguments: JSONObject, vararg keys: String): Any? {
+        keys.forEach { key ->
+            if (!arguments.has(key) || arguments.isNull(key)) {
+                return@forEach
+            }
+            return when (val raw = arguments.opt(key)) {
+                is Number -> {
+                    val value = raw.toLong()
+                    require(value >= 0L) { "$key must be 0 or greater" }
+                    require(value <= MAX_AUDIO_LEVEL) { "$key cannot exceed $MAX_AUDIO_LEVEL" }
+                    value.toInt()
+                }
+                else -> {
+                    val text = raw?.toString()?.trim().orEmpty()
+                    val numeric = text.toLongOrNull()
+                    if (numeric != null) {
+                        require(numeric >= 0L) { "$key must be 0 or greater" }
+                        require(numeric <= MAX_AUDIO_LEVEL) { "$key cannot exceed $MAX_AUDIO_LEVEL" }
+                        numeric.toInt()
+                    } else {
+                        require(text.indexOf('\u0000') < 0) { "$key must not contain NUL bytes" }
+                        require(text.contains('%') || text.contains("{{")) { "$key must be an integer or saved variable expression" }
+                        text.take(MAX_AUDIO_LEVEL_TEXT_CHARS)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun inferAudioAction(arguments: JSONObject): String? {
+        return when {
+            arguments.has("level") || arguments.has("volume_level") || arguments.has("volume") || arguments.has("stream_volume") -> "set_volume"
+            arguments.has("ringer_mode") || arguments.has("sound_mode") || arguments.has("target_mode") -> "set_ringer_mode"
+            else -> null
+        }
+    }
+
     private fun vibrationPayloadFromArguments(arguments: JSONObject): JSONObject {
         vibrationPatternMsFromArguments(arguments)?.let { pattern ->
             return if (pattern.size == 1) {
@@ -3895,6 +4029,12 @@ object HermesAutomationBridge {
         "create_wait_task",
         "create_clipboard_task",
         "create_vibration_task",
+        "create_audio_action_task",
+        "perform_audio_action",
+        "set_audio_volume",
+        "set_sound_mode",
+        "set_microphone_mute",
+        "set_speakerphone",
         "create_overlay_scene_task",
         "create_toast_task",
         "show_toast",
@@ -3955,6 +4095,7 @@ object HermesAutomationBridge {
         ACTION_TYPE_WAIT,
         ACTION_TYPE_CLIPBOARD_ACTION,
         ACTION_TYPE_VIBRATION_ACTION,
+        ACTION_TYPE_AUDIO_ACTION,
         ACTION_TYPE_OVERLAY_SCENE,
         ACTION_TYPE_TOAST_ACTION,
     )
@@ -3980,6 +4121,9 @@ object HermesAutomationBridge {
         "set_clipboard" to ACTION_TYPE_CLIPBOARD_ACTION,
         "vibrate" to ACTION_TYPE_VIBRATION_ACTION,
         "vibration" to ACTION_TYPE_VIBRATION_ACTION,
+        "audio" to ACTION_TYPE_AUDIO_ACTION,
+        "volume" to ACTION_TYPE_AUDIO_ACTION,
+        "sound_mode" to ACTION_TYPE_AUDIO_ACTION,
         "scene" to ACTION_TYPE_OVERLAY_SCENE,
         "overlay" to ACTION_TYPE_OVERLAY_SCENE,
         "overlay_scene" to ACTION_TYPE_OVERLAY_SCENE,
@@ -4302,6 +4446,8 @@ object HermesAutomationBridge {
     private const val MAX_WAIT_DURATION_MS = 60_000L
     private const val MAX_VIBRATION_TOTAL_MS = 60_000L
     private const val MAX_VIBRATION_PATTERN_ENTRIES = 32
+    private const val MAX_AUDIO_LEVEL = 100L
+    private const val MAX_AUDIO_LEVEL_TEXT_CHARS = 64
     private const val MAX_VARIABLE_VALUE_CHARS = 4_000
     private const val MAX_CLIPBOARD_LABEL_CHARS = 80
     private const val MAX_TOAST_TEXT_CHARS = 1_000

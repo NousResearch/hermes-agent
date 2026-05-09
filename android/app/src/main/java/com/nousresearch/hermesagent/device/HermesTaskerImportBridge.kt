@@ -282,11 +282,60 @@ object HermesTaskerImportBridge {
             TASKER_CUSTOM_SETTING -> {
                 customSettingRecordFromTaskerAction(base, action) ?: return null
             }
+            in TASKER_VOLUME_ACTIONS -> {
+                audioVolumeRecordFromTaskerAction(base, code, action) ?: return null
+            }
+            TASKER_SOUND_MODE -> {
+                audioSoundModeRecordFromTaskerAction(base, action) ?: return null
+            }
+            in TASKER_AUDIO_TOGGLE_ACTIONS -> {
+                audioToggleRecordFromTaskerAction(base, code, action) ?: return null
+            }
             in TASKER_SHIZUKU_FIXED_ACTIONS -> {
                 shizukuRecordFromTaskerAction(base, code, action) ?: return null
             }
             else -> null
         }
+    }
+
+    private fun audioVolumeRecordFromTaskerAction(base: JSONObject, code: Int, action: Element): JSONObject? {
+        val level = argText(action, 0).trim().toIntOrNull() ?: return null
+        if (level !in 0..MAX_AUDIO_LEVEL) return null
+        val stream = TASKER_VOLUME_ACTIONS.getValue(code)
+        return base.put("action_type", ACTION_TYPE_AUDIO_ACTION)
+            .put(
+                "command",
+                JSONObject()
+                    .put("audio_action", "set_volume")
+                    .put("stream", stream)
+                    .put("level", level)
+                    .toString(),
+            )
+    }
+
+    private fun audioSoundModeRecordFromTaskerAction(base: JSONObject, action: Element): JSONObject? {
+        val mode = taskerSoundModeFromAction(action) ?: return null
+        return base.put("action_type", ACTION_TYPE_AUDIO_ACTION)
+            .put(
+                "command",
+                JSONObject()
+                    .put("audio_action", "set_ringer_mode")
+                    .put("ringer_mode", mode)
+                    .toString(),
+            )
+    }
+
+    private fun audioToggleRecordFromTaskerAction(base: JSONObject, code: Int, action: Element): JSONObject? {
+        val enabled = taskerToggleEnabledFromAction(action) ?: return null
+        val audioAction = TASKER_AUDIO_TOGGLE_ACTIONS.getValue(code)
+        return base.put("action_type", ACTION_TYPE_AUDIO_ACTION)
+            .put(
+                "command",
+                JSONObject()
+                    .put("audio_action", audioAction)
+                    .put("target_enabled", enabled)
+                    .toString(),
+            )
     }
 
     private fun shizukuRecordFromTaskerAction(base: JSONObject, code: Int, action: Element): JSONObject? {
@@ -381,6 +430,15 @@ object HermesTaskerImportBridge {
             "1", "priority", "important_interruptions" -> "priority"
             "2", "all", "off", "disable", "disabled" -> "off"
             "3", "alarms", "alarms_only" -> "alarms"
+            else -> null
+        }
+    }
+
+    private fun taskerSoundModeFromAction(action: Element): String? {
+        return when (argText(action, 0).trim().lowercase()) {
+            "normal", "sound", "ring", "on" -> "normal"
+            "vibrate", "vibration" -> "vibrate"
+            "silent", "mute", "off" -> "silent"
             else -> null
         }
     }
@@ -571,11 +629,23 @@ object HermesTaskerImportBridge {
     private const val TASKER_BACK_BUTTON = 245
     private const val TASKER_SHOW_RECENTS = 247
     private const val TASKER_TURN_OFF = 248
+    private const val TASKER_SPEAKERPHONE = 254
     private const val TASKER_POWER_USAGE_SETTINGS = 257
     private const val TASKER_BLUETOOTH = 294
+    private const val TASKER_MIC_MUTE = 301
+    private const val TASKER_ALARM_VOLUME = 303
+    private const val TASKER_RINGER_VOLUME = 304
+    private const val TASKER_NOTIFICATION_VOLUME = 305
+    private const val TASKER_IN_CALL_VOLUME = 306
+    private const val TASKER_MEDIA_VOLUME = 307
+    private const val TASKER_SYSTEM_VOLUME = 308
+    private const val TASKER_DTMF_VOLUME = 309
+    private const val TASKER_BLUETOOTH_VOICE_VOLUME = 311
     private const val TASKER_DO_NOT_DISTURB = 312
+    private const val TASKER_SOUND_MODE = 313
     private const val TASKER_AIRPLANE_MODE = 333
     private const val TASKER_NOTIFICATION_SETTINGS = 337
+    private const val TASKER_ACCESSIBILITY_VOLUME = 387
     private const val TASKER_DELETE_FILE = 406
     private const val TASKER_WRITE_FILE = 410
     private const val TASKER_WIFI = 425
@@ -594,6 +664,7 @@ object HermesTaskerImportBridge {
     private const val MAX_WAIT_DURATION_MS = 60_000L
     private const val MAX_VIBRATION_TOTAL_MS = 60_000L
     private const val MAX_VIBRATION_PATTERN_ENTRIES = 32
+    private const val MAX_AUDIO_LEVEL = 100
     private const val MAX_NOTIFICATION_FIELD_CHARS = 120
     private const val MAX_NOTIFICATION_TEXT_CHARS = 2_000
     private const val MAX_CLIPBOARD_TEXT_CHARS = 8_000
@@ -627,6 +698,21 @@ object HermesTaskerImportBridge {
         TASKER_WIFI_TETHER,
         TASKER_WIFI,
         TASKER_MOBILE_DATA,
+    )
+    private val TASKER_VOLUME_ACTIONS = mapOf(
+        TASKER_ALARM_VOLUME to "alarm",
+        TASKER_RINGER_VOLUME to "ringer",
+        TASKER_NOTIFICATION_VOLUME to "notification",
+        TASKER_IN_CALL_VOLUME to "voice_call",
+        TASKER_MEDIA_VOLUME to "media",
+        TASKER_SYSTEM_VOLUME to "system",
+        TASKER_DTMF_VOLUME to "dtmf",
+        TASKER_BLUETOOTH_VOICE_VOLUME to "voice_call",
+        TASKER_ACCESSIBILITY_VOLUME to "accessibility",
+    )
+    private val TASKER_AUDIO_TOGGLE_ACTIONS = mapOf(
+        TASKER_SPEAKERPHONE to "set_speakerphone",
+        TASKER_MIC_MUTE to "set_microphone_mute",
     )
     private val TASKER_SETTINGS_ACTIONS = mapOf(
         TASKER_DEVELOPER_SETTINGS to "open_developer_options",
@@ -711,11 +797,23 @@ object HermesTaskerImportBridge {
         TASKER_BACK_BUTTON to "Back Button",
         TASKER_SHOW_RECENTS to "Show Recents",
         TASKER_TURN_OFF to "Turn Off",
+        TASKER_SPEAKERPHONE to "Speakerphone",
         TASKER_POWER_USAGE_SETTINGS to "Power Usage Settings",
         TASKER_BLUETOOTH to "Bluetooth",
+        TASKER_MIC_MUTE to "Mic Mute",
+        TASKER_ALARM_VOLUME to "Alarm Volume",
+        TASKER_RINGER_VOLUME to "Ringer Volume",
+        TASKER_NOTIFICATION_VOLUME to "Notification Volume",
+        TASKER_IN_CALL_VOLUME to "In-Call Volume",
+        TASKER_MEDIA_VOLUME to "Media Volume",
+        TASKER_SYSTEM_VOLUME to "System Volume",
+        TASKER_DTMF_VOLUME to "DTMF Volume",
+        TASKER_BLUETOOTH_VOICE_VOLUME to "BT Voice Volume",
         TASKER_DO_NOT_DISTURB to "Do Not Disturb",
+        TASKER_SOUND_MODE to "Sound Mode",
         TASKER_AIRPLANE_MODE to "Airplane Mode",
         TASKER_NOTIFICATION_SETTINGS to "Notification Settings",
+        TASKER_ACCESSIBILITY_VOLUME to "Accessibility Volume",
         TASKER_DELETE_FILE to "Delete File",
         TASKER_WRITE_FILE to "Write File",
         TASKER_WIFI to "Wi-Fi",

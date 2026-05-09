@@ -2,6 +2,7 @@ package com.nousresearch.hermesagent.device
 
 import android.content.ClipboardManager
 import android.content.Context
+import android.media.AudioManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -132,6 +133,65 @@ class HermesAutomationStoreTest {
         assertTrue(run.toString(), run.getBoolean("success"))
         assertEquals("vibrate", run.getJSONObject("result").getString("action"))
         assertEquals(60, run.getJSONObject("result").getLong("duration_ms"))
+    }
+
+    @Test
+    fun bridgeCreatesAndRunsAudioVolumeRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+        store.setVariable("MEDIA_LEVEL", "2")
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_audio_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-media-volume")
+                    .put("audio_action", "set_volume")
+                    .put("audio_stream", "media")
+                    .put("volume_level", "%MEDIA_LEVEL")
+                    .put("automation_enabled", false),
+            ),
+        )
+
+        assertTrue(created.toString(), created.getBoolean("success"))
+        val automation = created.getJSONObject("automation")
+        assertEquals(ACTION_TYPE_AUDIO_ACTION, automation.getString("action_type"))
+        val payload = org.json.JSONObject(automation.getString("command"))
+        assertEquals("set_volume", payload.getString("audio_action"))
+        assertEquals("media", payload.getString("stream"))
+        assertEquals("%MEDIA_LEVEL", payload.getString("level"))
+
+        val run = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "run",
+                org.json.JSONObject().put("id", "auto-media-volume"),
+            ),
+        )
+        assertTrue(run.toString(), run.getBoolean("success"))
+        val result = run.getJSONObject("result")
+        assertEquals("set_volume", result.getString("action"))
+        assertEquals("media", result.getString("stream"))
+        assertEquals(2, result.getInt("requested_level"))
+
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        assertEquals(
+            result.getInt("applied_level"),
+            audioManager.getStreamVolume(AudioManager.STREAM_MUSIC),
+        )
+
+        val directMode = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "set_sound_mode",
+                org.json.JSONObject().put("sound_mode", "normal"),
+            ),
+        )
+        assertTrue(directMode.toString(), directMode.getBoolean("success"))
+        assertEquals("set_ringer_mode", directMode.getString("action"))
+        assertEquals("normal", directMode.getString("ringer_mode"))
     }
 
     @Test
@@ -1824,6 +1884,86 @@ class HermesAutomationStoreTest {
             payloads.any {
                 it.getString("shizuku_action") == "set_mobile_data_enabled" &&
                     it.getBoolean("target_enabled")
+            },
+        )
+    }
+
+    @Test
+    fun bridgeImportsTaskerAudioActionsDisabled() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val taskerXml = """
+            <TaskerData sr="" dvi="1" tv="6.6.18">
+              <Task sr="task1">
+                <nme>Hermes Audio Controls</nme>
+                <Action><code>307</code><Int sr="arg0" val="5" /></Action>
+                <Action><code>304</code><Int sr="arg0" val="4" /></Action>
+                <Action><code>387</code><Int sr="arg0" val="3" /></Action>
+                <Action><code>254</code><Int sr="arg0" val="1" /></Action>
+                <Action><code>301</code><Int sr="arg0" val="0" /></Action>
+                <Action><code>313</code><Str sr="arg0" ve="3">vibrate</Str></Action>
+              </Task>
+            </TaskerData>
+        """.trimIndent()
+
+        val imported = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "import_tasker_xml",
+                org.json.JSONObject()
+                    .put("tasker_xml", taskerXml)
+                    .put("replace", true),
+            ),
+        )
+        assertTrue(imported.toString(), imported.getBoolean("success"))
+        assertEquals(6, imported.getInt("tasker_imported_action_count"))
+        assertEquals(0, imported.getJSONArray("tasker_skipped_actions").length())
+        assertEquals(6, imported.getInt("imported_automation_count"))
+
+        val records = store.list()
+        assertEquals(6, records.size)
+        assertTrue(records.all { it.actionType == ACTION_TYPE_AUDIO_ACTION })
+        assertTrue(records.none { it.enabled })
+        val payloads = records.map { org.json.JSONObject(it.command) }
+        assertTrue(
+            payloads.any {
+                it.getString("audio_action") == "set_volume" &&
+                    it.getString("stream") == "media" &&
+                    it.getInt("level") == 5
+            },
+        )
+        assertTrue(
+            payloads.any {
+                it.getString("audio_action") == "set_volume" &&
+                    it.getString("stream") == "ringer" &&
+                    it.getInt("level") == 4
+            },
+        )
+        assertTrue(
+            payloads.any {
+                it.getString("audio_action") == "set_volume" &&
+                    it.getString("stream") == "accessibility" &&
+                    it.getInt("level") == 3
+            },
+        )
+        assertTrue(
+            payloads.any {
+                it.getString("audio_action") == "set_speakerphone" &&
+                    it.getBoolean("target_enabled")
+            },
+        )
+        assertTrue(
+            payloads.any {
+                it.getString("audio_action") == "set_microphone_mute" &&
+                    !it.getBoolean("target_enabled")
+            },
+        )
+        assertTrue(
+            payloads.any {
+                it.getString("audio_action") == "set_ringer_mode" &&
+                    it.getString("ringer_mode") == "vibrate"
             },
         )
     }

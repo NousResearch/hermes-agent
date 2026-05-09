@@ -1,6 +1,5 @@
 """Tests for FileSyncManager.sync_back() — pull remote changes to host."""
 
-import fcntl
 import io
 import logging
 import os
@@ -11,6 +10,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+
+# `fcntl` is a UNIX-only stdlib module. Skip the whole file on platforms
+# (e.g. Windows) where it's unavailable so pytest collection doesn't
+# hard-fail before any test runs (#22420).
+fcntl = pytest.importorskip("fcntl")
 
 from tools.environments.file_sync import (
     FileSyncManager,

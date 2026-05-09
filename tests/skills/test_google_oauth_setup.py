@@ -322,3 +322,206 @@ class TestHermesConstantsFallback:
         import hermes_constants
         assert module.get_hermes_home is hermes_constants.get_hermes_home
         assert module.display_hermes_home is hermes_constants.display_hermes_home
+
+
+class _RefreshableCreds:
+    """Stand-in for google.oauth2.credentials.Credentials used by check_auth."""
+
+    def __init__(self, *, valid, expired, refresh_token, refresh_error=None, payload=None):
+        self.valid = valid
+        self.expired = expired
+        self.refresh_token = refresh_token
+        self._refresh_error = refresh_error
+        self._payload = payload or {
+            "token": "refreshed-access",
+            "refresh_token": "refresh-token",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+            "scopes": [],
+        }
+
+    def refresh(self, _request):
+        if self._refresh_error:
+            raise self._refresh_error
+        self.valid = True
+        self.expired = False
+
+    def to_json(self):
+        return json.dumps(self._payload)
+
+
+def _install_google_auth_fakes(monkeypatch, creds):
+    """Inject fake google.oauth2.credentials + google.auth.transport.requests."""
+    creds_mod = types.ModuleType("google.oauth2.credentials")
+    creds_mod.Credentials = types.SimpleNamespace(
+        from_authorized_user_file=lambda _path: creds,
+    )
+    oauth2_mod = types.ModuleType("google.oauth2")
+    oauth2_mod.credentials = creds_mod
+    google_mod = sys.modules.get("google") or types.ModuleType("google")
+    google_mod.oauth2 = oauth2_mod
+
+    transport_mod = types.ModuleType("google.auth.transport")
+    requests_mod = types.ModuleType("google.auth.transport.requests")
+    requests_mod.Request = lambda: object()
+    transport_mod.requests = requests_mod
+    auth_mod = types.ModuleType("google.auth")
+    auth_mod.transport = transport_mod
+    google_mod.auth = auth_mod
+
+    monkeypatch.setitem(sys.modules, "google", google_mod)
+    monkeypatch.setitem(sys.modules, "google.oauth2", oauth2_mod)
+    monkeypatch.setitem(sys.modules, "google.oauth2.credentials", creds_mod)
+    monkeypatch.setitem(sys.modules, "google.auth", auth_mod)
+    monkeypatch.setitem(sys.modules, "google.auth.transport", transport_mod)
+    monkeypatch.setitem(sys.modules, "google.auth.transport.requests", requests_mod)
+
+
+class TestCheckAuthRefreshBranches:
+    """Cover refresh-failure branches in check_auth: disabled_client, token_revoked, generic."""
+
+    def test_returns_false_when_token_missing(self, setup_module, capsys):
+        assert setup_module.check_auth() is False
+        out = capsys.readouterr().out
+        assert "NOT_AUTHENTICATED" in out
+
+    def test_token_corrupt_returns_false(self, setup_module, monkeypatch, capsys):
+        setup_module.TOKEN_PATH.write_text("not-json")
+
+        def boom(_path):
+            raise ValueError("corrupt token")
+
+        creds_mod = types.ModuleType("google.oauth2.credentials")
+        creds_mod.Credentials = types.SimpleNamespace(from_authorized_user_file=boom)
+        monkeypatch.setitem(sys.modules, "google.oauth2.credentials", creds_mod)
+        requests_mod = types.ModuleType("google.auth.transport.requests")
+        requests_mod.Request = lambda: object()
+        monkeypatch.setitem(sys.modules, "google.auth.transport.requests", requests_mod)
+
+        assert setup_module.check_auth() is False
+        out = capsys.readouterr().out
+        assert "TOKEN_CORRUPT" in out
+
+    def test_refresh_disabled_client_branch(self, setup_module, monkeypatch, capsys):
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "old"}))
+        creds = _RefreshableCreds(
+            valid=False,
+            expired=True,
+            refresh_token="r",
+            refresh_error=Exception("disabled_client: client deleted"),
+        )
+        _install_google_auth_fakes(monkeypatch, creds)
+
+        assert setup_module.check_auth() is False
+        out = capsys.readouterr().out
+        assert "OAUTH_CLIENT_DISABLED" in out
+        assert "myaccount.google.com" in out
+
+    def test_refresh_token_revoked_branch(self, setup_module, monkeypatch, capsys):
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "old"}))
+        creds = _RefreshableCreds(
+            valid=False,
+            expired=True,
+            refresh_token="r",
+            refresh_error=Exception("invalid_grant: Token has been revoked"),
+        )
+        _install_google_auth_fakes(monkeypatch, creds)
+
+        assert setup_module.check_auth() is False
+        out = capsys.readouterr().out
+        assert "TOKEN_REVOKED" in out
+        assert "Re-run setup" in out
+
+    def test_refresh_generic_failure_branch(self, setup_module, monkeypatch, capsys):
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "old"}))
+        creds = _RefreshableCreds(
+            valid=False,
+            expired=True,
+            refresh_token="r",
+            refresh_error=Exception("network unreachable"),
+        )
+        _install_google_auth_fakes(monkeypatch, creds)
+
+        assert setup_module.check_auth() is False
+        out = capsys.readouterr().out
+        assert "REFRESH_FAILED" in out
+
+    def test_token_invalid_when_no_refresh_token(self, setup_module, monkeypatch, capsys):
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "old"}))
+        creds = _RefreshableCreds(valid=False, expired=True, refresh_token=None)
+        _install_google_auth_fakes(monkeypatch, creds)
+
+        assert setup_module.check_auth() is False
+        out = capsys.readouterr().out
+        assert "TOKEN_INVALID" in out
+
+
+class TestCheckAuthLive:
+    """Cover check_auth_live: short-circuit, success, disabled_client, generic error."""
+
+    def _install_calendar_fake(self, monkeypatch, *, raises=None):
+        executed = {"called": False}
+
+        class _ListReq:
+            def execute(self_inner):
+                executed["called"] = True
+                if raises:
+                    raise raises
+                return {"items": []}
+
+        class _CalendarList:
+            def list(self_inner, **_kw):
+                return _ListReq()
+
+        class _Service:
+            def calendarList(self_inner):
+                return _CalendarList()
+
+        api_mod = types.ModuleType("googleapiclient")
+        discovery_mod = types.ModuleType("googleapiclient.discovery")
+        discovery_mod.build = lambda *_a, **_kw: _Service()
+        api_mod.discovery = discovery_mod
+        monkeypatch.setitem(sys.modules, "googleapiclient", api_mod)
+        monkeypatch.setitem(sys.modules, "googleapiclient.discovery", discovery_mod)
+        return executed
+
+    def test_short_circuits_when_check_auth_fails(self, setup_module, monkeypatch):
+        monkeypatch.setattr(setup_module, "check_auth", lambda quiet=False: False)
+        assert setup_module.check_auth_live() is False
+
+    def test_live_call_success(self, setup_module, monkeypatch, capsys):
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "ok"}))
+        monkeypatch.setattr(setup_module, "check_auth", lambda quiet=False: True)
+        creds = _RefreshableCreds(valid=True, expired=False, refresh_token="r")
+        _install_google_auth_fakes(monkeypatch, creds)
+        executed = self._install_calendar_fake(monkeypatch)
+
+        assert setup_module.check_auth_live() is True
+        assert executed["called"] is True
+        assert "LIVE_CHECK_OK" in capsys.readouterr().out
+
+    def test_live_call_disabled_client_branch(self, setup_module, monkeypatch, capsys):
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "ok"}))
+        monkeypatch.setattr(setup_module, "check_auth", lambda quiet=False: True)
+        creds = _RefreshableCreds(valid=True, expired=False, refresh_token="r")
+        _install_google_auth_fakes(monkeypatch, creds)
+        self._install_calendar_fake(monkeypatch, raises=Exception("invalid_client: deleted"))
+
+        assert setup_module.check_auth_live() is False
+        out = capsys.readouterr().out
+        assert "LIVE_CHECK_FAILED" in out
+        assert "OAuth client or account disabled" in out
+        assert "Do NOT retry" in out
+
+    def test_live_call_generic_failure_branch(self, setup_module, monkeypatch, capsys):
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "ok"}))
+        monkeypatch.setattr(setup_module, "check_auth", lambda quiet=False: True)
+        creds = _RefreshableCreds(valid=True, expired=False, refresh_token="r")
+        _install_google_auth_fakes(monkeypatch, creds)
+        self._install_calendar_fake(monkeypatch, raises=RuntimeError("connection reset"))
+
+        assert setup_module.check_auth_live() is False
+        out = capsys.readouterr().out
+        assert "LIVE_CHECK_FAILED" in out
+        assert "OAuth client or account disabled" not in out

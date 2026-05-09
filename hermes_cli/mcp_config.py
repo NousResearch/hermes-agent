@@ -31,7 +31,12 @@ logger = logging.getLogger(__name__)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-_MCP_PRESETS: Dict[str, Dict[str, Any]] = {}
+_MCP_PRESETS: Dict[str, Dict[str, Any]] = {
+    "codex": {
+        "command": "codex",
+        "args": ["mcp-server"],
+    },
+}
 
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────

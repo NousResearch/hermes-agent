@@ -426,26 +426,36 @@ def session_search(
                 continue
             if resolved_sid not in seen_sessions:
                 result = dict(result)
-                result["session_id"] = resolved_sid
+                if resolved_sid != raw_sid:
+                    result["resolved_session_id"] = resolved_sid
                 seen_sessions[resolved_sid] = result
             if len(seen_sessions) >= limit:
                 break
 
         # Prepare all sessions for parallel summarization
         tasks = []
-        for session_id, match_info in seen_sessions.items():
+        for resolved_session_id, match_info in seen_sessions.items():
+            content_session_id = match_info["session_id"]
             try:
-                messages = db.get_messages_as_conversation(session_id)
+                messages = db.get_messages_as_conversation(content_session_id)
                 if not messages:
                     continue
-                session_meta = db.get_session(session_id) or {}
+                session_meta = db.get_session(resolved_session_id) or {}
                 conversation_text = _format_conversation(messages)
                 conversation_text = _truncate_around_matches(conversation_text, query)
-                tasks.append((session_id, match_info, conversation_text, session_meta))
+                tasks.append(
+                    (
+                        content_session_id,
+                        resolved_session_id,
+                        match_info,
+                        conversation_text,
+                        session_meta,
+                    )
+                )
             except Exception as e:
                 logging.warning(
                     "Failed to prepare session %s: %s",
-                    session_id,
+                    content_session_id,
                     e,
                     exc_info=True,
                 )
@@ -462,7 +472,7 @@ def session_search(
 
             coros = [
                 _bounded_summary(text, meta)
-                for _, _, text, meta in tasks
+                for _, _, _, text, meta in tasks
             ]
             return await asyncio.gather(*coros, return_exceptions=True)
 
@@ -486,11 +496,19 @@ def session_search(
             }, ensure_ascii=False)
 
         summaries = []
-        for (session_id, match_info, conversation_text, session_meta), result in zip(tasks, results):
+        for (
+            content_session_id,
+            resolved_session_id,
+            match_info,
+            conversation_text,
+            session_meta,
+        ), result in zip(tasks, results):
             if isinstance(result, Exception):
                 logging.warning(
                     "Failed to summarize session %s: %s",
-                    session_id, result, exc_info=True,
+                    content_session_id,
+                    result,
+                    exc_info=True,
                 )
                 result = None
 
@@ -500,13 +518,15 @@ def session_search(
             # root, so session_meta has the authoritative platform/source for the
             # session the user actually cares about (#15909).
             entry = {
-                "session_id": session_id,
+                "session_id": content_session_id,
                 "when": _format_timestamp(
                     session_meta.get("started_at") or match_info.get("session_started")
                 ),
                 "source": session_meta.get("source") or match_info.get("source", "unknown"),
                 "model": session_meta.get("model") or match_info.get("model"),
             }
+            if resolved_session_id != content_session_id:
+                entry["resolved_session_id"] = resolved_session_id
 
             if result:
                 entry["summary"] = result

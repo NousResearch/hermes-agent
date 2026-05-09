@@ -556,7 +556,74 @@ class TestSessionSearch:
         assert result["success"] is True
         assert result["count"] == 1
         entry = result["results"][0]
-        assert entry["session_id"] == "parent_sid", "should report resolved parent session ID"
+        assert entry["session_id"] == "child_sid", "should report the session that contains the matched content"
+        assert entry["resolved_session_id"] == "parent_sid"
         assert entry["source"] == "api_server", (
             f"source should be parent's 'api_server', got {entry['source']!r}"
         )
+
+    def test_content_retrieval_uses_original_session_id(self):
+        """Fetch preview content from the matched child session, not its resolved parent."""
+        from unittest.mock import MagicMock, AsyncMock, patch as _patch
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "child_sid",
+                "content": "headless-chatgpt match",
+                "source": "telegram",
+                "session_started": 1709400000,
+                "model": "gpt-4o-mini",
+            },
+        ]
+
+        def _get_session(session_id):
+            if session_id == "child_sid":
+                return {
+                    "id": "child_sid",
+                    "parent_session_id": "parent_sid",
+                    "source": "telegram",
+                    "started_at": 1709400000,
+                    "model": "gpt-4o-mini",
+                }
+            if session_id == "parent_sid":
+                return {
+                    "id": "parent_sid",
+                    "parent_session_id": None,
+                    "source": "api_server",
+                    "started_at": 1709300000,
+                    "model": "gpt-4o-mini",
+                }
+            return None
+
+        def _get_messages_as_conversation(session_id):
+            if session_id == "child_sid":
+                return [
+                    {"role": "user", "content": "headless-chatgpt appears here"},
+                    {"role": "assistant", "content": "ack"},
+                ]
+            if session_id == "parent_sid":
+                return [
+                    {"role": "user", "content": "parent does not contain the query"},
+                ]
+            return []
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.side_effect = _get_messages_as_conversation
+
+        with _patch(
+            "tools.session_search_tool.async_call_llm",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("no provider"),
+        ):
+            result = json.loads(session_search(query="headless-chatgpt", db=mock_db))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        mock_db.get_messages_as_conversation.assert_called_once_with("child_sid")
+        entry = result["results"][0]
+        assert entry["session_id"] == "child_sid"
+        assert entry["resolved_session_id"] == "parent_sid"
+        assert "headless-chatgpt appears here" in entry["summary"]
+        assert "parent does not contain the query" not in entry["summary"]

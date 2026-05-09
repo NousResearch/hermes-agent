@@ -57,6 +57,7 @@ class TestYoloMode:
     def test_dangerous_command_approved_in_yolo_mode(self, monkeypatch):
         """With HERMES_YOLO_MODE, dangerous (non-hardline) commands are auto-approved."""
         monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        monkeypatch.setattr("tools.approval._YOLO_AT_STARTUP", True)
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.setenv("HERMES_SESSION_KEY", "test-session")
 
@@ -70,6 +71,7 @@ class TestYoloMode:
     def test_yolo_mode_works_for_all_patterns(self, monkeypatch):
         """Yolo mode bypasses dangerous patterns (except the hardline floor)."""
         monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        monkeypatch.setattr("tools.approval._YOLO_AT_STARTUP", True)
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
         # Dangerous but recoverable — yolo should bypass.
@@ -91,6 +93,7 @@ class TestYoloMode:
     def test_combined_guard_bypasses_yolo_mode(self, monkeypatch):
         """The new combined guard should preserve yolo bypass semantics."""
         monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        monkeypatch.setattr("tools.approval._YOLO_AT_STARTUP", True)
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
         called = {"value": False}
@@ -216,3 +219,32 @@ class TestYoloMode:
         approval_module.clear_session("session-a")
 
         assert is_session_yolo_enabled("session-a") is False
+
+    def test_subprocess_cannot_inject_yolo_via_env(self, monkeypatch):
+        """Subprocess setting HERMES_YOLO_MODE must not bypass approval mid-session.
+
+        _YOLO_AT_STARTUP is cached at import time. A subprocess that exports
+        HERMES_YOLO_MODE=1 afterward must not enable the bypass because
+        check_dangerous_command reads _YOLO_AT_STARTUP, not os.getenv().
+        """
+        # Ensure _YOLO_AT_STARTUP is False (not yolo at startup)
+        monkeypatch.setattr("tools.approval._YOLO_AT_STARTUP", False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_SESSION_KEY", "test-session")
+
+        # Simulate subprocess injecting the env var AFTER import
+        os.environ["HERMES_YOLO_MODE"] = "1"
+        try:
+            result = check_dangerous_command(
+                "rm -rf /tmp/stuff", "local",
+                approval_callback=lambda *a: "deny",
+            )
+        finally:
+            os.environ.pop("HERMES_YOLO_MODE", None)
+
+        # Must NOT be approved — _YOLO_AT_STARTUP=False wins
+        assert not result["approved"], (
+            "Subprocess env injection must not bypass approval: "
+            "_YOLO_AT_STARTUP should be read, not os.getenv()"
+        )

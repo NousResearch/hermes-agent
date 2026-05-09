@@ -15,8 +15,7 @@ class TestGetConfigPath:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HOME", str(tmp_path))
         result = get_config_path()
-        assert result.name == "config.yaml"
-        assert result.parent.name == ".hermes"
+        assert result == tmp_path / ".hermes" / "config.yaml"
 
     def test_filename_is_always_config_yaml(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

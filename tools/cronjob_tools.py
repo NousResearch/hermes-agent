@@ -52,13 +52,15 @@ _CRON_THREAT_PATTERNS = [
 _CRON_SECRET_VAR_RE = r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?'
 _CRON_EXFIL_COMMAND_PATTERNS = [
     # Tighten exfil detection to obvious leak paths: embedding a secret
-    # directly in the destination URL or POST/FORM payload. This avoids
-    # false positives on legitimate API examples that pass tokens via an
-    # Authorization header (for example the built-in GitHub skills).
+    # directly in the destination URL, sending it in POST/FORM payloads,
+    # or shipping it via Authorization headers to arbitrary hosts. The
+    # only intended allowlist exception today is the bundled GitHub skill
+    # pattern that talks to api.github.com.
     (rf'curl\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_curl_url"),
     (rf'wget\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_wget_url"),
     (rf'curl\s+[^\n]*(?:--data(?:-raw|-binary|-urlencode)?|-d|--form|-F)\s+[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_curl_data"),
     (rf'wget\s+[^\n]*--post-(?:data|file)=[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_wget_post"),
+    (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
 ]
 
 _CRON_INVISIBLE_CHARS = {
@@ -69,14 +71,25 @@ _CRON_INVISIBLE_CHARS = {
 
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
+    github_auth_header = re.search(
+        rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
+        r'\s+https://api\.github\.com(?:/|\b)',
+        prompt,
+        re.IGNORECASE,
+    )
+    prompt_to_scan = prompt
+    if github_auth_header:
+        # Allow the bundled GitHub skill fallback shape without opening a
+        # blanket exemption for arbitrary Authorization-header exfiltration.
+        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
     for char in _CRON_INVISIBLE_CHARS:
-        if char in prompt:
+        if char in prompt_to_scan:
             return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
     for pattern, pid in _CRON_THREAT_PATTERNS:
-        if re.search(pattern, prompt, re.IGNORECASE):
+        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     for pattern, pid in _CRON_EXFIL_COMMAND_PATTERNS:
-        if re.search(pattern, prompt, re.IGNORECASE):
+        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     return ""
 

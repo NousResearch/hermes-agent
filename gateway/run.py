@@ -15476,6 +15476,22 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 f"   or 'hermes gateway stop' to kill it first.\n"
                 f"   Or use 'hermes gateway run --replace' to auto-replace.\n"
             )
+            # Under systemd, returning False (exit 1) makes Restart=always
+            # immediately respawn — and if the original instance is still
+            # alive (typical during the restart race after systemctl restart
+            # without --replace, or with a stale unit file installed before
+            # --replace was added), every spawn detects the same duplicate
+            # and exits 1, producing an infinite restart-flap loop that
+            # eventually trips StartLimitBurst (#21915).  Treat the
+            # duplicate as a clean exit (0) when systemd is the parent so
+            # the service stays in 'active (exited)' instead of flapping.
+            # The CLI path (no INVOCATION_ID) still exits non-zero so the
+            # user's shell sees the error.
+            if os.environ.get("INVOCATION_ID"):
+                logger.info(
+                    "Running under systemd; exiting cleanly to avoid restart flap."
+                )
+                return True
             return False
 
     # Sync bundled skills on gateway start (fast -- skips unchanged)

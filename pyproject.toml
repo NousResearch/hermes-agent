@@ -84,6 +84,9 @@ computer-use = ["mcp>=1.2.0,<2"]
 acp = ["agent-client-protocol>=0.9.0,<1.0"]
 mistral = ["mistralai>=2.3.0,<3"]
 bedrock = ["boto3>=1.35.0,<2"]
+# Azure AI Content Safety guardrails (optional; provider works without it).
+# Pure-Python azure-* SDKs — Termux-safe.
+azure = ["azure-ai-contentsafety>=1.0.0,<2", "azure-core>=1.30,<2"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
   "python-telegram-bot[webhooks]>=22.6,<23",
@@ -111,6 +114,7 @@ termux-all = [
   "hermes-agent[google]",
   "hermes-agent[mistral]",
   "hermes-agent[bedrock]",
+  "hermes-agent[azure]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[web]",
@@ -162,6 +166,7 @@ all = [
   "hermes-agent[google]",
   "hermes-agent[mistral]",
   "hermes-agent[bedrock]",
+  "hermes-agent[azure]",
   "hermes-agent[web]",
 ]
 

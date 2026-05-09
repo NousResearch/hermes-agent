@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from getpass import getpass
 import math
+import os
 import sys
 import time
 from types import SimpleNamespace
@@ -508,6 +509,57 @@ def auth_spotify_command(args) -> None:
     raise SystemExit(f"Unknown Spotify auth action: {action}")
 
 
+def describe_azure_foundry_status(env=None):
+    """Build the Azure Foundry status row shown by ``hermes auth``.
+
+    Returns a dict::
+        {
+          "configured":     bool,           # row will only render when True
+          "resource":       str,            # hostname of AZURE_FOUNDRY_BASE_URL or "—"
+          "key_source":     "env"|"dotenv"|"config"|"—",
+          "content_safety": str,            # hostname of AZURE_CONTENT_SAFETY_ENDPOINT or "—"
+        }
+    """
+    import os as _os
+    env = env if env is not None else dict(_os.environ)
+    az_base = (env.get("AZURE_FOUNDRY_BASE_URL", "") or "").strip()
+    az_key = (env.get("AZURE_FOUNDRY_API_KEY", "") or "").strip()
+    key_source = "env" if az_key else "—"
+    if not az_key:
+        try:
+            from hermes_cli.config import get_env_value as _gev
+            v = (_gev("AZURE_FOUNDRY_API_KEY") or "").strip()
+            if v:
+                az_key = v
+                key_source = "dotenv"
+        except Exception:
+            pass
+
+    configured = bool(az_base or az_key)
+    host = "—"
+    if az_base:
+        try:
+            from urllib.parse import urlparse as _up
+            host = _up(az_base).hostname or "—"
+        except Exception:
+            host = "—"
+
+    cs_endpoint = (env.get("AZURE_CONTENT_SAFETY_ENDPOINT", "") or "").strip()
+    cs_resource = "—"
+    if cs_endpoint:
+        try:
+            from urllib.parse import urlparse as _up2
+            cs_resource = _up2(cs_endpoint).hostname or "—"
+        except Exception:
+            cs_resource = "—"
+    return {
+        "configured": configured,
+        "resource": host,
+        "key_source": key_source,
+        "content_safety": cs_resource,
+    }
+
+
 def _interactive_auth() -> None:
     """Interactive credential pool management when `hermes auth` is called bare."""
     # Show current pool status first
@@ -536,6 +588,40 @@ def _interactive_auth() -> None:
             print()
     except ImportError:
         pass  # boto3 or bedrock_adapter not available
+
+    # Show Azure Foundry credential status (also outside the pool — uses
+    # endpoint + key pair, optional Content Safety guardrail key).
+    _az_base = os.getenv("AZURE_FOUNDRY_BASE_URL", "").strip()
+    _az_key = os.getenv("AZURE_FOUNDRY_API_KEY", "").strip()
+    _az_source = "env" if _az_key else "—"
+    if not _az_key:
+        try:
+            from hermes_cli.config import get_env_value as _gev
+            _v = (_gev("AZURE_FOUNDRY_API_KEY") or "").strip()
+            if _v:
+                _az_key = _v
+                _az_source = "dotenv"
+        except Exception:
+            pass
+    if _az_base or _az_key:
+        try:
+            from urllib.parse import urlparse as _up
+            _host = _up(_az_base).hostname or "—" if _az_base else "—"
+        except Exception:
+            _host = "—"
+        _cs_endpoint = os.getenv("AZURE_CONTENT_SAFETY_ENDPOINT", "").strip()
+        _cs_resource = "—"
+        if _cs_endpoint:
+            try:
+                from urllib.parse import urlparse as _up2
+                _cs_resource = _up2(_cs_endpoint).hostname or "—"
+            except Exception:
+                _cs_resource = "—"
+        print(f"azure-foundry (resource + API key):")
+        print(f"  Resource: {_host}")
+        print(f"  Key source: {_az_source}")
+        print(f"  Content Safety: {_cs_resource}")
+        print()
     print()
 
     # Main menu

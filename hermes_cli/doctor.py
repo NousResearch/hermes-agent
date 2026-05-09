@@ -10,6 +10,7 @@ import subprocess
 import shutil
 import importlib.util
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -275,6 +276,121 @@ def _build_apikey_providers_list() -> list:
     except Exception:
         pass
     return _static
+
+
+def check_azure_foundry(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Inspect Azure Foundry + Content Safety configuration.
+
+    Pure-data helper used by ``run_doctor`` and the test suite.  Reads
+    credentials from ``env`` (defaults to ``os.environ``) and probes the
+    Foundry models endpoint and Content Safety endpoint via stdlib
+    ``urllib.request`` so the function stays import-cheap.
+
+    Returns a dict with::
+        {
+          "configured":        bool,         # base or key set
+          "base_url":          str,
+          "foundry_status":    "ok"|"warn"|"unconfigured",
+          "foundry_detail":    str,
+          "key_source":        "env"|"dotenv"|"config"|"missing",
+          "cs_endpoint":       str,
+          "cs_status":         "ok"|"warn"|"unconfigured"|"key_missing",
+          "cs_detail":         str,
+          "issues":            list[str],
+        }
+    """
+    import os
+    import urllib.error as _ue
+    import urllib.request as _u
+
+    env = env if env is not None else dict(os.environ)
+    issues: list[str] = []
+    base = (env.get("AZURE_FOUNDRY_BASE_URL", "") or "").strip().rstrip("/")
+    key = (env.get("AZURE_FOUNDRY_API_KEY", "") or "").strip()
+
+    key_source = "env" if key else "missing"
+    if not key:
+        try:
+            from hermes_cli.config import get_env_value as _get_env
+            _dot = (_get_env("AZURE_FOUNDRY_API_KEY") or "").strip()
+            if _dot:
+                key = _dot
+                key_source = "dotenv"
+        except Exception:
+            pass
+
+    result: Dict[str, Any] = {
+        "configured": bool(base or key),
+        "base_url": base,
+        "foundry_status": "unconfigured",
+        "foundry_detail": "",
+        "key_source": key_source,
+        "cs_endpoint": (env.get("AZURE_CONTENT_SAFETY_ENDPOINT", "") or "").strip().rstrip("/"),
+        "cs_status": "unconfigured",
+        "cs_detail": "",
+        "issues": issues,
+    }
+    if not result["configured"]:
+        return result
+
+    if not base:
+        result["foundry_status"] = "warn"
+        result["foundry_detail"] = "AZURE_FOUNDRY_BASE_URL not set"
+    elif not key:
+        result["foundry_status"] = "warn"
+        result["foundry_detail"] = "AZURE_FOUNDRY_API_KEY not set"
+    else:
+        probe_url = f"{base}/openai/models?api-version=2024-08-01-preview"
+        try:
+            req = _u.Request(probe_url, method="HEAD",
+                             headers={"api-key": key})
+            with _u.urlopen(req, timeout=5) as resp:
+                status = resp.status
+            if status in (200, 204, 401, 403):
+                result["foundry_status"] = "ok"
+                result["foundry_detail"] = base
+            else:
+                result["foundry_status"] = "warn"
+                result["foundry_detail"] = f"unexpected status {status}"
+        except _ue.HTTPError as exc:
+            if exc.code in (401, 403, 405):
+                result["foundry_status"] = "ok"
+                result["foundry_detail"] = f"{base} (HTTP {exc.code})"
+            else:
+                result["foundry_status"] = "warn"
+                result["foundry_detail"] = f"HTTP {exc.code}"
+                issues.append(f"Azure Foundry: HTTP {exc.code} from {probe_url}")
+        except Exception as exc:
+            result["foundry_status"] = "warn"
+            result["foundry_detail"] = f"{type(exc).__name__}"
+            issues.append(f"Azure Foundry: {type(exc).__name__} — check base URL / network")
+
+    cs_endpoint = result["cs_endpoint"]
+    cs_key = (env.get("AZURE_CONTENT_SAFETY_KEY", "") or "").strip()
+    if cs_endpoint:
+        if not cs_key:
+            result["cs_status"] = "key_missing"
+            result["cs_detail"] = "set AZURE_CONTENT_SAFETY_KEY"
+        else:
+            cs_probe = f"{cs_endpoint}/contentsafety/text:analyze?api-version=2024-09-01"
+            try:
+                req2 = _u.Request(cs_probe, method="OPTIONS",
+                                  headers={"Ocp-Apim-Subscription-Key": cs_key})
+                with _u.urlopen(req2, timeout=5) as resp2:
+                    _ = resp2.status
+                result["cs_status"] = "ok"
+                result["cs_detail"] = cs_endpoint
+            except _ue.HTTPError as exc:
+                if exc.code in (200, 204, 401, 403, 405):
+                    result["cs_status"] = "ok"
+                    result["cs_detail"] = f"{cs_endpoint} (HTTP {exc.code})"
+                else:
+                    result["cs_status"] = "warn"
+                    result["cs_detail"] = f"HTTP {exc.code}"
+            except Exception as exc:
+                result["cs_status"] = "warn"
+                result["cs_detail"] = f"{type(exc).__name__}"
+    return result
 
 
 def run_doctor(args):
@@ -1346,6 +1462,98 @@ def run_doctor(args):
                 issues.append(f"AWS Bedrock: {_err_name} — check IAM permissions for bedrock:ListFoundationModels")
     except ImportError:
         pass  # bedrock_adapter not available — skip silently
+
+    # -- Azure Foundry --
+    # Azure uses an API key + base URL.  We probe the openai/models
+    # listing endpoint (cheap, doesn't burn tokens) and surface the
+    # Content Safety guardrail wiring when configured.
+    try:
+        _az_base = os.getenv("AZURE_FOUNDRY_BASE_URL", "").strip().rstrip("/")
+        _az_key = os.getenv("AZURE_FOUNDRY_API_KEY", "").strip()
+        # Try dotenv as a fallback source for the key.
+        if not _az_key:
+            try:
+                from hermes_cli.config import get_env_value as _get_env
+                _az_key = (_get_env("AZURE_FOUNDRY_API_KEY") or "").strip()
+            except Exception:
+                pass
+        # If we don't have a base URL but the user has placeholder env
+        # set, attempt detection — cheap when offline (returns no host).
+        if _az_base or _az_key:
+            print(f"  Checking Azure Foundry...", end="", flush=True)
+            if not _az_base:
+                check_warn("Azure Foundry: AZURE_FOUNDRY_BASE_URL not set",
+                           "(run 'hermes model' to configure)")
+            elif not _az_key:
+                check_warn("Azure Foundry: AZURE_FOUNDRY_API_KEY not set",
+                           "(check ~/.hermes/.env)")
+            else:
+                # Reachability probe — HEAD on /openai/models.
+                import urllib.request as _u
+                import urllib.error as _ue
+                _probe_url = f"{_az_base}/openai/models?api-version=2024-08-01-preview"
+                try:
+                    _req = _u.Request(_probe_url, method="HEAD",
+                                      headers={"api-key": _az_key})
+                    with _u.urlopen(_req, timeout=5) as _resp:
+                        _status = _resp.status
+                    if _status in (200, 204, 401, 403):
+                        # 401/403 means the host responded — endpoint is
+                        # reachable, key just lacks permissions.  Still
+                        # green for "endpoint reachable".
+                        check_ok("Azure Foundry endpoint reachable",
+                                 f"({_az_base})")
+                    else:
+                        check_warn(f"Azure Foundry: unexpected status {_status}",
+                                   f"({_probe_url})")
+                except _ue.HTTPError as _exc:
+                    if _exc.code in (401, 403):
+                        check_ok("Azure Foundry endpoint reachable",
+                                 f"({_az_base}, key check failed: HTTP {_exc.code})")
+                    elif _exc.code == 405:
+                        # HEAD not allowed — host responded, that's enough.
+                        check_ok("Azure Foundry endpoint reachable",
+                                 f"({_az_base})")
+                    else:
+                        check_warn(f"Azure Foundry probe HTTP {_exc.code}",
+                                   f"({_probe_url})")
+                        issues.append(
+                            f"Azure Foundry: HTTP {_exc.code} from {_probe_url}")
+                except Exception as _exc:
+                    check_warn("Azure Foundry probe failed", f"({type(_exc).__name__})")
+                    issues.append(f"Azure Foundry: {type(_exc).__name__} — check base URL / network")
+
+            # Content Safety guardrail probe (optional).
+            _cs_endpoint = os.getenv("AZURE_CONTENT_SAFETY_ENDPOINT", "").strip().rstrip("/")
+            _cs_key = os.getenv("AZURE_CONTENT_SAFETY_KEY", "").strip()
+            if _cs_endpoint:
+                if not _cs_key:
+                    check_warn("Azure Content Safety: key missing",
+                               "(set AZURE_CONTENT_SAFETY_KEY)")
+                else:
+                    import urllib.request as _u2
+                    import urllib.error as _ue2
+                    _cs_probe = f"{_cs_endpoint}/contentsafety/text:analyze?api-version=2024-09-01"
+                    try:
+                        _req2 = _u2.Request(_cs_probe, method="OPTIONS",
+                                            headers={"Ocp-Apim-Subscription-Key": _cs_key})
+                        with _u2.urlopen(_req2, timeout=5) as _resp2:
+                            _ = _resp2.status
+                        check_ok("Azure Content Safety reachable", f"({_cs_endpoint})")
+                    except _ue2.HTTPError as _exc:
+                        if _exc.code in (200, 204, 401, 403, 405):
+                            check_ok("Azure Content Safety reachable",
+                                     f"({_cs_endpoint}, HTTP {_exc.code})")
+                        else:
+                            check_warn(f"Azure Content Safety HTTP {_exc.code}",
+                                       f"({_cs_endpoint})")
+                    except Exception as _exc:
+                        check_warn("Azure Content Safety probe failed",
+                                   f"({type(_exc).__name__})")
+    except Exception:
+        # Defensive: never let the Azure section break the doctor
+        # command for users who have no Azure config.
+        pass
 
     # =========================================================================
     # Check: Submodules

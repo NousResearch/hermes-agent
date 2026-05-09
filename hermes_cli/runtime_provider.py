@@ -736,7 +736,7 @@ def _resolve_azure_foundry_runtime(
         base_url = re.sub(r"/v1/?$", "", base_url)
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "config"
-    return {
+    descriptor: Dict[str, Any] = {
         "provider": "azure-foundry",
         "api_mode": cfg_api_mode,
         "base_url": base_url,
@@ -744,6 +744,51 @@ def _resolve_azure_foundry_runtime(
         "source": source,
         "requested_provider": requested_provider,
     }
+
+    # Optional Azure AI Content Safety guardrails block.  Mirrors the
+    # Bedrock guardrails block: configured under the model entry with
+    # the same shape so users can copy/paste between providers.  We
+    # surface the resolved guardrail config in the runtime descriptor
+    # so downstream callers (the chat loop) can wire pre-flight
+    # ``analyze_text`` / ``shield_prompt`` calls without re-reading
+    # config.
+    raw_guardrails = model_cfg.get("guardrails")
+    if isinstance(raw_guardrails, dict):
+        cs_endpoint = str(raw_guardrails.get("content_safety_endpoint") or "").strip().rstrip("/")
+        cs_key_env = str(raw_guardrails.get("content_safety_key_env") or "AZURE_CONTENT_SAFETY_KEY").strip()
+        cs_key = ""
+        if cs_endpoint:
+            try:
+                from hermes_cli.config import get_env_value
+                cs_key = (get_env_value(cs_key_env) or "").strip()
+            except Exception:
+                cs_key = ""
+            if not cs_key:
+                cs_key = os.getenv(cs_key_env, "").strip()
+            if not cs_key:
+                # Honour an explicit endpoint env var fallback too.
+                cs_key = os.getenv("AZURE_CONTENT_SAFETY_KEY", "").strip()
+        prompt_shield = bool(raw_guardrails.get("prompt_shield", False))
+        block_categories = raw_guardrails.get("block_categories") or []
+        if not isinstance(block_categories, list):
+            block_categories = []
+        block_categories = [str(c).strip() for c in block_categories if str(c).strip()]
+        try:
+            severity_threshold = int(raw_guardrails.get("severity_threshold", 4))
+        except (TypeError, ValueError):
+            severity_threshold = 4
+        descriptor["guardrails"] = {
+            "content_safety_endpoint": cs_endpoint,
+            "content_safety_key_env": cs_key_env,
+            "content_safety_key": cs_key,  # may be empty — caller checks
+            "prompt_shield": prompt_shield,
+            "block_categories": block_categories,
+            "severity_threshold": severity_threshold,
+            "configured": bool(cs_endpoint),
+            "key_resolved": bool(cs_key),
+        }
+
+    return descriptor
 
 
 def _resolve_explicit_runtime(

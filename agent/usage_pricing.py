@@ -475,6 +475,92 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",
     ),
+    # ── Azure Foundry / Azure OpenAI ────────────────────────────────────
+    # Azure exposes catalog models via per-region deployments.  Pricing
+    # below is the Microsoft-published list price (per 1M tokens, USD,
+    # global / standard tier).  Where Microsoft has not published a
+    # per-model number we fall back to OpenAI's list and tag the entry
+    # source as "azure-foundry-list-fallback".
+    #
+    # Source: https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/
+    # Snapshot: 2026-05.
+    (
+        "azure-foundry",
+        "gpt-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.25"),
+        output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("0.125"),
+        source="azure-foundry-list-fallback",
+        source_url="https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/",
+        pricing_version="azure-foundry-pricing-2026-05",
+    ),
+    (
+        "azure-foundry",
+        "gpt-5-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("2.00"),
+        cache_read_cost_per_million=Decimal("0.025"),
+        source="azure-foundry-list-fallback",
+        source_url="https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/",
+        pricing_version="azure-foundry-pricing-2026-05",
+    ),
+    (
+        "azure-foundry",
+        "gpt-5-codex",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.25"),
+        output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("0.125"),
+        source="azure-foundry-list-fallback",
+        source_url="https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/",
+        pricing_version="azure-foundry-pricing-2026-05",
+    ),
+    (
+        "azure-foundry",
+        "gpt-4.1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("8.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        source="azure-foundry-list-fallback",
+        source_url="https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/",
+        pricing_version="azure-foundry-pricing-2026-05",
+    ),
+    (
+        "azure-foundry",
+        "gpt-4.1-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.40"),
+        output_cost_per_million=Decimal("1.60"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        source="azure-foundry-list-fallback",
+        source_url="https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/",
+        pricing_version="azure-foundry-pricing-2026-05",
+    ),
+    (
+        "azure-foundry",
+        "o3",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("8.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        source="azure-foundry-list-fallback",
+        source_url="https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/",
+        pricing_version="azure-foundry-pricing-2026-05",
+    ),
+    (
+        "azure-foundry",
+        "o4-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.10"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.275"),
+        source="azure-foundry-list-fallback",
+        source_url="https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/",
+        pricing_version="azure-foundry-pricing-2026-05",
+    ),
     # MiniMax
     (
         "minimax",
@@ -537,9 +623,41 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name in {"azure-foundry", "azure_openai", "azure-openai"} or base_url_host_matches(base or "", "openai.azure.com") or base_url_host_matches(base or "", "cognitiveservices.azure.com") or base_url_host_matches(base or "", "services.ai.azure.com"):
+        # Azure deployment names are user-defined aliases; try to map
+        # the deployment back to a canonical catalog model name before
+        # billing lookup.  The pricing table is keyed on the catalog
+        # model (gpt-5, gpt-4.1, ...).
+        return BillingRoute(provider="azure-foundry", model=_canonicalize_azure_model(model), base_url=base_url or "", billing_mode="azure-foundry-list-fallback")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
+
+
+# Azure deployment-name → canonical catalog-model mapping.  Customers
+# are free to name deployments anything (e.g. "prod-gpt5", "gpt5-eus"),
+# so we use a substring match against the known catalog set.  Order
+# matters — check more specific names first so "gpt-5-mini" beats
+# "gpt-5".  Returns the input unchanged when no rule matches.
+_AZURE_CANONICAL_MODELS: tuple[str, ...] = (
+    "gpt-5-codex",
+    "gpt-5-mini",
+    "gpt-5",
+    "gpt-4.1-mini",
+    "gpt-4.1",
+    "o4-mini",
+    "o3",
+)
+
+
+def _canonicalize_azure_model(model: str) -> str:
+    if not model:
+        return model
+    needle = model.lower().replace("_", "-")
+    for canonical in _AZURE_CANONICAL_MODELS:
+        if canonical in needle:
+            return canonical
+    return model
 
 
 def _normalize_anthropic_model_name(model: str) -> str:

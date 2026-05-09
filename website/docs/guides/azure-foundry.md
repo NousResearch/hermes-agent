@@ -155,3 +155,67 @@ model:
 - [Environment variables](/docs/reference/environment-variables)
 - [Configuration](/docs/user-guide/configuration)
 - [AWS Bedrock](/docs/guides/aws-bedrock) — the other major cloud provider integration
+
+## Content Safety guardrails
+
+Azure AI [Content Safety](https://learn.microsoft.com/azure/ai-services/content-safety/) provides server-side moderation for prompts and responses. Hermes can wrap your Azure Foundry calls with pre-flight `text:analyze` and `text:shieldPrompt` checks, mirroring the AWS Bedrock guardrails block.
+
+### Provision a Content Safety resource
+
+1. In the Azure portal, create an **Azure AI Content Safety** resource (or reuse an existing one).
+2. Copy the endpoint (e.g. `https://my-cs.cognitiveservices.azure.com`) and one of the keys.
+
+### Configure
+
+Add a `guardrails:` block under your `model:` entry in `~/.hermes/config.yaml`:
+
+```yaml
+model:
+  provider: azure-foundry
+  base_url: https://my-resource.openai.azure.com
+  api_mode: chat_completions
+  default: gpt-5
+
+  guardrails:
+    content_safety_endpoint: https://my-cs.cognitiveservices.azure.com
+    content_safety_key_env: AZURE_CONTENT_SAFETY_KEY
+    prompt_shield: true
+    block_categories: [Hate, Violence, SelfHarm, Sexual]
+    severity_threshold: 4
+```
+
+Then set the key in `~/.hermes/.env`:
+
+```env
+AZURE_CONTENT_SAFETY_KEY=<your-key>
+# Optional — only needed if you want hermes doctor to probe the endpoint directly:
+AZURE_CONTENT_SAFETY_ENDPOINT=https://my-cs.cognitiveservices.azure.com
+```
+
+### Schema
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `content_safety_endpoint` | string (URL) | — | Required. Azure Content Safety resource endpoint. |
+| `content_safety_key_env` | string | `AZURE_CONTENT_SAFETY_KEY` | Env var name to read the key from. |
+| `prompt_shield` | bool | `false` | When true, also calls `text:shieldPrompt` to detect prompt-injection attacks. |
+| `block_categories` | list | `[Hate, Violence, SelfHarm, Sexual]` | Categories Hermes will block on. |
+| `severity_threshold` | int (0–7) | `4` | Block when any listed category is at or above this severity. |
+
+### Optional dependency
+
+The provider works without any new packages — guardrail HTTP calls go through `urllib`. If you prefer the official Azure SDK (better retry semantics), install the optional extra:
+
+```bash
+pip install 'hermes-agent[azure]'
+```
+
+### Verifying
+
+`hermes doctor` adds an **Azure Foundry** section that reports:
+
+- Whether `AZURE_FOUNDRY_BASE_URL` and `AZURE_FOUNDRY_API_KEY` resolve.
+- Whether the Foundry endpoint responds to a `HEAD /openai/models` probe.
+- Whether the Content Safety endpoint responds to an `OPTIONS /contentsafety/text:analyze` probe (no tokens spent).
+
+`hermes auth` shows a row with the resource hostname, key source (env/dotenv), and Content Safety resource (or `—` if not configured).

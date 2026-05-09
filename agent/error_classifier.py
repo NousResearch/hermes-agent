@@ -57,6 +57,11 @@ class FailoverReason(enum.Enum):
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
 
+    # Content moderation
+    content_filter = "content_filter"    # Provider-side content moderation (Azure Content Safety,
+                                         # ResponsibleAIPolicyViolation, OpenAI content_filter) —
+                                         # request was blocked, retry won't help.
+
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
 
@@ -234,6 +239,42 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = [
     "no endpoints available matching your guardrail",
     "no endpoints available matching your data policy",
     "no endpoints found matching your data policy",
+]
+
+# Azure / OpenAI content-moderation patterns.
+#
+# Azure OpenAI surfaces Responsible-AI policy violations as either:
+#   - Top-level error.code = "content_filter" (chat/completions and Responses API)
+#   - Top-level error.code = "ResponsibleAIPolicyViolation" (older deployments)
+#   - Inside content_filter_results when finish_reason == "content_filter"
+# Azure AI Content Safety returns category-level severities for analyzed text;
+# our content_safety client raises a ContentSafetyBlocked exception whose
+# string repr surfaces here as "content safety blocked".
+#
+# Bedrock returns "blocked by guardrail" / "guardrail intervened" — we map
+# both vendors to the same FailoverReason.content_filter for consistent UX.
+_CONTENT_FILTER_PATTERNS = [
+    "responsibleaipolicyviolation",
+    "responsible ai policy",
+    "content_filter",
+    "content filter",
+    "content safety blocked",
+    "blocked by content filter",
+    "blocked by guardrail",
+    "guardrail intervened",
+    "prompt shield",
+    "jailbreak",
+]
+
+# Azure Foundry "deployment not found" — distinct from a generic
+# "model not found" because the deployment is a user-named alias the user
+# created in the portal; the underlying model may still exist.  We map to
+# the same FailoverReason.model_not_found bucket because the recovery
+# action (fallback to a different routed model) is identical.
+_AZURE_DEPLOYMENT_NOT_FOUND_PATTERNS = [
+    "deploymentnotfound",
+    "deployment not found",
+    "the api deployment for this resource does not exist",
 ]
 
 # Auth patterns (non-status-code signals)
@@ -842,6 +883,28 @@ def _classify_by_error_code(
             should_fallback=True,
         )
 
+    if code_lower in (
+        "content_filter",
+        "responsibleaipolicyviolation",
+        "responsible_ai_policy_violation",
+        "contentpolicyviolation",
+    ):
+        return result_fn(
+            FailoverReason.content_filter,
+            retryable=False,
+            should_fallback=False,
+        )
+
+    if code_lower in (
+        "deploymentnotfound",
+        "deployment_not_found",
+    ):
+        return result_fn(
+            FailoverReason.model_not_found,
+            retryable=False,
+            should_fallback=True,
+        )
+
     if code_lower in ("model_not_found", "model_not_available", "invalid_model"):
         return result_fn(
             FailoverReason.model_not_found,
@@ -870,6 +933,26 @@ def _classify_by_message(
     result_fn,
 ) -> Optional[ClassifiedError]:
     """Classify based on error message patterns when no status code is available."""
+
+    # Content moderation (Azure Content Safety, Azure OpenAI content_filter,
+    # Bedrock guardrails, OpenAI moderation).  These are *not* retryable —
+    # the same prompt will be blocked again.  Don't rotate credentials
+    # either; the policy violation is request-shaped, not key-shaped.
+    if any(p in error_msg for p in _CONTENT_FILTER_PATTERNS):
+        return result_fn(
+            FailoverReason.content_filter,
+            retryable=False,
+            should_fallback=False,
+        )
+
+    # Azure Foundry deployment-name mismatch — surface as model_not_found
+    # so the routing layer triggers a fallback model attempt.
+    if any(p in error_msg for p in _AZURE_DEPLOYMENT_NOT_FOUND_PATTERNS):
+        return result_fn(
+            FailoverReason.model_not_found,
+            retryable=False,
+            should_fallback=True,
+        )
 
     # Payload-too-large patterns (from message text when no status_code)
     if any(p in error_msg for p in _PAYLOAD_TOO_LARGE_PATTERNS):

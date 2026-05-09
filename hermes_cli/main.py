@@ -7341,7 +7341,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
         maintainer_synced = False
-        if is_fork and branch == "patched-main" and _is_patched_fleet_maintainer():
+        force_maintainer_sync = bool(
+            getattr(args, "maintainer", False) or getattr(args, "sync_upstream", False)
+        )
+        if is_fork and branch == "patched-main" and (force_maintainer_sync or _is_patched_fleet_maintainer()):
             maintainer_synced = _sync_patched_main_with_upstream(git_cmd, PROJECT_ROOT)
 
         prompt_for_restore = (
@@ -11173,6 +11176,14 @@ Examples:
         action="store_true",
         default=False,
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
+    )
+    update_parser.add_argument(
+        "--maintainer",
+        "--sync-upstream",
+        dest="maintainer",
+        action="store_true",
+        default=False,
+        help="For this run only, sync upstream/main into the fork and patched-main before updating. Intended for temporarily promoting a consumer machine.",
     )
     update_parser.set_defaults(func=cmd_update)
 

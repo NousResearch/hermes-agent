@@ -528,7 +528,7 @@ def test_cmd_update_patched_main_maintainer_syncs_upstream_and_pushes(monkeypatc
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
     monkeypatch.setattr(hermes_main, "_get_origin_url", lambda *a, **kw: "https://github.com/kamellperry/hermes-agent.git")
-    monkeypatch.setattr(hermes_main, "_is_patched_fleet_maintainer", lambda: True)
+    monkeypatch.setattr(hermes_main, "_is_patched_fleet_maintainer", lambda: False)
 
     recorded = []
 
@@ -566,7 +566,7 @@ def test_cmd_update_patched_main_maintainer_syncs_upstream_and_pushes(monkeypatc
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main.cmd_update(SimpleNamespace(maintainer=True))
 
     assert ["git", "push", "origin", "upstream/main:main", "--force-with-lease"] in recorded
     assert ["git", "merge", "--no-edit", "upstream/main"] in recorded

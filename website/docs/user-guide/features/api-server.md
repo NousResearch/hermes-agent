@@ -106,10 +106,19 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
 
 Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
 
-**Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event for tool-start UX. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
+**Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
 
 **Tool progress in streams**:
-- **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
+- **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool lifecycle visibility. Each event carries:
+  - `status`: `"running"` when a tool starts, `"completed"` when it finishes
+  - `tool`: the tool name (e.g. `"web_search"`, `"image_generate"`)
+  - `toolCallId`: stable identifier for correlating running/completed pairs
+  - `label` / `emoji`: UI hints (running events only, pre-existing fields)
+
+  For completed events, select tools forward additional result fields when the tool returns `"success": true`. Currently:
+  - `image_generate` → `"image"` (the generated image URL)
+
+  The forwarding whitelist is extensible — new tools can be added with a one-line change to `_TOOL_RESULT_FIELDS` in `api_server.py`.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
 
 ### POST /v1/responses

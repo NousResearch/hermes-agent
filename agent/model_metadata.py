@@ -334,7 +334,7 @@ def _is_custom_endpoint(base_url: str) -> bool:
 
 _URL_TO_PROVIDER: Dict[str, str] = {
     "api.openai.com": "openai",
-    "chatgpt.com": "openai",
+    "chatgpt.com": "openai-codex",
     "api.anthropic.com": "anthropic",
     "api.z.ai": "zai",
     "open.bigmodel.cn": "zai",
@@ -1301,7 +1301,7 @@ def get_model_context_length(
     """Get the context length for a model.
 
     Resolution order:
-    0. Explicit config override (model.context_length or custom_providers per-model)
+    0. Explicit config override (model.context_length or providers/custom_providers per-model)
     1. Persistent cache (previously discovered via probing)
     1b. AWS Bedrock static table (must precede custom-endpoint probe)
     2. Active endpoint metadata (/models for explicit custom endpoints)
@@ -1317,11 +1317,14 @@ def get_model_context_length(
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
 
-    # 0b. custom_providers per-model override — check before any probe.
-    # This closes the gap where /model switch and display paths used to fall
-    # back to 128K despite the user having a per-model context_length set.
-    # See #15779.
-    if custom_providers and base_url and model:
+    # 0b. providers/custom_providers per-model override — check before any
+    # endpoint probe, cache hit, or models.dev lookup.  Many runtime/UI/gateway
+    # callsites do not thread the compatibility custom_providers list; when it
+    # is omitted, the helper loads config.yaml and normalizes providers: into
+    # the same shape so configured context windows remain stable everywhere.
+    # This closes the gap where different paths showed different windows for
+    # the same configured provider/model.
+    if base_url and model:
         try:
             from hermes_cli.config import get_custom_provider_context_length
             cp_ctx = get_custom_provider_context_length(

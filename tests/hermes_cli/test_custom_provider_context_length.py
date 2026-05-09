@@ -183,6 +183,40 @@ class TestGetModelContextLengthHonorsOverride:
                 p.stop()
         assert ctx == 1_050_000
 
+    def test_config_provider_override_autoloads_when_custom_providers_omitted(self):
+        """Callsites that do not thread custom_providers still use config.yaml.
+
+        Runtime, gateway, and UI paths do not all pass the compatibility
+        custom_providers list. The resolver must load the config-backed
+        provider model context_length override itself before falling through to
+        endpoint probes, models.dev, or the 256K default.
+        """
+        from agent.model_metadata import get_model_context_length
+
+        patches = self._mock_all_probes()
+        for p in patches:
+            p.start()
+        try:
+            with patch(
+                "hermes_cli.config.get_custom_provider_context_length",
+                return_value=777_000,
+            ) as lookup:
+                ctx = get_model_context_length(
+                    "private-model",
+                    base_url="https://example.invalid/v1",
+                    provider="custom",
+                    custom_providers=None,
+                )
+        finally:
+            for p in patches:
+                p.stop()
+        assert ctx == 777_000
+        lookup.assert_called_once_with(
+            model="private-model",
+            base_url="https://example.invalid/v1",
+            custom_providers=None,
+        )
+
     def test_explicit_config_context_length_still_wins(self):
         """Top-level model.context_length (step 0) outranks custom_providers (step 0b).
 
@@ -238,3 +272,10 @@ class TestContextProbeTiers:
             assert a > b, f"tiers must strictly descend, got {a} then {b}"
         # 128K is still a tier (users relying on it probe-down get there)
         assert 128_000 in CONTEXT_PROBE_TIERS
+
+
+def test_chatgpt_codex_url_infers_openai_codex_not_direct_openai():
+    """Providerless Codex paths must use Codex OAuth's lower enforced cap."""
+    from agent.model_metadata import _infer_provider_from_url
+
+    assert _infer_provider_from_url("https://chatgpt.com/backend-api/codex") == "openai-codex"

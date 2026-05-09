@@ -1,7 +1,10 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import useDocusaurusContext from "@docusaurus/useDocusaurusContext";
 import Layout from "@theme/Layout";
 import skills from "../../data/skills.json";
 import styles from "./styles.module.css";
+
+type Locale = "en" | "ru";
 
 interface Skill {
   name: string;
@@ -50,6 +53,128 @@ const CATEGORY_ICONS: Record<string, string> = {
   translation: "\u{1F30D}",
   other: "\u{1F4E6}",
 };
+
+const CATEGORY_LABEL_TRANSLATIONS_RU: Record<string, string> = {
+  Apple: "Apple",
+  "AI Agents": "ИИ-агенты",
+  Blockchain: "Блокчейн",
+  Communication: "Коммуникации",
+  Creative: "Креатив",
+  "Data Science": "Аналитика данных",
+  DevOps: "DevOps",
+  Dogfood: "Dogfood",
+  Domain: "Предметная область",
+  Email: "Электронная почта",
+  Gaming: "Игры",
+  GIFs: "GIF",
+  GitHub: "GitHub",
+  Health: "Здоровье",
+  Inference: "Инференс",
+  Leisure: "Досуг",
+  MCP: "MCP",
+  Media: "Медиа",
+  Migration: "Миграция",
+  MLOps: "MLOps",
+  "Note-Taking": "Заметки",
+  Productivity: "Продуктивность",
+  "Red Teaming": "Red Teaming",
+  Research: "Исследования",
+  Security: "Безопасность",
+  "Smart Home": "Умный дом",
+  "Social Media": "Социальные сети",
+  "Software Dev": "Разработка ПО",
+  Translation: "Перевод",
+  Other: "Другое",
+  Uncategorized: "Без категории",
+};
+
+const SOURCE_LABEL_TRANSLATIONS_RU: Record<string, string> = {
+  "built-in": "Встроенные",
+  optional: "Дополнительные",
+  Anthropic: "Anthropic",
+  LobeHub: "LobeHub",
+  "Claude Marketplace": "Маркетплейс",
+  all: "Все",
+};
+
+const UI_TEXT = {
+  en: {
+    layoutTitle: "Skills Hub",
+    layoutDescription: "Browse all skills and plugins available for Hermes Agent",
+    heroEyebrow: "Hermes Agent",
+    heroTitle: "Skills Hub",
+    heroSub: (skillsCount: number, registryCount: number) =>
+      `Discover, search, and install from ${skillsCount} skills across ${registryCount} registries`,
+    statBuiltIn: "Built-in",
+    statOptional: "Optional",
+    statCommunity: "Community",
+    statCategories: "Categories",
+    searchPlaceholder: 'Search skills... (press "/" to focus)',
+    sourceAll: "All",
+    categories: "Categories",
+    clear: "Clear",
+    allSkills: "All Skills",
+    filterBy: (category: string) => `Filter by ${category}`,
+    author: "Author",
+    version: "Version",
+    noDescription: "No description available.",
+    clearAll: "Clear all",
+    results: (count: number) => `${count} result${count === 1 ? "" : "s"}`,
+    showMore: (remaining: number) => `Show more (${remaining} remaining)`,
+    noSkillsTitle: "No skills found",
+    noSkillsDesc: "Try a different search term or clear your filters.",
+    resetAll: "Reset all filters",
+    sourceLabel: (source: string) => SOURCE_CONFIG[source]?.label || source,
+    categoryLabel: (label: string) => label,
+    installCommand: (skillName: string) => `hermes skills install ${skillName}`,
+    platformMac: "macOS",
+    platformLinux: "Linux",
+  },
+  ru: {
+    layoutTitle: "Каталог навыков",
+    layoutDescription: "Просматривайте все навыки и плагины, доступные для Hermes Agent",
+    heroEyebrow: "Hermes Agent",
+    heroTitle: "Каталог навыков",
+    heroSub: (skillsCount: number, registryCount: number) =>
+      `Ищите, изучайте и устанавливайте ${skillsCount} навыков из ${registryCount} реестров`,
+    statBuiltIn: "Встроенные",
+    statOptional: "Дополнительные",
+    statCommunity: "Сообщество",
+    statCategories: "Категории",
+    searchPlaceholder: 'Поиск навыков... (нажмите "/" для фокуса)',
+    sourceAll: "Все",
+    categories: "Категории",
+    clear: "Сбросить",
+    allSkills: "Все навыки",
+    filterBy: (category: string) => `Фильтр по категории «${category}»`,
+    author: "Автор",
+    version: "Версия",
+    noDescription: "Описание отсутствует.",
+    clearAll: "Сбросить все",
+    results: (count: number) => `${count} ${count === 1 ? "результат" : count < 5 ? "результата" : "результатов"}`,
+    showMore: (remaining: number) => `Показать ещё (${remaining} осталось)`,
+    noSkillsTitle: "Ничего не найдено",
+    noSkillsDesc: "Попробуйте другой поисковый запрос или сбросьте фильтры.",
+    resetAll: "Сбросить все фильтры",
+    sourceLabel: (source: string) => SOURCE_LABEL_TRANSLATIONS_RU[source] || SOURCE_CONFIG[source]?.label || source,
+    categoryLabel: (label: string) => CATEGORY_LABEL_TRANSLATIONS_RU[label] || label,
+    installCommand: (skillName: string) => `hermes skills install ${skillName}`,
+    platformMac: "macOS",
+    platformLinux: "Linux",
+  },
+} as const;
+
+function useLocale(): Locale {
+  const { i18n } = useDocusaurusContext();
+  return i18n.currentLocale.startsWith("ru") ? "ru" : "en";
+}
+
+function translateCategoryLabel(label: string, locale: Locale): string {
+  if (locale === "ru") {
+    return CATEGORY_LABEL_TRANSLATIONS_RU[label] || label;
+  }
+  return label;
+}
 
 const SOURCE_CONFIG: Record<
   string,
@@ -114,6 +239,7 @@ function SkillCard({
   onToggle,
   onCategoryClick,
   onTagClick,
+  locale,
   style,
 }: {
   skill: Skill;
@@ -122,8 +248,10 @@ function SkillCard({
   onToggle: () => void;
   onCategoryClick: (cat: string) => void;
   onTagClick: (tag: string) => void;
+  locale: Locale;
   style?: React.CSSProperties;
 }) {
+  const ui = UI_TEXT[locale];
   const src = SOURCE_CONFIG[skill.source] || SOURCE_CONFIG["optional"];
   const icon = CATEGORY_ICONS[skill.category] || "\u{1F4E6}";
 
@@ -150,13 +278,13 @@ function SkillCard({
                 borderColor: src.border,
               }}
             >
-              {src.icon} {src.label}
+              {src.icon} {ui.sourceLabel(skill.source)}
             </span>
           </div>
         </div>
 
         <p className={`${styles.cardDesc} ${expanded ? styles.cardDescFull : ""}`}>
-          {highlightMatch(skill.description || "No description available.", query)}
+          {highlightMatch(skill.description || ui.noDescription, query)}
         </p>
 
         <div className={styles.cardMeta}>
@@ -166,13 +294,13 @@ function SkillCard({
               e.stopPropagation();
               onCategoryClick(skill.category);
             }}
-            title={`Filter by ${skill.categoryLabel}`}
+            title={ui.filterBy(ui.categoryLabel(skill.categoryLabel || skill.category))}
           >
-            {skill.categoryLabel || skill.category}
+            {ui.categoryLabel(skill.categoryLabel || skill.category)}
           </button>
           {skill.platforms?.map((p) => (
             <span key={p} className={styles.platformPill}>
-              {p === "macos" ? "\u{F8FF} macOS" : p === "linux" ? "\u{1F427} Linux" : p}
+              {p === "macos" ? `\u{F8FF} ${ui.platformMac}` : p === "linux" ? `\u{1F427} ${ui.platformLinux}` : p}
             </span>
           ))}
         </div>
@@ -197,18 +325,18 @@ function SkillCard({
             )}
             {skill.author && (
               <div className={styles.authorRow}>
-                <span className={styles.authorLabel}>Author</span>
+                <span className={styles.authorLabel}>{ui.author}</span>
                 <span className={styles.authorValue}>{skill.author}</span>
               </div>
             )}
             {skill.version && (
               <div className={styles.authorRow}>
-                <span className={styles.authorLabel}>Version</span>
+                <span className={styles.authorLabel}>{ui.version}</span>
                 <span className={styles.authorValue}>{skill.version}</span>
               </div>
             )}
             <div className={styles.installHint}>
-              <code>hermes skills install {skill.name}</code>
+              <code>{ui.installCommand(skill.name)}</code>
             </div>
           </div>
         )}
@@ -231,6 +359,8 @@ function StatCard({ value, label, color }: { value: number; label: string; color
 const PAGE_SIZE = 60;
 
 export default function SkillsDashboard() {
+  const locale = useLocale();
+  const ui = UI_TEXT[locale];
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -273,7 +403,7 @@ export default function SkillsDashboard() {
         existing.count++;
       } else {
         map.set(key, {
-          label: s.categoryLabel || s.category || "Uncategorized",
+          label: translateCategoryLabel(s.categoryLabel || s.category || "Uncategorized", locale),
           count: 1,
         });
       }
@@ -281,7 +411,7 @@ export default function SkillsDashboard() {
     return Array.from(map.entries())
       .sort((a, b) => b[1].count - a[1].count)
       .map(([key, { label, count }]) => ({ key, label, count }));
-  }, [sourceFilter]);
+  }, [sourceFilter, locale]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
@@ -289,19 +419,25 @@ export default function SkillsDashboard() {
       if (sourceFilter !== "all" && s.source !== sourceFilter) return false;
       if (categoryFilter !== "all" && s.category !== categoryFilter) return false;
       if (q) {
-        const haystack = [s.name, s.description, s.categoryLabel, s.author, ...(s.tags || [])]
+        const haystack = [
+          s.name,
+          s.description,
+          translateCategoryLabel(s.categoryLabel || s.category || "", locale),
+          s.author,
+          ...(s.tags || []),
+        ]
           .join(" ")
           .toLowerCase();
         return haystack.includes(q);
       }
       return true;
     });
-  }, [search, sourceFilter, categoryFilter]);
+  }, [search, sourceFilter, categoryFilter, locale]);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
     setExpandedCard(null);
-  }, [search, sourceFilter, categoryFilter]);
+  }, [search, sourceFilter, categoryFilter, locale]);
 
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
@@ -333,30 +469,28 @@ export default function SkillsDashboard() {
 
   return (
     <Layout
-      title="Skills Hub"
-      description="Browse all skills and plugins available for Hermes Agent"
+      title={ui.layoutTitle}
+      description={ui.layoutDescription}
     >
       <div className={styles.page}>
         <header className={styles.hero}>
           <div className={styles.heroGlow} />
           <div className={styles.heroContent}>
-            <p className={styles.heroEyebrow}>Hermes Agent</p>
-            <h1 className={styles.heroTitle}>Skills Hub</h1>
+            <p className={styles.heroEyebrow}>{ui.heroEyebrow}</p>
+            <h1 className={styles.heroTitle}>{ui.heroTitle}</h1>
             <p className={styles.heroSub}>
-              Discover, search, and install from{" "}
-              <strong className={styles.heroAccent}>{allSkills.length}</strong> skills
-              across {sources.length - 1} registries
+              {ui.heroSub(allSkills.length, sources.length - 1)}
             </p>
 
             <div className={styles.statsRow}>
               <StatCard
                 value={allSkills.filter((s) => s.source === "built-in").length}
-                label="Built-in"
+                label={ui.statBuiltIn}
                 color="#4ade80"
               />
               <StatCard
                 value={allSkills.filter((s) => s.source === "optional").length}
-                label="Optional"
+                label={ui.statOptional}
                 color="#fbbf24"
               />
               <StatCard
@@ -365,12 +499,12 @@ export default function SkillsDashboard() {
                     (s) => s.source !== "built-in" && s.source !== "optional"
                   ).length
                 }
-                label="Community"
+                label={ui.statCommunity}
                 color="#60a5fa"
               />
               <StatCard
                 value={new Set(allSkills.map((s) => s.category)).size}
-                label="Categories"
+                label={ui.statCategories}
                 color="#a78bfa"
               />
             </div>
@@ -389,7 +523,7 @@ export default function SkillsDashboard() {
             <input
               ref={searchRef}
               type="text"
-              placeholder='Search skills... (press "/" to focus)'
+              placeholder={ui.searchPlaceholder}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className={styles.searchInput}
@@ -430,7 +564,7 @@ export default function SkillsDashboard() {
                       : undefined
                   }
                 >
-                  {src === "all" ? "All" : conf?.label || src}
+                  {src === "all" ? ui.sourceAll : ui.sourceLabel(src)}
                   <span className={styles.srcCount}>{count}</span>
                 </button>
               );
@@ -450,7 +584,7 @@ export default function SkillsDashboard() {
                 clipRule="evenodd"
               />
             </svg>
-            Categories
+            {ui.categories}
             {categoryFilter !== "all" && (
               <span className={styles.activeCatBadge}>
                 {categoryEntries.find((c) => c.key === categoryFilter)?.label}
@@ -460,10 +594,10 @@ export default function SkillsDashboard() {
 
           <aside className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`}>
             <div className={styles.sidebarHeader}>
-              <h2 className={styles.sidebarTitle}>Categories</h2>
+              <h2 className={styles.sidebarTitle}>{ui.categories}</h2>
               {categoryFilter !== "all" && (
                 <button className={styles.sidebarClear} onClick={() => setCategoryFilter("all")}>
-                  Clear
+                  {ui.clear}
                 </button>
               )}
             </div>
@@ -476,7 +610,7 @@ export default function SkillsDashboard() {
                 }}
               >
                 <span className={styles.catItemIcon}>{"\u{1F4CB}"}</span>
-                <span className={styles.catItemLabel}>All Skills</span>
+                <span className={styles.catItemLabel}>{ui.allSkills}</span>
                 <span className={styles.catItemCount}>{filtered.length}</span>
               </button>
               {categoryEntries.map((cat) => (
@@ -499,7 +633,7 @@ export default function SkillsDashboard() {
             {(search || sourceFilter !== "all" || categoryFilter !== "all") && (
               <div className={styles.filterSummary}>
                 <span className={styles.filterCount}>
-                  {filtered.length} result{filtered.length !== 1 ? "s" : ""}
+                  {ui.results(filtered.length)}
                 </span>
                 {search && (
                   <span className={styles.filterChip}>
@@ -509,7 +643,7 @@ export default function SkillsDashboard() {
                 )}
                 {sourceFilter !== "all" && (
                   <span className={styles.filterChip}>
-                    {SOURCE_CONFIG[sourceFilter]?.label || sourceFilter}
+                    {ui.sourceLabel(sourceFilter)}
                     <button onClick={() => setSourceFilter("all")}>&times;</button>
                   </span>
                 )}
@@ -521,7 +655,7 @@ export default function SkillsDashboard() {
                   </span>
                 )}
                 <button className={styles.clearAllBtn} onClick={clearAll}>
-                  Clear all
+                  {ui.clearAll}
                 </button>
               </div>
             )}
@@ -542,6 +676,7 @@ export default function SkillsDashboard() {
                         }
                         onCategoryClick={handleCategoryClick}
                         onTagClick={handleTagClick}
+                        locale={locale}
                         style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}
                       />
                     );
@@ -553,7 +688,7 @@ export default function SkillsDashboard() {
                       className={styles.loadMoreBtn}
                       onClick={() => setVisibleCount((v) => v + PAGE_SIZE)}
                     >
-                      Show more ({filtered.length - visibleCount} remaining)
+                      {ui.showMore(filtered.length - visibleCount)}
                     </button>
                   </div>
                 )}
@@ -561,12 +696,12 @@ export default function SkillsDashboard() {
             ) : (
               <div className={styles.empty}>
                 <div className={styles.emptyIcon}>{"\u{1F50D}"}</div>
-                <h3 className={styles.emptyTitle}>No skills found</h3>
+                <h3 className={styles.emptyTitle}>{ui.noSkillsTitle}</h3>
                 <p className={styles.emptyDesc}>
-                  Try a different search term or clear your filters.
+                  {ui.noSkillsDesc}
                 </p>
                 <button className={styles.emptyReset} onClick={clearAll}>
-                  Reset all filters
+                  {ui.resetAll}
                 </button>
               </div>
             )}

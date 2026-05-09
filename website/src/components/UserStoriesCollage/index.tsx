@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, type ReactElement } from 'react';
 import stories from '@site/src/data/userStories.json';
 import styles from './styles.module.css';
 
@@ -143,7 +143,7 @@ function sourceColor(source: string): string {
   }
 }
 
-export default function UserStoriesCollage(): JSX.Element {
+export default function UserStoriesCollage(): ReactElement {
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [activeSource, setActiveSource] = useState<string>('all');
 

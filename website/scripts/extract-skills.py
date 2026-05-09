@@ -48,6 +48,39 @@ CATEGORY_LABELS = {
     "other": "Other",
 }
 
+CATEGORY_LABELS_RU = {
+    "apple": "Apple",
+    "autonomous-ai-agents": "ИИ-агенты",
+    "blockchain": "Блокчейн",
+    "communication": "Коммуникации",
+    "creative": "Креатив",
+    "data-science": "Аналитика данных",
+    "devops": "DevOps",
+    "dogfood": "Dogfood",
+    "domain": "Предметная область",
+    "email": "Электронная почта",
+    "gaming": "Игры",
+    "gifs": "GIF",
+    "github": "GitHub",
+    "health": "Здоровье",
+    "inference-sh": "Инференс",
+    "leisure": "Досуг",
+    "mcp": "MCP",
+    "media": "Медиа",
+    "migration": "Миграция",
+    "mlops": "MLOps",
+    "note-taking": "Заметки",
+    "productivity": "Продуктивность",
+    "red-teaming": "Red Teaming",
+    "research": "Исследования",
+    "security": "Безопасность",
+    "smart-home": "Умный дом",
+    "social-media": "Социальные сети",
+    "software-development": "Разработка ПО",
+    "translation": "Перевод",
+    "other": "Другое",
+}
+
 SOURCE_LABELS = {
     "anthropics_skills": "Anthropic",
     "openai_skills": "OpenAI",
@@ -106,6 +139,7 @@ def extract_local_skills():
                 "description": fm.get("description", ""),
                 "category": category,
                 "categoryLabel": CATEGORY_LABELS.get(category, category.replace("-", " ").title()),
+                "categoryLabelRu": CATEGORY_LABELS_RU.get(category, category.replace("-", " ").title()),
                 "source": source_label,
                 "tags": tags or [],
                 "platforms": fm.get("platforms", []),
@@ -149,6 +183,7 @@ def extract_cached_index_skills():
                     "description": (agent.get("meta", {}).get("description", "") or "").split("\n")[0][:200],
                     "category": _guess_category(agent.get("meta", {}).get("tags", [])),
                     "categoryLabel": "",  # filled below
+                    "categoryLabelRu": "",
                     "source": source_label,
                     "tags": agent.get("meta", {}).get("tags", []),
                     "platforms": [],
@@ -168,6 +203,7 @@ def extract_cached_index_skills():
                     "description": entry.get("description", ""),
                     "category": "uncategorized",
                     "categoryLabel": "",
+                    "categoryLabelRu": "",
                     "source": source_label,
                     "tags": entry.get("tags", []),
                     "platforms": [],
@@ -180,6 +216,11 @@ def extract_cached_index_skills():
             s["categoryLabel"] = CATEGORY_LABELS.get(
                 s["category"],
                 s["category"].replace("-", " ").title() if s["category"] else "Uncategorized",
+            )
+        if not s.get("categoryLabelRu"):
+            s["categoryLabelRu"] = CATEGORY_LABELS_RU.get(
+                s["category"],
+                s["category"].replace("-", " ").title() if s["category"] else "Без категории",
             )
 
     return skills
@@ -227,6 +268,7 @@ def _consolidate_small_categories(skills: list) -> list:
         if s["category"] in ("uncategorized", ""):
             s["category"] = "other"
             s["categoryLabel"] = "Other"
+            s["categoryLabelRu"] = "Другое"
 
     counts = Counter(s["category"] for s in skills)
     small_cats = {cat for cat, n in counts.items() if n < MIN_CATEGORY_SIZE}
@@ -235,6 +277,7 @@ def _consolidate_small_categories(skills: list) -> list:
         if s["category"] in small_cats:
             s["category"] = "other"
             s["categoryLabel"] = "Other"
+            s["categoryLabelRu"] = "Другое"
 
     return skills
 

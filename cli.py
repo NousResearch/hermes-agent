@@ -192,6 +192,32 @@ def _assistant_copy_text(content: Any) -> str:
     return _strip_reasoning_tags(_assistant_content_as_text(content))
 
 
+def _cli_t(key: str, default: str, **kwargs: Any) -> str:
+    from agent.i18n import t
+
+    return t(key, default=default, **kwargs)
+
+
+def _cli_count(
+    count: int,
+    english_one: str,
+    english_many: str,
+    russian_one: str,
+    russian_few: str,
+    russian_many: str,
+    *,
+    language: str | None = None,
+) -> str:
+    from agent.i18n import get_language, pluralize
+
+    resolved_language = language or get_language()
+    if resolved_language == "ru":
+        noun = pluralize(count, russian_one, russian_few, russian_many, language=resolved_language)
+    else:
+        noun = english_one if abs(int(count)) == 1 else english_many
+    return f"{count} {noun}"
+
+
 # =============================================================================
 # Configuration Loading
 # =============================================================================
@@ -331,6 +357,7 @@ def load_cli_config() -> Dict[str, Any]:
         "display": {
             "compact": False,
             "resume_display": "full",
+            "language": "en",
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
@@ -4613,14 +4640,17 @@ class HermesCLI:
 
     def show_help(self):
         """Display help information with categorized commands."""
-        from hermes_cli.commands import COMMANDS_BY_CATEGORY
+        from agent.i18n import get_language, t
+        from hermes_cli.commands import get_commands_by_category
 
+        language = get_language()
+        help_title = t("commands.help.title", default="Available Commands", language=language)
         try:
             from hermes_cli.skin_engine import get_active_help_header
-            header = get_active_help_header("(^_^)? Available Commands")
+            header = get_active_help_header(f"(^_^)? {help_title}")
         except Exception:
-            header = "(^_^)? Available Commands"
-        header = (header or "").strip() or "(^_^)? Available Commands"
+            header = f"(^_^)? {help_title}"
+        header = (header or "").strip() or f"(^_^)? {help_title}"
         inner_width = 55
         if len(header) > inner_width:
             header = header[:inner_width]
@@ -4628,7 +4658,7 @@ class HermesCLI:
         _cprint(f"{_BOLD}|{header:^{inner_width}}|{_RST}")
         _cprint(f"{_BOLD}+{'-' * inner_width}+{_RST}")
 
-        for category, commands in COMMANDS_BY_CATEGORY.items():
+        for category, commands in get_commands_by_category(language=language, include_gateway_only=False).items():
             _cprint(f"\n  {_BOLD}── {category} ──{_RST}")
             for cmd, desc in commands.items():
                 if not self._command_available(cmd):
@@ -4636,19 +4666,21 @@ class HermesCLI:
                 ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
 
         if _skill_commands:
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
+            skills_title = t("commands.help.skills_title", default="Skill Commands", language=language)
+            installed = t("common.installed", default="installed", language=language)
+            _cprint(f"\n  ⚡ {_BOLD}{skills_title}{_RST} ({len(_skill_commands)} {installed}):")
             for cmd, info in sorted(_skill_commands.items()):
                 ChatConsole().print(
                     f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
                 )
 
-        _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
-        _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
+        _cprint(f"\n  {_DIM}{t('commands.help.tip_chat', default='Tip: Just type your message to chat with Hermes!', language=language)}{_RST}")
+        _cprint(f"  {_DIM}{t('commands.help.tip_multiline', default='Multi-line: Alt+Enter for a new line', language=language)}{_RST}")
+        _cprint(f"  {_DIM}{t('commands.help.tip_draft_editor', default='Draft editor: Ctrl+G (Alt+G in VSCode/Cursor)', language=language)}{_RST}")
         if _is_termux_environment():
-            _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
+            _cprint(f"  {_DIM}{t('commands.help.tip_attach_image', default='Attach image: /image {path} or start your prompt with a local image path', language=language, path=_termux_example_image_path())}{_RST}\n")
         else:
-            _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
+            _cprint(f"  {_DIM}{t('commands.help.tip_paste_image', default='Paste image: Alt+V (or /paste)', language=language)}{_RST}\n")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -5962,17 +5994,17 @@ class HermesCLI:
                 self.system_prompt = ""
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", ""):
-                    print("(^_^)b Personality cleared (saved to config)")
+                    print(_cli_t("cli.personality_cleared_saved", "(^_^)b Personality cleared (saved to config)"))
                 else:
-                    print("(^_^) Personality cleared (session only)")
-                print("  No personality overlay — using base agent behavior.")
+                    print(_cli_t("cli.personality_cleared_session", "(^_^) Personality cleared (session only)"))
+                print(_cli_t("cli.no_personality_overlay", "  No personality overlay — using base agent behavior."))
             elif personality_name in self.personalities:
                 self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", self.system_prompt):
-                    print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
+                    print(_cli_t("cli.personality_set_saved", "(^_^)b Personality set to '{personality_name}' (saved to config)", personality_name=personality_name))
                 else:
-                    print(f"(^_^) Personality set to '{personality_name}' (session only)")
+                    print(_cli_t("cli.personality_set_session", "(^_^) Personality set to '{personality_name}' (session only)", personality_name=personality_name))
                 print(f"  \"{self.system_prompt[:60]}{'...' if len(self.system_prompt) > 60 else ''}\"")
             else:
                 print(f"(._.) Unknown personality: {personality_name}")
@@ -6421,7 +6453,7 @@ class HermesCLI:
                         session_id=self.session_id,
                         context_length=ctx_len,
                     )
-                _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+                _cprint(f"  ✨ (◕‿◕)✨ {_cli_t('cli.fresh_start', 'Fresh start! Screen cleared and conversation reset.')}\n")
                 # Show a random tip on new session
                 try:
                     from hermes_cli.tips import get_random_tip
@@ -6436,7 +6468,7 @@ class HermesCLI:
                     pass
             else:
                 self.show_banner()
-                print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+                print(f"  ✨ (◕‿◕)✨ {_cli_t('cli.fresh_start', 'Fresh start! Screen cleared and conversation reset.')}\n")
                 # Show a random tip on new session
                 try:
                     from hermes_cli.tips import get_random_tip
@@ -6587,22 +6619,22 @@ class HermesCLI:
                 mgr = get_plugin_manager()
                 plugins = mgr.list_plugins()
                 if not plugins:
-                    print("No plugins installed.")
-                    print(f"Drop plugin directories into {display_hermes_home()}/plugins/ to get started.")
+                    print(_cli_t("cli.no_plugins_installed", "No plugins installed."))
+                    print(_cli_t("cli.plugins_drop_hint", "Drop plugin directories into {path}/plugins/ to get started.", path=display_hermes_home()))
                 else:
-                    print(f"Plugins ({len(plugins)}):")
+                    print(_cli_t("cli.plugins_header", "Plugins ({count}):", count=len(plugins)))
                     for p in plugins:
                         status = "✓" if p["enabled"] else "✗"
                         version = f" v{p['version']}" if p["version"] else ""
-                        tools = f"{p['tools']} tools" if p["tools"] else ""
-                        hooks = f"{p['hooks']} hooks" if p["hooks"] else ""
-                        commands = f"{p['commands']} commands" if p.get("commands") else ""
+                        tools = _cli_count(p["tools"], "tool", "tools", "инструмент", "инструмента", "инструментов") if p["tools"] else ""
+                        hooks = _cli_count(p["hooks"], "hook", "hooks", "хук", "хука", "хуков") if p["hooks"] else ""
+                        commands = _cli_count(p["commands"], "command", "commands", "команда", "команды", "команд") if p.get("commands") else ""
                         parts = [x for x in [tools, hooks, commands] if x]
                         detail = f" ({', '.join(parts)})" if parts else ""
                         error = f" — {p['error']}" if p["error"] else ""
                         print(f"  {status} {p['name']}{version}{detail}{error}")
             except Exception as e:
-                print(f"Plugin system error: {e}")
+                print(_cli_t("cli.plugin_system_error", "Ошибка системы плагинов: {error}", error=e))
         elif canonical == "rollback":
             self._handle_rollback_command(cmd_original)
         elif canonical == "snapshot":
@@ -6753,7 +6785,7 @@ class HermesCLI:
                     if full_name == typed_base:
                         # Already an exact token — no expansion possible; fall through
                         _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
-                        _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
+                        _cprint(f"{_DIM}{_ACCENT}{_cli_t('cli.type_help_hint', 'Type /help for available commands')}{_RST}")
                     else:
                         remainder = cmd_original.strip()[len(typed_base):]
                         full_cmd = full_name + remainder
@@ -6763,7 +6795,7 @@ class HermesCLI:
                     _cprint(f"{_DIM}Did you mean: {', '.join(sorted(matches))}?{_RST}")
                 else:
                     _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
-                    _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
+                    _cprint(f"{_DIM}{_ACCENT}{_cli_t('cli.type_help_hint', 'Type /help for available commands')}{_RST}")
         
         return True
     

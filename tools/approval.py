@@ -17,6 +17,8 @@ import threading
 import time
 import unicodedata
 from typing import Optional
+
+from agent.i18n import t
 from hermes_cli.config import cfg_get
 
 from utils import is_truthy_value
@@ -208,13 +210,17 @@ def _hardline_block_result(description: str) -> dict:
     return {
         "approved": False,
         "hardline": True,
-        "message": (
-            f"BLOCKED (hardline): {description}. "
-            "This command is on the unconditional blocklist and cannot "
-            "be executed via the agent — not even with --yolo, /yolo, "
-            "approvals.mode=off, or cron approve mode. If you genuinely "
-            "need to run it, run it yourself in a terminal outside the "
-            "agent."
+        "message": t(
+            "approval.hardline_blocked",
+            default=(
+                "BLOCKED (hardline): {description}. "
+                "This command is on the unconditional blocklist and cannot "
+                "be executed via the agent — not even with --yolo, /yolo, "
+                "approvals.mode=off, or cron approve mode. If you genuinely "
+                "need to run it, run it yourself in a terminal outside the "
+                "agent."
+            ),
+            description=description,
         ),
     }
 
@@ -630,13 +636,19 @@ def prompt_dangerous_approval(command: str, description: str,
     try:
         while True:
             print()
-            print(f"  ⚠️  DANGEROUS COMMAND: {description}")
+            print("  ⚠️  " + t("approval.dangerous_command", default="DANGEROUS COMMAND: {description}", description=description))
             print(f"      {command}")
             print()
             if allow_permanent:
-                print("      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny")
+                print("      " + t(
+                    "approval.choice_options_with_always",
+                    default="[o]nce  |  [s]ession  |  [a]lways  |  [d]eny",
+                ))
             else:
-                print("      [o]nce  |  [s]ession  |  [d]eny")
+                print("      " + t(
+                    "approval.choice_options_without_always",
+                    default="[o]nce  |  [s]ession  |  [d]eny",
+                ))
             print()
             sys.stdout.flush()
 
@@ -644,7 +656,13 @@ def prompt_dangerous_approval(command: str, description: str,
 
             def get_input():
                 try:
-                    prompt = "      Choice [o/s/a/D]: " if allow_permanent else "      Choice [o/s/D]: "
+                    prompt = t(
+                        "approval.choice_prompt_with_always",
+                        default="      Choice [o/s/a/D]: ",
+                    ) if allow_permanent else t(
+                        "approval.choice_prompt_without_always",
+                        default="      Choice [o/s/D]: ",
+                    )
                     result["choice"] = input(prompt).strip().lower()
                 except (EOFError, OSError):
                     result["choice"] = ""
@@ -654,28 +672,28 @@ def prompt_dangerous_approval(command: str, description: str,
             thread.join(timeout=timeout_seconds)
 
             if thread.is_alive():
-                print("\n      ⏱ Timeout - denying command")
+                print("\n      " + t("approval.timeout_denying", default="⏱ Timeout - denying command"))
                 return "deny"
 
             choice = result["choice"]
             if choice in ('o', 'once'):
-                print("      ✓ Allowed once")
+                print("      " + t("approval.allowed_once", default="✓ Allowed once"))
                 return "once"
             elif choice in ('s', 'session'):
-                print("      ✓ Allowed for this session")
+                print("      " + t("approval.allowed_session", default="✓ Allowed for this session"))
                 return "session"
             elif choice in ('a', 'always'):
                 if not allow_permanent:
-                    print("      ✓ Allowed for this session")
+                    print("      " + t("approval.allowed_session", default="✓ Allowed for this session"))
                     return "session"
-                print("      ✓ Added to permanent allowlist")
+                print("      " + t("approval.added_to_allowlist", default="✓ Added to permanent allowlist"))
                 return "always"
             else:
-                print("      ✗ Denied")
+                print("      " + t("approval.denied", default="✗ Denied"))
                 return "deny"
 
     except (EOFError, KeyboardInterrupt):
-        print("\n      ✗ Cancelled")
+        print("\n      " + t("approval.cancelled", default="✗ Cancelled"))
         return "deny"
     finally:
         if "HERMES_SPINNER_PAUSE" in os.environ:
@@ -834,12 +852,16 @@ def check_dangerous_command(command: str, env_type: str,
             if _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
-                    "message": (
-                        f"BLOCKED: Command flagged as dangerous ({description}) "
-                        "but cron jobs run without a user present to approve it. "
-                        "Find an alternative approach that avoids this command. "
-                        "To allow dangerous commands in cron jobs, set "
-                        "approvals.cron_mode: approve in config.yaml."
+                    "message": t(
+                        "approval.cron_blocked",
+                        default=(
+                            "BLOCKED: Command flagged as dangerous ({description}) "
+                            "but cron jobs run without a user present to approve it. "
+                            "Find an alternative approach that avoids this command. "
+                            "To allow dangerous commands in cron jobs, set "
+                            "approvals.cron_mode: approve in config.yaml."
+                        ),
+                        description=description,
                     ),
                 }
         return {"approved": True, "message": None}
@@ -856,9 +878,14 @@ def check_dangerous_command(command: str, env_type: str,
             "status": "approval_required",
             "command": command,
             "description": description,
-            "message": (
-                f"⚠️ This command is potentially dangerous ({description}). "
-                f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+            "message": t(
+                "approval.gateway_request",
+                default=(
+                    "⚠️ This command is potentially dangerous ({description}). "
+                    "Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+                ),
+                description=description,
+                command=command,
             ),
         }
 
@@ -868,7 +895,11 @@ def check_dangerous_command(command: str, env_type: str,
     if choice == "deny":
         return {
             "approved": False,
-            "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
+            "message": t(
+                "approval.user_denied",
+                default="BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
+                description=description,
+            ),
             "pattern_key": pattern_key,
             "description": description,
         }
@@ -896,7 +927,7 @@ def _format_tirith_description(tirith_result: dict) -> str:
     findings = tirith_result.get("findings") or []
     if not findings:
         summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        return t("approval.security_scan", default="Security scan: {summary}", summary=summary)
 
     parts = []
     for f in findings:
@@ -909,9 +940,9 @@ def _format_tirith_description(tirith_result: dict) -> str:
             parts.append(f"[{severity}] {title}" if severity else title)
     if not parts:
         summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        return t("approval.security_scan", default="Security scan: {summary}", summary=summary)
 
-    return "Security scan — " + "; ".join(parts)
+    return t("approval.security_scan_list", default="Security scan — {details}", details="; ".join(parts))
 
 
 def check_all_command_guards(command: str, env_type: str,
@@ -1028,8 +1059,11 @@ def check_all_command_guards(command: str, env_type: str,
             combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
             return {
                 "approved": False,
-                "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
-                           "The command was assessed as genuinely dangerous. Do NOT retry.",
+                "message": t(
+                    "approval.smart_blocked",
+                    default="BLOCKED by smart approval: {description}. The command was assessed as genuinely dangerous. Do NOT retry.",
+                    description=combined_desc_for_llm,
+                ),
                 "smart_denied": True,
             }
         # verdict == "escalate" → fall through to manual prompt
@@ -1091,7 +1125,10 @@ def check_all_command_guards(command: str, env_type: str,
                         _gateway_queues.pop(session_key, None)
                 return {
                     "approved": False,
-                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "message": t(
+                        "approval.blocked_failed_to_send",
+                        default="BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    ),
                     "pattern_key": primary_key,
                     "description": combined_desc,
                 }
@@ -1165,7 +1202,11 @@ def check_all_command_guards(command: str, env_type: str,
                 reason = "timed out" if not resolved else "denied by user"
                 return {
                     "approved": False,
-                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                    "message": t(
+                        "approval.blocked_command_reason",
+                        default="BLOCKED: Command {reason}. Do NOT retry this command.",
+                        reason=reason,
+                    ),
                     "pattern_key": primary_key,
                     "description": combined_desc,
                 }
@@ -1198,8 +1239,11 @@ def check_all_command_guards(command: str, env_type: str,
             "status": "approval_required",
             "command": command,
             "description": combined_desc,
-            "message": (
-                f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+            "message": t(
+                "approval.gateway_request",
+                default="⚠️ {description}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```",
+                description=combined_desc,
+                command=command,
             ),
         }
 
@@ -1231,7 +1275,10 @@ def check_all_command_guards(command: str, env_type: str,
     if choice == "deny":
         return {
             "approved": False,
-            "message": "BLOCKED: User denied. Do NOT retry.",
+            "message": t(
+                "approval.user_denied_simple",
+                default="BLOCKED: User denied. Do NOT retry.",
+            ),
             "pattern_key": primary_key,
             "description": combined_desc,
         }

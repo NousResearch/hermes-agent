@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from agent.i18n import get_language, t as _t
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -236,22 +237,111 @@ def _build_description(cmd: CommandDef) -> str:
     return cmd.description
 
 
+_CATEGORY_TRANSLATION_KEYS: dict[str, str] = {
+    "Session": "session",
+    "Configuration": "configuration",
+    "Tools & Skills": "tools_skills",
+    "Info": "info",
+    "Exit": "exit",
+}
+
+
+def _resolve_language(language: str | None = None) -> str:
+    return language or get_language()
+
+
+def _localized_category(category: str, language: str | None = None) -> str:
+    key = _CATEGORY_TRANSLATION_KEYS.get(category)
+    if not key:
+        return category
+    return _t(f"commands.categories.{key}", default=category, language=_resolve_language(language))
+
+
+def _localized_description(cmd: CommandDef, language: str | None = None) -> str:
+    return _t(
+        f"commands.descriptions.{cmd.name}",
+        default=cmd.description,
+        language=_resolve_language(language),
+    )
+
+
+def _localized_usage_description(cmd: CommandDef, language: str | None = None) -> str:
+    description = _localized_description(cmd, language=language)
+    if not cmd.args_hint:
+        return description
+    usage_prefix = _t(
+        "commands.usage_prefix",
+        default="usage",
+        language=_resolve_language(language),
+    )
+    return f"{description} ({usage_prefix}: /{cmd.name} {cmd.args_hint})"
+
+
+def _localized_alias_description(cmd: CommandDef, language: str | None = None) -> str:
+    return _t(
+        "commands.alias_for",
+        default="alias for /{command}",
+        language=_resolve_language(language),
+        command=cmd.name,
+    )
+
+
+def iter_command_entries(
+    language: str | None = None,
+    *,
+    include_gateway_only: bool = False,
+) -> list[tuple[str, str]]:
+    """Return slash-command/description pairs in registry order.
+
+    Alias entries are included immediately after their canonical command so
+    callers can preserve the same presentation order as the historical
+    ``COMMANDS``/``COMMANDS_BY_CATEGORY`` dictionaries.
+    """
+    entries: list[tuple[str, str]] = []
+    for cmd in COMMAND_REGISTRY:
+        if not include_gateway_only and cmd.gateway_only:
+            continue
+        entries.append((f"/{cmd.name}", _localized_usage_description(cmd, language=language)))
+        for alias in cmd.aliases:
+            entries.append((f"/{alias}", _localized_alias_description(cmd, language=language)))
+    return entries
+
+
+def get_commands_by_category(
+    language: str | None = None,
+    *,
+    include_gateway_only: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Return localized commands grouped by localized category label."""
+    catalog: dict[str, dict[str, str]] = {}
+    for cmd in COMMAND_REGISTRY:
+        if not include_gateway_only and cmd.gateway_only:
+            continue
+        category = _localized_category(cmd.category, language=language)
+        bucket = catalog.setdefault(category, {})
+        bucket[f"/{cmd.name}"] = _localized_usage_description(cmd, language=language)
+        for alias in cmd.aliases:
+            bucket[f"/{alias}"] = _localized_alias_description(cmd, language=language)
+    return catalog
+
+
+def get_command_description(cmd_name: str, language: str | None = None) -> str | None:
+    """Return a localized description for a slash command or alias."""
+    cmd = resolve_command(cmd_name)
+    if cmd is None:
+        return None
+    return _localized_usage_description(cmd, language=language)
+
+
 # Backwards-compatible flat dict: "/command" -> description
 COMMANDS: dict[str, str] = {}
-for _cmd in COMMAND_REGISTRY:
-    if not _cmd.gateway_only:
-        COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
-        for _alias in _cmd.aliases:
-            COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
+for _cmd_name, _cmd_desc in iter_command_entries(language="en", include_gateway_only=False):
+    COMMANDS[_cmd_name] = _cmd_desc
 
 # Backwards-compatible categorized dict
 COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
-for _cmd in COMMAND_REGISTRY:
-    if not _cmd.gateway_only:
-        _cat = COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {})
-        _cat[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
-        for _alias in _cmd.aliases:
-            _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
+for _cat, _entries in get_commands_by_category(language="en", include_gateway_only=False).items():
+    COMMANDS_BY_CATEGORY[_cat] = dict(_entries)
 
 
 # Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...]
@@ -408,6 +498,7 @@ def _requires_argument(args_hint: str) -> bool:
 
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
+    language = _resolve_language()
     overrides = _resolve_config_gates()
     lines: list[str] = []
     for cmd in COMMAND_REGISTRY:
@@ -420,8 +511,17 @@ def gateway_help_lines() -> list[str]:
             if a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name:
                 continue
             alias_parts.append(f"`/{a}`")
-        alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        alias_note = ""
+        if alias_parts:
+            alias_note = _t(
+                "commands.alias_note",
+                default=" (alias: {aliases})",
+                language=language,
+                aliases=", ".join(alias_parts),
+            )
+        lines.append(
+            f"`/{cmd.name}{args}` -- {_localized_description(cmd, language=language)}{alias_note}"
+        )
     return lines
 
 
@@ -470,6 +570,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     autocomplete in Telegram without touching core code.
     """
     overrides = _resolve_config_gates()
+    language = _resolve_language()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
@@ -478,7 +579,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
             continue
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            result.append((tg_name, _localized_description(cmd, language=language)))
     for name, description, args_hint in _iter_plugin_command_entries():
         if _requires_argument(args_hint):
             continue
@@ -966,6 +1067,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     gets dropped by the clamp or for free-form questions.
     """
     overrides = _resolve_config_gates()
+    language = _resolve_language()
     entries: list[tuple[str, str, str]] = []
     seen: set[str] = set()
 
@@ -989,7 +1091,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        _add(cmd.name, cmd.description, cmd.args_hint or "")
+        _add(cmd.name, _localized_description(cmd, language=language), cmd.args_hint or "")
 
     # Second pass: aliases.
     for cmd in COMMAND_REGISTRY:
@@ -998,7 +1100,11 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         for alias in cmd.aliases:
             # Skip aliases that only differ from canonical by case/punctuation
             # normalization (already covered by _add dedup).
-            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+            _add(
+                alias,
+                f"{_localized_alias_description(cmd, language=language)} — {_localized_description(cmd, language=language)}",
+                cmd.args_hint or "",
+            )
 
     # Third pass: plugin commands.
     for name, description, args_hint in _iter_plugin_command_entries():
@@ -1104,9 +1210,11 @@ class SlashCommandCompleter(Completer):
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
+        language: str | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
+        self._language = _resolve_language(language)
         # Cached project file list for fuzzy @ completions
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
@@ -1595,7 +1703,7 @@ class SlashCommandCompleter(Completer):
 
         word = text[1:]
 
-        for cmd, desc in COMMANDS.items():
+        for cmd, desc in iter_command_entries(language=self._language, include_gateway_only=False):
             if not self._command_allowed(cmd):
                 continue
             cmd_name = cmd[1:]
@@ -1671,7 +1779,7 @@ class SlashCommandAutoSuggest(AutoSuggest):
         if len(parts) == 1 and not text.endswith(" "):
             # Still typing the command name: /upd → suggest "ate"
             word = text[1:].lower()
-            for cmd in COMMANDS:
+            for cmd, _desc in iter_command_entries(language=self._completer._language if self._completer else None, include_gateway_only=False):
                 if self._completer is not None and not self._completer._command_allowed(cmd):
                     continue
                 cmd_name = cmd[1:]  # strip leading /

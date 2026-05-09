@@ -12,7 +12,12 @@ import os
 import sys
 from pathlib import Path
 
+from agent.i18n import t
 from hermes_constants import get_hermes_home
+
+
+def _memory_t(key: str, default: str, **kwargs) -> str:
+    return t(f"memory_setup.{key}", default=default, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -98,14 +103,14 @@ def _install_dependencies(provider_name: str) -> None:
     if not missing:
         return
 
-    print(f"\n  Installing dependencies: {', '.join(missing)}")
+    print(_memory_t("installing_dependencies", "\n  Installing dependencies: {deps}", deps=", ".join(missing)))
 
     import shutil
     uv_path = shutil.which("uv")
     if not uv_path:
-        print(f"  ⚠ uv not found — cannot install dependencies")
-        print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
-        print(f"  Then re-run: hermes memory setup")
+        print(_memory_t("uv_not_found", "  ⚠ uv not found — cannot install dependencies"))
+        print(_memory_t("install_uv", "  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh"))
+        print(_memory_t("rerun", "  Then re-run: hermes memory setup"))
         return
 
     try:
@@ -114,16 +119,16 @@ def _install_dependencies(provider_name: str) -> None:
             check=True, timeout=120,
             capture_output=True,
         )
-        print(f"  ✓ Installed {', '.join(missing)}")
+        print(_memory_t("installed_dependencies", "  ✓ Installed {deps}", deps=", ".join(missing)))
     except subprocess.CalledProcessError as e:
-        print(f"  ⚠ Failed to install {', '.join(missing)}")
+        print(_memory_t("failed_to_install", "  ⚠ Failed to install {deps}", deps=", ".join(missing)))
         stderr = (e.stderr or b"").decode()[:200]
         if stderr:
             print(f"    {stderr}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(_memory_t("run_manually", "  Run manually: uv pip install --python {python} {deps}", python=sys.executable, deps=" ".join(missing)))
     except Exception as e:
-        print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(_memory_t("install_failed", "  ⚠ Install failed: {error}", error=e))
+        print(_memory_t("run_manually", "  Run manually: uv pip install --python {python} {deps}", python=sys.executable, deps=" ".join(missing)))
 
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])
@@ -138,7 +143,7 @@ def _install_dependencies(provider_name: str) -> None:
                 )
             except Exception:
                 if install_cmd:
-                    print(f"\n  ⚠ '{dep_name}' not found. Install with:")
+                    print(_memory_t("external_dep_missing", "\n  ⚠ '{name}' not found. Install with:", name=dep_name))
                     print(f"    {install_cmd}")
 
 
@@ -166,13 +171,13 @@ def _get_available_providers() -> list:
         has_secrets = any(f.get("secret") for f in schema)
         has_non_secrets = any(not f.get("secret") for f in schema)
         if has_secrets and has_non_secrets:
-            setup_hint = "API key / local"
+            setup_hint = _memory_t("setup_hint_api_key_local", "API key / local")
         elif has_secrets:
-            setup_hint = "requires API key"
+            setup_hint = _memory_t("setup_hint_requires_api_key", "requires API key")
         elif not schema:
-            setup_hint = "no setup needed"
+            setup_hint = _memory_t("setup_hint_no_setup", "no setup needed")
         else:
-            setup_hint = "local"
+            setup_hint = _memory_t("setup_hint_local", "local")
 
         results.append((name, setup_hint, provider))
     return results
@@ -194,8 +199,8 @@ def cmd_setup_provider(provider_name: str) -> None:
             break
 
     if not match:
-        print(f"\n  Memory provider '{provider_name}' not found.")
-        print("  Run 'hermes memory setup' to see available providers.\n")
+        print(_memory_t("provider_not_found", "\n  Memory provider '{name}' not found.", name=provider_name))
+        print(_memory_t("run_setup", "  Run 'hermes memory setup' to see available providers.\n"))
         return
 
     name, _, provider = match
@@ -214,8 +219,8 @@ def cmd_setup_provider(provider_name: str) -> None:
     # Fallback: generic schema-based setup (same as cmd_setup)
     config["memory"]["provider"] = name
     save_config(config)
-    print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml\n")
+    print(_memory_t("memory_provider", "\n  Memory provider: {name}", name=name))
+    print(_memory_t("activation_saved", "  Activation saved to config.yaml\n"))
 
 
 def cmd_setup(args) -> None:
@@ -225,18 +230,18 @@ def cmd_setup(args) -> None:
     providers = _get_available_providers()
 
     if not providers:
-        print("\n  No memory provider plugins detected.")
-        print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
+        print(_memory_t("no_plugins", "\n  No memory provider plugins detected."))
+        print(_memory_t("install_plugin_hint", "  Install a plugin to ~/.hermes/plugins/ and try again.\n"))
         return
 
     # Build picker items
     items = []
     for name, desc, _ in providers:
         items.append((name, f"— {desc}"))
-    items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
+    items.append((_memory_t("built_in_only", "Built-in only"), f"— MEMORY.md / USER.md ({_memory_t('default', 'default')})"))
 
     builtin_idx = len(items) - 1
-    selected = _curses_select("Memory provider setup", items, default=builtin_idx)
+    selected = _curses_select(_memory_t("setup_title", "Memory provider setup"), items, default=builtin_idx)
 
     config = load_config()
     if not isinstance(config.get("memory"), dict):
@@ -246,8 +251,8 @@ def cmd_setup(args) -> None:
     if selected >= len(providers) or selected < 0:
         config["memory"]["provider"] = ""
         save_config(config)
-        print("\n  ✓ Memory provider: built-in only")
-        print("  Saved to config.yaml\n")
+        print(_memory_t("built_in_memory", "\n  ✓ Memory provider: built-in only"))
+        print(_memory_t("saved_to_config", "  Saved to config.yaml\n"))
         return
 
     name, _, provider = providers[selected]
@@ -272,7 +277,7 @@ def cmd_setup(args) -> None:
     env_writes = {}
 
     if schema:
-        print(f"\n  Configuring {name}:\n")
+        print(_memory_t("configuring", "\n  Configuring {name}:\n", name=name))
 
         for field in schema:
             key = field["key"]
@@ -340,19 +345,19 @@ def cmd_setup(args) -> None:
         try:
             provider.save_config(provider_config, hermes_home)
         except Exception as e:
-            print(f"  Failed to write provider config: {e}")
+            print(_memory_t("failed_to_write_provider_config", "  Failed to write provider config: {error}", error=e))
 
     # Write secrets to .env
     if env_writes:
         _write_env_vars(env_path, env_writes)
 
-    print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml")
+    print(_memory_t("memory_provider", "\n  Memory provider: {name}", name=name))
+    print(_memory_t("activation_saved", "  Activation saved to config.yaml"))
     if provider_config:
-        print(f"  Provider config saved")
+        print(_memory_t("provider_config_saved", "  Provider config saved"))
     if env_writes:
-        print(f"  API keys saved to .env")
-    print(f"\n  Start a new session to activate.\n")
+        print(_memory_t("api_keys_saved", "  API keys saved to .env"))
+    print(_memory_t("start_new_session", "\n  Start a new session to activate.\n"))
 
 
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
@@ -392,32 +397,32 @@ def cmd_status(args) -> None:
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
 
-    print(f"\nMemory status\n" + "─" * 40)
-    print(f"  Built-in:  always active")
-    print(f"  Provider:  {provider_name or '(none — built-in only)'}")
+    print(_memory_t("status_title", "\nMemory status") + "\n" + "─" * 40)
+    print(_memory_t("built_in", "  Built-in:  always active"))
+    print(_memory_t("provider", "  Provider:  {value}", value=provider_name or _memory_t("none_builtin_only", "(none — built-in only)")))
 
     if provider_name:
         provider_config = mem_config.get(provider_name, {})
         if provider_config:
-            print(f"\n  {provider_name} config:")
+            print(_memory_t("provider_config", "\n  {name} config:", name=provider_name))
             for key, val in provider_config.items():
                 print(f"    {key}: {val}")
 
         providers = _get_available_providers()
         found = any(name == provider_name for name, _, _ in providers)
         if found:
-            print(f"\n  Plugin:    installed ✓")
+            print(_memory_t("plugin_installed", "\n  Plugin:    installed ✓"))
             for pname, _, p in providers:
                 if pname == provider_name:
                     if p.is_available():
-                        print(f"  Status:    available ✓")
+                        print(_memory_t("available", "  Status:    available ✓"))
                     else:
-                        print(f"  Status:    not available ✗")
+                        print(_memory_t("not_available", "  Status:    not available ✗"))
                         schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
                         # Check all fields that have env_var (both secret and non-secret)
                         required_fields = [f for f in schema if f.get("env_var")]
                         if required_fields:
-                            print(f"  Missing:")
+                            print(_memory_t("missing", "  Missing:"))
                             for f in required_fields:
                                 env_var = f.get("env_var", "")
                                 url = f.get("url", "")
@@ -429,14 +434,14 @@ def cmd_status(args) -> None:
                                 print(line)
                     break
         else:
-            print(f"\n  Plugin:    NOT installed ✗")
-            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+            print(_memory_t("plugin_not_installed", "\n  Plugin:    NOT installed ✗"))
+            print(_memory_t("install_plugin", "  Install the '{provider}' memory plugin to ~/.hermes/plugins/", provider=provider_name))
 
     providers = _get_available_providers()
     if providers:
-        print(f"\n  Installed plugins:")
+        print(_memory_t("installed_plugins", "\n  Installed plugins:"))
         for pname, desc, _ in providers:
-            active = " ← active" if pname == provider_name else ""
+            active = _memory_t("active_suffix", " ← active") if pname == provider_name else ""
             print(f"    • {pname}  ({desc}){active}")
 
     print()

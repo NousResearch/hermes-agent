@@ -10,7 +10,7 @@ All other ``None`` outcomes (no credentials yet, config read error, explicit
 provider instantiation failure) leave the cache unset so the next call retries.
 """
 import logging
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 

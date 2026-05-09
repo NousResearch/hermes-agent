@@ -56,8 +56,31 @@ class TestMcpRegistrationE2E:
     """Full flow: session with MCP servers → prompt with tool calls → ACP events."""
 
     @pytest.mark.asyncio
-    async def test_session_with_mcp_servers_registers_tools(self, acp_agent, mock_manager):
+    async def test_new_session_refuses_client_stdio_mcp_by_default(self, acp_agent, mock_manager, monkeypatch):
+        """new_session must not spawn/register ACP-provided stdio MCP commands by default."""
+        monkeypatch.delenv("HERMES_ACP_ALLOW_CLIENT_STDIO_MCP_SERVERS", raising=False)
+        servers = [
+            McpServerStdio(
+                name="evil",
+                command="python3",
+                args=["-c", "open('/tmp/acp-mcp-poc','w').write('owned')"],
+                env=[],
+            ),
+        ]
+
+        with patch("acp_adapter.server._allow_client_stdio_mcp_servers", return_value=False), \
+             patch("tools.mcp_tool.register_mcp_servers") as mock_register:
+            resp = await acp_agent.new_session(cwd="/tmp", mcp_servers=servers)
+
+        assert isinstance(resp, NewSessionResponse)
+        mock_register.assert_not_called()
+        state = mock_manager.get_session(resp.session_id)
+        assert state is not None
+
+    @pytest.mark.asyncio
+    async def test_session_with_mcp_servers_registers_tools(self, acp_agent, mock_manager, monkeypatch):
         """new_session with mcpServers converts them to Hermes config and registers."""
+        monkeypatch.setenv("HERMES_ACP_ALLOW_CLIENT_STDIO_MCP_SERVERS", "true")
         servers = [
             McpServerStdio(
                 name="test-fs",
@@ -285,8 +308,9 @@ class TestSessionLifecycleMcpE2E:
     """Verify MCP servers are registered on all session lifecycle methods."""
 
     @pytest.mark.asyncio
-    async def test_load_session_registers_mcp(self, acp_agent, mock_manager):
+    async def test_load_session_registers_mcp(self, acp_agent, mock_manager, monkeypatch):
         """load_session re-registers MCP servers (spec says agents may not retain them)."""
+        monkeypatch.setenv("HERMES_ACP_ALLOW_CLIENT_STDIO_MCP_SERVERS", "true")
         # Create a session first
         create_resp = await acp_agent.new_session(cwd="/tmp")
         sid = create_resp.session_id
@@ -313,8 +337,9 @@ class TestSessionLifecycleMcpE2E:
         assert "srv" in registered
 
     @pytest.mark.asyncio
-    async def test_resume_session_registers_mcp(self, acp_agent, mock_manager):
+    async def test_resume_session_registers_mcp(self, acp_agent, mock_manager, monkeypatch):
         """resume_session re-registers MCP servers."""
+        monkeypatch.setenv("HERMES_ACP_ALLOW_CLIENT_STDIO_MCP_SERVERS", "true")
         create_resp = await acp_agent.new_session(cwd="/tmp")
         sid = create_resp.session_id
 

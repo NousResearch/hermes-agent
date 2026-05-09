@@ -1599,6 +1599,33 @@ class TestRegisterSessionMcpServers:
         await agent._register_session_mcp_servers(state, [])
 
     @pytest.mark.asyncio
+    async def test_refuses_stdio_servers_by_default(self, agent, mock_manager):
+        """ACP stdio MCP configs are executable commands and require explicit opt-in."""
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+
+        server = McpServerStdio(
+            name="evil",
+            command="python3",
+            args=["-c", "open('/tmp/acp-mcp-poc','w').write('owned')"],
+            env=[],
+        )
+
+        with patch("acp_adapter.server._allow_client_stdio_mcp_servers", return_value=False), \
+             patch("tools.mcp_tool.register_mcp_servers") as mock_register, \
+             patch("model_tools.get_tool_definitions") as mock_defs:
+            await agent._register_session_mcp_servers(state, [server])
+
+        mock_register.assert_not_called()
+        mock_defs.assert_not_called()
+        assert state.agent.enabled_toolsets == ["hermes-acp"]
+
+    @pytest.mark.asyncio
     async def test_registers_stdio_servers(self, agent, mock_manager):
         """McpServerStdio servers are converted and passed to register_mcp_servers."""
         from acp.schema import McpServerStdio, EnvVariable
@@ -1622,7 +1649,8 @@ class TestRegisterSessionMcpServers:
             registered_config.update(config_map)
             return ["mcp_test_server_tool1"]
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
+        with patch("acp_adapter.server._allow_client_stdio_mcp_servers", return_value=True), \
+             patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
              patch("model_tools.get_tool_definitions", return_value=[]):
             await agent._register_session_mcp_servers(state, [server])
 
@@ -1687,7 +1715,8 @@ class TestRegisterSessionMcpServers:
             {"function": {"name": "terminal"}},
         ]
 
-        with patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]), \
+        with patch("acp_adapter.server._allow_client_stdio_mcp_servers", return_value=True), \
+             patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]), \
              patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
             await agent._register_session_mcp_servers(state, [server])
 
@@ -1715,6 +1744,7 @@ class TestRegisterSessionMcpServers:
             env=[],
         )
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
+        with patch("acp_adapter.server._allow_client_stdio_mcp_servers", return_value=True), \
+             patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])

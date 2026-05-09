@@ -468,6 +468,25 @@ mcp_servers:
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."  # Only this is passed
 ```
 
+### ACP client-provided MCP servers
+
+ACP clients may provide MCP server definitions when creating, loading, resuming, or forking a session. HTTP/SSE MCP servers are treated as remote endpoints. Stdio MCP servers are different: their `command` and `args` are local executable process definitions.
+
+For that reason, ACP client-provided stdio MCP servers are disabled by default. Enable them only when the connected ACP client and workspace configuration are trusted:
+
+```yaml
+acp:
+  allow_client_stdio_mcp_servers: true
+```
+
+Or for a single process:
+
+```bash
+HERMES_ACP_ALLOW_CLIENT_STDIO_MCP_SERVERS=true hermes acp
+```
+
+Local MCP servers configured directly in the operator-owned `mcp_servers` config are unaffected.
+
 ### Credential Redaction
 
 Error messages from MCP tools are sanitized before being returned to the LLM. The following patterns are replaced with `[REDACTED]`:

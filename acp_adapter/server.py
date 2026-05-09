@@ -391,6 +391,48 @@ def _image_block_to_openai_part(block: ImageContentBlock) -> dict[str, Any] | No
     return {"type": "image_url", "image_url": {"url": url}}
 
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _parse_boolish(value: Any, *, default: bool = False) -> bool:
+    """Parse common bool-ish config/env values."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in _TRUE_VALUES:
+        return True
+    if text in _FALSE_VALUES:
+        return False
+    return default
+
+
+def _allow_client_stdio_mcp_servers() -> bool:
+    """Return whether ACP clients may register stdio MCP servers.
+
+    ACP client-provided stdio MCP servers are executable command definitions.
+    Keep them disabled by default so session creation cannot spawn arbitrary
+    local processes unless the operator explicitly opts into that trust model.
+    """
+    env_value = os.getenv("HERMES_ACP_ALLOW_CLIENT_STDIO_MCP_SERVERS")
+    if env_value is not None:
+        return _parse_boolish(env_value, default=False)
+
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+        return _parse_boolish(
+            cfg_get(cfg, "acp", "allow_client_stdio_mcp_servers", default=False),
+            default=False,
+        )
+    except Exception:
+        logger.debug("Failed to read ACP stdio MCP policy from config", exc_info=True)
+        return False
+
+
 def _content_blocks_to_openai_user_content(
     prompt: list[
         TextContentBlock
@@ -760,9 +802,20 @@ class HermesACPAgent(acp.Agent):
             from tools.mcp_tool import register_mcp_servers
 
             config_map: dict[str, dict] = {}
+            allow_stdio = _allow_client_stdio_mcp_servers()
             for server in mcp_servers:
                 name = server.name
                 if isinstance(server, McpServerStdio):
+                    if not allow_stdio:
+                        logger.warning(
+                            "Session %s: refusing ACP client-supplied stdio MCP "
+                            "server %r. Set acp.allow_client_stdio_mcp_servers "
+                            "or HERMES_ACP_ALLOW_CLIENT_STDIO_MCP_SERVERS=true "
+                            "only for trusted ACP clients.",
+                            state.session_id,
+                            name,
+                        )
+                        continue
                     config = {
                         "command": server.command,
                         "args": list(server.args),
@@ -774,6 +827,9 @@ class HermesACPAgent(acp.Agent):
                         "headers": {item.name: item.value for item in server.headers},
                     }
                 config_map[name] = config
+
+            if not config_map:
+                return
 
             await asyncio.to_thread(register_mcp_servers, config_map)
         except Exception:
@@ -789,7 +845,7 @@ class HermesACPAgent(acp.Agent):
 
             enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
-                mcp_server_names=[server.name for server in mcp_servers],
+                mcp_server_names=list(config_map),
             )
             state.agent.enabled_toolsets = enabled_toolsets
             disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)

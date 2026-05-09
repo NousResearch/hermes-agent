@@ -482,10 +482,12 @@ def write_runtime_status(
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
+    current_record = _build_pid_record()
     payload.setdefault("platforms", {})
-    payload.setdefault("kind", _GATEWAY_KIND)
-    payload["pid"] = os.getpid()
-    payload["start_time"] = _get_process_start_time(os.getpid())
+    payload["kind"] = current_record["kind"]
+    payload["pid"] = current_record["pid"]
+    payload["argv"] = current_record["argv"]
+    payload["start_time"] = current_record["start_time"]
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:

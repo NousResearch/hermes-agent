@@ -7243,7 +7243,7 @@ class AIAgent:
                 raise result["error"]
             return result["response"]
 
-        result = {"response": None, "error": None, "partial_tool_names": []}
+        result: dict[str, Any] = {"response": None, "error": None, "partial_tool_names": []}
         request_client_holder = {"client": None}
         first_delta_fired = {"done": False}
         deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
@@ -7910,6 +7910,23 @@ class AIAgent:
                     self._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
                 except Exception:
                     pass
+                # Closing an OpenAI/httpx client from another thread is
+                # best-effort.  In the common case it unblocks the worker and the
+                # inner retry loop can reconnect.  If the worker remains stuck in
+                # SSL_read (or a provider SDK ignores close()), do not leave the
+                # WebUI/gateway turn busy forever - synthesize a timeout and
+                # return control to the outer retry/fallback path.
+                t.join(timeout=2.0)
+                if t.is_alive() and result["error"] is None and result["response"] is None:
+                    result["error"] = TimeoutError(
+                        f"Streaming API call timed out after {int(_stale_elapsed)}s "
+                        f"with no chunks received (threshold: {int(_stream_stale_timeout)}s)"
+                    )
+                    self._touch_activity(
+                        f"stale stream abandoned after {int(_stale_elapsed)}s"
+                    )
+                    break
+
                 # Reset the timer so we don't kill repeatedly while
                 # the inner thread processes the closure.
                 last_chunk_time["t"] = time.time()

@@ -142,6 +142,83 @@ ACHIEVEMENTS: List[Dict[str, Any]] = [
 ]
 
 
+ACHIEVEMENT_JA: Dict[str, Dict[str, str]] = {
+    "let_him_cook": {"name": "任せて見守れ", "description": "1回のセッションで、Hermes に本格的な自律作業チェーンを走らせる。"},
+    "autonomous_avalanche": {"name": "自律作業の雪崩", "description": "複数セッションを通じて、Hermes のツール呼び出しを雪崩のように積み上げる。"},
+    "toolchain_maxxer": {"name": "ツールチェーン限界突破", "description": "1回のセッションで、さまざまな Hermes ツールを幅広く使いこなす。"},
+    "full_send": {"name": "全力投入", "description": "端末、ファイル操作、Web/ブラウザまで総動員する本気の実行を行う。"},
+    "subagent_commander": {"name": "サブエージェント司令官", "description": "委譲したエージェント作業をまとめて指揮する。"},
+    "background_process_enjoyer": {"name": "常駐プロセス愛好家", "description": "長時間動くプロセスを、称号に値するほど起動・制御する。"},
+    "cron_necromancer": {"name": "Cron 死霊術師", "description": "スケジュールされた自律ジョブを、墓場から何度も蘇らせる。"},
+    "red_text_connoisseur": {"name": "赤文字鑑定士", "description": "十分な数のエラーに遭遇し、赤い文字の味がわかるようになる。"},
+    "stack_trace_sommelier": {"name": "スタックトレース・ソムリエ", "description": "トレースバックを一口ではなく、飲み比べのように味わう。"},
+    "actually_read_the_logs": {"name": "ちゃんとログを読んだ", "description": "勘で進めず、ログを繰り返し確認する。えらい。"},
+    "port_3000_taken": {"name": "ポート3000は使用中", "description": "開発サーバーのポート衝突に何度も遭遇し、もはや何も感じなくなる。"},
+    "permission_denied_any_percent": {"name": "権限拒否 Any%", "description": "権限の壁へ最短ルートで突っ込む。"},
+    "dependency_hell_tourist": {"name": "依存関係地獄ツアー客", "description": "パッケージ導入に失敗する。それでもなぜか作業は続く。"},
+    "the_fix_was_restarting": {"name": "直し方は再起動だった", "description": "エラーの山のあとに再起動する。それを技術と呼べる回数まで繰り返す。"},
+    "forgot_the_env_var": {"name": "環境変数、忘れてた", "description": "認証や設定が失敗する。原因は環境変数。いつものやつ。"},
+    "yaml_colon_incident": {"name": "YAML コロン事件", "description": "設定ファイルの構文に噛みつかれる。だいたいコロン。"},
+    "docker_name_collision": {"name": "Docker 名衝突", "description": "コンテナ名が既に存在する。もちろんそう。"},
+    "supposed_to_be_quick": {"name": "すぐ終わるはずだった", "description": "小さな依頼が、気づけば大遠征になる。"},
+    "one_more_small_change": {"name": "あと小さな変更ひとつ", "description": "『小さな変更』という言葉が信用できなくなるほどファイルを編集する。"},
+    "vibe_architect": {"name": "雰囲気アーキテクト", "description": "1つのプロジェクトセッションで、広い範囲に手を入れる。"},
+    "pixel_goblin": {"name": "ピクセルの住人", "description": "フロントエンド、CSS、SVG、見た目の調整に長く居座る。"},
+    "ship_first_ask_later": {"name": "まず出荷、質問はあと", "description": "本格的なツールチェーンのあとに Git 作業まで突き進む。"},
+    "css_exorcist": {"name": "CSS 祓魔師", "description": "インターフェースに取り憑いたスタイルの悪霊を何度も祓う。"},
+    "one_character_fix": {"name": "1文字の修正", "description": "大量のエラーの末に、たった1文字を直す。苦しい。美しい。"},
+    "skillsmith": {"name": "スキル鍛冶師", "description": "Hermes スキルを使い込み、しっかり痕跡を残す。"},
+    "skill_issue_skill_created": {"name": "スキル不足？なら作った", "description": "同じことを繰り返さず、手順をスキルとして作成・修正する。"},
+    "memory_keeper": {"name": "記憶の番人", "description": "Memory や Mnemosyne で、あとから効く知識を保存する。"},
+    "memory_palace": {"name": "記憶の宮殿", "description": "本格的な永続記憶の道筋を築く。"},
+    "context_dragon": {"name": "文脈ドラゴン", "description": "圧縮、巨大な文脈、トークン圧に何度も触れる。"},
+    "gateway_dweller": {"name": "ゲートウェイの住人", "description": "ゲートウェイ接続の Hermes ワークフローで暮らすようになる。"},
+    "plugin_goblin": {"name": "プラグイン好き", "description": "ダッシュボードに気づかれるほど、プラグインを使う、または作る。"},
+    "rollback_wizard": {"name": "ロールバック魔術師", "description": "ロールバックやチェックポイント復旧の魔法を呼び出す。"},
+    "rabbit_hole_certified": {"name": "沼落ち認定", "description": "調査の沼と呼べるほど、Web コンテンツを検索・抽出する。"},
+    "citation_goblin": {"name": "引用コレクター", "description": "小さな司書のように、Web ページを抽出し続ける。"},
+    "docs_archaeologist": {"name": "考古学者", "description": "ドキュメントを何度も掘り返し、地層を読む。"},
+    "browser_possession": {"name": "ブラウザ憑依", "description": "自動操作でブラウザに何度も乗り移る。"},
+    "terminal_goblin": {"name": "端末の住人", "description": "シェルの国でかなりの時間を過ごす。"},
+    "patch_wizard": {"name": "パッチ魔術師", "description": "狙いすましたパッチで、ファイルを思い通りに曲げる。"},
+    "file_archaeologist": {"name": "ファイル発掘者", "description": "読み取りと検索で、ファイルシステムを掘り進める。"},
+    "image_whisperer": {"name": "画像と話す者", "description": "画像生成や視覚ツールを、見た目の作業に使い込む。"},
+    "voice_of_the_machine": {"name": "機械の声", "description": "読み上げや音声ツールを繰り返し使う。"},
+    "model_hopper": {"name": "モデル渡り鳥", "description": "プロバイダやモデルを、癖のように切り替えたり確認したりする。"},
+    "openrouter_enjoyer": {"name": "OpenRouter 愛好家", "description": "OpenRouter 経由でモデル作業を繰り返す。"},
+    "codex_conjurer": {"name": "Codex 召喚師", "description": "Codex 系の助力を、儀式のように何度も召喚する。"},
+    "multi_model_mage": {"name": "多モデル魔法使い", "description": "Hermes の履歴全体で、本当に多様なモデル名を使う。"},
+    "five_model_flight": {"name": "5モデル試飲会", "description": "最初に返事したモデルと即結婚せず、少なくとも5種類の LLM を試す。"},
+    "provider_polyglot": {"name": "プロバイダ多言語話者", "description": "Hermes の履歴全体で、複数プロバイダのモデルを使う。"},
+    "model_sommelier": {"name": "モデル・ソムリエ", "description": "好みが育つほど、モデルやプロバイダとの会話を味見する。"},
+    "claude_confidant": {"name": "Claude の相談相手", "description": "Claude 系の推論を、ワークフローに何度も持ち込む。"},
+    "gemini_cartographer": {"name": "Gemini の地図師", "description": "Gemini 関連のワークフローの地形がわかるほど使う。"},
+    "open_weights_pilgrim": {"name": "オープンウェイト巡礼者", "description": "Hermes のセッション情報上で、ローカルまたはオープンウェイトモデルと実際に会話する。"},
+    "toolset_cartographer": {"name": "道具箱の地図師", "description": "ツールをぼんやりした塊として扱わず、Hermes の道具箱を意識して辿る。"},
+    "config_surgeon": {"name": "設定外科医", "description": "設定ファイル、マニフェスト、環境ファイル、ダッシュボード設定を迷わず手術する。"},
+    "rebase_acrobat": {"name": "リベース曲芸師", "description": "リベース、競合、マージ、取得、プッシュといった Git 履歴の綱渡りをこなす。"},
+    "test_suite_tamer": {"name": "テストスイート調教師", "description": "緑の文字が儀式の一部になるほど、検証コマンドを走らせる。"},
+    "screenshot_hunter": {"name": "スクリーンショットハンター", "description": "動くと言い張るだけでなく、見える証拠を撮り、確認し、磨く。"},
+    "marathon_operator": {"name": "マラソン操作者", "description": "かなりの数の Hermes セッションを積み上げる。"},
+    "weekend_warrior": {"name": "週末戦士", "description": "週末に Hermes を使うことが生活様式になる。"},
+    "night_shift_operator": {"name": "夜勤担当", "description": "妙なものが動くような時間帯に、何度もセッションを走らせる。"},
+    "cache_hit_appreciator": {"name": "キャッシュヒット鑑賞者", "description": "プロンプトキャッシュやキャッシュヒットに気づく、または恩恵を受ける。"},
+}
+CATEGORY_JA: Dict[str, str] = {
+    "Agent Autonomy": "自律エージェント",
+    "Agent 自律性": "自律エージェント",
+    "Debugging Chaos": "デバッグの混沌",
+    "デバッグ混沌": "デバッグの混沌",
+    "Vibe Coding": "バイブコーディング",
+    "勢いコーディング": "バイブコーディング",
+    "Hermes Native": "Hermes 活用",
+    "Research/Web": "調査とWeb",
+    "Tool Mastery": "ツール熟達",
+    "Model Lore": "モデル知識",
+    "Lifestyle": "生活様式",
+}
+
+
 def state_path() -> Path:
     return get_hermes_home() / "plugins" / "hermes-achievements" / "state.json"
 
@@ -461,100 +538,117 @@ def evaluate_boolean(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> D
     return {"unlocked": unlocked, "discovered": True, "state": "unlocked" if unlocked else "discovered", "tier": None, "progress": 1 if unlocked else 0, "next_tier": None, "next_threshold": 1, "progress_pct": 100 if unlocked else 0}
 
 
-METRIC_LABELS = {
-    "max_tool_calls_in_session": "tool calls in one session",
-    "max_distinct_tools_in_session": "distinct Hermes tools used in one session",
-    "max_terminal_calls_in_session": "terminal calls in one session",
-    "max_file_tool_calls_in_session": "file/search/patch calls in one session",
-    "max_web_browser_calls_in_session": "web search/extract or browser calls in one session",
-    "max_messages_in_session": "messages in one session",
-    "max_files_touched_in_session": "files touched in one session",
-    "total_delegate_calls": "lifetime delegate_task calls",
-    "total_process_calls": "lifetime background process operations",
-    "total_cron_calls": "lifetime scheduled-job operations",
-    "total_errors": "error/failed/traceback messages observed",
-    "traceback_events": "traceback or exception mentions",
-    "log_read_events": "log inspections",
-    "port_conflict_events": "dev-server port conflict detections",
-    "permission_denied_events": "permission-denied errors",
-    "install_error_events": "package-install failures",
-    "install_success_events": "successful package installs after package work",
-    "restart_after_error_events": "restart/reload actions after error clusters",
-    "env_var_error_events": "missing auth/config/environment-variable events",
-    "yaml_error_events": "YAML/config parse incidents",
-    "docker_conflict_events": "Docker/container-name conflicts",
-    "frontend_activity_events": "frontend/CSS/SVG/React activity mentions",
-    "css_activity_events": "CSS, styling, Tailwind, or className activity",
-    "git_events": "git workflow commands",
-    "tiny_patch_after_errors_events": "tiny typo-style fixes after error clusters",
-    "skill_events": "Hermes skill mentions or tool use",
-    "skill_manage_events": "skill_manage create/patch/delete operations",
-    "memory_events": "memory or Mnemosyne tool events",
-    "memory_write_events": "durable memory writes",
-    "context_events": "context, compression, token, or cache-pressure mentions",
-    "gateway_events": "gateway/API/chat-platform activity",
-    "plugin_events": "dashboard plugin development or usage signals",
-    "rollback_events": "rollback/checkpoint recovery mentions",
-    "docs_activity_events": "documentation/README/docs activity",
-    "model_events": "model/provider-related activity",
-    "openrouter_events": "OpenRouter mentions",
-    "codex_events": "Codex mentions",
-    "cache_events": "prompt-cache/cache-hit mentions",
-    "total_web_calls": "lifetime web_search/web_extract calls",
-    "total_web_extract_calls": "lifetime web_extract calls",
-    "browser_calls": "lifetime browser automation calls",
-    "total_tool_calls": "lifetime Hermes tool calls",
-    "total_terminal_calls": "lifetime terminal calls",
-    "total_patch_calls": "lifetime targeted patch edits",
-    "total_file_reads_searches": "lifetime read_file/search_files calls",
-    "image_vision_calls": "image generation or vision tool calls",
-    "tts_calls": "text-to-speech or voice tool calls",
-    "distinct_model_count": "distinct model names seen in session metadata",
-    "distinct_provider_count": "distinct model providers inferred from session metadata",
-    "claude_events": "Claude/Anthropic model mentions",
-    "gemini_events": "Gemini/Google model mentions",
-    "local_model_events": "local/open-weight model mentions",
-    "local_model_chat_sessions": "Hermes sessions whose model metadata is local/open-weight",
-    "toolset_events": "toolset or tool-family mentions",
-    "config_events": "configuration/environment/manifest activity",
-    "git_history_events": "git history operations such as rebase, merge, fetch, push, or tag",
-    "test_events": "test/check/verification command mentions",
-    "screenshot_events": "screenshot, Playwright, PNG, or vision-inspection activity",
-    "release_events": "release, version, publish, or git tag events",
-    "session_count": "Hermes sessions",
-    "weekend_sessions": "sessions started on weekends",
-    "night_sessions": "sessions started late night or before dawn",
+METRIC_LABELS_JA = {
+    "max_tool_calls_in_session": "1セッション内のツール呼び出し数",
+    "max_distinct_tools_in_session": "1セッション内で使った Hermes ツールの種類数",
+    "max_terminal_calls_in_session": "1セッション内の端末操作数",
+    "max_file_tool_calls_in_session": "1セッション内のファイル・検索・パッチ操作数",
+    "max_web_browser_calls_in_session": "1セッション内のWeb検索・抽出またはブラウザ操作数",
+    "max_messages_in_session": "1セッション内のメッセージ数",
+    "max_files_touched_in_session": "1セッション内で触れたファイル数",
+    "total_delegate_calls": "累計の作業委譲回数",
+    "total_process_calls": "累計の常駐プロセス操作数",
+    "total_cron_calls": "累計のスケジュールジョブ操作数",
+    "total_errors": "観測したエラー・失敗・トレースバックの数",
+    "traceback_events": "トレースバックまたは例外の出現数",
+    "log_read_events": "ログ確認の回数",
+    "port_conflict_events": "開発サーバーのポート衝突検出数",
+    "permission_denied_events": "権限拒否エラーの数",
+    "install_error_events": "パッケージ導入失敗の数",
+    "install_success_events": "パッケージ作業後の導入成功数",
+    "restart_after_error_events": "エラーの塊の後に行った再起動・再読み込み数",
+    "env_var_error_events": "認証・設定・環境変数不足の発生数",
+    "yaml_error_events": "YAML・設定ファイルの構文事故数",
+    "docker_conflict_events": "Docker・コンテナ名の衝突数",
+    "frontend_activity_events": "フロントエンド・CSS・SVG・React 作業の出現数",
+    "css_activity_events": "CSS・スタイル・Tailwind・className 作業の出現数",
+    "git_events": "Git ワークフロー操作数",
+    "tiny_patch_after_errors_events": "エラーの塊の後の小さな typo 修正数",
+    "skill_events": "Hermes スキルへの言及または使用回数",
+    "skill_manage_events": "スキルの作成・修正・削除操作数",
+    "memory_events": "Memory または Mnemosyne ツールの使用回数",
+    "memory_write_events": "永続メモリへの書き込み数",
+    "context_events": "文脈・圧縮・トークン・キャッシュ圧への言及数",
+    "gateway_events": "ゲートウェイ・API・チャット連携の活動数",
+    "plugin_events": "ダッシュボードプラグインの開発または使用の兆候数",
+    "rollback_events": "ロールバック・チェックポイント復旧への言及数",
+    "docs_activity_events": "ドキュメント・README 関連作業数",
+    "model_events": "モデル・プロバイダ関連の活動数",
+    "openrouter_events": "OpenRouter への言及数",
+    "codex_events": "Codex への言及数",
+    "cache_events": "プロンプトキャッシュ・キャッシュヒットへの言及数",
+    "total_web_calls": "累計のWeb検索・Web抽出回数",
+    "total_web_extract_calls": "累計のWeb抽出回数",
+    "browser_calls": "累計のブラウザ自動操作回数",
+    "total_tool_calls": "累計の Hermes ツール呼び出し数",
+    "total_terminal_calls": "累計の端末操作数",
+    "total_patch_calls": "累計の狙い撃ちパッチ編集数",
+    "total_file_reads_searches": "累計のファイル読み取り・検索回数",
+    "image_vision_calls": "画像生成または視覚ツールの使用回数",
+    "tts_calls": "読み上げまたは音声ツールの使用回数",
+    "distinct_model_count": "セッション情報に現れたモデル名の種類数",
+    "distinct_provider_count": "セッション情報から推定したプロバイダの種類数",
+    "claude_events": "Claude・Anthropic モデルへの言及数",
+    "gemini_events": "Gemini・Google モデルへの言及数",
+    "local_model_events": "ローカル・オープンウェイトモデルへの言及数",
+    "local_model_chat_sessions": "モデル情報がローカル・オープンウェイトだった Hermes セッション数",
+    "toolset_events": "ツールセットまたはツール系統への言及数",
+    "config_events": "設定・環境・マニフェスト関連作業数",
+    "git_history_events": "リベース、マージ、取得、プッシュ、タグなど Git 履歴操作数",
+    "test_events": "テスト・確認・検証コマンドの出現数",
+    "screenshot_events": "スクリーンショット、Playwright、PNG、視覚確認の活動数",
+    "release_events": "リリース、バージョン、公開、Git タグ関連の発生数",
+    "session_count": "Hermes セッション数",
+    "weekend_sessions": "週末に開始したセッション数",
+    "night_sessions": "深夜または明け方に開始したセッション数",
 }
 
 
-def metric_label(metric: str) -> str:
-    return METRIC_LABELS.get(metric, metric.replace("_", " "))
+def normalize_locale(locale: str | None) -> str:
+    return "ja" if str(locale or "").lower().startswith("ja") else "en"
 
 
-def criteria_for(definition: Dict[str, Any]) -> str:
+def metric_label(metric: str, locale: str = "en") -> str:
+    if normalize_locale(locale) == "ja":
+        return METRIC_LABELS_JA.get(metric, metric.replace("_", " "))
+    return metric.replace("_", " ")
+
+
+def criteria_for(definition: Dict[str, Any], locale: str = "en") -> str:
+    if normalize_locale(locale) == "ja":
+        if definition.get("secret") and definition.get("state") == "secret":
+            return "隠し実績: 条件はまだ伏せられている。デバッグ、ツール、記憶、スキル、プラグイン、モデル関連の作業を続けると、手がかりが見つかって明らかになる。"
+        if "threshold_metric" in definition:
+            tiers_list = sorted(definition.get("tiers", []), key=lambda t: t["threshold"])
+            if not tiers_list:
+                return "達成条件: 該当する作業で Hermes を使う。"
+            metric = metric_label(definition["threshold_metric"], locale)
+            ladder = ", ".join(f"{t['name']} {t['threshold']}" for t in tiers_list)
+            return f"達成条件: {metric}。ティア一覧: {ladder}。"
+        requirements = definition.get("requirements") or []
+        if requirements:
+            parts = [f"{metric_label(r['metric'], locale)} ≥ {int(r.get('gte', 1))}" for r in requirements]
+            return "達成条件: " + "、".join(parts) + "。"
+        return "達成条件: 該当する Hermes 上の行動を完了する。"
+
     if definition.get("secret") and definition.get("state") == "secret":
-        return "Secret: exact requirement hidden until Hermes sees the first matching signal. Keep using Hermes across debugging, tools, memory, skills, plugins, and model workflows to reveal it."
-    secret_prefix = ""
+        return "Secret achievement: requirements are hidden until Hermes finds a related signal in your session history."
     if "threshold_metric" in definition:
         tiers_list = sorted(definition.get("tiers", []), key=lambda t: t["threshold"])
         if not tiers_list:
-            return secret_prefix + "Requirement: use Hermes in the matching workflow."
-        metric = metric_label(definition["threshold_metric"])
+            return "What counts: use Hermes for the relevant work."
+        metric = metric_label(definition["threshold_metric"], locale)
         ladder = ", ".join(f"{t['name']} {t['threshold']}" for t in tiers_list)
-        return secret_prefix + f"Requirement: {metric}. Tier ladder: {ladder}."
+        return f"What counts: {metric}. Tiers: {ladder}."
     requirements = definition.get("requirements") or []
     if requirements:
-        parts = [f"{metric_label(r['metric'])} ≥ {int(r.get('gte', 1))}" for r in requirements]
-        return secret_prefix + "Requirement: " + "; ".join(parts) + "."
-    return secret_prefix + "Requirement: complete the matching Hermes behavior."
+        parts = [f"{metric_label(r['metric'], locale)} ≥ {int(r.get('gte', 1))}" for r in requirements]
+        return "What counts: " + ", ".join(parts) + "."
+    return "What counts: complete the relevant Hermes activity."
 
 
-def display_achievement(item: Dict[str, Any]) -> Dict[str, Any]:
-    clean = dict(item)
-    if clean.get("state") == "secret":
-        return {**clean, "name": "???", "description": "Secret achievement: hidden until Hermes detects the first relevant behavior in your session history.", "criteria": criteria_for(clean), "icon": "secret"}
-    clean["criteria"] = criteria_for(clean)
-    return clean
+def display_achievement(item: Dict[str, Any], locale: str = "en") -> Dict[str, Any]:
+    return localize_display_item(item, locale=locale)
 
 
 def scan_sessions(
@@ -826,6 +920,46 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
     }
 
 
+def localize_display_item(item: Dict[str, Any], locale: str = "en") -> Dict[str, Any]:
+    clean = dict(item)
+    original = next((d for d in ACHIEVEMENTS if d.get("id") == clean.get("id")), {})
+    clean["category_en"] = clean.get("category_en") or original.get("category") or clean.get("category")
+    clean["name_en"] = clean.get("name_en") or original.get("name") or clean.get("name")
+    clean["description_en"] = clean.get("description_en") or original.get("description") or clean.get("description")
+
+    if normalize_locale(locale) != "ja":
+        clean["name"] = clean.get("name_en", clean.get("name"))
+        clean["description"] = clean.get("description_en", clean.get("description"))
+        if clean.get("state") == "secret":
+            clean["name"] = "???"
+            clean["description"] = "Secret achievement: hidden until a triggering action appears in your session history."
+            clean["icon"] = "secret"
+        clean["category"] = clean.get("category_en", clean.get("category"))
+        clean["criteria"] = criteria_for(clean, locale="en")
+        return clean
+
+    original_category = str(clean.get("category_en") or original.get("category") or clean.get("category") or "")
+    clean["category"] = CATEGORY_JA.get(original_category, clean.get("category"))
+    ja = ACHIEVEMENT_JA.get(str(clean.get("id") or ""), {})
+    if clean.get("state") == "secret":
+        clean["name"] = "???"
+        clean["description"] = "隠し実績: きっかけになる行動がセッション履歴に現れるまで非表示。"
+        clean["icon"] = "secret"
+    elif ja:
+        clean["name"] = ja.get("name", clean.get("name"))
+        clean["description"] = ja.get("description", clean.get("description"))
+    clean["criteria"] = criteria_for(clean, locale="ja")
+    return clean
+
+
+def localize_payload(data: Dict[str, Any], locale: str = "en") -> Dict[str, Any]:
+    localized = dict(data or {})
+    achievements = localized.get("achievements")
+    if isinstance(achievements, list):
+        localized["achievements"] = [localize_display_item(a, locale=locale) if isinstance(a, dict) else a for a in achievements]
+    return localized
+
+
 def compute_all(progress_callback: Optional[Any] = None, progress_every: int = 250) -> Dict[str, Any]:
     scan = scan_sessions(progress_callback=progress_callback, progress_every=progress_every)
     return _compute_from_scan(scan, is_partial=False)
@@ -997,8 +1131,8 @@ def evaluate_all(force: bool = False) -> Dict[str, Any]:
 
 
 @router.get("/achievements")
-async def achievements():
-    data = evaluate_all()
+async def achievements(locale: str = "en"):
+    data = localize_payload(evaluate_all(), locale=locale)
     payload = {k: data[k] for k in ["achievements", "unlocked_count", "discovered_count", "secret_count", "total_count", "error", "generated_at"] if k in data}
     payload["is_stale"] = _is_snapshot_stale(data)
     payload["scan_meta"] = {
@@ -1014,14 +1148,14 @@ async def scan_status():
 
 
 @router.get("/recent-unlocks")
-async def recent_unlocks():
-    data = evaluate_all()
+async def recent_unlocks(locale: str = "en"):
+    data = localize_payload(evaluate_all(), locale=locale)
     return sorted([a for a in data["achievements"] if a["unlocked"]], key=lambda a: a.get("unlocked_at") or 0, reverse=True)[:20]
 
 
 @router.get("/sessions/{session_id}/badges")
-async def session_badges(session_id: str):
-    data = evaluate_all()
+async def session_badges(session_id: str, locale: str = "en"):
+    data = localize_payload(evaluate_all(), locale=locale)
     session = next((s for s in data["sessions"] if s["session_id"] == session_id), None)
     if not session:
         return {"session_id": session_id, "badges": []}
@@ -1035,8 +1169,8 @@ async def session_badges(session_id: str):
 
 
 @router.post("/rescan")
-async def rescan():
-    return {"ok": True, **evaluate_all(force=True)}
+async def rescan(locale: str = "en"):
+    return {"ok": True, **localize_payload(evaluate_all(force=True), locale=locale)}
 
 
 @router.post("/reset-state")

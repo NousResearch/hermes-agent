@@ -375,3 +375,27 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
         "partial scans must not record unlock timestamps — a later session "
         "could change whether the badge deserves to be unlocked yet"
     )
+
+
+def test_localize_payload_preserves_english_and_adds_japanese_on_request(plugin_api):
+    item = {
+        "id": "let_him_cook",
+        "name": "Let Him Cook",
+        "description": "Run a serious autonomous chain in one session.",
+        "category": "Agent Autonomy",
+        "state": "discovered",
+        "threshold_metric": "max_tool_calls_in_session",
+        "tiers": [{"name": "Copper", "threshold": 5}],
+    }
+
+    english = plugin_api.localize_display_item(item, locale="en")
+    japanese = plugin_api.localize_display_item(item, locale="ja")
+
+    assert english["name"] == "Let Him Cook"
+    assert english["description"] == "Let Hermes run a serious autonomous tool chain in one session."
+    assert english["category"] == "Agent Autonomy"
+    assert english["criteria"].startswith("What counts:")
+
+    assert japanese["name"] == "任せて見守れ"
+    assert japanese["category"] == "自律エージェント"
+    assert japanese["criteria"].startswith("達成条件:")

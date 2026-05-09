@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import type { GatewayClient } from "@/lib/gatewayClient";
 import { Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "@/i18n";
 
 /**
  * Two-stage model picker modal.
@@ -62,7 +63,12 @@ interface Props {
   alwaysGlobal?: boolean;
 }
 
+function tr(locale: string, en: string, ja: string): string {
+  return locale === "ja" ? ja : en;
+}
+
 export function ModelPickerDialog(props: Props) {
+  const { locale } = useI18n();
   const {
     gw,
     sessionId,
@@ -70,7 +76,7 @@ export function ModelPickerDialog(props: Props) {
     loader,
     onApply,
     onClose,
-    title = "Switch Model",
+    title = tr(locale, "Switch Model", "モデルを切り替え"),
     alwaysGlobal = false,
   } = props;
   const standalone = !!loader && !!onApply;
@@ -208,7 +214,7 @@ export function ModelPickerDialog(props: Props) {
           size="icon"
           onClick={onClose}
           className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-          aria-label="Close"
+          aria-label={tr(locale, "Close", "閉じる")}
         >
           <X />
         </Button>
@@ -221,7 +227,7 @@ export function ModelPickerDialog(props: Props) {
             {title}
           </h2>
           <p className="text-xs text-muted-foreground mt-1 font-mono">
-            current: {currentModel || "(unknown)"}
+            {tr(locale, "current", "現在")}: {currentModel || tr(locale, "(unknown)", "(不明)")}
             {currentProviderSlug && ` · ${currentProviderSlug}`}
           </p>
         </header>
@@ -231,7 +237,7 @@ export function ModelPickerDialog(props: Props) {
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               autoFocus
-              placeholder="Filter providers and models…"
+              placeholder={tr(locale, "Filter providers and models…", "provider / model を絞り込み…")}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="pl-7 h-8 text-sm"
@@ -272,7 +278,7 @@ export function ModelPickerDialog(props: Props) {
         <footer className="border-t border-border p-3 flex items-center justify-between gap-3 flex-wrap">
           {alwaysGlobal ? (
             <span className="text-xs text-muted-foreground">
-              Saves to config.yaml — applies to new sessions.
+              {tr(locale, "Saves to config.yaml — applies to new sessions.", "config.yaml に保存。新規セッションに適用される。")}
             </span>
           ) : (
             <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
@@ -282,16 +288,16 @@ export function ModelPickerDialog(props: Props) {
                 onChange={(e) => setPersistGlobal(e.target.checked)}
                 className="cursor-pointer"
               />
-              Persist globally (otherwise this session only)
+              {tr(locale, "Persist globally (otherwise this session only)", "グローバルに保存（オフならこのセッションのみ）")}
             </label>
           )}
 
           <div className="flex items-center gap-2 ml-auto">
             <Button outlined onClick={onClose} disabled={applying}>
-              Cancel
+              {tr(locale, "Cancel", "キャンセル")}
             </Button>
             <Button onClick={confirm} disabled={!canConfirm}>
-              {applying ? <Spinner /> : "Switch"}
+              {applying ? <Spinner /> : tr(locale, "Switch", "切り替え")}
             </Button>
           </div>
         </footer>
@@ -321,11 +327,12 @@ function ProviderColumn({
   query: string;
   onSelect(slug: string): void;
 }) {
+  const { locale } = useI18n();
   return (
     <div className="border-r border-border overflow-y-auto">
       {loading && (
         <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
-          <Spinner className="text-xs" /> loading…
+          <Spinner className="text-xs" /> {tr(locale, "loading…", "読み込み中…")}
         </div>
       )}
 
@@ -334,10 +341,10 @@ function ProviderColumn({
       {!loading && !error && providers.length === 0 && (
         <div className="p-4 text-xs text-muted-foreground italic">
           {query
-            ? "no matches"
+            ? tr(locale, "no matches", "一致なし")
             : total === 0
-              ? "no authenticated providers"
-              : "no matches"}
+              ? tr(locale, "no authenticated providers", "認証済み provider なし")
+              : tr(locale, "no matches", "一致なし")}
         </div>
       )}
 
@@ -358,7 +365,7 @@ function ProviderColumn({
                 {p.is_current && <CurrentTag />}
               </div>
               <div className="text-[0.65rem] text-muted-foreground/80 font-mono truncate">
-                {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
+                {p.slug} · {p.total_models ?? p.models?.length ?? 0} {tr(locale, "models", "モデル")}
               </div>
             </div>
           </ListItem>
@@ -391,11 +398,12 @@ function ModelColumn({
   onSelect(model: string): void;
   onConfirm(model: string): void;
 }) {
+  const { locale } = useI18n();
   if (!provider) {
     return (
       <div className="overflow-y-auto">
         <div className="p-4 text-xs text-muted-foreground italic">
-          pick a provider →
+          {tr(locale, "pick a provider →", "provider を選択 →")}
         </div>
       </div>
     );
@@ -412,8 +420,8 @@ function ModelColumn({
       {models.length === 0 ? (
         <div className="p-4 text-xs text-muted-foreground italic">
           {allModels.length
-            ? "no models match your filter"
-            : "no models listed for this provider"}
+            ? tr(locale, "no models match your filter", "フィルタに一致する model なし")
+            : tr(locale, "no models listed for this provider", "この provider の model 一覧なし")}
         </div>
       ) : (
         models.map((m) => {
@@ -443,9 +451,10 @@ function ModelColumn({
 }
 
 function CurrentTag() {
+  const { locale } = useI18n();
   return (
     <span className="text-[0.6rem] uppercase tracking-wider text-primary/80 shrink-0">
-      current
+      {tr(locale, "current", "現在")}
     </span>
   );
 }

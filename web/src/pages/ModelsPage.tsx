@@ -49,6 +49,30 @@ const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
   { key: "curator", label: "Curator", hint: "Skill-usage review" },
 ] as const;
 
+const AUX_TASKS_JA: Record<string, { label: string; hint: string }> = {
+  vision: { label: "Vision", hint: "画像解析" },
+  web_extract: { label: "Web Extract", hint: "ページ要約" },
+  compression: { label: "Compression", hint: "コンテキスト圧縮" },
+  session_search: { label: "Session Search", hint: "過去会話の検索" },
+  skills_hub: { label: "Skills Hub", hint: "スキル検索" },
+  approval: { label: "Approval", hint: "低リスク操作の自動承認" },
+  mcp: { label: "MCP", hint: "MCP ツール routing" },
+  title_generation: { label: "Title Gen", hint: "セッション題名生成" },
+  curator: { label: "Curator", hint: "スキル利用レビュー" },
+};
+
+function tr(locale: string, en: string, ja: string): string {
+  return locale === "ja" ? ja : en;
+}
+
+function auxTaskLabel(task: { key: string; label: string }, locale: string): string {
+  return locale === "ja" ? (AUX_TASKS_JA[task.key]?.label ?? task.label) : task.label;
+}
+
+function auxTaskHint(task: { key: string; hint: string }, locale: string): string {
+  return locale === "ja" ? (AUX_TASKS_JA[task.key]?.hint ?? task.hint) : task.hint;
+}
+
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -87,14 +111,15 @@ function TokenBar({
   cacheRead: number;
   reasoning: number;
 }) {
+  const { locale } = useI18n();
   const total = input + output + cacheRead + reasoning;
   if (total === 0) return null;
 
   const segments = [
-    { value: cacheRead, color: "bg-blue-400/60", label: "Cache Read" },
-    { value: reasoning, color: "bg-purple-400/60", label: "Reasoning" },
-    { value: input, color: "bg-[#ffe6cb]/70", label: "Input" },
-    { value: output, color: "bg-emerald-500/70", label: "Output" },
+    { value: cacheRead, color: "bg-blue-400/60", label: tr(locale, "Cache Read", "キャッシュ読込") },
+    { value: reasoning, color: "bg-purple-400/60", label: tr(locale, "Reasoning", "推論") },
+    { value: input, color: "bg-[#ffe6cb]/70", label: tr(locale, "Input", "入力") },
+    { value: output, color: "bg-emerald-500/70", label: tr(locale, "Output", "出力") },
   ].filter((s) => s.value > 0);
 
   return (
@@ -125,6 +150,7 @@ function CapabilityBadges({
 }: {
   capabilities: ModelsAnalyticsModelEntry["capabilities"];
 }) {
+  const { locale } = useI18n();
   const hasAny =
     capabilities.supports_tools ||
     capabilities.supports_vision ||
@@ -136,7 +162,7 @@ function CapabilityBadges({
     <div className="flex flex-wrap items-center gap-1.5">
       {capabilities.supports_tools && (
         <span className="inline-flex items-center gap-1 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-          <Wrench className="h-2.5 w-2.5" /> Tools
+          <Wrench className="h-2.5 w-2.5" /> {tr(locale, "Tools", "ツール")}
         </span>
       )}
       {capabilities.supports_vision && (
@@ -146,7 +172,7 @@ function CapabilityBadges({
       )}
       {capabilities.supports_reasoning && (
         <span className="inline-flex items-center gap-1 bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-medium text-purple-600 dark:text-purple-400">
-          <Brain className="h-2.5 w-2.5" /> Reasoning
+          <Brain className="h-2.5 w-2.5" /> {tr(locale, "Reasoning", "推論")}
         </span>
       )}
       {capabilities.model_family && (
@@ -177,6 +203,7 @@ function UseAsMenu({
   mainAuxTask: string | null;
   onAssigned(): void;
 }) {
+  const { locale } = useI18n();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -186,7 +213,7 @@ function UseAsMenu({
     task: string,
   ) => {
     if (!provider || !model) {
-      setError("Missing provider/model");
+      setError(tr(locale, "Missing provider/model", "provider/model が未指定"));
       return;
     }
     setBusy(true);
@@ -223,7 +250,7 @@ function UseAsMenu({
         className="text-[10px] h-6 px-2"
         prefix={busy ? <Spinner /> : null}
       >
-        Use as <ChevronDown className="h-3 w-3" />
+        {tr(locale, "Use as", "用途に設定")} <ChevronDown className="h-3 w-3" />
       </Button>
       {open && (
         <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
@@ -235,17 +262,17 @@ function UseAsMenu({
           >
             <span className="flex items-center gap-2">
               <Star className="h-3 w-3" />
-              Main model
+              {tr(locale, "Main model", "メインモデル")}
             </span>
             {isMain && (
               <span className="text-[9px] uppercase tracking-wider text-primary/80">
-                current
+                {tr(locale, "current", "現在")}
               </span>
             )}
           </button>
 
           <div className="border-t border-border/50 px-3 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground">
-            Auxiliary task
+            {tr(locale, "Auxiliary task", "補助タスク")}
           </div>
 
           <button
@@ -254,7 +281,7 @@ function UseAsMenu({
             disabled={busy}
             className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
           >
-            <span>All auxiliary tasks</span>
+            <span>{tr(locale, "All auxiliary tasks", "全補助タスク")}</span>
           </button>
 
           {AUX_TASKS.map((t) => (
@@ -265,10 +292,10 @@ function UseAsMenu({
               disabled={busy}
               className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
             >
-              <span>{t.label}</span>
+              <span>{auxTaskLabel(t, locale)}</span>
               {mainAuxTask === t.key && (
                 <span className="text-[9px] uppercase tracking-wider text-primary/80">
-                  current
+                  {tr(locale, "current", "現在")}
                 </span>
               )}
             </button>
@@ -302,7 +329,7 @@ function ModelCard({
   aux: AuxiliaryTaskAssignment[];
   onAssigned(): void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const provider = entry.provider || modelVendor(entry.model);
   const totalTokens = entry.input_tokens + entry.output_tokens;
   const caps = entry.capabilities;
@@ -332,7 +359,7 @@ function ModelCard({
               </CardTitle>
               {isMain && (
                 <span className="inline-flex items-center gap-0.5 bg-primary/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
-                  <Star className="h-2.5 w-2.5" /> main
+                  <Star className="h-2.5 w-2.5" /> {tr(locale, "main", "メイン")}
                 </span>
               )}
               {mainAuxTask && (
@@ -454,6 +481,7 @@ function ModelSettingsPanel({
   refreshKey: number;
   onSaved(): void;
 }) {
+  const { locale } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
@@ -477,7 +505,7 @@ function ModelSettingsPanel({
   };
 
   const resetAllAux = async () => {
-    if (!window.confirm("Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set.")) {
+    if (!window.confirm(tr(locale, "Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set.", "すべての補助タスクを auto に戻しますか？個別指定は上書きされます。"))) {
       return;
     }
     setResetBusy(true);
@@ -500,9 +528,9 @@ function ModelSettingsPanel({
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2">
             <Settings2 className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-sm">Model Settings</CardTitle>
+            <CardTitle className="text-sm">{tr(locale, "Model Settings", "モデル設定")}</CardTitle>
             <span className="text-[10px] text-muted-foreground">
-              applies to new sessions
+              {tr(locale, "applies to new sessions", "新規セッションに適用")}
             </span>
           </div>
           <Button
@@ -511,7 +539,7 @@ function ModelSettingsPanel({
             onClick={() => setExpanded((v) => !v)}
             className="text-xs"
           >
-            {expanded ? "Hide auxiliary" : "Show auxiliary"}
+            {expanded ? tr(locale, "Hide auxiliary", "補助モデルを隠す") : tr(locale, "Show auxiliary", "補助モデルを表示")}
             <ChevronDown
               className={`h-3 w-3 transition-transform ${expanded ? "rotate-180" : ""}`}
             />
@@ -526,13 +554,13 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Star className="h-3 w-3 text-primary" />
               <span className="text-xs font-medium uppercase tracking-wider">
-                Main model
+                {tr(locale, "Main model", "メインモデル")}
               </span>
             </div>
             <div className="text-xs font-mono text-muted-foreground truncate">
-              {mainProv || "(unset)"}
+              {mainProv || tr(locale, "(unset)", "(未設定)")}
               {mainProv && mainModel && " · "}
-              {mainModel || "(unset)"}
+              {mainModel || tr(locale, "(unset)", "(未設定)")}
             </div>
           </div>
           <Button
@@ -540,7 +568,7 @@ function ModelSettingsPanel({
             onClick={() => setPicker({ kind: "main" })}
             className="text-xs"
           >
-            Change
+            {tr(locale, "Change", "変更")}
           </Button>
         </div>
 
@@ -549,7 +577,7 @@ function ModelSettingsPanel({
           <div className="space-y-1 border-t border-border/50 pt-3">
             <div className="flex items-center justify-between pb-1">
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                Auxiliary tasks
+                {tr(locale, "Auxiliary tasks", "補助タスク")}
               </div>
               <Button
                 size="sm"
@@ -559,15 +587,14 @@ function ModelSettingsPanel({
                 className="text-[10px] h-6"
                 prefix={resetBusy ? <Spinner /> : null}
               >
-                Reset all to auto
+                {tr(locale, "Reset all to auto", "すべて auto に戻す")}
               </Button>
             </div>
 
             <p className="text-[10px] text-muted-foreground/80 pb-2">
-              Auxiliary tasks handle side-jobs like vision, session search, and
-              compression. <span className="font-mono">auto</span> means
-              &quot;use the main model&quot;. Override per-task when you want a
-              cheap/fast model for a specific job.
+              {tr(locale, "Auxiliary tasks handle side-jobs like vision, session search, and compression.", "補助タスクは vision、session search、compression などの副処理を担当する。")}{" "}
+              <span className="font-mono">auto</span>{" "}
+              {tr(locale, "means \"use the main model\". Override per-task when you want a cheap/fast model for a specific job.", "は「メインモデルを使う」の意味。特定用途に安価/高速なモデルを使いたい時だけ個別指定する。")}
             </p>
 
             {AUX_TASKS.map((t) => {
@@ -581,15 +608,15 @@ function ModelSettingsPanel({
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
-                      <span className="text-xs font-medium">{t.label}</span>
+                      <span className="text-xs font-medium">{auxTaskLabel(t, locale)}</span>
                       <span className="text-[10px] text-muted-foreground/60">
-                        {t.hint}
+                        {auxTaskHint(t, locale)}
                       </span>
                     </div>
                     <div className="text-[10px] font-mono text-muted-foreground truncate">
                       {isAuto
-                        ? "auto (use main model)"
-                        : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
+                        ? tr(locale, "auto (use main model)", "auto（メインモデルを使用）")
+                        : `${cur?.provider} · ${cur?.model || tr(locale, "(provider default)", "(provider 既定)")}`}
                     </div>
                   </div>
                   <Button
@@ -598,7 +625,7 @@ function ModelSettingsPanel({
                     onClick={() => setPicker({ kind: "aux", task: t.key })}
                     className="text-[10px] h-6"
                   >
-                    Change
+                    {tr(locale, "Change", "変更")}
                   </Button>
                 </div>
               );
@@ -613,10 +640,9 @@ function ModelSettingsPanel({
             alwaysGlobal
             title={
               picker.kind === "main"
-                ? "Set Main Model"
-                : `Set Auxiliary: ${
-                    AUX_TASKS.find((t) => t.key === picker.task)?.label ??
-                    picker.task
+                ? tr(locale, "Set Main Model", "メインモデルを設定")
+                : `${tr(locale, "Set Auxiliary", "補助モデルを設定")}: ${
+                    auxTaskLabel(AUX_TASKS.find((t) => t.key === picker.task) ?? { key: picker.task, label: picker.task }, locale)
                   }`
             }
             onApply={async ({ provider, model }) => {
@@ -718,7 +744,7 @@ export default function ModelsPage() {
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
 
   useEffect(() => {
-    load();
+    void Promise.resolve().then(load);
   }, [load]);
 
   return (

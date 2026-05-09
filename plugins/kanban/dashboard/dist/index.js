@@ -44,6 +44,28 @@
     done: "Completed",
     archived: "Archived",
   };
+  const COLUMN_HELP_JA = {
+    triage: "未整理のアイデア。specifier が仕様へ育てる場所",
+    todo: "依存待ち、または担当者未割り当て",
+    ready: "担当者割り当て済み。dispatcher の次回 tick 待ち",
+    running: "worker が取得済み。実行中",
+    blocked: "worker が人間の入力を待っている",
+    done: "完了済み",
+    archived: "アーカイブ済み",
+  };
+  function kanbanLocale() {
+    try {
+      return (window.localStorage.getItem("hermes-locale") || document.documentElement.lang || "en").toLowerCase();
+    } catch (_e) {
+      return (document.documentElement.lang || "en").toLowerCase();
+    }
+  }
+  function kanbanIsJa() { return kanbanLocale().startsWith("ja"); }
+  function kanbanText(en, ja) { return kanbanIsJa() ? ja : en; }
+  function columnHelp(name) {
+    const source = kanbanIsJa() ? COLUMN_HELP_JA : COLUMN_HELP;
+    return source[name] || "";
+  }
   const COLUMN_DOT = {
     triage: "hermes-kanban-dot-triage",
     todo: "hermes-kanban-dot-todo",
@@ -1143,8 +1165,8 @@
       target: "_blank",
       rel: "noopener noreferrer",
       className: "hermes-kanban-docs-link",
-      title: "Open Hermes Kanban docs in a new tab",
-      "aria-label": "Hermes Kanban documentation",
+      title: kanbanText("Open Hermes Kanban docs in a new tab", "Hermes Kanban ドキュメントを新しいタブで開く"),
+      "aria-label": kanbanText("Hermes Kanban documentation", "Hermes Kanban ドキュメント"),
     }, "?");
   }
 
@@ -1171,7 +1193,7 @@
           onClick: props.onNewClick,
           size: "sm",
           className: "h-7 text-xs",
-        }, "+ New board"),
+        }, kanbanText("+ New board", "+ 新規 board")),
         h(DocsLink, null),
       );
     }
@@ -1180,13 +1202,13 @@
       h("div", { className: "hermes-kanban-boardswitcher-inner" },
         h("div", { className: "flex flex-col gap-0.5" },
           h("div", { className: "text-[11px] uppercase tracking-wider text-muted-foreground" },
-            "Board"),
+            kanbanText("Board", "Board")),
           h("div", { className: "flex items-center gap-2" },
             h(Select, Object.assign({
               value: props.board,
               className: "h-8 min-w-[220px]",
               "aria-label": "Switch kanban board",
-              title: "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
+              title: kanbanText("Boards are independent work streams. Each board has its own tasks, tenants, and assignees.", "board は独立した作業の流れ。タスク、テナント、担当者は board ごとに分かれる。"),
             }, selectChangeHandler(function (v) { if (v) props.onSwitch(v); })),
               list.map(function (b) {
                 const label = b.total > 0
@@ -1205,8 +1227,8 @@
           onClick: props.onNewClick,
           size: "sm",
           className: "h-8",
-          title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
-        }, "+ New board"),
+          title: kanbanText("Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).", "新しい board を作成。別プロジェクト、別チーム、隔離した作業場を分けたい時に使う。"),
+        }, kanbanText("+ New board", "+ 新規 board")),
         props.board !== "default"
           ? h(Button, {
             onClick: function () {
@@ -1269,14 +1291,14 @@
         className: "hermes-kanban-dialog",
         onSubmit: onSubmit,
       },
-        h("div", { className: "hermes-kanban-dialog-title" }, "New board"),
+        h("div", { className: "hermes-kanban-dialog-title" }, kanbanText("New board", "新規 board")),
         h("div", { className: "text-xs text-muted-foreground mb-2" },
-          "Boards let you separate unrelated streams of work — one per project, repo, or domain. Workers on one board never see another board's tasks."),
+          kanbanText("Boards let you separate unrelated streams of work — one per project, repo, or domain. Workers on one board never see another board\'s tasks.", "board は無関係な作業の流れを分けるための単位。プロジェクト、repo、領域ごとに分けられる。別 board のタスクは worker から見えない。")),
         h("div", { className: "flex flex-col gap-3" },
           h("div", { className: "flex flex-col gap-1" },
-            h(Label, { className: "text-xs" }, "Slug ",
+            h(Label, { className: "text-xs" }, kanbanText("Slug ", "Slug "),
               h("span", { className: "text-muted-foreground" },
-                "— lowercase, hyphens, e.g. atm10-server")),
+                kanbanText("— lowercase, hyphens, e.g. atm10-server", "— 小文字・ハイフン。例: atm10-server"))),
             h(Input, {
               value: slug,
               onChange: function (e) { setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9\-_]/g, "-")); },
@@ -1286,28 +1308,28 @@
             }),
           ),
           h("div", { className: "flex flex-col gap-1" },
-            h(Label, { className: "text-xs" }, "Display name ",
-              h("span", { className: "text-muted-foreground" }, "(optional)")),
+            h(Label, { className: "text-xs" }, kanbanText("Display name ", "表示名 "),
+              h("span", { className: "text-muted-foreground" }, kanbanText("(optional)", "任意"))),
             h(Input, {
               value: name,
               onChange: function (e) { setName(e.target.value); },
-              placeholder: autoName || "Display name",
+              placeholder: autoName || kanbanText("Display name", "表示名"),
               className: "h-8",
             }),
           ),
           h("div", { className: "flex flex-col gap-1" },
-            h(Label, { className: "text-xs" }, "Description ",
-              h("span", { className: "text-muted-foreground" }, "(optional)")),
+            h(Label, { className: "text-xs" }, kanbanText("Description ", "説明 "),
+              h("span", { className: "text-muted-foreground" }, kanbanText("(optional)", "任意"))),
             h(Input, {
               value: description,
               onChange: function (e) { setDescription(e.target.value); },
-              placeholder: "What goes on this board?",
+              placeholder: kanbanText("What goes on this board?", "この board で扱う内容"),
               className: "h-8",
             }),
           ),
           h("div", { className: "flex flex-col gap-1" },
-            h(Label, { className: "text-xs" }, "Icon ",
-              h("span", { className: "text-muted-foreground" }, "(single character or emoji)")),
+            h(Label, { className: "text-xs" }, kanbanText("Icon ", "アイコン "),
+              h("span", { className: "text-muted-foreground" }, kanbanText("(single character or emoji)", "1文字または絵文字"))),
             h(Input, {
               value: icon,
               onChange: function (e) { setIcon(e.target.value.slice(0, 4)); },
@@ -1321,7 +1343,7 @@
               checked: switchTo,
               onChange: function (e) { setSwitchTo(e.target.checked); },
             }),
-            "Switch to this board after creating it",
+            kanbanText("Switch to this board after creating it", "作成後、この board に切り替える"),
           ),
         ),
         err ? h("div", { className: "text-xs text-destructive mt-2" }, err) : null,
@@ -1331,12 +1353,12 @@
             onClick: props.onCancel,
             size: "sm",
             disabled: submitting,
-          }, "Cancel"),
+          }, kanbanText("Cancel", "キャンセル")),
           h(Button, {
             type: "submit",
             size: "sm",
             disabled: submitting || !slug.trim(),
-          }, submitting ? "Creating…" : "Create board"),
+          }, submitting ? kanbanText("Creating…", "作成中…") : kanbanText("Create board", "board を作成")),
         ),
       ),
     );
@@ -1350,71 +1372,65 @@
     const tenants = (props.board && props.board.tenants) || [];
     const assignees = (props.board && props.board.assignees) || [];
     return h("div", { className: "flex flex-wrap items-end gap-3" },
-      h("div", { className: "flex flex-col gap-1",
-                 title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
-        h(Label, { className: "text-xs text-muted-foreground" }, "Search"),
+      h("div", { className: "flex flex-col gap-1" },
+        h(Label, { className: "text-xs text-muted-foreground" }, kanbanText("Search", "検索")),
         h(Input, {
-          placeholder: "Filter cards…",
+          placeholder: kanbanText("Filter cards…", "カードを絞り込み…"),
           value: props.search,
           onChange: function (e) { props.setSearch(e.target.value); },
           className: "w-56 h-8",
         }),
       ),
-      h("div", { className: "flex flex-col gap-1",
-                 title: "Tenants are free-form tags on a task (e.g. customer, project, team). Set them via the task drawer or kanban_create." },
-        h(Label, { className: "text-xs text-muted-foreground" }, "Tenant"),
+      h("div", { className: "flex flex-col gap-1" },
+        h(Label, { className: "text-xs text-muted-foreground" }, kanbanText("Tenant", "テナント")),
         h(Select, Object.assign({
           value: props.tenantFilter,
           className: "h-8",
         }, selectChangeHandler(props.setTenantFilter)),
-          h(SelectOption, { value: "" }, "All tenants"),
+          h(SelectOption, { value: "" }, kanbanText("All tenants", "全テナント")),
           tenants.map(function (t) {
             return h(SelectOption, { key: t, value: t }, t);
           }),
         ),
       ),
-      h("div", { className: "flex flex-col gap-1",
-                 title: "Filter by assigned Hermes profile. Profiles are the named agent identities that claim and work on tasks." },
-        h(Label, { className: "text-xs text-muted-foreground" }, "Assignee"),
+      h("div", { className: "flex flex-col gap-1" },
+        h(Label, { className: "text-xs text-muted-foreground" }, kanbanText("Assignee", "担当")),
         h(Select, Object.assign({
           value: props.assigneeFilter,
           className: "h-8",
         }, selectChangeHandler(props.setAssigneeFilter)),
-          h(SelectOption, { value: "" }, "All profiles"),
+          h(SelectOption, { value: "" }, kanbanText("All profiles", "全プロファイル")),
           assignees.map(function (a) {
             return h(SelectOption, { key: a, value: a }, a);
           }),
         ),
       ),
-      h("label", { className: "flex items-center gap-2 text-xs",
-                   title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
+      h("label", { className: "flex items-center gap-2 text-xs" },
         h("input", {
           type: "checkbox",
           checked: props.includeArchived,
           onChange: function (e) { props.setIncludeArchived(e.target.checked); },
         }),
-        "Show archived",
+        kanbanText("Show archived", "アーカイブも表示"),
       ),
       h("label", { className: "flex items-center gap-2 text-xs",
-                   title: "Group the Running column by assigned profile" },
+                   title: kanbanText("Group the Running column by assigned profile", "実行中カラムを担当プロファイルごとに分ける") },
         h("input", {
           type: "checkbox",
           checked: props.laneByProfile,
           onChange: function (e) { props.setLaneByProfile(e.target.checked); },
         }),
-        "Lanes by profile",
+        kanbanText("Lanes by profile", "プロファイル別レーン"),
       ),
       h("div", { className: "flex-1" }),
       h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",
-        title: "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately.",
-      }, "Nudge dispatcher"),
+      }, kanbanText("Nudge dispatcher", "実行待ちを割り当て")),
       h(Button, {
         onClick: props.onRefresh,
         size: "sm",
-        title: "Reload the board from the database. The board auto-refreshes on task events; this is for forcing a re-read.",
-      }, "Refresh"),
+      }, kanbanText("Refresh", "更新")),
     );
   }
 
@@ -1430,7 +1446,6 @@
       h(Button, {
         onClick: function () { props.onApply({ status: "ready" }); },
         size: "sm",
-        title: "Move selected tasks to Ready. Ready tasks are picked up by the dispatcher on the next tick.",
       }, "→ ready"),
       h(Button, {
         onClick: function () {
@@ -1438,7 +1453,6 @@
             `Mark ${props.count} task(s) as done?`);
         },
         size: "sm",
-        title: "Mark selected tasks as done. Releases any claims and unblocks dependent children. You'll be asked for a completion summary.",
       }, "Complete"),
       h(Button, {
         onClick: function () {
@@ -1446,10 +1460,8 @@
             `Archive ${props.count} task(s)?`);
         },
         size: "sm",
-        title: "Archive selected tasks. They disappear from the default board view but remain in the database.",
       }, "Archive"),
-      h("div", { className: "hermes-kanban-bulk-reassign",
-                 title: "Reassign selected tasks to a different Hermes profile. Pick a profile (or unassign) and click Apply." },
+      h("div", { className: "hermes-kanban-bulk-reassign" },
         h(Select, {
           value: assignee,
           onChange: function (e) { setAssignee(e.target.value); },
@@ -1469,14 +1481,12 @@
           },
           disabled: !assignee,
           size: "sm",
-          title: "Apply the selected assignee to all selected tasks.",
         }, "Apply"),
       ),
       h("div", { className: "flex-1" }),
       h(Button, {
         onClick: props.onClear,
         size: "sm",
-        title: "Deselect all tasks and hide this bar.",
       }, "Clear"),
     );
   }
@@ -1557,23 +1567,21 @@
       onDragLeave: handleDragLeave,
       onDrop: handleDrop,
     },
-      h("div", { className: "hermes-kanban-column-header",
-                 title: COLUMN_HELP[props.column.name] || "" },
+      h("div", { className: "hermes-kanban-column-header" },
         h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[props.column.name]) }),
         h("span", { className: "hermes-kanban-column-label" },
           COLUMN_LABEL[props.column.name] || props.column.name),
-        h("span", { className: "hermes-kanban-column-count",
-                    title: `${props.column.tasks.length} task${props.column.tasks.length === 1 ? "" : "s"} in this column` },
+        h("span", { className: "hermes-kanban-column-count" },
           props.column.tasks.length),
         h("button", {
           type: "button",
           className: "hermes-kanban-column-add",
-          title: "Create task in this column",
+          title: kanbanText("Create task in this column", "このカラムにタスクを作成"),
           onClick: function () { setShowCreate(function (v) { return !v; }); },
         }, showCreate ? "×" : "+"),
       ),
       h("div", { className: "hermes-kanban-column-sub" },
-        COLUMN_HELP[props.column.name] || ""),
+        columnHelp(props.column.name)),
       showCreate ? h(InlineCreate, {
         columnName: props.column.name,
         allTasks: props.allTasks,
@@ -1584,7 +1592,7 @@
       }) : null,
       h("div", { className: "hermes-kanban-column-body" },
         props.column.tasks.length === 0
-          ? h("div", { className: "hermes-kanban-empty" }, "— no tasks —")
+          ? h("div", { className: "hermes-kanban-empty" }, kanbanText("— no tasks —", "— タスクなし —"))
           : lanes
             ? lanes.map(function (lane) {
                 return h("div", { key: lane.assignee, className: "hermes-kanban-lane" },
@@ -1690,8 +1698,7 @@
               onClick: function (e) { e.stopPropagation(); },
               title: "Select for bulk actions",
             }),
-            h("span", { className: "hermes-kanban-card-id",
-                        title: `Task id: ${t.id}. Use this id with kanban_show, /kanban show, or hermes kanban show.` }, t.id),
+            h("span", { className: "hermes-kanban-card-id" }, t.id),
             t.warnings && t.warnings.count > 0
               ? h("span", {
                   className: cn(
@@ -1708,12 +1715,10 @@
                    t.warnings.highest_severity === "error" ? "!!" : "⚠")
               : null,
             t.priority > 0
-              ? h(Badge, { className: "hermes-kanban-priority",
-                           title: `Priority ${t.priority}. Higher-priority tasks are claimed first by the dispatcher.` }, `P${t.priority}`)
+              ? h(Badge, { className: "hermes-kanban-priority" }, `P${t.priority}`)
               : null,
             t.tenant
-              ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
-                           title: `Tenant: ${t.tenant}. Free-form tag for grouping tasks (customer, project, team).` }, t.tenant)
+              ? h(Badge, { variant: "outline", className: "hermes-kanban-tag" }, t.tenant)
               : null,
             progress
               ? h("span", {
@@ -1728,21 +1733,16 @@
           h("div", { className: "hermes-kanban-card-title" }, t.title || "(untitled)"),
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
             t.assignee
-              ? h("span", { className: "hermes-kanban-assignee",
-                            title: `Assigned to Hermes profile @${t.assignee}` }, "@", t.assignee)
-              : h("span", { className: "hermes-kanban-unassigned",
-                            title: "No profile assigned. The dispatcher will pick one from available profiles when the task is Ready." }, "unassigned"),
+              ? h("span", { className: "hermes-kanban-assignee" }, "@", t.assignee)
+              : h("span", { className: "hermes-kanban-unassigned" }, "unassigned"),
             t.comment_count > 0
-              ? h("span", { className: "hermes-kanban-count",
-                            title: `${t.comment_count} comment${t.comment_count === 1 ? "" : "s"} on this task` }, "💬 ", t.comment_count)
+              ? h("span", { className: "hermes-kanban-count" }, "💬 ", t.comment_count)
               : null,
             t.link_counts && (t.link_counts.parents + t.link_counts.children) > 0
-              ? h("span", { className: "hermes-kanban-count",
-                            title: `${t.link_counts.parents} parent${t.link_counts.parents === 1 ? "" : "s"}, ${t.link_counts.children} child${t.link_counts.children === 1 ? "" : "ren"}. Children stay blocked until their parent is done.` },
+              ? h("span", { className: "hermes-kanban-count" },
                   "↔ ", t.link_counts.parents + t.link_counts.children)
               : null,
-            h("span", { className: "hermes-kanban-ago",
-                        title: t.created_at ? `Created ${t.created_at}` : "" },
+            h("span", { className: "hermes-kanban-ago" },
               timeAgo ? timeAgo(t.created_at) : ""),
           ),
         ),
@@ -1823,9 +1823,6 @@
           onChange: function (e) { setAssignee(e.target.value); },
           placeholder: props.columnName === "triage" ? "specifier" : "assignee",
           className: "h-7 text-xs flex-1",
-          title: props.columnName === "triage"
-            ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
-            : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
         }),
         h(Input, {
           type: "number",
@@ -1833,7 +1830,6 @@
           onChange: function (e) { setPriority(e.target.value); },
           placeholder: "pri",
           className: "h-7 text-xs w-16",
-          title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
         }),
       ),
       h(Input, {
@@ -1865,7 +1861,6 @@
         value: parent,
         onChange: function (e) { setParent(e.target.value); },
         className: "h-7 text-xs",
-        title: "Optional parent task. A child stays blocked in its current column until the parent is marked done.",
       },
         h(SelectOption, { value: "" }, "— no parent —"),
         (props.allTasks || []).map(function (t) {
@@ -1881,7 +1876,7 @@
         h(Button, {
           onClick: props.onCancel,
           size: "sm",
-        }, "Cancel"),
+        }, kanbanText("Cancel", "キャンセル")),
       ),
     );
   }
@@ -1954,29 +1949,6 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalPatch),
       }).then(function () { load(); props.onRefresh(); });
-    };
-
-    // Triage specifier — calls the auxiliary LLM to flesh out a rough
-    // idea in the Triage column into a concrete spec (title + body with
-    // goal, approach, acceptance criteria) and promotes it to todo.
-    // Not a PATCH: runs through a dedicated POST endpoint because the
-    // LLM call can take tens of seconds, and its outcome is richer than
-    // a status flip (may update title AND body AND emit an audit
-    // comment — or fail with a human-readable reason that the UI
-    // surfaces inline without treating it as an HTTP error).
-    const doSpecify = function () {
-      return SDK.fetchJSON(
-        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/specify`, boardSlug),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        }
-      ).then(function (res) {
-        load();
-        props.onRefresh();
-        return res;
-      });
     };
 
     const addLink = function (parentId) {
@@ -2068,7 +2040,6 @@
           assignees: props.assignees || [],
           boardSlug: boardSlug,
           onPatch: doPatch,
-          onSpecify: doSpecify,
           onAddParent: addLink,
           onRemoveParent: removeLink,
           onAddChild: addChild,
@@ -2126,7 +2097,7 @@
         h(MetaRow, { label: "Status", value: t.status }),
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
-        t.tenant ? h(MetaRow, { label: "Tenant", value: t.tenant }) : null,
+        t.tenant ? h(MetaRow, { label: kanbanText("Tenant", "テナント"), value: t.tenant }) : null,
         h(MetaRow, {
           label: "Workspace",
           value: `${t.workspace_kind}${t.workspace_path ? ": " + t.workspace_path : ""}`,
@@ -2137,11 +2108,7 @@
         }) : null,
         t.created_by ? h(MetaRow, { label: "Created by", value: t.created_by }) : null,
       ),
-      h(StatusActions, {
-        task: t,
-        onPatch: props.onPatch,
-        onSpecify: props.onSpecify,
-      }),
+      h(StatusActions, { task: t, onPatch: props.onPatch }),
       h(DiagnosticsSection, {
         task: t,
         boardSlug: props.boardSlug,
@@ -2372,7 +2339,7 @@
       }, "Save"),
       h(Button, { onClick: props.onCancel,
         size: "sm",
-      }, "Cancel"),
+      }, kanbanText("Cancel", "キャンセル")),
     );
   }
 
@@ -2382,7 +2349,7 @@
     useEffect(function () { setV(props.task.assignee || ""); }, [props.task.assignee]);
     if (!editing) {
       return h("div", { className: "hermes-kanban-meta-row" },
-        h("span", { className: "hermes-kanban-meta-label" }, "Assignee"),
+        h("span", { className: "hermes-kanban-meta-label" }, kanbanText("Assignee", "担当")),
         h("span", {
           className: "hermes-kanban-meta-value hermes-kanban-editable",
           onClick: function () { setEditing(true); },
@@ -2394,7 +2361,7 @@
       props.onPatch({ assignee: v.trim() || "" }).then(function () { setEditing(false); });
     };
     return h("div", { className: "hermes-kanban-meta-row" },
-      h("span", { className: "hermes-kanban-meta-label" }, "Assignee"),
+      h("span", { className: "hermes-kanban-meta-label" }, kanbanText("Assignee", "担当")),
       h(Input, {
         value: v, autoFocus: true,
         onChange: function (e) { setV(e.target.value); },
@@ -2456,7 +2423,7 @@
               }, "Save"),
               h(Button, { onClick: function () { setEditing(false); setV(props.task.body || ""); },
                 size: "sm",
-              }, "Cancel"),
+              }, kanbanText("Cancel", "キャンセル")),
             )
           : h("button", {
               type: "button",
@@ -2574,8 +2541,6 @@
 
   function StatusActions(props) {
     const t = props.task;
-    const [specifyBusy, setSpecifyBusy] = useState(false);
-    const [specifyMsg, setSpecifyMsg] = useState(null);
     const b = function (label, patch, enabled, confirmMsg) {
       return h(Button, {
         onClick: function () { if (enabled !== false) props.onPatch(patch, { confirm: confirmMsg }); },
@@ -2583,67 +2548,22 @@
         size: "sm",
       }, label);
     };
-
-    // "Specify" appears only when the task is in the Triage column — the
-    // one column where an auxiliary LLM pass is meaningful. Elsewhere
-    // the backend would return ok:false with "not in triage" anyway,
-    // so hiding the button keeps the action row uncluttered.
-    const specifyButton = (t.status === "triage" && props.onSpecify)
-      ? h(Button, {
-          onClick: function () {
-            if (specifyBusy) return;
-            setSpecifyBusy(true);
-            setSpecifyMsg(null);
-            props.onSpecify().then(function (res) {
-              if (res && res.ok) {
-                const suffix = res.new_title
-                  ? ` — retitled: ${res.new_title}`
-                  : "";
-                setSpecifyMsg({ ok: true, text: `Specified${suffix}` });
-              } else {
-                setSpecifyMsg({
-                  ok: false,
-                  text: "Specify failed: " + ((res && res.reason) || "unknown error"),
-                });
-              }
-            }).catch(function (err) {
-              setSpecifyMsg({
-                ok: false,
-                text: "Specify failed: " + (err.message || String(err)),
-              });
-            }).then(function () {
-              setSpecifyBusy(false);
-            });
-          },
-          disabled: specifyBusy,
-          size: "sm",
-        }, specifyBusy ? "Specifying…" : "✨ Specify")
-      : null;
-
-    return h("div", null,
-      h("div", { className: "hermes-kanban-actions" },
-        specifyButton,
-        b("→ triage",  { status: "triage" },   t.status !== "triage"),
-        b("→ ready",   { status: "ready" },    t.status !== "ready"),
-        // No direct → running button: /tasks/:id PATCH rejects status=running
-        // with 400 (issue #19535). Tasks enter running only through the
-        // dispatcher's claim_task path, which atomically creates the run row,
-        // claim lock, and worker process metadata.
-        b("Block",     { status: "blocked" },
-          t.status === "running" || t.status === "ready",
-          DESTRUCTIVE_TRANSITIONS.blocked),
-        b("Unblock",   { status: "ready" },    t.status === "blocked"),
-        b("Complete",  { status: "done" },
-          t.status === "running" || t.status === "ready" || t.status === "blocked",
-          DESTRUCTIVE_TRANSITIONS.done),
-        b("Archive",   { status: "archived" }, t.status !== "archived",
-          DESTRUCTIVE_TRANSITIONS.archived),
-      ),
-      specifyMsg ? h("div", {
-        className: specifyMsg.ok
-          ? "hermes-kanban-msg-ok"
-          : "hermes-kanban-msg-err",
-      }, specifyMsg.text) : null,
+    return h("div", { className: "hermes-kanban-actions" },
+      b("→ triage",  { status: "triage" },   t.status !== "triage"),
+      b("→ ready",   { status: "ready" },    t.status !== "ready"),
+      // No direct → running button: /tasks/:id PATCH rejects status=running
+      // with 400 (issue #19535). Tasks enter running only through the
+      // dispatcher's claim_task path, which atomically creates the run row,
+      // claim lock, and worker process metadata.
+      b("Block",     { status: "blocked" },
+        t.status === "running" || t.status === "ready",
+        DESTRUCTIVE_TRANSITIONS.blocked),
+      b("Unblock",   { status: "ready" },    t.status === "blocked"),
+      b("Complete",  { status: "done" },
+        t.status === "running" || t.status === "ready" || t.status === "blocked",
+        DESTRUCTIVE_TRANSITIONS.done),
+      b("Archive",   { status: "archived" }, t.status !== "archived",
+        DESTRUCTIVE_TRANSITIONS.archived),
     );
   }
 

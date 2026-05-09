@@ -19,8 +19,21 @@
     return tier ? "ha-tier-" + tier.toLowerCase() : "ha-tier-pending";
   };
 
+  function currentLocale() {
+    try {
+      return localStorage.getItem("hermes-locale") === "ja" ? "ja" : "en";
+    } catch (_) {
+      return "en";
+    }
+  }
+
+  function tr(en, ja) {
+    return currentLocale() === "ja" ? ja : en;
+  }
+
   async function api(path, options) {
-    const url = "/api/plugins/hermes-achievements" + path;
+    const sep = path.indexOf("?") === -1 ? "?" : "&";
+    const url = "/api/plugins/hermes-achievements" + path + sep + "locale=" + encodeURIComponent(currentLocale());
     const res = await fetch(url, options || {});
     if (!res.ok) {
       const text = await res.text().catch(function () { return res.statusText; });
@@ -184,7 +197,7 @@
     }
 
     // Tier badge pill
-    const badgeLabel = tier.toUpperCase() + " TIER";
+    const badgeLabel = tier.toUpperCase() + tr(" TIER", " ティア");
     ctx.font = "700 22px ui-monospace, 'SF Mono', Menlo, monospace";
     const badgeWidth = ctx.measureText(badgeLabel).width + 32;
     const badgeX = rx;
@@ -290,7 +303,7 @@
       if (!blobRef.current) return;
       try {
         if (!navigator.clipboard || !window.ClipboardItem) {
-          throw new Error("Clipboard image copy not supported in this browser — use Download instead.");
+          throw new Error(tr("This browser cannot copy images to the clipboard. Use download instead.", "このブラウザは画像のクリップボードコピーに対応していません。代わりにダウンロードを使ってください。"));
         }
         await navigator.clipboard.write([
           new window.ClipboardItem({ "image/png": blobRef.current }),
@@ -307,8 +320,8 @@
     // when the user hasn't attached the PNG yet — they'll copy-image and
     // paste in the same flow.
     function tweetText() {
-      const tierPart = achievement.tier ? (achievement.tier + " tier ") : "";
-      return "Just unlocked " + tierPart + "\"" + achievement.name + "\" in Hermes Agent ☤\n\n" +
+      const tierPart = achievement.tier ? (currentLocale() === "ja" ? achievement.tier + "ティアの " : achievement.tier + " tier ") : "";
+      return (currentLocale() === "ja" ? "Hermes Agent で " + tierPart + "\"" + achievement.name + "\" を解除した ☤\n\n" : "Unlocked " + tierPart + "\"" + achievement.name + "\" in Hermes Agent ☤\n\n") +
         "@NousResearch · https://hermes-agent.nousresearch.com";
     }
 
@@ -321,36 +334,36 @@
       className: "ha-share-backdrop",
       onClick: function (e) { if (e.target === e.currentTarget) onClose(); },
     },
-      React.createElement("div", { className: "ha-share-dialog", role: "dialog", "aria-label": "Share achievement" },
+      React.createElement("div", { className: "ha-share-dialog", role: "dialog", "aria-label": tr("Share achievement", "実績を共有") },
         React.createElement("div", { className: "ha-share-head" },
-          React.createElement("strong", null, "Share: " + achievement.name),
-          React.createElement("button", { className: "ha-share-close", onClick: onClose, "aria-label": "Close" }, "×")
+          React.createElement("strong", null, tr("Share: ", "共有: ") + achievement.name),
+          React.createElement("button", { className: "ha-share-close", onClick: onClose, "aria-label": tr("Close", "閉じる") }, "×")
         ),
         React.createElement("div", { className: "ha-share-preview" },
-          status === "rendering" && React.createElement("div", { className: "ha-share-placeholder" }, "Rendering…"),
-          previewUrl && React.createElement("img", { src: previewUrl, alt: achievement.name + " share card" })
+          status === "rendering" && React.createElement("div", { className: "ha-share-placeholder" }, tr("Rendering…", "生成中…")),
+          previewUrl && React.createElement("img", { src: previewUrl, alt: achievement.name + tr(" share card", " 共有カード") })
         ),
-        status === "error" && React.createElement("div", { className: "ha-share-error" }, errorMsg || "Something went wrong."),
+        status === "error" && React.createElement("div", { className: "ha-share-error" }, errorMsg || tr("Something went wrong.", "問題が発生しました。")),
         React.createElement("div", { className: "ha-share-actions" },
           React.createElement("button", {
             className: "ha-share-btn ha-share-btn-primary",
             onClick: shareOnX,
-            title: "Opens X with a pre-filled post",
-          }, "Share on X"),
+            title: tr("Open a prefilled post on X", "入力済みの投稿を X で開く"),
+          }, tr("Share on X", "X で共有")),
           React.createElement("button", {
             className: "ha-share-btn",
             onClick: copyToClipboard,
             disabled: status !== "ready" && status !== "copied",
-            title: "Copy the image to paste into your post",
-          }, status === "copied" ? "Copied ✓" : "Copy image"),
+            title: tr("Copy image to paste into your post", "投稿へ貼り付ける画像をコピー"),
+          }, status === "copied" ? tr("Copied ✓", "コピー済み ✓") : tr("Copy image", "画像をコピー")),
           React.createElement("button", {
             className: "ha-share-btn",
             onClick: download,
             disabled: status !== "ready" && status !== "copied",
-          }, "Download PNG")
+          }, tr("Download PNG", "PNG をダウンロード"))
         ),
         React.createElement("p", { className: "ha-share-hint" },
-          "Share on X opens a pre-filled post in a new tab. Click Copy image first if you want the 1200×630 badge attached — X lets you paste it right into the tweet composer. Download PNG saves the file for use anywhere."
+          tr("Sharing on X opens a prefilled post in a new tab. To attach the 1200×630 badge image, copy it first and paste it into X, or download the PNG for use elsewhere.", "Xで共有すると、入力済みの投稿を新しいタブで開きます。1200×630 のバッジ画像を添付したい場合は、先に画像をコピーしてください。X の投稿欄にそのまま貼り付けられます。PNG をダウンロードすれば、他の場所でも使えます。")
         )
       )
     );
@@ -413,18 +426,18 @@
         React.createElement("div", null,
           React.createElement("div", { className: "ha-kicker" }, "Agentic Gamerscore"),
           React.createElement("h1", null, "Hermes Achievements"),
-          React.createElement("p", null, "Scanning Hermes session history. First scan can take 5–10 seconds on large histories.")
+          React.createElement("p", null, tr("Scanning your Hermes session history. Large histories can take 5–10 seconds on the first scan.", "Hermes のセッション履歴をスキャン中。履歴が大きい場合、初回スキャンは 5〜10 秒かかることがあります。"))
         ),
         React.createElement("div", { className: "ha-scan-status", role: "status", "aria-live": "polite" },
           React.createElement("span", { className: "ha-scan-pulse", "aria-hidden": "true" }),
           React.createElement("div", null,
-            React.createElement("strong", null, "Building achievement profile…"),
-            React.createElement("p", null, "Reading sessions, tool calls, model metadata, and unlock state.")
+            React.createElement("strong", null, tr("Building achievement profile…", "実績プロフィールを構築中…")),
+            React.createElement("p", null, tr("Reading sessions, tool calls, model info, and unlock state.", "セッション、ツール呼び出し、モデル情報、解除状態を読み取り中。"))
           )
         )
       ),
       React.createElement("div", { className: "ha-stats" },
-        ["Unlocked", "Discovered", "Secrets", "Highest tier", "Latest"].map(function (label) {
+        [tr("Unlocked", "解除済み"), tr("Discovered", "発見済み"), tr("Secret", "隠し実績"), tr("Highest tier", "最高ティア"), tr("Latest", "最新")].map(function (label) {
           return React.createElement(C.Card, { key: label, className: "ha-stat ha-skeleton-stat" },
             React.createElement(C.CardContent, { className: "ha-stat-content" },
               React.createElement("div", { className: "ha-stat-label" }, label),
@@ -436,12 +449,12 @@
       ),
       React.createElement("section", { className: "ha-guide ha-loading-guide" },
         React.createElement("div", null,
-          React.createElement("strong", null, "Scan status"),
-          React.createElement("p", null, "Hermes is scanning local history once, then cards will appear automatically. Nothing is stuck if this takes a few seconds.")
+          React.createElement("strong", null, tr("Scan status", "スキャン状態")),
+          React.createElement("p", null, tr("Hermes is scanning local history once. Cards appear automatically when it finishes; a few seconds is normal.", "Hermes はローカル履歴を一度スキャンしています。完了するとカードが自動で表示されます。数秒かかっても停止ではありません。"))
         ),
         React.createElement("div", null,
-          React.createElement("strong", null, "What is scanned"),
-          React.createElement("p", null, "Sessions, tool calls, model metadata, errors, achievements, and local unlock state.")
+          React.createElement("strong", null, tr("What is scanned", "スキャン対象")),
+          React.createElement("p", null, tr("Sessions, tool calls, model info, errors, achievements, and local unlock state.", "セッション、ツール呼び出し、モデル情報、エラー、実績、ローカルの解除状態。"))
         )
       ),
       React.createElement("section", { className: "ha-grid" }, [0, 1, 2, 3, 4, 5].map(function (i) {
@@ -456,10 +469,10 @@
     const progress = achievement.progress || 0;
     const pct = achievement.progress_pct || (unlocked ? 100 : 0);
     const state = achievement.state || (unlocked ? "unlocked" : "discovered");
-    const stateLabel = state === "unlocked" ? "Unlocked" : (state === "secret" ? "Secret" : "Discovered");
+    const stateLabel = state === "unlocked" ? tr("Unlocked", "解除済み") : (state === "secret" ? tr("Secret", "隠し実績") : tr("Discovered", "発見済み"));
     const targetTier = achievement.next_tier || achievement.tier;
-    const tierLabel = achievement.tier ? achievement.tier : (targetTier ? "Target " + targetTier : (state === "secret" ? "Hidden" : (unlocked ? "Complete" : "Objective")));
-    const progressText = state === "secret" ? "hidden" : (progress + (achievement.next_threshold ? " / " + achievement.next_threshold : ""));
+    const tierLabel = achievement.tier ? achievement.tier : (targetTier ? tr("Target ", "目標 ") + targetTier : (state === "secret" ? tr("Hidden", "非表示") : (unlocked ? tr("Complete", "完了") : tr("Target", "目標"))));
+    const progressText = state === "secret" ? tr("Hidden", "非表示") : (progress + (achievement.next_threshold ? " / " + achievement.next_threshold : ""));
     const [shareOpen, setShareOpen] = hooks.useState(false);
     return React.createElement(C.Card, { className: cn("ha-card", "ha-state-" + state, tierClass(achievement.tier || achievement.next_tier)) },
       React.createElement(C.CardContent, { className: "ha-card-content" },
@@ -475,21 +488,21 @@
             state === "unlocked" && React.createElement("button", {
               className: "ha-share-trigger",
               onClick: function () { setShareOpen(true); },
-              title: "Share this achievement",
-              "aria-label": "Share " + achievement.name,
-            }, "Share")
+              title: tr("Share this achievement", "この 実績を共有"),
+              "aria-label": tr("Share ", "共有 ") + achievement.name,
+            }, tr("Share", "共有"))
           )
         ),
         React.createElement("p", { className: "ha-description" }, achievement.description),
         achievement.criteria && React.createElement("details", { className: "ha-criteria" },
-          React.createElement("summary", null, state === "secret" ? "How to reveal" : "What counts"),
+          React.createElement("summary", null, state === "secret" ? tr("Unlock hint", "解除のヒント") : tr("What counts", "達成条件")),
           React.createElement("p", null, achievement.criteria)
         ),
         React.createElement("div", { className: "ha-evidence-slot" },
           achievement.evidence ? React.createElement("div", { className: "ha-evidence" },
-            React.createElement("span", { className: "ha-evidence-label" }, "Evidence"),
+            React.createElement("span", { className: "ha-evidence-label" }, tr("Evidence", "根拠")),
             React.createElement("span", { className: "ha-evidence-title" }, achievement.evidence.title || achievement.evidence.session_id || "session")
-          ) : React.createElement("div", { className: "ha-evidence ha-evidence-empty", "aria-hidden": "true" }, "No evidence yet")
+          ) : React.createElement("div", { className: "ha-evidence ha-evidence-empty", "aria-hidden": "true" }, tr("No evidence yet", "根拠はまだありません"))
         ),
         React.createElement("div", { className: "ha-progress-row" },
           React.createElement("div", { className: "ha-progress-track" },
@@ -527,7 +540,7 @@
         .then(function (payload) { setData(payload); setError((payload && payload.error) || null); })
         .catch(function (err) { setError(String(err)); });
     }
-    hooks.useEffect(load, []);
+    hooks.useEffect(load, [currentLocale()]);
 
     // Auto-poll while the backend is still scanning. scan_meta.mode is
     // "pending" on the very first request (no cache yet) and "in_progress"
@@ -554,11 +567,11 @@
     const discovered = achievements.filter(function (a) { return a.state === "discovered"; });
     const secret = achievements.filter(function (a) { return a.state === "secret"; });
     const latest = unlocked.slice().sort(function (a, b) { return (b.unlocked_at || 0) - (a.unlocked_at || 0); }).slice(0, 5);
-    const highest = ["Olympian", "Diamond", "Gold", "Silver", "Copper"].find(function (tier) { return unlocked.some(function (a) { return a.tier === tier; }); }) || "None yet";
+    const highest = ["Olympian", "Diamond", "Gold", "Silver", "Copper"].find(function (tier) { return unlocked.some(function (a) { return a.tier === tier; }); }) || tr("None yet", "まだなし");
 
     // Build the in-progress scan banner once so the JSX below stays readable.
     // Shows nothing when the scan is idle. When a scan is running it renders
-    // a pulsing status row with "X / Y sessions · Z%" and a filling bar, so
+    // a pulsing status row with "X / Y セッション · Z%" and a filling bar, so
     // the user gets continuous visual feedback during long cold scans on
     // large session databases (can take several minutes on 8000+ sessions).
     let scanBanner = null;
@@ -568,11 +581,11 @@
       const total = Number(meta.sessions_expected_total || 0);
       const pct = total > 0 ? Math.max(0, Math.min(100, Math.floor((scanned / total) * 100))) : 0;
       const headline = scanMode === "pending"
-        ? "Starting achievement scan…"
-        : "Building achievement profile…";
+        ? tr("Starting achievement scan…", "実績スキャンを開始中…")
+        : tr("Building achievement profile…", "実績プロフィールを構築中…");
       const detail = total > 0
-        ? ("Scanned " + scanned.toLocaleString() + " of " + total.toLocaleString() + " sessions · " + pct + "%. Badges unlock as more history streams in.")
-        : "Reading sessions, tool calls, model metadata, and unlock state. Badges appear here as they unlock.";
+        ? (currentLocale() === "ja" ? "セッション " + scanned.toLocaleString() + " / " + total.toLocaleString() + " をスキャン済み · " + pct + "%。履歴の読み込みに応じてバッジが解除されます。" : "Scanned " + scanned.toLocaleString() + " / " + total.toLocaleString() + " sessions · " + pct + "%. Badges unlock as history is read.")
+        : tr("Reading sessions, tool calls, model info, and unlock state. Unlocked badges will appear here.", "セッション、ツール呼び出し、モデル情報、解除状態を読み取り中。解除されたバッジがここに表示されます。");
       scanBanner = React.createElement("section", { className: "ha-scan-banner", role: "status", "aria-live": "polite" },
         React.createElement("div", { className: "ha-scan-banner-head" },
           React.createElement("span", { className: "ha-scan-pulse", "aria-hidden": "true" }),
@@ -596,18 +609,18 @@
         React.createElement("div", null,
           React.createElement("div", { className: "ha-kicker" }, "Agentic Gamerscore"),
           React.createElement("h1", null, "Hermes Achievements"),
-          React.createElement("p", null, "Collectible Hermes badges earned from real session history. Known unfinished achievements are shown as Discovered; Secret achievements stay hidden until the first matching behavior appears.")
+          React.createElement("p", null, tr("Hermes badges earned from real session history. Known but unfinished badges appear as Discovered; secret achievements stay hidden until a triggering action appears in history.", "実際のセッション履歴から獲得できる Hermes バッジです。条件が判明していて未達成のものは「発見済み」として表示され、隠し実績はきっかけになる行動が履歴に現れるまで伏せられます。"))
         ),
-        React.createElement(C.Button, { onClick: load, className: "ha-refresh" }, "Rescan")
+        React.createElement(C.Button, { onClick: load, className: "ha-refresh" }, tr("Rescan", "再スキャン"))
       ),
       scanBanner,
       error && React.createElement(C.Card, { className: "ha-error" }, React.createElement(C.CardContent, null, String(error))),
       React.createElement("div", { className: "ha-stats" },
-        React.createElement(StatCard, { label: "Unlocked", value: (data ? data.unlocked_count : 0) + " / " + (data ? data.total_count : 0), hint: "earned badges" }),
-        React.createElement(StatCard, { label: "Discovered", value: discovered.length, hint: "known, not earned yet" }),
-        React.createElement(StatCard, { label: "Secrets", value: secret.length, hint: "hidden until first signal" }),
-        React.createElement(StatCard, { label: "Highest tier", value: highest, hint: "Copper → Silver → Gold → Diamond → Olympian" }),
-        React.createElement(StatCard, { label: "Latest", value: latest[0] ? latest[0].name : "None yet", hint: latest[0] ? latest[0].category : "run Hermes more" })
+        React.createElement(StatCard, { label: tr("Unlocked", "解除済み"), value: (data ? data.unlocked_count : 0) + " / " + (data ? data.total_count : 0), hint: tr("Earned badges", "獲得済みバッジ") }),
+        React.createElement(StatCard, { label: tr("Discovered", "発見済み"), value: discovered.length, hint: tr("Known requirements, not earned yet", "条件は表示済み、まだ未獲得") }),
+        React.createElement(StatCard, { label: tr("Secret", "隠し実績"), value: secret.length, hint: tr("Hidden until a trigger is found", "きっかけが見つかるまで非表示") }),
+        React.createElement(StatCard, { label: tr("Highest tier", "最高ティア"), value: highest, hint: "Copper → Silver → Gold → Diamond → Olympian" }),
+        React.createElement(StatCard, { label: tr("Latest", "最新"), value: latest[0] ? latest[0].name : tr("None yet", "まだなし"), hint: latest[0] ? latest[0].category : tr("Use Hermes more", "Hermes をもっと使う") })
       ),
       React.createElement("section", { className: "ha-guide" },
         React.createElement("div", null,
@@ -615,20 +628,20 @@
           React.createElement(TierLegend, null)
         ),
         React.createElement("div", null,
-          React.createElement("strong", null, "Secret achievements"),
-          React.createElement("p", null, "Secrets hide their exact trigger. Once Hermes sees a related signal, the card becomes Discovered and shows its requirement.")
+          React.createElement("strong", null, tr("Secret achievements", "隠し実績")),
+          React.createElement("p", null, tr("These achievements keep their requirements hidden. When Hermes finds a clue in history, they become Discovered and reveal what counts.", "まだ条件が伏せられている実績です。Hermes が履歴の中に手がかりを見つけると「発見済み」になり、達成条件が表示されます。"))
         )
       ),
       React.createElement("div", { className: "ha-toolbar" },
         React.createElement("div", { className: "ha-pills" }, categories.map(function (cat) {
-          return React.createElement("button", { key: cat, onClick: function () { setCategory(cat); }, className: cat === category ? "active" : "" }, cat);
+          return React.createElement("button", { key: cat, onClick: function () { setCategory(cat); }, className: cat === category ? "active" : "" }, cat === "All" ? tr("All", "すべて") : cat);
         })),
-        React.createElement("div", { className: "ha-pills" }, ["all", "unlocked", "discovered", "secret"].map(function (v) {
-          return React.createElement("button", { key: v, onClick: function () { setVisibility(v); }, className: v === visibility ? "active" : "" }, v);
+        React.createElement("div", { className: "ha-pills" }, [{ key: "all", label: tr("All", "すべて") }, { key: "unlocked", label: tr("Unlocked", "解除済み") }, { key: "discovered", label: tr("Discovered", "発見済み") }, { key: "secret", label: tr("Secret", "隠し実績") }].map(function (item) {
+          return React.createElement("button", { key: item.key, onClick: function () { setVisibility(item.key); }, className: item.key === visibility ? "active" : "" }, item.label);
         }))
       ),
       latest.length > 0 && React.createElement("section", { className: "ha-latest" },
-        React.createElement("h2", null, "Recent unlocks"),
+        React.createElement("h2", null, tr("Recent unlocks", "最近の解除")),
         React.createElement("div", { className: "ha-latest-row" }, latest.map(function (a) {
           return React.createElement("div", { key: a.id, className: cn("ha-chip", tierClass(a.tier)) },
             React.createElement("span", { className: "ha-chip-icon" }, React.createElement(AchievementIcon, { icon: a.icon || "secret" })),
@@ -638,8 +651,8 @@
       ),
       visibility === "secret" && visible.length === 0 && React.createElement(C.Card, { className: "ha-secret-empty" },
         React.createElement(C.CardContent, { className: "ha-secret-empty-content" },
-          React.createElement("strong", null, "No hidden secrets left in this scan."),
-          React.createElement("p", null, "Clue: secrets usually start from unusual failure or power-user patterns — port conflicts, permission walls, missing env vars, YAML mistakes, Docker collisions, rollback/checkpoint use, cache hits, or tiny fixes after lots of red text.")
+          React.createElement("strong", null, tr("No hidden secret achievements remain in this scan.", "このスキャンに未表示の隠し実績は残っていません。")),
+          React.createElement("p", null, tr("Hint: secret achievements often start from unusual failures or expert-looking behavior — port conflicts, permission walls, missing env vars, YAML mistakes, Docker conflicts, rollback/checkpoint use, cache hits, or tiny fixes after lots of red text.", "ヒント: 隠し実績はたいてい、少し変わった失敗や熟練者っぽい使い方から始まります — ポート衝突、権限の壁、環境変数不足、YAML ミス、Docker 衝突、ロールバック/チェックポイント利用、キャッシュヒット、大量の赤文字の後の小さな修正など。"))
         )
       ),
       React.createElement("section", { className: "ha-grid" }, visible.map(function (a) {

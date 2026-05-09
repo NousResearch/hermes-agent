@@ -1180,12 +1180,14 @@ display:
   show_cost: false        # Show estimated $ cost in the CLI status bar
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   runtime_metadata_footer: false  # Gateway: append a runtime-context footer to final replies
-  language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | ja | de | es | fr | tr | uk
+  language: en            # UI language for static messages and the dashboard. en | zh | ja | de | es | fr | tr | uk
 ```
 
 ### UI language for static messages
 
-The `display.language` setting translates a small set of static user-facing messages — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
+The `display.language` setting translates static user-facing messages and dashboard UI text — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"), and supported web dashboard locales. It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
+
+The dashboard currently ships locales for `en`, `zh`, and `ja`. Other configured languages still apply to CLI/gateway strings where available, while the dashboard falls back to English. Dashboard translations cover built-in navigation, forms, model/provider UI, bundled skill descriptions, and bundled plugin dashboards; custom skill descriptions and user-authored content are shown as written.
 
 Supported values: `en` (default), `zh` (Simplified Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian). Unknown values fall back to English.
 
@@ -1193,7 +1195,7 @@ You can also set this per-session with the `HERMES_LANGUAGE` env var, which over
 
 ```yaml
 display:
-  language: zh   # CLI approval prompts appear in Chinese
+  language: ja   # Dashboard UI and supported static prompts appear in Japanese
 ```
 
 | Mode | What you see |

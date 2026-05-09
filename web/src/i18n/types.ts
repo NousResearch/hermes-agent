@@ -1,4 +1,4 @@
-export type Locale = "en" | "zh";
+export type Locale = "en" | "zh" | "ja";
 
 export interface Translations {
   // ── Common ──
@@ -361,6 +361,8 @@ export interface Translations {
       discord: string;
       auxiliary: string;
     };
+    fieldLabels?: Record<string, string>;
+    fieldDescriptions?: Record<string, string>;
   };
 
   // ── Env / Keys page ──
@@ -395,6 +397,7 @@ export interface Translations {
     noProviders: string;
     login: string;
     disconnect: string;
+    disconnected: string;
     managedExternally: string;
     copied: string;
     cli: string;

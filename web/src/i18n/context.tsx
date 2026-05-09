@@ -1,19 +1,21 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+/* eslint-disable react-refresh/only-export-components */
+import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
 import { zh } from "./zh";
+import { ja } from "./ja";
 
-const TRANSLATIONS: Record<Locale, Translations> = { en, zh };
+const TRANSLATIONS: Record<Locale, Translations> = { en, zh, ja };
 const STORAGE_KEY = "hermes-locale";
 
 function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "en" || stored === "zh") return stored;
+    if (stored === "en" || stored === "zh" || stored === "ja") return stored;
   } catch {
     // SSR or privacy mode
   }
-  return "en";
+  return "ja";
 }
 
 interface I18nContextValue {
@@ -30,6 +32,10 @@ const I18nContext = createContext<I18nContextValue>({
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
 
   const setLocale = useCallback((l: Locale) => {
     setLocaleState(l);

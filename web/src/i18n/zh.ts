@@ -385,6 +385,7 @@ export const zh: Translations = {
     noProviders: "未检测到支持 OAuth 的提供商。",
     login: "登录",
     disconnect: "断开连接",
+    disconnected: "已断开",
     managedExternally: "外部管理",
     copied: "已复制 ✓",
     cli: "CLI",
@@ -414,7 +415,7 @@ export const zh: Translations = {
   },
 
   language: {
-    switchTo: "切换到英文",
+    switchTo: "切换到日语",
   },
 
   theme: {

@@ -1,15 +1,28 @@
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { useI18n } from "@/i18n/context";
+import type { Locale } from "@/i18n";
 
 /**
- * Compact language toggle — shows a clickable flag that switches between
- * English and Chinese.  Persists choice to localStorage.
+ * Compact language toggle — cycles English, Chinese, and Japanese.
+ * Persists choice to localStorage.
  */
 export function LanguageSwitcher() {
   const { locale, setLocale, t } = useI18n();
 
-  const toggle = () => setLocale(locale === "en" ? "zh" : "en");
+  const LOCALES: Locale[] = ["en", "zh", "ja"];
+  const LABELS: Record<Locale, { flag: string; text: string }> = {
+    en: { flag: "🇬🇧", text: "EN" },
+    zh: { flag: "🇨🇳", text: "中文" },
+    ja: { flag: "🇯🇵", text: "日本語" },
+  };
+
+  const toggle = () => {
+    const current = LOCALES.indexOf(locale);
+    setLocale(LOCALES[(current + 1) % LOCALES.length]);
+  };
+
+  const current = LABELS[locale];
 
   return (
     <Button
@@ -21,14 +34,14 @@ export function LanguageSwitcher() {
     >
       <span className="inline-flex items-center gap-1.5">
         <span className="text-base leading-none">
-          {locale === "en" ? "🇬🇧" : "🇨🇳"}
+          {current.flag}
         </span>
 
         <Typography
           mondwest
           className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
         >
-          {locale === "en" ? "EN" : "中文"}
+          {current.text}
         </Typography>
       </span>
     </Button>

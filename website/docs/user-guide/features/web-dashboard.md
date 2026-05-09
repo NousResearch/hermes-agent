@@ -16,6 +16,14 @@ hermes dashboard
 
 This starts a local web server and opens `http://127.0.0.1:9119` in your browser. The dashboard runs entirely on your machine — no data leaves localhost.
 
+The dashboard follows the UI language from `display.language` in `config.yaml`. You can switch languages from the header language menu, or set it from the CLI:
+
+```bash
+hermes config set display.language ja
+```
+
+Supported dashboard locales are English (`en`), Simplified Chinese (`zh`), and Japanese (`ja`). Unknown or incomplete locale values fall back to English. The language setting affects dashboard chrome, forms, bundled skill descriptions, and built-in plugin dashboards; it does not translate agent responses, logs, tool output, or user-authored/custom skill descriptions.
+
 ### Options
 
 | Flag | Default | Description |

@@ -62,6 +62,10 @@ function generateChannelId(): string {
 // with cream foreground — we intentionally don't pick monokai or a loud
 // theme, because the TUI's skin engine already paints the content; the
 // terminal chrome just needs to sit quietly inside the dashboard.
+function tr(locale: string, en: string, ja: string): string {
+  return locale === "ja" ? ja : en;
+}
+
 const TERMINAL_THEME = {
   background: "#0d2626",
   foreground: "#f0e6d2",
@@ -133,7 +137,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
   const { setEnd } = usePageHeader();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
@@ -333,7 +337,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -584,18 +588,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       if (ev.code === 4401) {
-        setBanner("Auth failed. Reload the page to refresh the session token.");
+        setBanner(tr(locale, "Auth failed. Reload the page to refresh the session token.", "認証に失敗。ページを再読み込みして session token を更新してください。"));
         return;
       }
       if (ev.code === 4403) {
-        setBanner("Chat is only reachable from localhost.");
+        setBanner(tr(locale, "Chat is only reachable from localhost.", "Chat は localhost からのみ利用可能。"));
         return;
       }
       if (ev.code === 1011) {
         // Server already wrote an ANSI error frame.
         return;
       }
-      term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+      term.write(`\r\n\x1b[90m[${tr(locale, "session ended", "セッション終了")}]\x1b[0m\r\n`);
     };
 
     // Keystrokes → PTY.
@@ -657,7 +661,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, locale, resumeParam]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -825,8 +829,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <Button
             ghost
             onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+            title={tr(locale, "Copy last assistant response as raw markdown", "最後のアシスタント応答を raw markdown でコピー")}
+            aria-label={tr(locale, "Copy last assistant response", "最後のアシスタント応答をコピー")}
             className={cn(
               "absolute z-10",
               "rounded border border-current/30",
@@ -841,7 +845,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
               <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+                {copyState === "copied" ? tr(locale, "copied", "コピー済み") : tr(locale, "copy last response", "最後の応答をコピー")}
               </span>
             </span>
           </Button>

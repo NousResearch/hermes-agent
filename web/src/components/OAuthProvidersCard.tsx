@@ -80,7 +80,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     setBusyId(provider.id);
     try {
       await api.disconnectOAuthProvider(provider.id);
-      onSuccess?.(`${provider.name} ${t.oauth.disconnect.toLowerCase()}ed`);
+      onSuccess?.(`${provider.name} ${t.oauth.disconnected}`);
       refresh();
     } catch (e) {
       onError?.(`${t.oauth.disconnect} failed: ${e}`);

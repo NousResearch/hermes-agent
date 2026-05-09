@@ -23,6 +23,10 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
 const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
 
+function tr(locale: string, en: string, ja: string): string {
+  return locale === "ja" ? ja : en;
+}
+
 export default function PluginsPage() {
   const [hub, setHub] = useState<PluginsHubResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -37,7 +41,7 @@ export default function PluginsPage() {
   const [rowBusy, setRowBusy] = useState<string | null>(null);
 
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { setEnd } = usePageHeader();
 
   const loadHub = useCallback(() => {
@@ -53,8 +57,7 @@ export default function PluginsPage() {
   }, [showToast, t.common.loading]);
 
   useEffect(() => {
-    setLoading(true);
-    void loadHub().finally(() => setLoading(false));
+    void Promise.resolve().then(() => loadHub().finally(() => setLoading(false)));
   }, [loadHub]);
 
   useEffect(() => {
@@ -86,14 +89,14 @@ export default function PluginsPage() {
         force: installForce,
         enable: installEnable,
       });
-      showToast(`${r.plugin_name ?? id} installed`, "success");
+      showToast(`${r.plugin_name ?? id} ${tr(locale, "installed", "をインストールしました")}`, "success");
       if ((r.warnings?.length ?? 0) > 0) showToast(r.warnings!.join(" "), "error");
       if ((r.missing_env?.length ?? 0) > 0)
         showToast(`${t.pluginsPage.missingEnvWarn} ${r.missing_env!.join(", ")}`, "error");
       setInstallId("");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Install failed", "error");
+      showToast(e instanceof Error ? e.message : tr(locale, "Install failed", "インストールに失敗"), "error");
     } finally {
       setInstallBusy(false);
     }
@@ -109,7 +112,7 @@ export default function PluginsPage() {
       );
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Rescan failed", "error");
+      showToast(e instanceof Error ? e.message : tr(locale, "Rescan failed", "再スキャンに失敗"), "error");
     } finally {
       setRescanBusy(false);
     }
@@ -126,7 +129,7 @@ export default function PluginsPage() {
       showToast(t.pluginsPage.savedProviders, "success");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Save failed", "error");
+      showToast(e instanceof Error ? e.message : tr(locale, "Save failed", "保存に失敗"), "error");
     } finally {
       setProviderBusy(false);
     }
@@ -138,7 +141,7 @@ export default function PluginsPage() {
       await fn();
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Failed", "error");
+      showToast(e instanceof Error ? e.message : tr(locale, "Failed", "失敗"), "error");
     } finally {
       setRowBusy(null);
     }

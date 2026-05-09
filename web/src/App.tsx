@@ -607,7 +607,7 @@ export default function App() {
                       >
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
                           <Spinner />
-                          <span>Loading chat…</span>
+                          <span>{t.common.loading}</span>
                         </div>
                       </div>
                     ) : null

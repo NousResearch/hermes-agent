@@ -98,6 +98,26 @@ body {
   overflow: hidden;
 }
 
+html:lang(ja) {
+  --theme-font-sans: "Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic UI",
+    "Yu Gothic", "Hiragino Sans", "Meiryo", system-ui, sans-serif;
+  --theme-font-display: var(--theme-font-sans);
+  --theme-letter-spacing: 0.01em;
+  line-height: 1.65;
+}
+
+html:lang(ja) .font-mondwest,
+html:lang(ja) .font-expanded,
+html:lang(ja) .font-compressed,
+html:lang(ja) [class*="font-mondwest"] {
+  font-family: var(--theme-font-sans) !important;
+  letter-spacing: 0.04em;
+}
+
+html:lang(ja) .uppercase {
+  text-transform: none;
+}
+
 code, kbd, pre, samp, .font-mono, .font-mono-ui {
   font-family: var(--theme-font-mono);
 }

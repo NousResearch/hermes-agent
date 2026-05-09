@@ -11125,8 +11125,26 @@ class AIAgent:
             and self._memory_nudge_interval > 0
             and self._turns_since_memory == 0
         ):
+            # Locate the most recent memory tool invocation; runtime resets
+            # _turns_since_memory to 0 whenever it runs, so on hydration we
+            # count user turns from that point. Falls back to total user
+            # turns when no prior memory tool call exists.
+            last_memory_idx = -1
+            for idx, msg in enumerate(conversation_history):
+                if (
+                    isinstance(msg, dict)
+                    and msg.get("role") == "tool"
+                    and msg.get("name") == "memory"
+                ):
+                    last_memory_idx = idx
+            if last_memory_idx >= 0:
+                relevant = conversation_history[last_memory_idx + 1 :]
+            else:
+                relevant = conversation_history
             prior_user_turns = sum(
-                1 for msg in conversation_history if msg.get("role") == "user"
+                1
+                for msg in relevant
+                if isinstance(msg, dict) and msg.get("role") == "user"
             )
             self._turns_since_memory = prior_user_turns % self._memory_nudge_interval
 

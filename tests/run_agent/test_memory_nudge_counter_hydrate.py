@@ -25,8 +25,22 @@ def _hydrate(agent, conversation_history):
         and agent._memory_nudge_interval > 0
         and agent._turns_since_memory == 0
     ):
+        last_memory_idx = -1
+        for idx, msg in enumerate(conversation_history):
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "tool"
+                and msg.get("name") == "memory"
+            ):
+                last_memory_idx = idx
+        if last_memory_idx >= 0:
+            relevant = conversation_history[last_memory_idx + 1 :]
+        else:
+            relevant = conversation_history
         prior_user_turns = sum(
-            1 for msg in conversation_history if msg.get("role") == "user"
+            1
+            for msg in relevant
+            if isinstance(msg, dict) and msg.get("role") == "user"
         )
         agent._turns_since_memory = (
             prior_user_turns % agent._memory_nudge_interval
@@ -106,6 +120,33 @@ def test_messages_without_role_field_are_ignored():
     history = _hist(3) + [{"content": "no role"}, {"role": "tool", "content": "x"}]
     _hydrate(agent, history)
     assert agent._turns_since_memory == 3
+
+
+def test_hydration_counts_user_turns_since_last_memory_tool():
+    """When the memory tool ran mid-history, runtime resets the counter to 0;
+    hydration must mirror that by only counting user turns AFTER that tool call."""
+    agent = _make_agent(interval=10)
+    history = (
+        _hist(8)
+        + [{"role": "tool", "name": "memory", "content": "saved"}]
+        + [{"role": "user", "content": "u_after_1"}, {"role": "assistant", "content": "a"}]
+        + [{"role": "user", "content": "u_after_2"}]
+    )
+    _hydrate(agent, history)
+    assert agent._turns_since_memory == 2
+
+
+def test_hydration_uses_most_recent_memory_tool_call():
+    agent = _make_agent(interval=10)
+    history = (
+        [{"role": "user", "content": "u0"}]
+        + [{"role": "tool", "name": "memory", "content": "first"}]
+        + [{"role": "user", "content": "u1"}, {"role": "user", "content": "u2"}]
+        + [{"role": "tool", "name": "memory", "content": "second"}]
+        + [{"role": "user", "content": "u3"}]
+    )
+    _hydrate(agent, history)
+    assert agent._turns_since_memory == 1
 
 
 @pytest.mark.parametrize(

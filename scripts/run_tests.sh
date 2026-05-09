@@ -41,10 +41,15 @@ fi
 
 PYTHON="$VENV/bin/python"
 
-# ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
+# ── pytest-split (declared in ``[project.optional-dependencies].dev``) ──
+# uv-managed venvs often ship without ``pip``; do not try to bootstrap here.
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
-  echo "→ installing pytest-split into $VENV"
-  "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+  echo "error: pytest-split is not installed in $VENV" >&2
+  echo "  Install dev dependencies (includes pytest-split), for example:" >&2
+  echo "    uv sync --extra dev" >&2
+  echo "    # or: uv pip install 'pytest-split>=0.9,<1'" >&2
+  echo "    # or: python -m pip install 'pytest-split>=0.9,<1'  (when pip exists)" >&2
+  exit 1
 fi
 
 # ── Hermetic environment ────────────────────────────────────────────────────

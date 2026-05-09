@@ -90,6 +90,66 @@ def test_run_gateway_root_guard_has_escape_hatch(monkeypatch):
     assert calls == [(True, 2)]
 
 
+def test_run_gateway_windows_foreground_keeps_ctrl_c_enabled(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    class _TTY:
+        def isatty(self):
+            return True
+
+    signal_calls = []
+
+    def fake_signal(sig, handler):
+        signal_calls.append((sig, handler))
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway.sys, "stdin", _TTY())
+    monkeypatch.delenv("HERMES_GATEWAY_DETACHED", raising=False)
+    monkeypatch.setattr(gateway.signal, "signal", fake_signal)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway()
+
+    assert calls == [(False, 0)]
+    assert (gateway.signal.SIGINT, gateway.signal.SIG_IGN) not in signal_calls
+
+
+def test_run_gateway_windows_detached_absorbs_console_controls(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    class _TTY:
+        def isatty(self):
+            return True
+
+    signal_calls = []
+
+    def fake_signal(sig, handler):
+        signal_calls.append((sig, handler))
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway.sys, "stdin", _TTY())
+    monkeypatch.setenv("HERMES_GATEWAY_DETACHED", "1")
+    monkeypatch.setattr(gateway.signal, "signal", fake_signal)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway()
+
+    assert calls == [(False, 0)]
+    assert (gateway.signal.SIGINT, gateway.signal.SIG_IGN) in signal_calls
+
+
 class TestSystemdLingerStatus:
     def test_reports_enabled(self, monkeypatch):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)

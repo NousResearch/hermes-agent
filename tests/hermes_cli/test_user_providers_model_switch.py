@@ -753,6 +753,63 @@ def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     assert result.error_message == ""
 
 
+def test_named_custom_provider_keeps_bare_route_model_on_current_provider(monkeypatch):
+    """Bare model names on named custom providers should stay on that endpoint.
+
+    Bifrost can route aliases like ``deepseek-v4-pro`` internally. Provider
+    autodetection must not rewrite that request to the native DeepSeek provider
+    before the custom endpoint sees it.
+    """
+    custom_providers = [
+        {
+            "name": "bifrost",
+            "base_url": "https://bifrost.example.test/v1",
+            "api_key": "vk-test",
+            "model": "opencode/deepseek-v4-pro",
+        }
+    ]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_alias",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_provider_models",
+        lambda *a, **k: [],
+    )
+
+    def _detect_provider_for_model(*args, **kwargs):
+        raise AssertionError("custom:bifrost must not run provider autodetect")
+
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model",
+        _detect_provider_for_model,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *a, **k: {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": None,
+        },
+    )
+
+    result = switch_model(
+        raw_input="deepseek-v4-pro",
+        current_provider="custom:bifrost",
+        current_model="opencode/deepseek-v4-pro",
+        current_base_url="https://bifrost.example.test/v1",
+        current_api_key="vk-test",
+        custom_providers=custom_providers,
+    )
+
+    assert result.success is True
+    assert result.target_provider == "custom:bifrost"
+    assert result.provider_label == "bifrost"
+    assert result.new_model == "deepseek-v4-pro"
+
+
 # =============================================================================
 # Regression: providers: dict ``transport`` field must be honored
 # =============================================================================

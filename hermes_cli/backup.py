@@ -620,7 +620,12 @@ def restore_quick_snapshot(
     """
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
-    snap_dir = root / snapshot_id
+    try:
+        snap_dir = (root / snapshot_id).resolve()
+        snap_dir.relative_to(root.resolve())
+    except (OSError, ValueError):
+        logger.warning("Blocked quick snapshot restore outside snapshot root: %s", snapshot_id)
+        return False
 
     if not snap_dir.is_dir():
         return False
@@ -639,6 +644,11 @@ def restore_quick_snapshot(
             continue
 
         dst = home / rel
+        try:
+            dst.resolve().relative_to(home.resolve())
+        except (OSError, ValueError):
+            logger.warning("Blocked quick snapshot restore path outside Hermes home: %s", rel)
+            continue
         dst.parent.mkdir(parents=True, exist_ok=True)
 
         try:

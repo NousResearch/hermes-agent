@@ -309,7 +309,10 @@ class TestTencentTokenhubContextLength:
     def test_hy3_preview_context_length(self):
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length("hy3-preview")
-        assert ctx == 256000
+        # OpenRouter's live API now reports 262144 (256 KiB) for hy3-preview;
+        # the metadata cache reaches the static fallback only when offline,
+        # so both the live and offline paths must agree (#22268).
+        assert ctx == 262144
 
 
 # =============================================================================

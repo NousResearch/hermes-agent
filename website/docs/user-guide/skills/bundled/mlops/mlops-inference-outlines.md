@@ -20,6 +20,7 @@ Outlines: structured JSON/regex/Pydantic LLM generation.
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `outlines`, `transformers`, `vllm`, `pydantic` |
+| Platforms | linux, macos, windows |
 | Tags | `Prompt Engineering`, `Outlines`, `Structured Generation`, `JSON Schema`, `Pydantic`, `Local Models`, `Grammar-Based Generation`, `vLLM`, `Transformers`, `Type Safety` |
 
 ## Reference: full SKILL.md

@@ -12,6 +12,8 @@ import asyncio
 import json
 import logging
 import os
+import sys
+import textwrap
 from io import StringIO
 
 import pytest
@@ -126,6 +128,91 @@ async def test_bare_ping_request_produces_proper_response_and_no_stderr_noise(
     when the filter is installed on the handler.
     """
     import acp
+
+    if sys.platform == "win32":
+        script = textwrap.dedent(
+            """
+            import asyncio
+            import logging
+            import sys
+
+            import acp
+
+            from acp_adapter.entry import _BenignProbeMethodFilter
+
+
+            class _FakeAgent:
+                async def initialize(self, **kwargs):
+                    from acp.schema import AgentCapabilities, InitializeResponse
+                    return InitializeResponse(protocol_version=1, agent_capabilities=AgentCapabilities())
+
+                async def new_session(self, cwd, mcp_servers=None, **kwargs):
+                    from acp.schema import NewSessionResponse
+                    return NewSessionResponse(session_id="test")
+
+                async def prompt(self, session_id, prompt, **kwargs):
+                    from acp.schema import PromptResponse
+                    return PromptResponse(stop_reason="end_turn")
+
+                async def cancel(self, session_id, **kwargs):
+                    pass
+
+                async def authenticate(self, **kwargs):
+                    pass
+
+                def on_connect(self, conn):
+                    pass
+
+
+            handler = logging.StreamHandler(sys.stderr)
+            handler.addFilter(_BenignProbeMethodFilter())
+            root = logging.getLogger()
+            root.handlers.clear()
+            root.addHandler(handler)
+            root.setLevel(logging.INFO)
+
+            asyncio.run(acp.run_agent(_FakeAgent(), use_unstable_protocol=True))
+            """
+        )
+        request = {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            script,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+        proc.stdin.write((json.dumps(request) + "\n").encode())
+        await proc.stdin.drain()
+        try:
+            response_line = await asyncio.wait_for(proc.stdout.readline(), timeout=5.0)
+        finally:
+            proc.stdin.close()
+            try:
+                await proc.stdin.wait_closed()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        stderr_bytes = await proc.stderr.read()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+
+        stderr = stderr_bytes.decode(errors="replace")
+        assert response_line, (
+            f"ACP subprocess produced no stdout; rc={proc.returncode}\nstderr:\n{stderr}"
+        )
+        response = json.loads(response_line.decode())
+        assert response["error"]["code"] == -32601, response
+        assert response["error"]["data"] == {"method": "ping"}, response
+        assert "Background task failed" not in stderr, stderr
+        return
 
     # Attach the filter to a fresh stream handler that mirrors entry._setup_logging.
     stream = StringIO()

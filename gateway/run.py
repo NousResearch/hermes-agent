@@ -5914,16 +5914,32 @@ class GatewayRunner:
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        proc = None
+                        communicate_task = None
                         try:
                             proc = await asyncio.create_subprocess_shell(
                                 exec_cmd,
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.PIPE,
                             )
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                            communicate_task = asyncio.create_task(proc.communicate())
+                            stdout, stderr = await asyncio.wait_for(communicate_task, timeout=30)
                             output = (stdout or stderr).decode().strip()
                             return output if output else "Command returned no output."
                         except asyncio.TimeoutError:
+                            if communicate_task is not None and not communicate_task.done():
+                                communicate_task.cancel()
+                            if proc is not None and proc.returncode is None:
+                                proc.kill()
+                                try:
+                                    await proc.wait()
+                                except Exception:
+                                    logger.debug("Timed-out quick command cleanup failed", exc_info=True)
+                            if communicate_task is not None:
+                                try:
+                                    await communicate_task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
                             return "Quick command timed out (30s)."
                         except Exception as e:
                             return f"Quick command error: {e}"

@@ -817,14 +817,17 @@ class Migrator:
         **details: Any,
     ) -> None:
         sensitive = bool(details.pop("sensitive", False))
+        normalized_details: Dict[str, Any] = {}
+        for key, value in details.items():
+            normalized_details[key] = self._report_path(value) if key.endswith(("path", "from", "backup", "file")) else value
         self.items.append(
             ItemResult(
                 kind=kind,
-                source=str(source) if source else None,
-                destination=str(destination) if destination else None,
+                source=self._report_path(source),
+                destination=self._report_path(destination),
                 status=status,
                 reason=reason,
-                details=details,
+                details=normalized_details,
                 sensitive=sensitive,
             )
         )
@@ -835,6 +838,16 @@ class Migrator:
             dest_str = str(destination)
             if dest_str.endswith("config.yaml") or dest_str.endswith("config.yml"):
                 self._config_apply_blocked = True
+
+    @staticmethod
+    def _report_path(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, Path):
+            return value.as_posix()
+        if isinstance(value, str):
+            return value.replace("\\", "/")
+        return value
 
     def source_candidate(self, *relative_paths: str) -> Optional[Path]:
         for rel in relative_paths:

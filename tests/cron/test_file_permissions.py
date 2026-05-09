@@ -3,10 +3,18 @@
 import json
 import os
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX chmod mode bits are not reliable on Windows",
+)
 
 
 class TestCronFilePermissions(unittest.TestCase):

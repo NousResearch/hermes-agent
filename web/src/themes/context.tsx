@@ -137,7 +137,7 @@ const NAMED_ASSET_KEYS = ["bg", "hero", "logo", "crest", "sidebar", "header"] as
  *  Each bucket emits `--component-<bucket>-<kebab-prop>` CSS vars. */
 const COMPONENT_BUCKETS = [
   "card", "header", "footer", "sidebar", "tab",
-  "progress", "badge", "backdrop", "page",
+  "progress", "badge", "backdrop", "page", "terminal",
 ] as const;
 
 /** Camel → kebab (`clipPath` → `clip-path`). */

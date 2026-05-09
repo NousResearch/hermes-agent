@@ -3707,7 +3707,7 @@ _THEME_NAMED_ASSET_KEYS = {"bg", "hero", "logo", "crest", "sidebar", "header"}
 # without shipping their own CSS.
 _THEME_COMPONENT_BUCKETS = {
     "card", "header", "footer", "sidebar", "tab",
-    "progress", "badge", "backdrop", "page",
+    "progress", "badge", "backdrop", "page", "terminal",
 }
 
 _THEME_LAYOUT_VARIANTS = {"standard", "cockpit", "tiled"}

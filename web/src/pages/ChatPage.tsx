@@ -20,7 +20,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
@@ -35,6 +35,8 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
+import { useTheme } from "@/themes";
+import type { DashboardTheme } from "@/themes/types";
 
 function buildWsUrl(
   token: string,
@@ -58,17 +60,40 @@ function generateChannelId(): string {
   return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 }
 
-// Colors for the terminal body.  Matches the dashboard's dark teal canvas
-// with cream foreground — we intentionally don't pick monokai or a loud
-// theme, because the TUI's skin engine already paints the content; the
-// terminal chrome just needs to sit quietly inside the dashboard.
-const TERMINAL_THEME = {
+// Fallback colors for the terminal body. Runtime values are derived from the
+// active dashboard theme so a custom dark/noir theme does not leave `/chat`
+// stuck on the built-in teal canvas.
+const FALLBACK_TERMINAL_THEME: ITheme = {
   background: "#0d2626",
   foreground: "#f0e6d2",
   cursor: "#f0e6d2",
   cursorAccent: "#0d2626",
   selectionBackground: "#f0e6d244",
 };
+
+function terminalThemeFromDashboardTheme(theme: DashboardTheme): ITheme {
+  const terminal = theme.componentStyles?.terminal ?? {};
+  const background =
+    terminal.backgroundColor ??
+    terminal.background ??
+    theme.palette.background.hex ??
+    FALLBACK_TERMINAL_THEME.background;
+  const foreground =
+    terminal.color ??
+    terminal.foreground ??
+    theme.palette.midground.hex ??
+    FALLBACK_TERMINAL_THEME.foreground;
+
+  return {
+    ...FALLBACK_TERMINAL_THEME,
+    background,
+    foreground,
+    cursor: terminal.cursor ?? foreground,
+    cursorAccent: terminal.cursorAccent ?? background,
+    selectionBackground:
+      terminal.selectionBackground ?? FALLBACK_TERMINAL_THEME.selectionBackground,
+  };
+}
 
 /**
  * CSS width for xterm font tiers.
@@ -134,6 +159,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
   const { setEnd } = usePageHeader();
   const { t } = useI18n();
+  const { theme } = useTheme();
+  const terminalTheme = useMemo(
+    () => terminalThemeFromDashboardTheme(theme),
+    [theme],
+  );
+  const terminalThemeRef = useRef(terminalTheme);
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
@@ -155,7 +186,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const channel = useMemo(() => {
+    // Tie the PTY channel identity to the active resume target.
+    void resumeParam;
+    return generateChannelId();
+  }, [resumeParam]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -290,7 +325,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // let the inner Hermes TUI own transcript history/scroll behavior.
       // The outer browser xterm should act as a display/input bridge only.
       scrollback: 0,
-      theme: TERMINAL_THEME,
+      theme: terminalThemeRef.current,
     });
     termRef.current = term;
 
@@ -333,7 +368,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -659,6 +694,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
   }, [channel, resumeParam]);
 
+  useEffect(() => {
+    terminalThemeRef.current = terminalTheme;
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = terminalTheme;
+    term.refresh(0, Math.max(0, term.rows - 1));
+  }, [terminalTheme]);
+
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
   // ResizeObserver won't fire on that kind of style-driven box change —
@@ -813,7 +856,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "p-2 sm:p-3",
           )}
           style={{
-            backgroundColor: TERMINAL_THEME.background,
+            backgroundColor: terminalTheme.background,
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
@@ -836,7 +879,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
               "lg:bottom-4 lg:right-4",
             )}
-            style={{ color: TERMINAL_THEME.foreground }}
+            style={{ color: terminalTheme.foreground }}
           >
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />

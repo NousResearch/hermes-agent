@@ -117,6 +117,8 @@ export interface ThemeComponentStyles {
   badge?: Record<string, string>;
   backdrop?: Record<string, string>;
   page?: Record<string, string>;
+  /** Embedded xterm.js chat surface in `/chat`. */
+  terminal?: Record<string, string>;
 }
 
 /** Optional hex overrides keyed by shadcn-compat token name (without the

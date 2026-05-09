@@ -1792,6 +1792,7 @@ class TestNormaliseThemeExtensions:
                     "bad prop!": "ignored",  # non-alnum prop rejected
                 },
                 "header": {"background": "linear-gradient(red, blue)"},
+                "terminal": {"backgroundColor": "#070a08", "color": "#ecfdf5"},
                 "rogueBucket": {"foo": "bar"},  # not a known bucket — rejected
             },
         })
@@ -1800,6 +1801,10 @@ class TestNormaliseThemeExtensions:
             "boxShadow": "inset 0 0 0 1px red",
         }
         assert r["componentStyles"]["header"]["background"].startswith("linear-gradient")
+        assert r["componentStyles"]["terminal"] == {
+            "backgroundColor": "#070a08",
+            "color": "#ecfdf5",
+        }
         assert "rogueBucket" not in r["componentStyles"]
 
     def test_component_styles_empty_buckets_dropped(self):

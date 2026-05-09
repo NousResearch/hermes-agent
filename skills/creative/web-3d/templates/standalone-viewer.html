@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Web 3D Viewer</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #0a0c10; color: #f4f4f4; }
+    body { font-family: system-ui, sans-serif; }
+    #app { position: fixed; inset: 0; }
+    .label {
+      position: fixed;
+      left: 16px;
+      top: 16px;
+      z-index: 2;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(8px);
+      font-size: 12px;
+      letter-spacing: 0.02em;
+    }
+  </style>
+</head>
+<body>
+  <div class="label">Replace this starter with the real scene.</div>
+  <div id="app"></div>
+  <script type="module">
+    import * as THREE from "https://esm.sh/three@0.180.0";
+
+    const mount = document.getElementById("app");
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color("#0a0c10");
+
+    const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+    camera.position.set(0, 0, 4);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    mount.appendChild(renderer.domElement);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.65);
+    const key = new THREE.DirectionalLight(0xffffff, 1.2);
+    key.position.set(2, 2, 2);
+    scene.add(ambient, key);
+
+    const geometry = new THREE.TorusKnotGeometry(0.75, 0.24, 180, 24);
+    const material = new THREE.MeshStandardMaterial({
+      color: "#d9e7ff",
+      roughness: 0.28,
+      metalness: 0.2,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    scene.add(mesh);
+
+    let raf = 0;
+
+    function resize() {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+    }
+
+    function frame() {
+      mesh.rotation.y += 0.008;
+      mesh.rotation.x += 0.003;
+      renderer.render(scene, camera);
+      raf = requestAnimationFrame(frame);
+    }
+
+    addEventListener("resize", resize);
+    frame();
+
+    // Replace with more complete cleanup if you convert this into a framework component.
+    window.addEventListener("beforeunload", () => {
+      cancelAnimationFrame(raf);
+      geometry.dispose();
+      material.dispose();
+      renderer.dispose();
+    });
+  </script>
+</body>
+</html>

@@ -150,6 +150,10 @@ fun AppShellScreen(
                         modifier = Modifier.fillMaxSize(),
                         viewModel = authViewModel,
                         extraBottomSpacing = pageBottomClearance,
+                        onOpenSettings = {
+                            settingsViewModel.reload()
+                            currentSection = AppSection.Settings
+                        },
                         onContextActionsChanged = ::setActions,
                     )
 

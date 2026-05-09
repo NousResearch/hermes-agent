@@ -77,6 +77,8 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
     download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
     litert_proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
+    manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
+    gradle = (REPO_ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
     assert 'strings.localDownloadsExampleGuidance()' in downloads_section
     assert 'strings.quickLocalModelsTitle()' in downloads_section
@@ -103,6 +105,12 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     assert 'Backend.GPU() to "gpu"' in litert_proxy
     assert 'Backend.CPU() to "cpu"' in litert_proxy
     assert 'put("accelerator", runtimeBackendLabel)' in litert_proxy
+    assert 'com.google.ai.edge.litertlm:litertlm-android:0.11.0' in gradle
+    assert 'ExperimentalFlags.enableSpeculativeDecoding' in litert_proxy
+    assert 'shouldEnableSpeculativeDecoding(modelPath)' in litert_proxy
+    assert 'put("speculative_decoding", engineInitResult.speculativeDecoding)' in litert_proxy
+    assert 'libOpenCL.so' in manifest
+    assert 'libvndksupport.so' in manifest
 
 
 def test_android_linux_subsystem_reapplies_executable_bits_before_reusing_cached_prefix():

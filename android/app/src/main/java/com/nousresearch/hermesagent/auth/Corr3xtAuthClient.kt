@@ -3,6 +3,16 @@ package com.nousresearch.hermesagent.auth
 import android.net.Uri
 import com.nousresearch.hermesagent.data.AuthOption
 import com.nousresearch.hermesagent.data.AuthSessionStore
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.UnknownHostException
+
+data class AuthStartProbeResult(
+    val reachable: Boolean,
+    val status: String = "",
+    val host: String = "",
+    val errorName: String = "",
+)
 
 object Corr3xtAuthClient {
     const val DEFAULT_BASE_URL = "https://auth.corr3xt.com"
@@ -61,5 +71,51 @@ object Corr3xtAuthClient {
             .appendQueryParameter("locale", normalizedLanguageTag)
             .appendQueryParameter("ui_locales", normalizedLanguageTag)
             .build()
+    }
+
+    fun probeStartUri(uri: Uri, timeoutMs: Int = 4_000): AuthStartProbeResult {
+        val host = uri.host.orEmpty()
+        val oauthStartSuffix = "/oauth/start"
+        val basePath = uri.encodedPath
+            .orEmpty()
+            .removeSuffix(oauthStartSuffix)
+            .ifBlank { "/" }
+        val probeUri = uri.buildUpon()
+            .encodedPath(basePath)
+            .encodedQuery(null)
+            .fragment(null)
+            .build()
+        return try {
+            val connection = (URL(probeUri.toString()).openConnection() as HttpURLConnection).apply {
+                connectTimeout = timeoutMs
+                readTimeout = timeoutMs
+                instanceFollowRedirects = false
+                requestMethod = "GET"
+            }
+            connection.use {
+                responseCode
+                AuthStartProbeResult(reachable = true)
+            }
+        } catch (_: UnknownHostException) {
+            AuthStartProbeResult(
+                reachable = false,
+                status = "unknown_host",
+                host = host,
+            )
+        } catch (error: Exception) {
+            AuthStartProbeResult(
+                reachable = false,
+                status = "network_error",
+                errorName = error.javaClass.simpleName,
+            )
+        }
+    }
+
+    private inline fun <T> HttpURLConnection.use(block: HttpURLConnection.() -> T): T {
+        return try {
+            block()
+        } finally {
+            disconnect()
+        }
     }
 }

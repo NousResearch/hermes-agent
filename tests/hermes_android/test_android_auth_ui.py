@@ -16,6 +16,8 @@ def test_app_shell_has_accounts_tab_and_auth_screen():
 def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
     auth_models = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/AuthModels.kt").read_text(encoding="utf-8")
     auth_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthScreen.kt").read_text(encoding="utf-8")
+    app_shell = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
 
     for label in ["Email", "Google", "Phone", "ChatGPT", "Claude", "Gemini", "Qwen", "Z.AI"]:
         assert label in auth_models
@@ -28,6 +30,13 @@ def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
     assert 'LaunchedEffect(strings.language)' in auth_screen
     assert 'secure callback' in auth_screen
     assert 'Sign in' in auth_screen
+    assert 'option.supportsApiKeySetup' in auth_screen
+    assert 'strings.useApiKeyInSettings()' in auth_screen
+    assert 'viewModel.prepareApiKeySetup(option.id)' in auth_screen
+    assert 'onOpenSettings()' in auth_screen
+    assert 'FlowRow' in auth_screen
+    assert 'settingsViewModel.reload()' in app_shell
+    assert 'fun reload()' in settings_view_model
     assert 'extraBottomSpacing' in auth_screen
 
 
@@ -68,13 +77,30 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'Auth callback rejected: no account identity returned' in auth_session_store
     assert 'currentStrings().authBaseUrlMustBeValid()' in auth_view_model
     assert 'currentStrings().authSavedBaseUrl()' in auth_view_model
+    assert 'viewModelScope.launch' in auth_view_model
+    assert 'Corr3xtAuthClient.probeStartUri' in auth_view_model
+    assert 'currentStrings().authCheckingCorr3xt(option.label)' in auth_view_model
+    assert 'currentStrings().authHostCouldNotBeResolved(probe.host)' in auth_view_model
+    assert 'currentStrings().authPageCouldNotBeReached(probe.errorName)' in auth_view_model
+    assert 'fun prepareApiKeySetup' in auth_view_model
+    assert 'authApiKeySetupReady(option.label)' in auth_view_model
     assert 'currentStrings().authOpenedCorr3xt(option.label)' in auth_view_model
     assert 'currentStrings().authNoBrowser()' in auth_view_model
     assert 'authBaseUrlMustBeValid' in strings
     assert 'authOpenedCorr3xt' in strings
+    assert 'authCheckingCorr3xt' in strings
+    assert 'authHostCouldNotBeResolved' in strings
+    assert 'authPageCouldNotBeReached' in strings
+    assert 'Use API key in Settings' in strings
+    assert 'secure API-key setup' in strings
     assert 'Unable to open Corr3xt: no browser is available' in strings
     assert 'callback_contract' in corr3xt_auth_client
     assert 'ui_locales' in corr3xt_auth_client
     assert 'locale' in corr3xt_auth_client
     assert 'lang' in corr3xt_auth_client
     assert 'normalizeConfiguredBaseUrl' in corr3xt_auth_client
+    assert 'probeStartUri' in corr3xt_auth_client
+    assert 'UnknownHostException' in corr3xt_auth_client
+    assert 'status = "unknown_host"' in corr3xt_auth_client
+    assert 'status = "network_error"' in corr3xt_auth_client
+    assert 'encodedQuery(null)' in corr3xt_auth_client

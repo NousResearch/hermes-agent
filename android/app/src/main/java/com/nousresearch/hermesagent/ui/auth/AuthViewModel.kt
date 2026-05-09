@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import com.nousresearch.hermesagent.auth.AuthRuntimeApplier
 import com.nousresearch.hermesagent.auth.Corr3xtAuthClient
 import com.nousresearch.hermesagent.data.AppSettings
@@ -17,10 +18,13 @@ import com.nousresearch.hermesagent.data.PendingAuthRequest
 import com.nousresearch.hermesagent.ui.i18n.AppLanguage
 import com.nousresearch.hermesagent.ui.i18n.HermesStrings
 import com.nousresearch.hermesagent.ui.i18n.hermesStringsFor
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 data class AuthOptionUiState(
@@ -32,6 +36,7 @@ data class AuthOptionUiState(
     val signedIn: Boolean = false,
     val status: String = "Not signed in",
     val accountHint: String = "",
+    val supportsApiKeySetup: Boolean = false,
 )
 
 data class AuthUiState(
@@ -125,27 +130,75 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
-        authSessionStore.savePendingRequest(pendingRequest)
-        try {
-            getApplication<Application>().startActivity(browserIntent)
-            _uiState.update { current ->
-                current.copy(
-                    corr3xtBaseUrl = normalizedBaseUrl,
-                    globalStatus = currentStrings().authOpenedCorr3xt(option.label),
-                    pendingMethodLabel = option.label,
-                    hasPendingRequest = true,
-                )
+        viewModelScope.launch {
+            _uiState.update { it.copy(globalStatus = currentStrings().authCheckingCorr3xt(option.label)) }
+            val probe = withContext(Dispatchers.IO) {
+                Corr3xtAuthClient.probeStartUri(android.net.Uri.parse(pendingRequest.startUrl))
             }
-        } catch (_: ActivityNotFoundException) {
-            authSessionStore.clearPendingRequest()
-            _uiState.update {
-                it.copy(globalStatus = currentStrings().authNoBrowser())
+            if (!probe.reachable) {
+                authSessionStore.clearPendingRequest()
+                val failureStatus = when (probe.status) {
+                    "unknown_host" -> currentStrings().authHostCouldNotBeResolved(probe.host)
+                    "network_error" -> currentStrings().authPageCouldNotBeReached(probe.errorName)
+                    else -> probe.status.ifBlank { currentStrings().authTryAgain() }
+                }
+                _uiState.update {
+                    it.copy(
+                        corr3xtBaseUrl = normalizedBaseUrl,
+                        globalStatus = failureStatus,
+                        pendingMethodLabel = "",
+                        hasPendingRequest = false,
+                    )
+                }
+                return@launch
             }
-        } catch (_: RuntimeException) {
-            authSessionStore.clearPendingRequest()
-            _uiState.update {
-                it.copy(globalStatus = currentStrings().authTryAgain())
+
+            authSessionStore.savePendingRequest(pendingRequest)
+            try {
+                getApplication<Application>().startActivity(browserIntent)
+                _uiState.update { current ->
+                    current.copy(
+                        corr3xtBaseUrl = normalizedBaseUrl,
+                        globalStatus = currentStrings().authOpenedCorr3xt(option.label),
+                        pendingMethodLabel = option.label,
+                        hasPendingRequest = true,
+                    )
+                }
+            } catch (_: ActivityNotFoundException) {
+                authSessionStore.clearPendingRequest()
+                _uiState.update {
+                    it.copy(globalStatus = currentStrings().authNoBrowser())
+                }
+            } catch (_: RuntimeException) {
+                authSessionStore.clearPendingRequest()
+                _uiState.update {
+                    it.copy(globalStatus = currentStrings().authTryAgain())
+                }
             }
+        }
+    }
+
+    fun prepareApiKeySetup(methodId: String) {
+        val option = AuthCatalog.find(methodId) ?: return
+        if (option.runtimeProvider.isBlank()) {
+            return
+        }
+        val existing = appSettingsStore.load()
+        appSettingsStore.save(
+            AppSettings(
+                provider = option.runtimeProvider,
+                baseUrl = option.defaultBaseUrl,
+                model = option.defaultModel,
+                corr3xtBaseUrl = existing.corr3xtBaseUrl,
+                dataSaverMode = existing.dataSaverMode,
+                onDeviceBackend = existing.onDeviceBackend,
+                languageTag = existing.languageTag,
+            )
+        )
+        _uiState.update {
+            it.copy(
+                globalStatus = currentStrings().authApiKeySetupReady(option.label),
+            )
         }
     }
 
@@ -200,6 +253,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 runtimeProvider = session.runtimeProvider,
                 signedIn = session.signedIn,
                 status = localizedStatus,
+                supportsApiKeySetup = option.scope == AuthScope.RuntimeProvider && option.runtimeProvider.isNotBlank(),
                 accountHint = listOf(session.displayName, session.email, session.phone)
                     .firstOrNull { it.isNotBlank() }
                     .orEmpty(),

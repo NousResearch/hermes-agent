@@ -52,6 +52,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         )
     }
 
+    fun reload() {
+        _uiState.value = loadInitialState()
+    }
+
     fun updateProvider(provider: String) {
         val preset = ProviderPresets.find(provider)
         _uiState.update {

@@ -477,6 +477,51 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Unable to open Corr3xt. Check the auth URL and try again."
     }
 
+    fun authCheckingCorr3xt(label: String): String = when (language) {
+        AppLanguage.CHINESE -> "正在检查 $label 的 Corr3xt 登录页面…"
+        AppLanguage.SPANISH -> "Comprobando la página de inicio Corr3xt para $label…"
+        AppLanguage.GERMAN -> "Corr3xt-Anmeldeseite für $label wird geprüft…"
+        AppLanguage.PORTUGUESE -> "Verificando a página de login Corr3xt para $label…"
+        AppLanguage.FRENCH -> "Vérification de la page de connexion Corr3xt pour $label…"
+        AppLanguage.ENGLISH -> "Checking Corr3xt sign-in page for $label…"
+    }
+
+    fun authHostCouldNotBeResolved(host: String): String = when (language) {
+        AppLanguage.CHINESE -> "无法解析 Corr3xt 登录主机 $host。请使用可访问的登录 URL，或在设置中用 API 密钥配置此提供商。"
+        AppLanguage.SPANISH -> "No se pudo resolver el host de inicio Corr3xt $host. Usa una URL de autenticación accesible o configura este proveedor con una clave API en Ajustes."
+        AppLanguage.GERMAN -> "Der Corr3xt-Anmeldehost $host konnte nicht aufgelöst werden. Verwende eine erreichbare Auth-URL oder konfiguriere diesen Anbieter in den Einstellungen mit einem API-Schlüssel."
+        AppLanguage.PORTUGUESE -> "Não foi possível resolver o host de login Corr3xt $host. Use uma URL de autenticação acessível ou configure este provedor com uma chave API nas Configurações."
+        AppLanguage.FRENCH -> "Impossible de résoudre l’hôte de connexion Corr3xt $host. Utilisez une URL d’authentification accessible ou configurez ce fournisseur avec une clé API dans Paramètres."
+        AppLanguage.ENGLISH -> "Corr3xt auth host $host could not be resolved. Use a reachable auth URL or configure this provider with an API key in Settings."
+    }
+
+    fun authPageCouldNotBeReached(errorName: String): String = when (language) {
+        AppLanguage.CHINESE -> "无法访问 Corr3xt 登录页面：$errorName。请使用可访问的登录 URL，或在设置中用 API 密钥配置此提供商。"
+        AppLanguage.SPANISH -> "No se pudo abrir la página de inicio Corr3xt: $errorName. Usa una URL de autenticación accesible o configura este proveedor con una clave API en Ajustes."
+        AppLanguage.GERMAN -> "Die Corr3xt-Anmeldeseite konnte nicht erreicht werden: $errorName. Verwende eine erreichbare Auth-URL oder konfiguriere diesen Anbieter in den Einstellungen mit einem API-Schlüssel."
+        AppLanguage.PORTUGUESE -> "Não foi possível acessar a página de login Corr3xt: $errorName. Use uma URL de autenticação acessível ou configure este provedor com uma chave API nas Configurações."
+        AppLanguage.FRENCH -> "Impossible d’atteindre la page de connexion Corr3xt : $errorName. Utilisez une URL d’authentification accessible ou configurez ce fournisseur avec une clé API dans Paramètres."
+        AppLanguage.ENGLISH -> "Corr3xt auth page could not be reached: $errorName. Use a reachable auth URL or configure this provider with an API key in Settings."
+    }
+
+    fun useApiKeyInSettings(): String = when (language) {
+        AppLanguage.CHINESE -> "在设置中使用 API 密钥"
+        AppLanguage.SPANISH -> "Usar clave API en Ajustes"
+        AppLanguage.GERMAN -> "API-Schlüssel in Einstellungen nutzen"
+        AppLanguage.PORTUGUESE -> "Usar chave API nas Configurações"
+        AppLanguage.FRENCH -> "Utiliser une clé API dans Paramètres"
+        AppLanguage.ENGLISH -> "Use API key in Settings"
+    }
+
+    fun authApiKeySetupReady(label: String): String = when (language) {
+        AppLanguage.CHINESE -> "$label 已准备好使用安全 API 密钥设置。请在设置中粘贴密钥并保存。"
+        AppLanguage.SPANISH -> "$label está listo para configuración segura con clave API. Pega la clave en Ajustes y guarda."
+        AppLanguage.GERMAN -> "$label ist für die sichere API-Schlüssel-Einrichtung bereit. Füge den Schlüssel in den Einstellungen ein und speichere."
+        AppLanguage.PORTUGUESE -> "$label está pronto para configuração segura por chave API. Cole a chave nas Configurações e salve."
+        AppLanguage.FRENCH -> "$label est prêt pour une configuration sécurisée par clé API. Collez la clé dans Paramètres puis enregistrez."
+        AppLanguage.ENGLISH -> "$label is ready for secure API-key setup. Paste the key in Settings and save."
+    }
+
     fun authCanceled(): String = when (language) {
         AppLanguage.CHINESE -> "已取消等待中的 Corr3xt 登录"
         AppLanguage.SPANISH -> "Inicio de sesión Corr3xt pendiente cancelado"

@@ -9,6 +9,8 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.ai.edge.litertlm.SamplerConfig
@@ -168,6 +170,7 @@ object LiteRtLmOpenAiProxy {
             val backend: String,
             val visionBackend: String,
             val audioBackend: String,
+            val speculativeDecoding: Boolean,
         )
 
         private val engineInitResult = initializeEngine(
@@ -199,6 +202,7 @@ object LiteRtLmOpenAiProxy {
                             put("accelerator", runtimeBackendLabel)
                             put("vision_accelerator", visionBackendLabel)
                             put("audio_accelerator", audioBackendLabel)
+                            put("speculative_decoding", engineInitResult.speculativeDecoding)
                             put("model", modelName)
                         }
                     )
@@ -229,6 +233,7 @@ object LiteRtLmOpenAiProxy {
          * Follows Edge Gallery pattern: GPU primary, CPU fallback.
          * For multimodal models: vision uses GPU, audio uses CPU.
          */
+        @OptIn(ExperimentalApi::class)
         private fun initializeEngine(
             context: Context,
             modelPath: String,
@@ -236,6 +241,8 @@ object LiteRtLmOpenAiProxy {
             supportAudio: Boolean,
         ): EngineInitResult {
             var lastError: Throwable? = null
+            val enableSpeculativeDecoding = shouldEnableSpeculativeDecoding(modelPath)
+            ExperimentalFlags.enableSpeculativeDecoding = enableSpeculativeDecoding
             val openClAvailable = hasLoadableOpenClLibrary()
             val backends = if (isTranslatedArm64OnX86(context) || !openClAvailable) {
                 listOf(Backend.CPU() to "cpu")
@@ -274,6 +281,7 @@ object LiteRtLmOpenAiProxy {
                         backend = label,
                         visionBackend = visionBackendLabel,
                         audioBackend = if (supportAudio) "cpu" else "none",
+                        speculativeDecoding = enableSpeculativeDecoding,
                     )
                 } catch (error: Throwable) {
                     lastError = error
@@ -281,6 +289,10 @@ object LiteRtLmOpenAiProxy {
                 }
             }
             throw lastError ?: IllegalStateException("LiteRT-LM engine initialization failed")
+        }
+
+        private fun shouldEnableSpeculativeDecoding(modelPath: String): Boolean {
+            return File(modelPath).name.lowercase(Locale.US).contains("gemma-4")
         }
 
         private fun isTranslatedArm64OnX86(context: Context): Boolean {

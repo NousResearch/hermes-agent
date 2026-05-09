@@ -1,9 +1,11 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.nousresearch.hermesagent.ui.auth
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -34,6 +36,7 @@ fun AuthScreen(
     modifier: Modifier = Modifier,
     viewModel: AuthViewModel = viewModel(),
     extraBottomSpacing: Dp = 0.dp,
+    onOpenSettings: () -> Unit = {},
     onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -93,7 +96,11 @@ fun AuthScreen(
                     label = { Text(strings.corr3xtAuthBaseUrl.ifBlank { "Corr3xt auth base URL" }) },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     Button(onClick = viewModel::saveCorr3xtBaseUrl) {
                         Text(strings.saveAuthUrl.ifBlank { "Save auth URL" })
                     }
@@ -152,12 +159,23 @@ fun AuthScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
-                            Row(
+                            FlowRow(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 Button(onClick = { viewModel.startAuth(option.id) }) {
                                     Text(if (option.signedIn) strings.reconnect.ifBlank { "Reconnect" } else strings.signIn.ifBlank { "Sign in" })
+                                }
+                                if (option.supportsApiKeySetup) {
+                                    Button(
+                                        onClick = {
+                                            viewModel.prepareApiKeySetup(option.id)
+                                            onOpenSettings()
+                                        },
+                                    ) {
+                                        Text(strings.useApiKeyInSettings())
+                                    }
                                 }
                                 if (option.signedIn) {
                                     Button(onClick = { viewModel.signOut(option.id) }) {
@@ -173,4 +191,3 @@ fun AuthScreen(
     }
 }
 }
-

@@ -130,6 +130,77 @@ UPDATE_AVAILABLE_NO_COUNT = -1
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 
 
+def _resolve_git_dir(repo_dir: Path) -> Optional[Path]:
+    """Resolve ``repo_dir/.git`` to the actual git directory.
+
+    Supports both normal checkouts (``.git`` directory) and worktrees where
+    ``.git`` is a file containing ``gitdir: ...``.
+    """
+    git_entry = repo_dir / ".git"
+    if git_entry.is_dir():
+        return git_entry
+    if not git_entry.is_file():
+        return None
+    try:
+        text = git_entry.read_text().strip()
+    except Exception:
+        return None
+    prefix = "gitdir:"
+    if not text.lower().startswith(prefix):
+        return None
+    raw_path = text[len(prefix):].strip()
+    if not raw_path:
+        return None
+    git_dir = Path(raw_path)
+    if not git_dir.is_absolute():
+        git_dir = (repo_dir / git_dir).resolve()
+    return git_dir if git_dir.exists() else None
+
+
+def _read_git_head(repo_dir: Path) -> Optional[str]:
+    """Return the current local HEAD commit hash without invoking git."""
+    git_dir = _resolve_git_dir(repo_dir)
+    if git_dir is None:
+        return None
+
+    try:
+        head_text = (git_dir / "HEAD").read_text().strip()
+    except Exception:
+        return None
+
+    if not head_text:
+        return None
+    if not head_text.startswith("ref:"):
+        return head_text
+
+    ref_name = head_text[4:].strip()
+    if not ref_name:
+        return None
+
+    ref_path = git_dir / ref_name
+    try:
+        if ref_path.exists():
+            ref_value = ref_path.read_text().strip()
+            return ref_value or None
+    except Exception:
+        return None
+
+    packed_refs = git_dir / "packed-refs"
+    try:
+        if packed_refs.exists():
+            for line in packed_refs.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line.startswith("^"):
+                    continue
+                parts = line.split(" ", 1)
+                if len(parts) == 2 and parts[1].strip() == ref_name:
+                    value = parts[0].strip()
+                    return value or None
+    except Exception:
+        return None
+    return None
+
+
 def _check_via_rev(local_rev: str) -> Optional[int]:
     """Compare an embedded git revision to upstream main via ls-remote.
 
@@ -189,16 +260,26 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_dir = None
+    local_head = None
 
-    # Read cache — invalidate if the embedded rev has changed since last check
+    if not embedded_rev:
+        repo_dir = hermes_home / "hermes-agent"
+        if not (repo_dir / ".git").exists():
+            repo_dir = Path(__file__).parent.parent.resolve()
+        if not (repo_dir / ".git").exists():
+            return None
+        local_head = _read_git_head(repo_dir)
+
+    # Read cache — invalidate if the embedded rev or local HEAD changed since last check
     now = time.time()
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
-            if (
-                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
-            ):
+            cache_is_fresh = now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+            cache_matches_rev = cached.get("rev") == embedded_rev
+            cache_matches_head = bool(embedded_rev) or cached.get("local_head") == local_head
+            if cache_is_fresh and cache_matches_rev and cache_matches_head:
                 return cached.get("behind")
     except Exception:
         pass
@@ -206,15 +287,14 @@ def check_for_updates() -> Optional[int]:
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
-            repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            return None
         behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        cache_file.write_text(
+            json.dumps(
+                {"ts": now, "behind": behind, "rev": embedded_rev, "local_head": local_head}
+            )
+        )
     except Exception:
         pass
 

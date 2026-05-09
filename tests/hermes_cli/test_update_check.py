@@ -17,16 +17,20 @@ def test_version_string_no_v_prefix():
 
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
-    """When cache is fresh, check_for_updates should return cached value without calling git."""
+    """When cache is fresh and HEAD matches, check_for_updates should return cached value without calling git."""
     from hermes_cli.banner import check_for_updates
 
     # Create a fake git repo and fresh cache
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
-    (repo_dir / ".git").mkdir()
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir()
+    (git_dir / "refs" / "heads").mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    (git_dir / "refs" / "heads" / "main").write_text("abc123\n")
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "local_head": "abc123", "rev": None}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
@@ -42,11 +46,15 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
 
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
-    (repo_dir / ".git").mkdir()
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir()
+    (git_dir / "refs" / "heads").mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    (git_dir / "refs" / "heads" / "main").write_text("abc123\n")
 
     # Write an expired cache (timestamp far in the past)
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": 0, "behind": 1}))
+    cache_file.write_text(json.dumps({"ts": 0, "behind": 1, "local_head": "abc123", "rev": None}))
 
     mock_result = MagicMock(returncode=0, stdout="5\n")
 
@@ -56,6 +64,34 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
 
     assert result == 5
     assert mock_run.call_count == 2  # git fetch + git rev-list
+
+
+def test_check_for_updates_ignores_fresh_cache_when_local_head_changed(tmp_path, monkeypatch):
+    """Fresh cache should be invalidated when the local checkout moved to a new HEAD."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir()
+    (git_dir / "refs" / "heads").mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    (git_dir / "refs" / "heads" / "main").write_text("newhead\n")
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 1, "local_head": "oldhead", "rev": None}))
+
+    mock_result = MagicMock(returncode=0, stdout="0\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+        result = check_for_updates()
+
+    assert result == 0
+    assert mock_run.call_count == 2  # stale cache forces git fetch + rev-list
+    cached = json.loads(cache_file.read_text())
+    assert cached["behind"] == 0
+    assert cached["local_head"] == "newhead"
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):

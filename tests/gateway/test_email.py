@@ -871,6 +871,42 @@ class TestFetchNewMessages(unittest.TestCase):
 
         self.assertEqual(results, [])
 
+    def test_fetch_skips_expunged_during_fetch(self):
+        """If a UID is expunged between SEARCH and FETCH, the IMAP server
+        returns ('OK', [None]) (or an empty list). The adapter must skip that
+        UID and keep processing instead of crashing on msg_data[0][1].
+        """
+        adapter = self._make_adapter()
+
+        good_email = MIMEText("Hello from 2", "plain", "utf-8")
+        good_email["From"] = "user@test.com"
+        good_email["Subject"] = "Survivor"
+        good_email["Message-ID"] = "<surv@test.com>"
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1 2 3"])
+            if command == "fetch":
+                fetched_uid = args[0]
+                if fetched_uid == b"1":
+                    return ("OK", [None])
+                if fetched_uid == b"2":
+                    return ("OK", [(b"2", good_email.as_bytes())])
+                if fetched_uid == b"3":
+                    return ("OK", [])
+                return ("NO", [])
+            return ("OK", [b""])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["subject"], "Survivor")
+
     def test_fetch_extracts_sender_name(self):
         """Sender name should be extracted from 'Name <addr>' format."""
         adapter = self._make_adapter()

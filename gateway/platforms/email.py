@@ -362,6 +362,20 @@ class EmailAdapter(BasePlatformAdapter):
                     if status != "OK":
                         continue
 
+                    # Guard against expunged-during-fetch races: IMAP servers
+                    # may return [None] or [] when a UID was deleted between
+                    # SEARCH and FETCH, even with status == "OK".
+                    if (
+                        not msg_data
+                        or not msg_data[0]
+                        or not isinstance(msg_data[0], tuple)
+                        or len(msg_data[0]) < 2
+                    ):
+                        logger.debug(
+                            "[Email] Skipping UID %s: empty/expunged FETCH payload", uid
+                        )
+                        continue
+
                     raw_email = msg_data[0][1]
                     msg = email_lib.message_from_bytes(raw_email)
 

@@ -691,9 +691,18 @@ DEFAULT_CONFIG = {
     #   See: https://openrouter.ai/docs/guides/features/response-caching
     # response_cache_ttl: how long cached responses remain valid, in seconds (1-86400).
     #   Default 300 (5 minutes). Only used when response_cache is enabled.
+    # min_coding_score: knob for the openrouter/pareto-code router (0.0-1.0).
+    #   Only applied when model.model is "openrouter/pareto-code". Higher
+    #   values route to stronger (more expensive) coders; lower values open
+    #   up cheaper, faster options. Default 0.65 lands on the mid-tier
+    #   coder on the current Pareto frontier. Empty string = let OpenRouter
+    #   pick the strongest available coder (router's documented default
+    #   when the plugins block is omitted).
+    #   See: https://openrouter.ai/docs/guides/routing/routers/pareto-router
     "openrouter": {
         "response_cache": True,
         "response_cache_ttl": 300,
+        "min_coding_score": 0.65,
     },
 
     # AWS Bedrock provider configuration.

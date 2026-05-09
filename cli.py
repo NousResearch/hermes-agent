@@ -5463,7 +5463,8 @@ class HermesCLI:
             return
 
         if not self._session_db:
-            _cprint("  Session database not available.")
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
             return
 
         # Resolve title or ID
@@ -5574,7 +5575,8 @@ class HermesCLI:
             return
 
         if not self._session_db:
-            _cprint("  Session database not available.")
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
             return
 
         parts = cmd_original.split(None, 1)
@@ -6850,7 +6852,8 @@ class HermesCLI:
                                 self._pending_title = new_title
                                 _cprint(f"  Session title queued: {new_title} (will be saved on first message)")
                     else:
-                        _cprint("  Session database not available.")
+                        from hermes_state import format_session_db_unavailable
+                        _cprint(f"  {format_session_db_unavailable()}")
                 else:
                     _cprint("  Usage: /title <your session title>")
             else:
@@ -6865,7 +6868,8 @@ class HermesCLI:
                     else:
                         _cprint("  No title set. Usage: /title <your session title>")
                 else:
-                    _cprint("  Session database not available.")
+                    from hermes_state import format_session_db_unavailable
+                    _cprint(f"  {format_session_db_unavailable()}")
         elif canonical == "new":
             parts = cmd_original.split(maxsplit=1)
             title = parts[1].strip() if len(parts) > 1 else None

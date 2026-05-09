@@ -65,6 +65,7 @@ AUTHOR_MAP = {
     "am@studio1.tailb672fe.ts.net": "subtract0",
     "axmaiqiu@gmail.com": "qWaitCrypto",
     "44045911+kidonng@users.noreply.github.com": "kidonng",
+    "daniellsmarta@gmail.com": "DanielLSM",
     "maksesipov@gmail.com": "Qwinty",
     "denisamania@gmail.com": "CalmProton",
     "308068+mbac@users.noreply.github.com": "mbac",

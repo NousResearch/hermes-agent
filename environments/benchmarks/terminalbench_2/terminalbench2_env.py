@@ -575,7 +575,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 # other tasks, tqdm updates, and timeout timers).
                 ctx = ToolContext(task_id)
                 try:
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     reward = await loop.run_in_executor(
                         None,  # default thread pool
                         self._run_tests, eval_item, ctx, task_name,

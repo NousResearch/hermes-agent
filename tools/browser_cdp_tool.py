@@ -132,9 +132,9 @@ async def _cdp_call(
                     }
                 )
             )
-            deadline = asyncio.get_event_loop().time() + timeout
+            deadline = asyncio.get_running_loop().time() + timeout
             while True:
-                remaining = deadline - asyncio.get_event_loop().time()
+                remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     raise TimeoutError(
                         f"Timed out attaching to target {target_id}"
@@ -166,9 +166,9 @@ async def _cdp_call(
             req["sessionId"] = session_id
         await ws.send(json.dumps(req))
 
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 raise TimeoutError(
                     f"Timed out waiting for response to {method}"

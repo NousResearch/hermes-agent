@@ -53,6 +53,7 @@ AUTHOR_MAP = {
     "harish.kukreja@gmail.com": "counterposition",
     "cleo@edaphic.xyz": "curiouscleo",
     "hirokazu.ogawa@kwansei.ac.jp": "hrkzogw",
+    "datapod.k@gmail.com": "dandacompany",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
     "128259593+Gutslabs@users.noreply.github.com": "Gutslabs",
     "50326054+nocturnum91@users.noreply.github.com": "nocturnum91",

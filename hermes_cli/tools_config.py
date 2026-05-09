@@ -972,6 +972,43 @@ def _get_platform_tools(
             ts for ts in toolset_names
             if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
         }
+        # Explicit configurable keys sit alongside a composite (e.g. ``hermes-cli``
+        # + ``spotify``).  The direct-membership branch alone drops the composite:
+        # native toolsets never get subset-inferred (#22601).  Merge inferred
+        # configurable keys from any *non-configurable* listed toolsets that
+        # resolve to concrete tools (composite bundles, platform defaults).  Do
+        # not apply ``_DEFAULT_OFF_TOOLSETS`` to explicitly listed keys — only to
+        # inferred ones, matching the non-explicit branch semantics.
+        extras_universe: Set[str] = set()
+        for ts_name in toolset_names:
+            if ts_name in configurable_keys:
+                continue
+            if ts_name == "no_mcp":
+                continue
+            if ts_name in plugin_ts_keys:
+                continue
+            resolved = resolve_toolset(ts_name)
+            if not resolved:
+                continue
+            extras_universe.update(resolved)
+
+        if extras_universe:
+            inferred_from_composite = set()
+            for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
+                if not _toolset_allowed_for_platform(ts_key, platform):
+                    continue
+                ts_tools = set(resolve_toolset(ts_key))
+                if ts_tools and ts_tools.issubset(extras_universe):
+                    inferred_from_composite.add(ts_key)
+
+            default_off = set(_DEFAULT_OFF_TOOLSETS)
+            if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
+                default_off.remove(platform)
+            if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
+                default_off.remove("homeassistant")
+
+            inferred_from_composite -= default_off
+            enabled_toolsets |= inferred_from_composite
     else:
         # No explicit config — fall back to resolving composite toolset names
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.

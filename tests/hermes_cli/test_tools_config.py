@@ -771,6 +771,19 @@ def test_save_platform_tools_preserves_mcp_server_names():
     assert "another-mcp" in saved
 
 
+def test_get_platform_tools_composite_alongside_configurable_restores_core():
+    """Regression #22601: composite + explicit configurable must not drop native toolsets.
+
+    Saving e.g. ``hermes-cli`` next to ``spotify`` after toggling an opt-in must
+    still subset-resolve the CLI bundle — not leave only the explicit keys.
+    """
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "spotify"]}}
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    assert "spotify" in enabled
+    assert "terminal" in enabled
+    assert "web" in enabled
+
+
 def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
     """Non-configurable toolsets whose tools are in the composite but not in
     CONFIGURABLE_TOOLSETS should still appear in the result.

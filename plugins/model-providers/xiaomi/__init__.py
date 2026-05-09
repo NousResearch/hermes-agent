@@ -6,7 +6,7 @@ from providers.base import ProviderProfile
 xiaomi = ProviderProfile(
     name="xiaomi",
     aliases=("mimo", "xiaomi-mimo"),
-    env_vars=("XIAOMI_API_KEY",),
+    env_vars=("XIAOMI_API_KEY", "XIAOMI_BASE_URL"),
     base_url="https://api.xiaomimimo.com/v1",
 )
 

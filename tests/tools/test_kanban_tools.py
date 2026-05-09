@@ -296,19 +296,38 @@ def test_comment_rejects_empty_body(worker_env):
     assert json.loads(out).get("error")
 
 
-def test_comment_custom_author(worker_env):
+def test_comment_ignores_caller_supplied_author(worker_env):
+    """``args["author"]`` is no longer honored — the author is always
+    derived from ``HERMES_PROFILE`` so a worker can't forge a comment
+    under an authoritative-looking name like ``hermes-system`` and
+    poison the next worker's prompt context. Cross-task commenting
+    itself remains unrestricted (see #19713); only the author override
+    is removed.
+    """
     from tools import kanban_tools as kt
     out = kt._handle_comment({
-        "task_id": worker_env, "body": "hi", "author": "custom-bot",
+        "task_id": worker_env, "body": "hi", "author": "hermes-system",
     })
     assert json.loads(out)["ok"]
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
         comments = kb.list_comments(conn, worker_env)
-        assert comments[0].author == "custom-bot"
+        # Author comes from HERMES_PROFILE in the fixture, not the
+        # caller-supplied "hermes-system" override.
+        assert comments[0].author == "test-worker"
     finally:
         conn.close()
+
+
+def test_comment_schema_omits_author_override():
+    """The ``author`` property must not appear on KANBAN_COMMENT_SCHEMA;
+    exposing it to the LLM would re-introduce the forgery surface this
+    handler is hardened against.
+    """
+    from tools.kanban_tools import KANBAN_COMMENT_SCHEMA
+    props = KANBAN_COMMENT_SCHEMA["parameters"]["properties"]
+    assert "author" not in props
 
 
 def test_create_happy_path(worker_env):
@@ -655,6 +674,42 @@ def test_worker_heartbeat_rejects_foreign_task_id(worker_env):
     out = kt._handle_heartbeat({"task_id": other})
     d = json.loads(out)
     assert "refusing to mutate" in d.get("error", "")
+
+
+def test_worker_can_comment_on_foreign_task(worker_env):
+    """Cross-task commenting must remain unrestricted (#19713 policy).
+
+    The author-forgery hardening removed args['author'] but deliberately
+    did NOT add an ownership gate to kanban_comment — comments are the
+    documented handoff channel between tasks. This test pins that policy
+    so a future change accidentally adding ``_enforce_worker_task_ownership``
+    to ``_handle_comment`` would fail CI immediately.
+    """
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="sibling")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_comment({
+        "task_id": other,
+        "body": "handoff: see prior findings before starting",
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True, f"cross-task comment must succeed: {d}"
+
+    # The comment lands on the foreign task, attributed to the worker's
+    # HERMES_PROFILE — never to a caller-controlled string.
+    conn = kb.connect()
+    try:
+        comments = kb.list_comments(conn, other)
+        assert len(comments) == 1
+        assert comments[0].author == "test-worker"
+        assert comments[0].body.startswith("handoff:")
+    finally:
+        conn.close()
 
 
 def test_worker_complete_own_task_still_works(worker_env):

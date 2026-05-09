@@ -633,9 +633,32 @@ class HermesACPAgent(acp.Agent):
 
     @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
-        """Resolve ``provider:model`` input into the provider and normalized model id."""
+        """Resolve ``provider:model`` input into the provider and normalized model id.
+
+        Handles custom/user-defined providers from config.yaml ``providers:``
+        that are not in the hardcoded ``_KNOWN_PROVIDER_NAMES`` list.
+        """
         target_provider = current_provider
         new_model = raw_model.strip()
+
+        # If raw_model contains a colon, check whether the left part is a
+        # custom provider defined in config.yaml's ``providers:`` section.
+        # This catches names like ``manbu``, ``manbu2``, ``azure-cn`` etc.
+        # that parse_model_input() would miss because they aren't in the
+        # hardcoded _KNOWN_PROVIDER_NAMES.
+        colon = new_model.find(":")
+        if colon > 0:
+            provider_part = new_model[:colon].strip().lower()
+            model_part = new_model[colon + 1:].strip()
+            if provider_part and model_part:
+                try:
+                    from hermes_cli.config import load_config
+                    cfg = load_config()
+                    custom_providers = cfg.get("providers", {})
+                    if isinstance(custom_providers, dict) and provider_part in custom_providers:
+                        return (provider_part, model_part)
+                except Exception:
+                    pass
 
         try:
             from hermes_cli.models import detect_provider_for_model, parse_model_input

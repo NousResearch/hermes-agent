@@ -55,6 +55,7 @@ AUTHOR_MAP = {
     "hirokazu.ogawa@kwansei.ac.jp": "hrkzogw",
     "datapod.k@gmail.com": "dandacompany",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
+    "quarker1337@users.noreply.github.com": "quarker1337",
     "128259593+Gutslabs@users.noreply.github.com": "Gutslabs",
     "50326054+nocturnum91@users.noreply.github.com": "nocturnum91",
     "223003280+Abd0r@users.noreply.github.com": "Abd0r",

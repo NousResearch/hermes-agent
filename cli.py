@@ -9142,9 +9142,41 @@ class HermesCLI:
         except Exception:
             pass  # Non-fatal — fail-open at scan time if unavailable
         
+        # --- Ctrl+Enter / c-j platform detection ---
+        # On WSL, SSH, and Windows Terminal, Ctrl+Enter arrives as c-j (LF)
+        # and should insert a newline. On pure POSIX (local terminal), c-j is
+        # the literal Enter key for thin PTYs and must submit.
+        def _is_wsl() -> bool:
+            """Detect WSL by checking /proc/version for 'microsoft'."""
+            if sys.platform == 'win32':
+                return False
+            try:
+                with open('/proc/version', 'r') as f:
+                    return 'microsoft' in f.read().lower()
+            except (OSError, IOError):
+                return False
+
+        def _preserve_ctrl_enter_newline() -> bool:
+            """Return True if c-j should insert a newline (not submit).
+
+            True on: native Windows, WSL, SSH sessions, Windows Terminal.
+            False on: pure POSIX local terminals (thin PTYs use c-j as Enter).
+            """
+            if sys.platform == 'win32':
+                return True
+            if _is_wsl():
+                return True
+            if os.getenv('SSH_CONNECTION') or os.getenv('SSH_CLIENT') or os.getenv('SSH_TTY'):
+                return True
+            if os.getenv('WT_SESSION'):
+                return True
+            return False
+
+        _ctrl_enter_newline = _preserve_ctrl_enter_newline()
+
         # Key bindings for the input area
         kb = KeyBindings()
-        
+
         @kb.add('enter')
         def handle_enter(event):
             """Handle Enter key - submit input.
@@ -9272,8 +9304,22 @@ class HermesCLI:
 
         @kb.add('c-j')
         def handle_ctrl_enter(event):
-            """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
-            event.current_buffer.insert_text('\n')
+            """Ctrl+Enter (c-j) behavior depends on platform.
+
+            WSL/SSH/Windows Terminal: insert a newline (Ctrl+Enter multiline).
+            Pure POSIX local: submit (thin PTYs send LF for Enter key).
+            """
+            if _ctrl_enter_newline:
+                event.current_buffer.insert_text('\n')
+            else:
+                # Thin PTY fallback: c-j is the Enter key — submit.
+                handle_enter(event)
+
+        # Enhanced terminal protocol: CSI-u and modifyOtherKeys sequences
+        # for Ctrl+Enter (sent by Kitty, iTerm2, WezTerm, xterm).
+        if _ctrl_enter_newline:
+            from hermes_cli.pt_input_extras import install_ctrl_enter_alias
+            install_ctrl_enter_alias(kb)
 
         @kb.add(
             'c-g',

@@ -119,15 +119,14 @@ export HERMES_TUI_THEME=light
 
 ## Busy indicator styles
 
-The status-bar FaceTicker is pluggable — the default rotates Hermes' kawaii face palette every 2.5 seconds during agent work. Pick a different style (or `none` for a minimal dot) via config:
+The status-bar FaceTicker is pluggable — the default rotates Hermes' kawaii face palette every 2.5 seconds during agent work. Pick a different style via config or `/indicator <style>`:
 
 ```yaml
 display:
-  busy_indicator:
-    style: kawaii     # kawaii | minimal | dots | wings | none
+  tui_status_indicator: kaomoji   # kaomoji | emoji | ascii | unicode
 ```
 
-Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.
+`kaomoji`, `emoji`, and `ascii` show rotating verb text; `unicode` stays minimal and hides the verbs. When the active skin defines a non-empty `spinner.thinking_verbs` list, the TUI uses it and pads against that active list so the rest of the status bar doesn't jitter on rotation.
 
 ## Auto-resume
 

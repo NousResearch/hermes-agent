@@ -4,7 +4,8 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { VERBS } from '../content/verbs.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -157,6 +158,29 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: undefined, type: 'review.summary' } as any)
 
     expect(ctx.system.sys).not.toHaveBeenCalled()
+  })
+
+  it('applies skin.changed spinner thinking verbs to the status ticker', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { spinner: { thinking_verbs: ['forging', 'plotting impact'] } },
+      type: 'skin.changed'
+    } as any)
+
+    expect(getUiState().tickerVerbs).toEqual(['forging', 'plotting impact'])
+  })
+
+  it('falls back to default status ticker verbs for empty skin.changed verb lists', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchUiState({ tickerVerbs: ['customizing'] })
+
+    onEvent({ payload: { spinner: { thinking_verbs: [] } }, type: 'skin.changed' } as any)
+
+    expect(getUiState().tickerVerbs).toEqual(VERBS)
   })
 
   it('clears the visible todo list when the todo tool returns an empty list', () => {

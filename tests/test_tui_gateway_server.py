@@ -59,6 +59,28 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_resolve_skin_includes_spinner_thinking_verbs(monkeypatch):
+    from hermes_cli.skin_engine import set_active_skin
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"display": {"skin": "ares"}},
+    )
+
+    try:
+        payload = server.resolve_skin()
+    finally:
+        set_active_skin("default")
+
+    verbs = payload["spinner"]["thinking_verbs"]
+
+    assert payload["name"] == "ares"
+    assert isinstance(verbs, list)
+    assert verbs
+    assert all(isinstance(verb, str) and verb for verb in verbs)
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 

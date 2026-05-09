@@ -13,6 +13,7 @@ import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
+import { DEFAULT_VERB_PAD_LEN, getVerbPadLen, padVerb } from '../lib/tickerVerbs.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
@@ -22,8 +23,8 @@ const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+export const VERB_PAD_LEN = DEFAULT_VERB_PAD_LEN
+export { getVerbPadLen, padVerb }
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -79,8 +80,9 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
   const ui = useStore($uiState)
   const style = ui.indicatorStyle
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * Math.max(1, ui.tickerVerbs.length)))
   const [now, setNow] = useState(() => Date.now())
+  const activeVerbs = ui.tickerVerbs.length ? ui.tickerVerbs : VERBS
 
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
@@ -106,8 +108,9 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
   }, [intervalMs, showVerb])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const verbPadLen = useMemo(() => getVerbPadLen(activeVerbs), [activeVerbs])
+  const verb = activeVerbs[verbTick % activeVerbs.length] ?? ''
+  const verbSegment = showVerb ? ` ${padVerb(verb, verbPadLen)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra

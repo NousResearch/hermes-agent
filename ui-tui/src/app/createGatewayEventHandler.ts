@@ -12,6 +12,7 @@ import type {
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
+import { normalizeTickerVerbs } from '../lib/tickerVerbs.js'
 import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress } from '../types.js'
 
@@ -34,7 +35,8 @@ const applySkin = (s: GatewaySkin) =>
       s.banner_hero ?? '',
       s.tool_prefix ?? '',
       s.help_header ?? ''
-    )
+    ),
+    tickerVerbs: normalizeTickerVerbs(s.spinner?.thinking_verbs)
   })
 
 const dropBgTask = (taskId: string) =>

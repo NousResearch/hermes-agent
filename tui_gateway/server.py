@@ -755,6 +755,7 @@ def resolve_skin() -> dict:
 
         init_skin_from_config(_load_cfg())
         skin = get_active_skin()
+        spinner = skin.spinner if isinstance(skin.spinner, dict) else {}
         return {
             "name": skin.name,
             "colors": skin.colors,
@@ -763,6 +764,9 @@ def resolve_skin() -> dict:
             "banner_hero": skin.banner_hero,
             "tool_prefix": skin.tool_prefix,
             "help_header": (skin.branding or {}).get("help_header", ""),
+            "spinner": {
+                "thinking_verbs": spinner.get("thinking_verbs", []),
+            },
         }
     except Exception:
         return {}

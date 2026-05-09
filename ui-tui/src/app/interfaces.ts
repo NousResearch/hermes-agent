@@ -114,6 +114,7 @@ export interface UiState {
   statusBar: StatusBarMode
   streaming: boolean
   theme: Theme
+  tickerVerbs: string[]
   usage: Usage
 }
 

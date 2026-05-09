@@ -164,6 +164,45 @@ class TestSystemdServiceRefresh:
         assert "still stopping after 90s" in output
         assert "hermes gateway status" in output
 
+    def test_systemd_restart_timeout_prints_status_guidance(self, monkeypatch, capsys):
+        """`hermes gateway restart` must not surface a raw TimeoutExpired traceback.
+
+        The dashboard spawns `hermes gateway restart` in the background; when a
+        wedged adapter websocket pushes drain past the 90s CLI timeout, the
+        dashboard would previously show a Python traceback (issue #19937
+        follow-up: the same failure mode applies to restart, not just stop).
+        """
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: None)
+        monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_recover_pending_systemd_restart",
+            lambda system=False, previous_pid=None: False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_systemd_service_is_start_limited",
+            lambda system=False: False,
+        )
+
+        def fake_run_systemctl(args, **kwargs):
+            # reset-failed is a pre-step (check=False, 30s) — let it pass.
+            if args and args[0] == "reset-failed":
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_restart()
+
+        output = capsys.readouterr().out
+        assert "still restarting after 90s" in output
+        assert "hermes gateway status" in output
+
     def test_run_gateway_refreshes_outdated_unit_on_boot(self, tmp_path, monkeypatch):
         """run_gateway() should refresh the systemd unit on boot so that
         restart settings take effect even when the process was respawned

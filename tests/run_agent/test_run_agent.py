@@ -3063,6 +3063,8 @@ class TestRunConversation:
         second_call_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
+        second_call_kwargs = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert second_call_kwargs.get("max_tokens") is None
 
     def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
         """Ollama-hosted GLM responses can misreport truncated output as stop."""
@@ -3212,12 +3214,12 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello")
 
-        # Without think tags, the agent should attempt continuation retries
-        # (up to 3), not immediately fire thinking-exhaustion.
+        # Without think tags, the agent should retry continuation until it can
+        # tell the response is not making progress.
         assert result["api_calls"] == 3
         assert result["completed"] is False
 
-    def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
+    def test_length_with_tool_calls_falls_back_to_text_only_recovery(self, agent):
         self._setup_agent(agent)
         bad_tc = _mock_tool_call(
             name="write_file",
@@ -3225,7 +3227,11 @@ class TestRunConversation:
             call_id="c1",
         )
         resp = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
-        agent.client.chat.completions.create.return_value = resp
+        final_resp = _mock_response(
+            content="I could not safely emit the large tool payload; split it into smaller writes.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [resp, resp, resp, resp, final_resp]
 
         with (
             patch("run_agent.handle_function_call") as mock_handle_function_call,
@@ -3235,14 +3241,16 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("write the report")
 
-        assert result["completed"] is False
-        assert result["partial"] is True
-        assert "truncated due to output length limit" in result["error"]
+        assert result["completed"] is True
+        assert agent.client.chat.completions.create.call_count == 5
+        assert result["final_response"].startswith("I could not safely emit")
+        final_call_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
+        assert final_call_kwargs.get("tools") in (None, [])
         mock_handle_function_call.assert_not_called()
 
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
         """When tool call args are truncated, the agent retries the API call
-        once. If the retry succeeds (valid JSON args), tool execution proceeds."""
+        before refusing. If a retry succeeds, tool execution proceeds."""
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
         bad_tc = _mock_tool_call(
@@ -3281,8 +3289,7 @@ class TestRunConversation:
 
     def test_truncated_tool_args_detected_when_finish_reason_not_length(self, agent):
         """When a router rewrites finish_reason from 'length' to 'tool_calls',
-        truncated JSON arguments should still be detected and refused rather
-        than wasting 3 retry attempts."""
+        truncated JSON arguments should still be detected and recovered."""
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
         bad_tc = _mock_tool_call(
@@ -3293,7 +3300,11 @@ class TestRunConversation:
         resp = _mock_response(
             content="", finish_reason="tool_calls", tool_calls=[bad_tc],
         )
-        agent.client.chat.completions.create.return_value = resp
+        final_resp = _mock_response(
+            content="I could not safely emit the large tool payload; split it into smaller writes.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [resp, resp, resp, resp, final_resp]
 
         with (
             patch("run_agent.handle_function_call") as mock_handle_function_call,
@@ -3303,9 +3314,11 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("write the report")
 
-        assert result["completed"] is False
-        assert result["partial"] is True
-        assert "truncated due to output length limit" in result["error"]
+        assert result["completed"] is True
+        assert result["api_calls"] == 5
+        assert result["final_response"].startswith("I could not safely emit")
+        final_call_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
+        assert final_call_kwargs.get("tools") in (None, [])
         mock_handle_function_call.assert_not_called()
 
 

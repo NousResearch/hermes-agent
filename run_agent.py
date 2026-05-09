@@ -8632,6 +8632,11 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        _disable_tools = bool(getattr(self, "_ephemeral_disable_tools", False))
+        if _disable_tools:
+            self._ephemeral_disable_tools = False
+        request_tools = None if _disable_tools else self.tools
+
         if self.api_mode == "anthropic_messages":
             _transport = self._get_transport()
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
@@ -8643,7 +8648,7 @@ class AIAgent:
             return _transport.build_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
-                tools=self.tools,
+                tools=request_tools,
                 max_tokens=ephemeral_out if ephemeral_out is not None else self.max_tokens,
                 reasoning_config=self.reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
@@ -8663,7 +8668,7 @@ class AIAgent:
             return _bt.build_kwargs(
                 model=self.model,
                 messages=api_messages,
-                tools=self.tools,
+                tools=request_tools,
                 max_tokens=self.max_tokens or 4096,
                 region=region,
                 guardrail_config=guardrail,
@@ -8687,7 +8692,7 @@ class AIAgent:
             return _ct.build_kwargs(
                 model=self.model,
                 messages=_msgs_for_codex,
-                tools=self.tools,
+                tools=request_tools,
                 reasoning_config=self.reasoning_config,
                 session_id=getattr(self, "session_id", None),
                 max_tokens=self.max_tokens,
@@ -8778,7 +8783,7 @@ class AIAgent:
             return _ct.build_kwargs(
                 model=self.model,
                 messages=api_messages,
-                tools=self.tools,
+                tools=request_tools,
                 base_url=self.base_url,
                 timeout=self._resolved_api_call_timeout(),
                 max_tokens=self.max_tokens,
@@ -8809,7 +8814,7 @@ class AIAgent:
         return _ct.build_kwargs(
             model=self.model,
             messages=_msgs_for_chat,
-            tools=self.tools,
+            tools=request_tools,
             base_url=self.base_url,
             timeout=self._resolved_api_call_timeout(),
             max_tokens=self.max_tokens,
@@ -11110,11 +11115,43 @@ class AIAgent:
         final_response = None
         interrupted = False
         codex_ack_continuations = 0
+        try:
+            max_length_continuations = max(
+                1, int(os.getenv("HERMES_LENGTH_CONTINUATION_SAFETY_LIMIT", "64"))
+            )
+        except (TypeError, ValueError):
+            max_length_continuations = 64
+        max_stalled_length_continuations = 2
+        max_truncated_tool_call_retries = 3
+        truncated_tool_text_fallback_attempted = False
         length_continue_retries = 0
+        length_continue_last_chars = 0
+        length_continue_stalled_retries = 0
         truncated_tool_call_retries = 0
         truncated_response_prefix = ""
         compression_attempts = 0
         _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+
+        def _append_truncated_tool_recovery_message(*, text_only: bool = False) -> None:
+            if text_only:
+                content = (
+                    "[System: Your previous tool call arguments were repeatedly truncated by "
+                    "the provider output window. Do not call tools in the next response. "
+                    "Return a concise plain-text summary of what you can complete now, and "
+                    "state any remaining action needed in one short sentence.]"
+                )
+            else:
+                content = (
+                    "[System: Your previous tool call arguments were truncated by the provider "
+                    "output window before valid JSON completed. Retry the task, but do not emit "
+                    "large tool arguments. Split large writes/patches into smaller tool calls; "
+                    "for very large file content, prefer execute_code with hermes_tools.write_file() "
+                    "instead of a giant write_file content string. Emit only complete valid JSON "
+                    "for any tool call.]"
+                )
+            messages.append({"role": "user", "content": content})
+            self._session_messages = messages
+            self._save_session_log(messages)
         
         # Record the execution thread so interrupt()/clear_interrupt() can
         # scope the tool-level interrupt signal to THIS agent's thread only.
@@ -11482,6 +11519,7 @@ class AIAgent:
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
+            restart_after_truncated_tool_recovery = False
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
@@ -11978,11 +12016,21 @@ class AIAgent:
                                 messages.append(interim_msg)
                                 if assistant_message.content:
                                     truncated_response_prefix += assistant_message.content
+                                _assembled_chars = len(truncated_response_prefix)
+                                if _assembled_chars > length_continue_last_chars:
+                                    length_continue_last_chars = _assembled_chars
+                                    length_continue_stalled_retries = 0
+                                else:
+                                    length_continue_stalled_retries += 1
 
-                                if length_continue_retries < 3:
+                                if (
+                                    length_continue_retries < max_length_continuations
+                                    and length_continue_stalled_retries <= max_stalled_length_continuations
+                                ):
                                     self._vprint(
                                         f"{self.log_prefix}↻ Requesting continuation "
-                                        f"({length_continue_retries}/3)..."
+                                        f"({length_continue_retries}; "
+                                        f"{_assembled_chars:,} chars assembled)..."
                                     )
                                     continue_msg = {
                                         "role": "user",
@@ -11999,6 +12047,15 @@ class AIAgent:
                                     break
 
                                 partial_response = self._strip_think_blocks(truncated_response_prefix).strip()
+                                if length_continue_stalled_retries > max_stalled_length_continuations:
+                                    _length_error = (
+                                        "Response truncated repeatedly without producing additional content"
+                                    )
+                                else:
+                                    _length_error = (
+                                        "Response remained truncated after "
+                                        f"{max_length_continuations} continuation attempts"
+                                    )
                                 self._cleanup_task_resources(effective_task_id)
                                 self._persist_session(messages, conversation_history)
                                 return {
@@ -12007,22 +12064,39 @@ class AIAgent:
                                     "api_calls": api_call_count,
                                     "completed": False,
                                     "partial": True,
-                                    "error": "Response remained truncated after 3 continuation attempts",
+                                    "error": _length_error,
                                 }
 
                         if self.api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages"):
                             assistant_message = _trunc_msg
                             if assistant_message is not None and _trunc_has_tool_calls:
-                                if truncated_tool_call_retries < 1:
+                                if truncated_tool_call_retries < max_truncated_tool_call_retries:
                                     truncated_tool_call_retries += 1
                                     self._vprint(
-                                        f"{self.log_prefix}⚠️  Truncated tool call detected — retrying API call...",
+                                        f"{self.log_prefix}⚠️  Truncated tool call detected — "
+                                        "asking model to split the tool payload "
+                                        f"({truncated_tool_call_retries}/{max_truncated_tool_call_retries})...",
                                         force=True,
                                     )
-                                    # Don't append the broken response to messages;
-                                    # just re-run the same API call from the current
-                                    # message state, giving the model another chance.
-                                    continue
+                                    # Don't append the broken assistant response:
+                                    # the JSON arguments are incomplete and unsafe.
+                                    # Add a recovery instruction instead of blindly
+                                    # retrying the identical prompt, because large
+                                    # write_file/patch payloads often truncate again.
+                                    _append_truncated_tool_recovery_message()
+                                    restart_after_truncated_tool_recovery = True
+                                    break
+                                if not truncated_tool_text_fallback_attempted:
+                                    truncated_tool_text_fallback_attempted = True
+                                    self._vprint(
+                                        f"{self.log_prefix}⚠️  Truncated tool calls persisted — "
+                                        "falling back to a text-only recovery response.",
+                                        force=True,
+                                    )
+                                    _append_truncated_tool_recovery_message(text_only=True)
+                                    self._ephemeral_disable_tools = True
+                                    restart_after_truncated_tool_recovery = True
+                                    break
                                 self._vprint(
                                     f"{self.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
                                     force=True,
@@ -13312,12 +13386,14 @@ class AIAgent:
                 continue
 
             if restart_with_length_continuation:
-                # Progressively boost the output token budget on each retry.
-                # Retry 1 → 2× base, retry 2 → 3× base, capped at 32 768.
-                # Applies to all providers via _ephemeral_max_output_tokens.
-                _boost_base = self.max_tokens if self.max_tokens else 4096
-                _boost = _boost_base * (length_continue_retries + 1)
-                self._ephemeral_max_output_tokens = min(_boost, 32768)
+                # Do not inject a Hermes-owned output cap during length
+                # continuation. If max_tokens is unset globally, the retry
+                # should stay uncapped instead of reintroducing a hidden cap.
+                self._ephemeral_max_output_tokens = None
+                continue
+
+            if restart_after_truncated_tool_recovery:
+                self._ephemeral_max_output_tokens = None
                 continue
 
             # Guard: if all retries exhausted without a successful response
@@ -13599,6 +13675,30 @@ class AIAgent:
                             if tc.function.name in {n for n, _ in invalid_json_args}
                         )
                         if _truncated:
+                            if truncated_tool_call_retries < max_truncated_tool_call_retries:
+                                truncated_tool_call_retries += 1
+                                self._vprint(
+                                    f"{self.log_prefix}⚠️  Truncated tool call arguments detected "
+                                    f"(finish_reason={finish_reason!r}) — asking model to split the tool payload "
+                                    f"({truncated_tool_call_retries}/{max_truncated_tool_call_retries})...",
+                                    force=True,
+                                )
+                                self._invalid_json_retries = 0
+                                _append_truncated_tool_recovery_message()
+                                restart_after_truncated_tool_recovery = True
+                                continue
+                            if not truncated_tool_text_fallback_attempted:
+                                truncated_tool_text_fallback_attempted = True
+                                self._vprint(
+                                    f"{self.log_prefix}⚠️  Truncated tool arguments persisted — "
+                                    "falling back to a text-only recovery response.",
+                                    force=True,
+                                )
+                                self._invalid_json_retries = 0
+                                _append_truncated_tool_recovery_message(text_only=True)
+                                self._ephemeral_disable_tools = True
+                                restart_after_truncated_tool_recovery = True
+                                continue
                             self._vprint(
                                 f"{self.log_prefix}⚠️  Truncated tool call arguments detected "
                                 f"(finish_reason={finish_reason!r}) — refusing to execute.",

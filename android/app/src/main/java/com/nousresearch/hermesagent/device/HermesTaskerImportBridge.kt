@@ -536,20 +536,46 @@ object HermesTaskerImportBridge {
     private const val TASKER_RUN_SHELL = 123
     private const val TASKER_POWER_MODE = 175
     private const val TASKER_DEVELOPER_SETTINGS = 197
+    private const val TASKER_DEVICE_INFO_SETTINGS = 198
+    private const val TASKER_ADD_ACCOUNT_SETTINGS = 199
+    private const val TASKER_ALL_SETTINGS = 200
     private const val TASKER_AIRPLANE_MODE_SETTINGS = 201
+    private const val TASKER_APN_SETTINGS = 202
+    private const val TASKER_DATE_SETTINGS = 203
+    private const val TASKER_INTERNAL_STORAGE_SETTINGS = 204
     private const val TASKER_WIFI_SETTINGS = 206
+    private const val TASKER_LOCATION_SETTINGS = 208
+    private const val TASKER_INPUT_METHOD_SETTINGS = 210
+    private const val TASKER_SYNC_SETTINGS = 211
+    private const val TASKER_WIFI_IP_SETTINGS = 212
+    private const val TASKER_WIRELESS_SETTINGS = 214
+    private const val TASKER_APP_SETTINGS = 216
     private const val TASKER_BLUETOOTH_SETTINGS = 218
     private const val TASKER_QUICK_SETTINGS = 219
     private const val TASKER_MOBILE_DATA_SETTINGS = 220
+    private const val TASKER_DISPLAY_SETTINGS = 222
+    private const val TASKER_LOCALE_SETTINGS = 224
+    private const val TASKER_APP_MANAGE_SETTINGS = 226
+    private const val TASKER_MEMORY_CARD_SETTINGS = 227
+    private const val TASKER_NETWORK_OPERATOR_SETTINGS = 228
+    private const val TASKER_QUICK_LAUNCH_SETTINGS = 229
+    private const val TASKER_SECURITY_SETTINGS = 230
+    private const val TASKER_SEARCH_SETTINGS = 231
+    private const val TASKER_SOUND_SETTINGS = 232
+    private const val TASKER_DICTIONARY_SETTINGS = 234
     private const val TASKER_CUSTOM_SETTING = 235
     private const val TASKER_ACCESSIBILITY_SETTINGS = 236
     private const val TASKER_NOTIFICATION_LISTENER_SETTINGS = 237
+    private const val TASKER_PRIVACY_SETTINGS = 238
+    private const val TASKER_PRINT_SETTINGS = 239
     private const val TASKER_BACK_BUTTON = 245
     private const val TASKER_SHOW_RECENTS = 247
     private const val TASKER_TURN_OFF = 248
+    private const val TASKER_POWER_USAGE_SETTINGS = 257
     private const val TASKER_BLUETOOTH = 294
     private const val TASKER_DO_NOT_DISTURB = 312
     private const val TASKER_AIRPLANE_MODE = 333
+    private const val TASKER_NOTIFICATION_SETTINGS = 337
     private const val TASKER_DELETE_FILE = 406
     private const val TASKER_WRITE_FILE = 410
     private const val TASKER_WIFI = 425
@@ -604,12 +630,38 @@ object HermesTaskerImportBridge {
     )
     private val TASKER_SETTINGS_ACTIONS = mapOf(
         TASKER_DEVELOPER_SETTINGS to "open_developer_options",
+        TASKER_DEVICE_INFO_SETTINGS to "open_device_info_settings",
+        TASKER_ADD_ACCOUNT_SETTINGS to "open_add_account_settings",
+        TASKER_ALL_SETTINGS to "open_all_settings",
         TASKER_AIRPLANE_MODE_SETTINGS to "open_airplane_mode_settings",
+        TASKER_APN_SETTINGS to "open_apn_settings",
+        TASKER_DATE_SETTINGS to "open_date_settings",
+        TASKER_INTERNAL_STORAGE_SETTINGS to "open_internal_storage_settings",
         TASKER_WIFI_SETTINGS to "open_wifi_panel",
+        TASKER_LOCATION_SETTINGS to "open_location_settings",
+        TASKER_INPUT_METHOD_SETTINGS to "open_input_method_settings",
+        TASKER_SYNC_SETTINGS to "open_sync_settings",
+        TASKER_WIFI_IP_SETTINGS to "open_wifi_ip_settings",
+        TASKER_WIRELESS_SETTINGS to "open_wireless_settings",
+        TASKER_APP_SETTINGS to "open_app_settings",
         TASKER_BLUETOOTH_SETTINGS to "open_bluetooth_settings",
         TASKER_MOBILE_DATA_SETTINGS to "open_mobile_network_settings",
+        TASKER_DISPLAY_SETTINGS to "open_display_settings",
+        TASKER_LOCALE_SETTINGS to "open_locale_settings",
+        TASKER_APP_MANAGE_SETTINGS to "open_manage_apps_settings",
+        TASKER_MEMORY_CARD_SETTINGS to "open_memory_card_settings",
+        TASKER_NETWORK_OPERATOR_SETTINGS to "open_mobile_network_settings",
+        TASKER_QUICK_LAUNCH_SETTINGS to "open_quick_launch_settings",
+        TASKER_SECURITY_SETTINGS to "open_security_settings",
+        TASKER_SEARCH_SETTINGS to "open_search_settings",
+        TASKER_SOUND_SETTINGS to "open_sound_settings",
+        TASKER_DICTIONARY_SETTINGS to "open_dictionary_settings",
         TASKER_ACCESSIBILITY_SETTINGS to "open_accessibility_settings",
         TASKER_NOTIFICATION_LISTENER_SETTINGS to "open_notification_listener_settings",
+        TASKER_PRIVACY_SETTINGS to "open_privacy_settings",
+        TASKER_PRINT_SETTINGS to "open_print_settings",
+        TASKER_POWER_USAGE_SETTINGS to "open_power_usage_settings",
+        TASKER_NOTIFICATION_SETTINGS to "open_system_notification_settings",
         TASKER_NFC_SETTINGS to "open_nfc_settings",
     )
     private val TASKER_ACTION_LABELS = mapOf(
@@ -624,20 +676,46 @@ object HermesTaskerImportBridge {
         TASKER_RUN_SHELL to "Run Shell",
         TASKER_POWER_MODE to "Power Mode",
         TASKER_DEVELOPER_SETTINGS to "Developer Settings",
+        TASKER_DEVICE_INFO_SETTINGS to "Device Info Settings",
+        TASKER_ADD_ACCOUNT_SETTINGS to "Add Account Settings",
+        TASKER_ALL_SETTINGS to "All Settings",
         TASKER_AIRPLANE_MODE_SETTINGS to "Airplane Mode Settings",
+        TASKER_APN_SETTINGS to "APN Settings",
+        TASKER_DATE_SETTINGS to "Date Settings",
+        TASKER_INTERNAL_STORAGE_SETTINGS to "Internal Storage Settings",
         TASKER_WIFI_SETTINGS to "Wi-Fi Settings",
+        TASKER_LOCATION_SETTINGS to "Location Settings",
+        TASKER_INPUT_METHOD_SETTINGS to "Input Method Settings",
+        TASKER_SYNC_SETTINGS to "Sync Settings",
+        TASKER_WIFI_IP_SETTINGS to "Wi-Fi IP Settings",
+        TASKER_WIRELESS_SETTINGS to "Wireless Settings",
+        TASKER_APP_SETTINGS to "App Settings",
         TASKER_BLUETOOTH_SETTINGS to "Bluetooth Settings",
         TASKER_QUICK_SETTINGS to "Quick Settings",
         TASKER_MOBILE_DATA_SETTINGS to "Mobile Data Settings",
+        TASKER_DISPLAY_SETTINGS to "Display Settings",
+        TASKER_LOCALE_SETTINGS to "Locale Settings",
+        TASKER_APP_MANAGE_SETTINGS to "App Manage Settings",
+        TASKER_MEMORY_CARD_SETTINGS to "Memory Card Settings",
+        TASKER_NETWORK_OPERATOR_SETTINGS to "Network Operator Settings",
+        TASKER_QUICK_LAUNCH_SETTINGS to "Quick Launch Settings",
+        TASKER_SECURITY_SETTINGS to "Security Settings",
+        TASKER_SEARCH_SETTINGS to "Search Settings",
+        TASKER_SOUND_SETTINGS to "Sound Settings",
+        TASKER_DICTIONARY_SETTINGS to "Dictionary Settings",
         TASKER_CUSTOM_SETTING to "Custom Setting",
         TASKER_ACCESSIBILITY_SETTINGS to "Accessibility Settings",
         TASKER_NOTIFICATION_LISTENER_SETTINGS to "Notification Listener Settings",
+        TASKER_PRIVACY_SETTINGS to "Privacy Settings",
+        TASKER_PRINT_SETTINGS to "Print Settings",
         TASKER_BACK_BUTTON to "Back Button",
         TASKER_SHOW_RECENTS to "Show Recents",
         TASKER_TURN_OFF to "Turn Off",
+        TASKER_POWER_USAGE_SETTINGS to "Power Usage Settings",
         TASKER_BLUETOOTH to "Bluetooth",
         TASKER_DO_NOT_DISTURB to "Do Not Disturb",
         TASKER_AIRPLANE_MODE to "Airplane Mode",
+        TASKER_NOTIFICATION_SETTINGS to "Notification Settings",
         TASKER_DELETE_FILE to "Delete File",
         TASKER_WRITE_FILE to "Write File",
         TASKER_WIFI to "Wi-Fi",

@@ -26,10 +26,35 @@ private val DEFAULT_SYSTEM_ACTIONS = listOf(
     "open_mobile_network_settings",
     "open_data_usage_settings",
     "open_hotspot_settings",
+    "open_device_info_settings",
+    "open_add_account_settings",
+    "open_all_settings",
+    "open_apn_settings",
     "open_airplane_mode_settings",
+    "open_date_settings",
+    "open_internal_storage_settings",
+    "open_location_settings",
+    "open_input_method_settings",
+    "open_sync_settings",
+    "open_wifi_ip_settings",
+    "open_wireless_settings",
+    "open_app_settings",
     "open_bluetooth_settings",
     "open_connected_devices_settings",
+    "open_display_settings",
+    "open_locale_settings",
+    "open_manage_apps_settings",
+    "open_memory_card_settings",
     "open_nfc_settings",
+    "open_power_usage_settings",
+    "open_quick_launch_settings",
+    "open_security_settings",
+    "open_search_settings",
+    "open_sound_settings",
+    "open_dictionary_settings",
+    "open_privacy_settings",
+    "open_print_settings",
+    "open_system_notification_settings",
     "open_notification_settings",
     "open_notification_listener_settings",
     "open_overlay_settings",
@@ -158,10 +183,35 @@ object HermesSystemControlBridge {
             "open_mobile_network_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_NETWORK_OPERATOR_SETTINGS), "Opened mobile network settings")
             "open_data_usage_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_DATA_USAGE_SETTINGS), "Opened data usage settings")
             "open_hotspot_settings" -> launchIntent(appContext, action, Intent("android.settings.TETHER_SETTINGS"), "Opened hotspot and tethering settings")
+            "open_device_info_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.DEVICE_INFO_SETTINGS"), "Opened device info settings")
+            "open_add_account_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.ADD_ACCOUNT_SETTINGS"), "Opened add-account settings")
+            "open_all_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.SETTINGS"), "Opened Android settings")
+            "open_apn_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.APN_SETTINGS"), "Opened APN settings")
             "open_airplane_mode_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS), "Opened airplane mode settings")
+            "open_date_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.DATE_SETTINGS"), "Opened date and time settings")
+            "open_internal_storage_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.INTERNAL_STORAGE_SETTINGS"), "Opened internal storage settings")
+            "open_location_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.LOCATION_SOURCE_SETTINGS"), "Opened location settings")
+            "open_input_method_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.INPUT_METHOD_SETTINGS"), "Opened input method settings")
+            "open_sync_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.SYNC_SETTINGS"), "Opened sync settings")
+            "open_wifi_ip_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.WIFI_IP_SETTINGS"), "Opened Wi-Fi IP settings")
+            "open_wireless_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.WIRELESS_SETTINGS"), "Opened wireless settings")
+            "open_app_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.APPLICATION_SETTINGS"), "Opened app settings")
             "open_bluetooth_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_BLUETOOTH_SETTINGS), "Opened Bluetooth settings")
             "open_connected_devices_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_WIRELESS_SETTINGS), "Opened connected-device settings")
+            "open_display_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.DISPLAY_SETTINGS"), "Opened display settings")
+            "open_locale_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.LOCALE_SETTINGS"), "Opened language and locale settings")
+            "open_manage_apps_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.MANAGE_APPLICATIONS_SETTINGS"), "Opened manage apps settings")
+            "open_memory_card_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.MEMORY_CARD_SETTINGS"), "Opened memory card settings")
             "open_nfc_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_NFC_SETTINGS), "Opened NFC settings")
+            "open_power_usage_settings" -> launchIntent(appContext, action, settingsIntent("android.intent.action.POWER_USAGE_SUMMARY"), "Opened power usage settings")
+            "open_quick_launch_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.QUICK_LAUNCH_SETTINGS"), "Opened quick launch settings")
+            "open_security_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.SECURITY_SETTINGS"), "Opened security settings")
+            "open_search_settings" -> launchIntent(appContext, action, settingsIntent("android.search.action.SEARCH_SETTINGS"), "Opened search settings")
+            "open_sound_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.SOUND_SETTINGS"), "Opened sound settings")
+            "open_dictionary_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.USER_DICTIONARY_SETTINGS"), "Opened dictionary settings")
+            "open_privacy_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.PRIVACY_SETTINGS"), "Opened privacy settings")
+            "open_print_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.ACTION_PRINT_SETTINGS"), "Opened print settings")
+            "open_system_notification_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.NOTIFICATION_SETTINGS"), "Opened system notification settings")
             "open_notification_settings" -> launchIntent(appContext, action, notificationSettingsIntent(appContext), "Opened Hermes notification settings")
             "open_notification_listener_settings" -> launchIntent(
                 appContext,
@@ -209,6 +259,8 @@ object HermesSystemControlBridge {
             else -> HermesSystemActionResult(success = false, action = action, message = "Unsupported Android system action: $action")
         }
     }
+
+    private fun settingsIntent(action: String): Intent = Intent(action)
 
     @JvmStatic
     fun statusJson(): String {

@@ -1843,12 +1843,38 @@ class HermesAutomationStoreTest {
                 <Action><code>247</code></Action>
                 <Action><code>219</code></Action>
                 <Action><code>197</code></Action>
+                <Action><code>198</code></Action>
+                <Action><code>199</code></Action>
+                <Action><code>200</code></Action>
                 <Action><code>201</code></Action>
+                <Action><code>202</code></Action>
+                <Action><code>203</code></Action>
+                <Action><code>204</code></Action>
                 <Action><code>206</code></Action>
+                <Action><code>208</code></Action>
+                <Action><code>210</code></Action>
+                <Action><code>211</code></Action>
+                <Action><code>212</code></Action>
+                <Action><code>214</code></Action>
+                <Action><code>216</code></Action>
                 <Action><code>218</code></Action>
                 <Action><code>220</code></Action>
+                <Action><code>222</code></Action>
+                <Action><code>224</code></Action>
+                <Action><code>226</code></Action>
+                <Action><code>227</code></Action>
+                <Action><code>228</code></Action>
+                <Action><code>229</code></Action>
+                <Action><code>230</code></Action>
+                <Action><code>231</code></Action>
+                <Action><code>232</code></Action>
+                <Action><code>234</code></Action>
                 <Action><code>236</code></Action>
                 <Action><code>237</code></Action>
+                <Action><code>238</code></Action>
+                <Action><code>239</code></Action>
+                <Action><code>257</code></Action>
+                <Action><code>337</code></Action>
                 <Action><code>956</code></Action>
               </Task>
             </TaskerData>
@@ -1864,9 +1890,9 @@ class HermesAutomationStoreTest {
             ),
         )
         assertTrue(imported.toString(), imported.getBoolean("success"))
-        assertEquals(12, imported.getInt("tasker_imported_action_count"))
+        assertEquals(38, imported.getInt("tasker_imported_action_count"))
         assertEquals(0, imported.getJSONArray("tasker_skipped_actions").length())
-        assertEquals(12, imported.getInt("imported_automation_count"))
+        assertEquals(38, imported.getInt("imported_automation_count"))
 
         val records = store.list()
         val uiActions = records
@@ -1882,12 +1908,37 @@ class HermesAutomationStoreTest {
         assertEquals(
             setOf(
                 "open_developer_options",
+                "open_device_info_settings",
+                "open_add_account_settings",
+                "open_all_settings",
                 "open_airplane_mode_settings",
+                "open_apn_settings",
+                "open_date_settings",
+                "open_internal_storage_settings",
                 "open_wifi_panel",
+                "open_location_settings",
+                "open_input_method_settings",
+                "open_sync_settings",
+                "open_wifi_ip_settings",
+                "open_wireless_settings",
+                "open_app_settings",
                 "open_bluetooth_settings",
                 "open_mobile_network_settings",
+                "open_display_settings",
+                "open_locale_settings",
+                "open_manage_apps_settings",
+                "open_memory_card_settings",
+                "open_quick_launch_settings",
+                "open_security_settings",
+                "open_search_settings",
+                "open_sound_settings",
+                "open_dictionary_settings",
                 "open_accessibility_settings",
                 "open_notification_listener_settings",
+                "open_privacy_settings",
+                "open_print_settings",
+                "open_power_usage_settings",
+                "open_system_notification_settings",
                 "open_nfc_settings",
             ),
             systemActions,

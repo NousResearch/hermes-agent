@@ -978,6 +978,8 @@ class TestTelegramMenuCommands:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         pinned_slugs = [
+            "design-taste-skill",
+            "visual-quality-harness",
             "grill-with-docs",
             "grill-me",
             "zoom-out",

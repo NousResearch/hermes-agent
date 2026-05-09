@@ -426,6 +426,8 @@ _TELEGRAM_REQUIRED_ARG_MENU_ALLOWLIST: frozenset[str] = frozenset({"qopen"})
 # Skills that Joohyun/Mina intentionally want in the Telegram native slash menu
 # even when the 100-command Bot API cap hides later alphabetical skills.
 _TELEGRAM_PINNED_SKILL_SLUGS: tuple[str, ...] = (
+    "design-taste-skill",
+    "visual-quality-harness",
     "grill-with-docs",
     "grill-me",
     "zoom-out",

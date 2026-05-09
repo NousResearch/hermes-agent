@@ -203,6 +203,7 @@ function buildNavItems(
     const pluginItem: NavItem = {
       path: manifest.tab.path,
       label: manifest.label,
+      labelKey: manifest.name === "kanban" ? "kanban" : undefined,
       icon: resolveIcon(manifest.icon),
     };
 

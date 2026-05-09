@@ -1,12 +1,13 @@
 """Tests for gateway service management helpers."""
 
 import os
-pwd = pytest.importorskip("pwd")
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+pwd = pytest.importorskip("pwd")
 
 import hermes_cli.gateway as gateway_cli
 from gateway import status
@@ -1284,20 +1285,17 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_auto_detected_root_is_rejected(self, monkeypatch):
         """When root is auto-detected (not explicitly requested), raise."""
-        pwd = pytest.importorskip("pwd")
         import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "root")
         monkeypatch.setenv("LOGNAME", "root")
 
-        import pytest
         with pytest.raises(ValueError, match="pass --run-as-user root to override"):
             gateway_cli._system_service_identity(run_as_user=None)
 
     def test_explicit_root_is_allowed(self, monkeypatch):
         """When root is explicitly passed via --run-as-user root, allow it."""
-        pwd = pytest.importorskip("pwd")
         import grp
 
         root_info = pwd.getpwnam("root")
@@ -1309,7 +1307,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_non_root_user_passes_through(self, monkeypatch):
         """Normal non-root user works as before."""
-        pwd = pytest.importorskip("pwd")
         import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)

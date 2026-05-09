@@ -19,6 +19,7 @@ description: "54 real design systems (Stripe, Linear, Vercel) as HTML/CSS"
 | Version | `1.0.0` |
 | Author | Hermes Agent + Teknium (design systems sourced from VoltAgent/awesome-design-md) |
 | License | MIT |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 

@@ -690,6 +690,10 @@ def _build_media_placeholder(event) -> str:
     dequeued, only .text is extracted.  If the event has no caption,
     the media would be silently lost.  This builds a placeholder that
     the vision enrichment pipeline will replace with a real description.
+
+    Returns a plain-text fallback so the agent never receives an empty
+    user message — empty input causes the agent to stall, retry, or
+    hallucinate for 30+ minutes (issue #22385).
     """
     parts = []
     media_urls = getattr(event, "media_urls", None) or []
@@ -702,7 +706,12 @@ def _build_media_placeholder(event) -> str:
             parts.append(f"[User sent audio: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
-    return "\n".join(parts)
+    if parts:
+        return "\n".join(parts)
+    # Safeguard: if there's nothing to placehold (no media_urls at all),
+    # return a neutral fallback so the agent doesn't receive empty input.
+    return "[User sent a message with media that couldn't be accessed]"
+
 
 
 def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
@@ -12171,6 +12180,7 @@ class GatewayRunner:
         )
 
         enriched_parts = []
+        all_failed = True
         for path in image_paths:
             try:
                 logger.debug("Auto-analyzing user image: %s", path)
@@ -12182,6 +12192,7 @@ class GatewayRunner:
                 if result.get("success"):
                     description = result.get("analysis", "")
                     description = sanitize_context(description)
+                    all_failed = False
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
@@ -12203,6 +12214,15 @@ class GatewayRunner:
 
         # Combine: vision descriptions first, then the user's original text
         if enriched_parts:
+            # If ALL images failed to analyze AND the user didn't
+            # provide a caption, give a clear fail-fast message
+            # so the agent doesn't keep retrying for 30+ minutes.
+            if all_failed and not user_text.strip():
+                return (
+                    "[The user sent an image but I'm unable to see it — "
+                    "the vision analysis is not available right now. "
+                    "Ask the user to describe what the image contains.]"
+                )
             prefix = "\n\n".join(enriched_parts)
             if user_text:
                 return f"{prefix}\n\n{user_text}"

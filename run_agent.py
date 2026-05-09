@@ -135,6 +135,7 @@ from tools.terminal_tool import (
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
+from tools.memory_tool import consume_next_session_handoff
 
 
 # Agent internals extracted to agent/ package for modularity
@@ -5382,6 +5383,15 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        handoff = consume_next_session_handoff()
+        if handoff:
+            prompt_parts.append(
+                "## Next Session Handoff\n"
+                "This is a one-shot carryover note from the immediately previous session. "
+                "Use it only if it is still relevant to the user's current message.\n"
+                f"- {handoff['message']}"
+            )
 
         # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:

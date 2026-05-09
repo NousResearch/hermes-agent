@@ -29,6 +29,7 @@ import os
 import re
 import tempfile
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
@@ -56,6 +57,16 @@ def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
 
+def get_handoff_dir() -> Path:
+    """Return the profile-scoped one-shot handoff directory."""
+    return get_hermes_home() / "handoffs"
+
+# Backward-compatible alias — gateway/run.py imports this at runtime inside
+# a function body, so it gets the correct snapshot for that process.  New code
+# should prefer get_memory_dir().
+MEMORY_DIR = get_memory_dir()
+HANDOFF_DIR = get_handoff_dir()
+NEXT_SESSION_HANDOFF_PATH = get_handoff_dir() / "next-session.json"
 ENTRY_DELIMITER = "\n§\n"
 
 
@@ -88,6 +99,13 @@ _INVISIBLE_CHARS = {
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
 }
 
+_NEXT_SESSION_HANDOFF_PATTERNS = (
+    re.compile(r"\bnext session\b", re.IGNORECASE),
+    re.compile(r"\bstart (?:the |this )?(?:very )?next session\b", re.IGNORECASE),
+    re.compile(r"\bstart the session immediately\b", re.IGNORECASE),
+    re.compile(r"\bimmediately with\b", re.IGNORECASE),
+)
+
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
@@ -102,6 +120,67 @@ def _scan_memory_content(content: str) -> Optional[str]:
             return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
 
     return None
+
+
+def _is_next_session_handoff(content: str) -> bool:
+    """Return True when content looks like one-shot carryover state."""
+    normalized = " ".join(content.strip().split())
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in _NEXT_SESSION_HANDOFF_PATTERNS)
+
+
+def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
+    """Write JSON to disk atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".handoff_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def write_next_session_handoff(content: str, *, source: str = "memory") -> Dict[str, Any]:
+    """Persist a one-shot handoff for the next session."""
+    payload = {
+        "message": content.strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "use_once": True,
+    }
+    _atomic_write_json(get_handoff_dir() / "next-session.json", payload)
+    return payload
+
+
+def consume_next_session_handoff() -> Optional[Dict[str, Any]]:
+    """Return and remove the pending handoff if present."""
+    handoff_path = get_handoff_dir() / "next-session.json"
+    if not handoff_path.exists():
+        return None
+    try:
+        payload = json.loads(handoff_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    try:
+        handoff_path.unlink()
+    except OSError:
+        logger.debug("Failed to remove consumed handoff: %s", handoff_path)
+
+    if not isinstance(payload, dict):
+        return None
+    if not str(payload.get("message", "")).strip():
+        return None
+    return payload
 
 
 class MemoryStore:
@@ -232,6 +311,15 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
+        if _is_next_session_handoff(content):
+            payload = write_next_session_handoff(content, source=f"memory:{target}")
+            resp = self._success_response(
+                target,
+                "Saved as one-shot next-session handoff instead of durable memory.",
+            )
+            resp["handoff"] = payload
+            return resp
+
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions
             self._reload_target(target)
@@ -302,6 +390,16 @@ class MemoryStore:
                 # All identical -- safe to replace just the first
 
             idx = matches[0][0]
+
+            if _is_next_session_handoff(new_content):
+                payload = write_next_session_handoff(new_content, source=f"memory:{target}")
+                entries.pop(idx)
+                self._set_entries(target, entries)
+                self.save_to_disk(target)
+                resp = self._success_response(target, "Entry moved to one-shot next-session handoff.")
+                resp["handoff"] = payload
+                return resp
+
             limit = self._char_limit(target)
 
             # Check that replacement doesn't blow the budget
@@ -580,7 +678,5 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
 
 

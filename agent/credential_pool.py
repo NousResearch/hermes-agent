@@ -1113,6 +1113,11 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
     field_updates = {}
     extra_updates = {}
     _field_names = {f.name for f in fields(existing)}
+    token_changed = (
+        "access_token" in payload
+        and payload["access_token"] is not None
+        and payload["access_token"] != existing.access_token
+    )
     for key, value in payload.items():
         if key in {"id", "priority"} or value is None:
             continue
@@ -1124,6 +1129,14 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
         elif key in _EXTRA_KEYS:
             if existing.extra.get(key) != value:
                 extra_updates[key] = value
+    # When the credential token itself changes (key rotation), clear any
+    # exhaustion/error state — the old status is stale for the new key.
+    if token_changed and existing.last_status is not None:
+        field_updates["last_status"] = None
+        field_updates["last_error_code"] = None
+        field_updates["last_error_reason"] = None
+        field_updates["last_error_message"] = None
+        field_updates["last_error_reset_at"] = None
     if field_updates or extra_updates:
         if extra_updates:
             field_updates["extra"] = {**existing.extra, **extra_updates}

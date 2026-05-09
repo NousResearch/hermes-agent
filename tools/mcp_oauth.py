@@ -177,7 +177,7 @@ def _write_json(path: Path, data: dict) -> None:
     # No-op on Windows (POSIX mode bits aren't enforced); ignore failures.
     try:
         os.chmod(path.parent, 0o700)
-    except OSError:
+    except OSError as _port_exc:
         pass
     # Per-process random suffix avoids collisions between concurrent
     # writers and stale leftovers from a prior crashed write.
@@ -193,10 +193,10 @@ def _write_json(path: Path, data: dict) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
-    except OSError:
+    except OSError as _port_exc:
         try:
             tmp.unlink(missing_ok=True)
-        except OSError:
+        except OSError as _port_exc:
             pass
         raise
 
@@ -255,7 +255,7 @@ class HermesTokenStorage:
         elif data.get("expires_in") is not None:
             try:
                 file_mtime = self._tokens_path().stat().st_mtime
-            except OSError:
+            except OSError as _port_exc:
                 file_mtime = None
             if file_mtime is not None:
                 try:
@@ -441,12 +441,12 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     # Start a temporary server on the known port
     try:
         server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
-    except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
+    except OSError as _port_exc:
+        # Port is already taken by another process or concurrent OAuth flow.
+        # Since we pick the port via _find_free_port() (TOCTOU race),
         raise OAuthNonInteractiveError(
-            "OAuth callback timed out — could not bind callback port. "
-            "Complete the authorization in a browser first, then retry."
+            "OAuth callback server could not bind port (TOCTOU race or port conflict). "
+            "Use redirect_port: 0 (default) to auto-select a free port, or ensure"
         )
 
     server_thread = threading.Thread(target=server.handle_request, daemon=True)

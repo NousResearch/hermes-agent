@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import uuid
 from types import SimpleNamespace
@@ -227,6 +228,49 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
 # Message format conversion
 # ---------------------------------------------------------------------------
 
+
+def _codex_tool_output_max_chars() -> int:
+    raw = os.environ.get("HERMES_CODEX_TOOL_OUTPUT_MAX_CHARS", "4000")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 4000
+    return max(0, value)
+
+
+def _is_compact_persisted_output_handle(output: str) -> bool:
+    if len(output) > 8000:
+        return False
+    stripped = output.strip()
+    return (
+        stripped.startswith("<persisted-output>")
+        and "</persisted-output>" in stripped
+        and "Full output saved to:" in stripped
+        and "read_file" in stripped
+    )
+
+
+def _truncate_codex_tool_output(output: str) -> str:
+    if _is_compact_persisted_output_handle(output):
+        return output
+    if "[Hermes truncated this prior tool output for Codex replay:" in output:
+        return output
+    max_chars = _codex_tool_output_max_chars()
+    if not max_chars or len(output) <= max_chars:
+        return output
+    omitted = len(output) - max_chars
+    logger.warning(
+        "Codex Responses tool output truncated from %d to %d chars before replay",
+        len(output),
+        max_chars,
+    )
+    return (
+        output[:max_chars].rstrip()
+        + f"\n\n[Hermes truncated this prior tool output for Codex replay: {omitted} chars omitted. "
+        + "Call the relevant tool again if exact omitted details are required.]"
+    )
+
+
 _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
 
 
@@ -413,7 +457,7 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
             items.append({
                 "type": "function_call_output",
                 "call_id": call_id,
-                "output": str(msg.get("content", "") or ""),
+                "output": _truncate_codex_tool_output(str(msg.get("content", "") or "")),
             })
 
     return items
@@ -473,7 +517,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 {
                     "type": "function_call_output",
                     "call_id": call_id.strip(),
-                    "output": output,
+                    "output": _truncate_codex_tool_output(output),
                 }
             )
             continue

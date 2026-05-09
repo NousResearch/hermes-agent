@@ -1603,6 +1603,56 @@ def test_codex_message_item_status_survives_conversion_and_preflight(monkeypatch
     assert normalized[0]["status"] == "in_progress"
 
 
+
+def test_codex_replay_preserves_compact_persisted_output_handle(monkeypatch):
+    from agent.codex_responses_adapter import (
+        _chat_messages_to_responses_input,
+        _preflight_codex_input_items,
+    )
+
+    handle = """<persisted-output>
+[Large tool output externalized by Hermes]
+Tool: mcp_codealive_fetch_artifacts
+Original: 56,000 characters (54.7 KB).
+Full output saved to: /Users/ilya/.hermes/tool-artifacts/2026-05-06/result.txt
+Use the read_file tool with offset and limit to access specific sections of this output.
+
+Preview (first 20 chars):
+important preview
+...
+</persisted-output>"""
+    items = _chat_messages_to_responses_input([
+        {"role": "tool", "tool_call_id": "call_1", "content": handle}
+    ])
+    normalized = _preflight_codex_input_items(items)
+    output = next(item["output"] for item in normalized if item.get("type") == "function_call_output")
+    assert output == handle
+
+
+def test_codex_replay_safety_cap_truncates_legacy_raw_output(monkeypatch):
+    monkeypatch.setenv("HERMES_CODEX_TOOL_OUTPUT_MAX_CHARS", "1000")
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    items = _chat_messages_to_responses_input([
+        {"role": "tool", "tool_call_id": "call_1", "content": "x" * 5000}
+    ])
+    output = next(item["output"] for item in items if item.get("type") == "function_call_output")
+    assert len(output) < 1300
+    assert "Hermes truncated this prior tool output" in output
+
+
+def test_codex_replay_does_not_trust_spoofed_large_persisted_marker(monkeypatch):
+    monkeypatch.setenv("HERMES_CODEX_TOOL_OUTPUT_MAX_CHARS", "1000")
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    spoofed = "prefix <persisted-output> " + ("x" * 5000)
+    items = _chat_messages_to_responses_input([
+        {"role": "tool", "tool_call_id": "call_1", "content": spoofed}
+    ])
+    output = next(item["output"] for item in items if item.get("type") == "function_call_output")
+    assert len(output) < 1300
+    assert "Hermes truncated this prior tool output" in output
+
 def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch):
     """Two consecutive reasoning-only responses with different encrypted content
     must NOT be treated as duplicates."""

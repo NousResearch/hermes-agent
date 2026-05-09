@@ -251,7 +251,8 @@ class TestMaybePersistToolResult:
         cmd = env.execute.call_args[0][0]
         assert '"exit_code"' in cmd
 
-    def test_above_threshold_no_env_truncates_inline(self):
+    def test_above_threshold_no_env_persists_locally(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_TOOL_ARTIFACT_DIR", str(tmp_path))
         content = "x" * 60_000
         result = maybe_persist_tool_result(
             content=content,
@@ -260,9 +261,46 @@ class TestMaybePersistToolResult:
             env=None,
             threshold=30_000,
         )
-        assert PERSISTED_OUTPUT_TAG not in result
-        assert "Truncated" in result
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "Full output saved to:" in result
+        saved_line = next(line for line in result.splitlines() if line.startswith("Full output saved to:"))
+        saved_path = saved_line.split(":", 1)[1].strip()
+        with open(saved_path, encoding="utf-8") as fh:
+            assert fh.read() == content
         assert len(result) < len(content)
+
+
+    def test_local_artifact_sanitizes_unsafe_tool_use_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_TOOL_ARTIFACT_DIR", str(tmp_path))
+        content = "x" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="mcp/codealive fetch",
+            tool_use_id="../../evil/id with spaces",
+            env=None,
+            threshold=30_000,
+        )
+        saved_line = next(line for line in result.splitlines() if line.startswith("Full output saved to:"))
+        saved_path = saved_line.split(":", 1)[1].strip()
+        assert str(tmp_path) in saved_path
+        assert ".." not in saved_path.replace(str(tmp_path), "")
+        with open(saved_path, encoding="utf-8") as fh:
+            assert fh.read() == content
+
+    def test_local_artifact_uses_hermes_home_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_TOOL_ARTIFACT_DIR", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        content = "x" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_home",
+            env=None,
+            threshold=30_000,
+        )
+        saved_line = next(line for line in result.splitlines() if line.startswith("Full output saved to:"))
+        saved_path = saved_line.split(":", 1)[1].strip()
+        assert saved_path.startswith(str(tmp_path / "hermes-home" / "tool-artifacts"))
 
     def test_env_write_failure_falls_back_to_truncation(self):
         env = MagicMock()
@@ -516,25 +554,12 @@ class TestPerToolThresholds:
         except ImportError:
             pytest.skip("terminal_tool not importable in test env")
 
-    def test_read_file_result_size_cap(self):
+    def test_read_file_never_persisted(self):
         from tools.registry import registry
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("read_file")
-            assert val == 100_000
-        except ImportError:
-            pytest.skip("file_tools not importable in test env")
-
-    def test_read_file_registry_cap_is_100k(self):
-        """Regression test: read_file must have a 100_000 char registry cap (Layer 2 safety net)."""
-        from tools.registry import registry
-        try:
-            import tools.file_tools  # noqa: F401
-            val = registry.get_max_result_size("read_file")
-            assert val == 100_000, (
-                f"read_file registry cap must be 100_000, got {val!r}. "
-                "float('inf') is not allowed — it disables the Layer 2 result-size guard."
-            )
+            assert val == float("inf")
         except ImportError:
             pytest.skip("file_tools not importable in test env")
 

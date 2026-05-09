@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -611,6 +612,40 @@ def ensure_installed(*, log_failures: bool = True):
 _MAX_FINDINGS = 50
 _MAX_SUMMARY_LEN = 500
 
+# Sed/awk alternative delimiters that can trigger false-positive hostname scans
+_SED_ALT_DELIMS = "|#%,@"
+
+
+def _is_sed_pattern_false_positive(command: str, flagged_text: str) -> bool:
+    """Return True when flagged text lives inside a sed/awk substitution pattern
+    using alternative delimiters (``s|...|...|``, ``s#...#...#``, etc.).
+
+    Tirith's hostname scanner treats sed/awk delimiter characters (``|``, ``#``,
+    ``%``, ``,``, ``@``) as invalid hostname chars, flagging the pattern body.
+    This function detects those false positives by verifying the flagged text
+    is a substring of an actual sed substitution match in the command.
+
+    Args:
+        command: The full command string being scanned.
+        flagged_text: The text tirith flagged as an invalid hostname.
+
+    Returns:
+        True if the flagged text is inside a sed/awk substitution pattern.
+    """
+    if not flagged_text or not command:
+        return False
+
+    for d in _SED_ALT_DELIMS:
+        escaped = re.escape(d)
+        # Find all sed substitution patterns with this delimiter.
+        # The flagged text must appear WITHIN the matched pattern body —
+        # not merely co-exist elsewhere in the same command.
+        for m in re.finditer(rf"s{escaped}.+?{escaped}.+?{escaped}", command):
+            if flagged_text in m.group(0):
+                return True
+
+    return False
+
 
 def check_command_security(command: str) -> dict:
     """Run tirith security scan on a command.
@@ -678,8 +713,31 @@ def check_command_security(command: str) -> dict:
     try:
         data = json.loads(result.stdout) if result.stdout.strip() else {}
         raw_findings = data.get("findings", [])
-        findings = raw_findings[:_MAX_FINDINGS]
+
+        # Post-filter: suppress hostname false-positives inside sed/awk
+        # substitution patterns (s|...|...|, s#...#...#, etc.)
+        kept = []
+        suppressed = 0
+        for f in raw_findings:
+            text = (
+                f.get("flagged_text", "")
+                or f.get("text", "")
+                or f.get("hostname", "")
+                or f.get("match", "")
+                or f.get("value", "")
+            )
+            if _is_sed_pattern_false_positive(command, text):
+                suppressed += 1
+            else:
+                kept.append(f)
+
+        findings = kept[:_MAX_FINDINGS]
         summary = (data.get("summary", "") or "")[:_MAX_SUMMARY_LEN]
+
+        # If every finding was a sed false-positive, downgrade the block
+        if suppressed > 0 and not findings and action != "allow":
+            action = "allow"
+            summary = "clean (sed/awk false positive suppressed)"
     except (json.JSONDecodeError, AttributeError):
         # JSON parse failure degrades findings/summary, not the verdict
         logger.debug("tirith JSON parse failed, using exit code only")

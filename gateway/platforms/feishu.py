@@ -154,11 +154,82 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Feishu post-type 'md' elements do not render tables, so we convert them
+# to fenced code blocks before sending as post.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+_MARKDOWN_TABLE_BLOCK_RE = re.compile(
+    r"(?:^\|.+\|\s*\n)+^\|[-|: ]+\|\s*\n(?:^\|.+\|\s*\n)*",
+    re.MULTILINE,
+)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
+
+
+def _convert_markdown_tables_to_code_blocks(content: str) -> str:
+    """Convert markdown tables to fenced code blocks.
+
+    Feishu post-type 'md' elements don't render tables — they either
+    disappear or corrupt the surrounding layout.  Instead of dropping
+    to plain-text mode we wrap each table in a code fence so the data
+    stays visible in monospace while the rest of the message renders
+    with full markdown formatting.
+
+    Tables inside existing fenced code blocks are left untouched.
+    """
+    if not _MARKDOWN_TABLE_RE.search(content):
+        return content
+
+    lines = content.split("\n")
+    result: list[str] = []
+    in_fence = False
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Track existing code fences to skip their content
+        if _MARKDOWN_FENCE_OPEN_RE.match(stripped):
+            in_fence = True
+            result.append(line)
+            i += 1
+            continue
+        if in_fence:
+            result.append(line)
+            if _MARKDOWN_FENCE_CLOSE_RE.match(stripped):
+                in_fence = False
+            i += 1
+            continue
+
+        # Outside a fence — detect a markdown table starting on this line
+        if _is_table_header_line(stripped, lines, i):
+            # Collect full table block
+            table_lines: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i])
+                i += 1
+            # Wrap in code fence
+            result.append("```")
+            result.extend(table_lines)
+            result.append("```")
+        else:
+            result.append(line)
+            i += 1
+
+    return "\n".join(result)
+
+
+def _is_table_header_line(stripped: str, lines: list[str], i: int) -> bool:
+    """Return True if lines[i] starts a markdown table."""
+    if not stripped.startswith("|"):
+        return False
+    if i + 1 >= len(lines):
+        return False
+    next_stripped = lines[i + 1].strip()
+    return bool(re.match(r"^\|[-|: ]+\|", next_stripped))
+
+
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
@@ -4005,12 +4076,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Feishu post-type 'md' elements do not render markdown tables.
+        # Convert any markdown tables to fenced code blocks so they display
+        # in monospace rather than disappearing or forcing the whole message
+        # into plain-text mode.
+        content = _convert_markdown_tables_to_code_blocks(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

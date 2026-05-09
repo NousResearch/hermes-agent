@@ -53,6 +53,60 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 
+def _latest_text_by_role(history: List[Dict[str, Any]], role: str, limit: int = 1600) -> str:
+    """Return recent visible text for a role from the transcript tail."""
+    for msg in reversed(history or []):
+        if msg.get("role") != role:
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()[-limit:]
+    return ""
+
+
+def _extract_auto_topic_split_decision(
+    raw: str,
+    *,
+    min_confidence: float = 0.6,
+) -> tuple[Optional[bool], str]:
+    """Parse the LLM topic-boundary judge response.
+
+    Returns:
+        True  -> start a new session
+        False -> keep the current session
+        None  -> invalid/uncertain; caller should keep current session
+    """
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if match:
+        text = match.group(0)
+    try:
+        data = json.loads(text)
+    except Exception as exc:
+        return None, f"invalid_json:{type(exc).__name__}"
+    if not isinstance(data, dict):
+        return None, "invalid_payload"
+
+    decision = str(data.get("decision") or data.get("action") or "").strip().lower()
+    confidence = data.get("confidence", 1.0)
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    reason = str(data.get("reason") or decision or "llm_judge")
+
+    if decision in {"new_session", "new", "split", "start_new", "reset"}:
+        if confidence < min_confidence:
+            return None, f"low_confidence:{confidence:.2f}:{reason}"
+        return True, reason
+    if decision in {"continue", "same_session", "same", "keep", "keep_session"}:
+        return False, reason
+    return None, f"unknown_decision:{decision or 'empty'}"
+
+
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
 
@@ -1507,6 +1561,211 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
+
+    def _auto_topic_split_enabled(self, source: SessionSource) -> bool:
+        """Return whether unrelated incoming messages should start a fresh session."""
+        raw_env = os.getenv("HERMES_AUTO_TOPIC_SPLIT", "").strip().lower()
+        if raw_env in {"1", "true", "yes", "on"}:
+            return True
+        if raw_env in {"0", "false", "no", "off"}:
+            return False
+        if source.platform in (Platform.WEBHOOK, Platform.LOCAL):
+            return False
+        try:
+            cfg = _load_gateway_config()
+            raw = cfg_get(cfg, "sessions", "auto_topic_split", "enabled", default=None)
+            if raw is None:
+                raw = cfg_get(cfg, "auto_topic_split", "enabled", default=False)
+            return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+        except Exception:
+            return False
+
+    def _auto_topic_split_config(self) -> dict:
+        try:
+            cfg = _load_gateway_config()
+            raw = cfg_get(cfg, "sessions", "auto_topic_split", default=None)
+            if raw is None:
+                raw = cfg_get(cfg, "auto_topic_split", default={})
+            return raw if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
+
+    async def _judge_auto_topic_split_with_llm(
+        self,
+        *,
+        user_text: str,
+        history: List[Dict[str, Any]],
+        source: SessionSource,
+        session_key: str,
+    ) -> tuple[bool, str]:
+        """Use an auxiliary LLM to decide whether a gateway turn starts a new topic."""
+        current = (user_text or "").strip()
+        if not current or not history or current.startswith("/"):
+            return False, "empty_history_or_command"
+
+        previous_user = _latest_text_by_role(history, "user", limit=1200)
+        previous_assistant = _latest_text_by_role(history, "assistant", limit=1800)
+        if not previous_user and not previous_assistant:
+            return False, "no_reference_turn"
+
+        cfg = self._auto_topic_split_config()
+        min_confidence = cfg.get("min_confidence", 0.6)
+        try:
+            min_confidence = float(min_confidence)
+        except (TypeError, ValueError):
+            min_confidence = 0.6
+        timeout_s = cfg.get("timeout_seconds", 8)
+        try:
+            timeout_s = max(1.0, float(timeout_s))
+        except (TypeError, ValueError):
+            timeout_s = 8.0
+        task_name = str(cfg.get("auxiliary_task") or "topic_split")
+
+        try:
+            model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source,
+                session_key=session_key,
+                user_config=_load_gateway_config(),
+            )
+            main_runtime = {
+                **runtime_kwargs,
+                "model": model,
+            }
+            from agent.auxiliary_client import get_text_auxiliary_client
+
+            client, judge_model = get_text_auxiliary_client(
+                task=task_name,
+                main_runtime=main_runtime,
+            )
+            if client is None or not judge_model:
+                logger.info("Auto topic split: no auxiliary LLM available; keeping current session")
+                return False, "no_auxiliary_llm"
+            judge_model = str(cfg.get("model") or judge_model)
+
+            system_prompt = (
+                "You are Hermes's conversation-boundary judge for an agent platform. "
+                "Decide whether the current user message should continue the existing "
+                "conversation session or start a fresh session. Consider semantic intent, "
+                "references to prior work, and whether the new request depends on the "
+                "previous assistant answer. If uncertain, choose continue. Return only "
+                "valid compact JSON with keys: decision, confidence, reason. decision "
+                "must be either \"continue\" or \"new_session\"."
+            )
+            user_prompt = json.dumps(
+                {
+                    "previous_user_message": previous_user,
+                    "previous_assistant_answer": previous_assistant,
+                    "current_user_message": current[-2000:],
+                    "output_schema": {
+                        "decision": "continue | new_session",
+                        "confidence": "number from 0 to 1",
+                        "reason": "short explanation",
+                    },
+                },
+                ensure_ascii=False,
+            )
+
+            def _call_judge() -> str:
+                response = client.chat.completions.create(
+                    model=judge_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                )
+                choice = response.choices[0]
+                message = getattr(choice, "message", None)
+                return str(getattr(message, "content", "") or "")
+
+            loop = asyncio.get_running_loop()
+            raw = await asyncio.wait_for(
+                loop.run_in_executor(None, _call_judge),
+                timeout=timeout_s,
+            )
+            decision, reason = _extract_auto_topic_split_decision(
+                raw,
+                min_confidence=min_confidence,
+            )
+            if decision is None:
+                logger.info("Auto topic split: uncertain judge response (%s); keeping session", reason)
+                return False, reason
+            return bool(decision), reason
+        except Exception as exc:
+            logger.info("Auto topic split judge failed; keeping current session: %s", exc)
+            return False, f"judge_failed:{type(exc).__name__}"
+
+    async def _auto_reset_session_for_unrelated_input(
+        self,
+        *,
+        session_key: str,
+        source: SessionSource,
+        old_entry: Any,
+    ) -> Any:
+        """Rotate a gateway session because the new message starts a new topic."""
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            with _cache_lock:
+                _cached = self._agent_cache.get(session_key)
+                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+            if _old_agent is not None:
+                self._cleanup_agent_resources(_old_agent)
+        self._evict_cached_agent(session_key)
+
+        _qe = getattr(self, "_queued_events", None)
+        if _qe is not None:
+            _qe.pop(session_key, None)
+
+        new_entry = self.session_store.reset_session(session_key)
+        if new_entry is None:
+            new_entry = self.session_store.get_or_create_session(source, force_new=True)
+
+        self._session_model_overrides.pop(session_key, None)
+        self._set_session_reasoning_override(session_key, None)
+        if hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes.pop(session_key, None)
+        self._clear_session_boundary_security_state(session_key)
+
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _old_sid = getattr(old_entry, "session_id", None)
+            _invoke_hook(
+                "on_session_finalize",
+                session_id=_old_sid,
+                platform=source.platform.value if source.platform else "",
+            )
+        except Exception:
+            pass
+
+        await self.hooks.emit("session:end", {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "session_key": session_key,
+        })
+        await self.hooks.emit("session:reset", {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "session_key": session_key,
+            "reason": "auto_topic_split",
+        })
+
+        if self._is_telegram_topic_lane(source) and new_entry is not None:
+            try:
+                self._record_telegram_topic_binding(source, new_entry)
+            except Exception:
+                logger.debug("Failed to rebind Telegram topic after auto topic split", exc_info=True)
+
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _new_sid = getattr(new_entry, "session_id", None)
+            _invoke_hook(
+                "on_session_reset",
+                session_id=_new_sid,
+                platform=source.platform.value if source.platform else "",
+            )
+        except Exception:
+            pass
+
+        return new_entry
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
@@ -6224,6 +6483,41 @@ class GatewayRunner:
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
+
+        # Load conversation history before building context so optional
+        # topic-boundary detection can rotate the session first.
+        history = self.session_store.load_transcript(session_entry.session_id)
+
+        if history and self._auto_topic_split_enabled(source):
+            should_split, split_reason = await self._judge_auto_topic_split_with_llm(
+                user_text=event.text or "",
+                history=history,
+                source=source,
+                session_key=session_key,
+            )
+            if should_split:
+                old_session_id = session_entry.session_id
+                session_entry = await self._auto_reset_session_for_unrelated_input(
+                    session_key=session_key,
+                    source=source,
+                    old_entry=session_entry,
+                )
+                history = []
+                _is_new_session = True
+                logger.info(
+                    "Auto topic split: session_key=%s old_session=%s new_session=%s reason=%s",
+                    session_key,
+                    old_session_id,
+                    getattr(session_entry, "session_id", ""),
+                    split_reason,
+                )
+                await self.hooks.emit("session:start", {
+                    "platform": source.platform.value if source.platform else "",
+                    "user_id": source.user_id,
+                    "session_id": session_entry.session_id,
+                    "session_key": session_key,
+                    "reason": "auto_topic_split",
+                })
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
@@ -6342,9 +6636,6 @@ class GatewayRunner:
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
-        # Load conversation history from transcript
-        history = self.session_store.load_transcript(session_entry.session_id)
-        
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #

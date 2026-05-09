@@ -978,22 +978,37 @@ def _maybe_wrap_anthropic(
         )
         return client_obj
 
+    # The Anthropic SDK appends /v1/messages to base_url.  If the caller
+    # already rewrote the URL through _to_openai_base_url() (which adds /v1
+    # for Kimi Coding's /coding endpoint), the SDK would double it:
+    #   /coding/v1  →  /coding/v1/v1/messages  (404).
+    # Strip the trailing /v1 for endpoints the Anthropic SDK handles.
+    anthropic_base_url = base_url
+    if base_url and base_url.rstrip("/").endswith("/v1"):
+        from agent.anthropic_adapter import _is_kimi_coding_endpoint
+        if _is_kimi_coding_endpoint(base_url):
+            anthropic_base_url = base_url.rstrip("/")[:-3]  # strip "/v1"
+            logger.debug(
+                "Stripped /v1 from Kimi base URL for Anthropic SDK: %s → %s",
+                base_url, anthropic_base_url,
+            )
+
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        real_client = build_anthropic_client(api_key, anthropic_base_url)
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
-            "OpenAI-wire client.", base_url, exc,
+            "OpenAI-wire client.", anthropic_base_url, exc,
         )
         return client_obj
 
     logger.debug(
         "Auxiliary transport: wrapping client in AnthropicAuxiliaryClient "
         "(model=%s, base_url=%s, api_mode=%s)",
-        model, base_url[:60] if base_url else "", api_mode or "auto-detected",
+        model, anthropic_base_url[:60] if anthropic_base_url else "", api_mode or "auto-detected",
     )
     return AnthropicAuxiliaryClient(
-        real_client, model, api_key, base_url, is_oauth=False,
+        real_client, model, api_key, anthropic_base_url, is_oauth=False,
     )
 
 

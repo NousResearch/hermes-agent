@@ -9902,7 +9902,7 @@ class AIAgent:
             )
             try:
                 _payload = json.loads(result)
-                _key = _payload.get("recall_key")
+                _key = _payload.get("auto_recall_key") or _payload.get("recall_key")
                 if _key:
                     _recent = getattr(self, "_memory_recall_recent_keys", {}) or {}
                     _recent[_key] = self._user_turn_count
@@ -10555,7 +10555,7 @@ class AIAgent:
                 )
                 try:
                     _payload = json.loads(function_result)
-                    _key = _payload.get("recall_key")
+                    _key = _payload.get("auto_recall_key") or _payload.get("recall_key")
                     if _key:
                         _recent = getattr(self, "_memory_recall_recent_keys", {}) or {}
                         _recent[_key] = self._user_turn_count
@@ -11453,9 +11453,10 @@ class AIAgent:
                     )
                     _decision = decide_recall(
                         _gate_ctx,
-                        strategy=str(_router_cfg.get("strategy", "hybrid") or "hybrid"),
+                        strategy=str(_router_cfg.get("strategy", "heuristic") or "heuristic"),
                         max_depth=str(_router_cfg.get("max_depth", "standard") or "standard"),
                         max_budget=str(_router_cfg.get("max_budget", "small") or "small"),
+                        timeout=float(_router_cfg.get("timeout", 8.0) or 8.0),
                     )
                     if _decision.should_recall:
                         _recall_query = _decision.query or _query
@@ -11469,15 +11470,33 @@ class AIAgent:
                         _recent = getattr(self, "_memory_recall_recent_keys", {})
                         _last_seen = _recent.get(_recall_key)
                         if _last_seen is None or (self._user_turn_count - int(_last_seen)) > _ttl:
-                            _ext_prefetch_cache = self._memory_manager.recall_now_all(
-                                _recall_query,
-                                mode="auto",
-                                depth=_decision.depth,
-                                sources=_decision.sources,
-                                budget=_decision.budget,
-                                provenance=_decision.provenance,
-                                session_id=self.session_id or "",
-                            ) or ""
+                            _wants_session = any(
+                                _src in ("session_fts", "session_summary")
+                                for _src in (_decision.sources or [])
+                            )
+                            if _wants_session:
+                                from tools.recall_tool import recall as _recall_tool
+                                _ext_prefetch_cache = _recall_tool(
+                                    _recall_query,
+                                    mode="auto",
+                                    depth=_decision.depth,
+                                    sources=_decision.sources,
+                                    budget=_decision.budget,
+                                    provenance=_decision.provenance,
+                                    memory_manager=self._memory_manager,
+                                    db=self._session_db,
+                                    current_session_id=self.session_id,
+                                ) or ""
+                            else:
+                                _ext_prefetch_cache = self._memory_manager.recall_now_all(
+                                    _recall_query,
+                                    mode="auto",
+                                    depth=_decision.depth,
+                                    sources=_decision.sources,
+                                    budget=_decision.budget,
+                                    provenance=_decision.provenance,
+                                    session_id=self.session_id or "",
+                                ) or ""
                             _recent[_recall_key] = self._user_turn_count
                             # Clear old duplicate-suppression entries so the
                             # router does not permanently suppress a topic.

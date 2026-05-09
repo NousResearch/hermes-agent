@@ -41,15 +41,32 @@ def test_gate_context_strips_memory_blocks_and_tool_messages():
             {"role": "tool", "content": "tool output should not be included"},
             {"role": "assistant", "content": "answer"},
         ],
-        platform_context={"platform": "discord"},
+        platform_context={"platform": "discord", "user_id": "raw-user-123"},
         session_metadata={"session_id": "s1"},
     )
 
     dumped = json.dumps(ctx, ensure_ascii=False)
     assert "SECRET" not in dumped
     assert "tool output" not in dumped
+    assert "raw-user-123" not in dumped
+    assert "\"s1\"" not in dumped
+    assert ctx["platform_context"]["user_id"].startswith("sha256:")
+    assert ctx["session_metadata"]["session_id"].startswith("sha256:")
     assert "visible" in dumped
     assert ctx["platform_context"]["platform"] == "discord"
+
+
+def test_gate_context_caps_long_current_message():
+    ctx = build_recall_gate_context(
+        "x" * 5000,
+        [{"role": "assistant", "content": "y" * 5000}],
+        platform_context={"platform": "discord"},
+        max_chars=500,
+    )
+
+    assert len(json.dumps(ctx, ensure_ascii=False)) <= 500
+    assert ctx["recent_turns"] == []
+    assert len(ctx["current_message"]) < 5000
 
 
 def test_heuristic_skips_short_ack_and_routes_project_memory():
@@ -59,6 +76,15 @@ def test_heuristic_skips_short_ack_and_routes_project_memory():
     assert decision.should_recall is True
     assert decision.depth == "light"
     assert decision.sources == ["graph"]
+
+
+def test_default_recall_router_is_privacy_preserving_heuristic():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    cfg = DEFAULT_CONFIG["memory"]["recall_router"]
+    assert cfg["enabled"] is True
+    assert cfg["strategy"] == "heuristic"
+    assert cfg["timeout"] == 8.0
 
 
 def test_heuristic_caps_evidence_to_standard_for_auto():

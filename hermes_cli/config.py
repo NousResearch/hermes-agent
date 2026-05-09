@@ -1001,11 +1001,13 @@ DEFAULT_CONFIG = {
         "provider": "",
         "recall_router": {
             "enabled": True,
-            # heuristic = local rules only; hybrid = rules first, cheap LLM only
-            # when rules say no; llm = cheap LLM every turn with heuristic fallback.
-            "strategy": "hybrid",
+            # heuristic = local rules only. hybrid/llm may send sanitized current
+            # and recent turn text (with platform/session IDs hashed) to the
+            # auxiliary memory_recall model; opt in if you want semantic gating.
+            "strategy": "heuristic",
             "recent_turns": 6,
             "max_context_chars": 4000,
+            "timeout": 8.0,
             "max_depth": "standard",   # automatic recall never goes deep/evidence
             "max_budget": "small",
             "dedupe_ttl_turns": 2,

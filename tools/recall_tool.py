@@ -127,16 +127,20 @@ def recall(
                     current_session_id=current_session_id,
                 )
                 try:
-                    results["sessions"] = json.loads(raw)
+                    session_payload = json.loads(raw)
+                    results["sessions"] = session_payload
+                    if isinstance(session_payload, dict) and session_payload.get("success") is False:
+                        errors.append("session recall returned unsuccessful result")
                 except Exception:
                     results["sessions"] = raw
             except Exception as exc:  # pragma: no cover - defensive fail-open
                 errors.append(f"session recall failed: {exc}")
 
     recall_key = stable_recall_key(query, mode=mode, depth=depth, sources=normalized_sources)
+    auto_recall_key = stable_recall_key(query, mode="auto", depth=depth, sources=normalized_sources)
     return json.dumps(
         {
-            "success": bool(results) and not (errors and not results),
+            "success": bool(results) and not errors,
             "query": query,
             "mode": mode,
             "depth": depth,
@@ -144,6 +148,7 @@ def recall(
             "budget": budget,
             "provenance": provenance,
             "recall_key": recall_key,
+            "auto_recall_key": auto_recall_key,
             "results": results,
             "errors": errors,
         },
@@ -152,9 +157,16 @@ def recall(
 
 
 def check_recall_requirements() -> bool:
-    # run_agent injects db/memory_manager at call time; exposing the tool is safe
-    # whenever the session_search toolset is enabled.
-    return True
+    # Keep the session_search toolset availability aligned with the concrete
+    # session_search backend.  recall can still use graph-only paths at runtime
+    # through AIAgent's special dispatch, but its public tool schema lives in
+    # the session_search toolset and should not make that toolset appear
+    # available earlier than session_search itself.
+    try:
+        from tools.session_search_tool import check_session_search_requirements
+        return check_session_search_requirements()
+    except Exception:
+        return False
 
 
 RECALL_SCHEMA = {
@@ -200,6 +212,7 @@ registry.register(
         provenance=args.get("provenance", "ids"),
         role_filter=args.get("role_filter"),
         limit=args.get("limit"),
+        memory_manager=kw.get("memory_manager"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
     ),

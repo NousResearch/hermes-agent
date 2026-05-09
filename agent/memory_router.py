@@ -39,6 +39,32 @@ _LONG_TERM_RE = re.compile(
 
 _DEPTH_ORDER = {"none": 0, "light": 1, "standard": 2, "deep": 3, "evidence": 4}
 _BUDGET_ORDER = {"tiny": 0, "small": 1, "medium": 2, "large": 3}
+_SENSITIVE_METADATA_KEY_RE = re.compile(r"(user|chat|thread|session|gateway).*(_?id|key)$|^.*_id$", re.IGNORECASE)
+
+
+def _sanitize_gate_metadata(metadata: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Return low-risk platform/session metadata for the optional LLM gate.
+
+    The gate only needs coarse routing hints.  Preserve labels such as platform,
+    but hash stable identifiers so auxiliary providers never see raw Discord /
+    Telegram / gateway IDs.
+    """
+    safe: Dict[str, Any] = {}
+    for key, value in dict(metadata or {}).items():
+        key_str = str(key)
+        if value is None:
+            safe[key_str] = ""
+            continue
+        value_str = str(value)
+        if _SENSITIVE_METADATA_KEY_RE.search(key_str):
+            if value_str:
+                digest = hashlib.sha256(value_str.encode("utf-8", "ignore")).hexdigest()[:12]
+                safe[key_str] = f"sha256:{digest}"
+            else:
+                safe[key_str] = ""
+        else:
+            safe[key_str] = value
+    return safe
 
 
 @dataclass
@@ -116,8 +142,8 @@ def build_recall_gate_context(
     ctx: Dict[str, Any] = {
         "current_message": clean_current[:2000],
         "recent_turns": turns,
-        "platform_context": dict(platform_context or {}),
-        "session_metadata": dict(session_metadata or {}),
+        "platform_context": _sanitize_gate_metadata(platform_context),
+        "session_metadata": _sanitize_gate_metadata(session_metadata),
     }
     encoded = json.dumps(ctx, ensure_ascii=False)
     if len(encoded) > max_chars:
@@ -125,6 +151,15 @@ def build_recall_gate_context(
         while turns and len(json.dumps(ctx, ensure_ascii=False)) > max_chars:
             turns.pop(0)
         ctx["recent_turns"] = turns
+    if len(json.dumps(ctx, ensure_ascii=False)) > max_chars:
+        # Very long current turns can exceed the cap even with no history.
+        # Preserve the beginning of the user's message and leave room for
+        # metadata/JSON framing rather than leaking an unbounded gate prompt.
+        overhead_ctx = dict(ctx)
+        overhead_ctx["current_message"] = ""
+        overhead = len(json.dumps(overhead_ctx, ensure_ascii=False))
+        budget = max(0, max_chars - overhead - 32)
+        ctx["current_message"] = ctx["current_message"][:budget]
     return ctx
 
 

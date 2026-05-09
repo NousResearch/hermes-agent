@@ -49,6 +49,16 @@ def test_recall_standard_routes_graph_and_session_search(monkeypatch):
     assert data["results"]["graph"] == "graph memory hit"
     assert data["results"]["sessions"]["results"][0]["summary"] == "session hit"
     assert data["recall_key"]
+    assert data["auto_recall_key"]
+    assert data["auto_recall_key"] != data["recall_key"]
+
+
+def test_recall_auto_key_matches_manual_query_for_auto_suppression():
+    manager = DummyMemoryManager()
+    manual = json.loads(recall("Graphiti auth", depth="light", memory_manager=manager))
+    auto = json.loads(recall("Graphiti auth", mode="auto", depth="light", memory_manager=manager))
+
+    assert manual["auto_recall_key"] == auto["recall_key"]
 
 
 def test_recall_reports_missing_sources():
@@ -80,3 +90,16 @@ def test_recall_budget_clamps_session_limit(monkeypatch):
 
     assert data["success"] is True
     assert seen["limit"] == 1
+
+
+def test_recall_surfaces_nested_session_failure(monkeypatch):
+    def fake_session_search(**kwargs):
+        return json.dumps({"success": False, "error": "fts unavailable"})
+
+    monkeypatch.setattr("tools.session_search_tool.session_search", fake_session_search)
+    raw = recall("history", depth="standard", sources=["session_fts"], db=object())
+    data = json.loads(raw)
+
+    assert data["success"] is False
+    assert data["results"]["sessions"]["success"] is False
+    assert "session recall returned unsuccessful result" in data["errors"]

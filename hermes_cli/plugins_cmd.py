@@ -77,6 +77,23 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
     return target
 
 
+def _git_executable() -> Optional[str]:
+    """Return a usable git executable path, if available.
+
+    Some non-interactive runtimes (for example dashboard/API workers) may run
+    with a minimal PATH that omits standard binary directories even when git is
+    installed. Resolve git robustly before spawning subprocesses.
+    """
+    git_cmd = shutil.which("git")
+    if git_cmd:
+        return git_cmd
+
+    for candidate in ("/usr/bin/git", "/usr/local/bin/git", "/bin/git"):
+        if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _resolve_git_url(identifier: str) -> str:
     """Turn an identifier into a cloneable Git URL.
 
@@ -324,9 +341,13 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
     with tempfile.TemporaryDirectory() as tmp:
         tmp_target = Path(tmp) / "plugin"
 
+        git_cmd = _git_executable()
+        if not git_cmd:
+            raise PluginOperationError("git is not installed or not in PATH.")
+
         try:
             result = subprocess.run(
-                ["git", "clone", "--depth", "1", git_url, str(tmp_target)],
+                [git_cmd, "clone", "--depth", "1", git_url, str(tmp_target)],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -1472,9 +1493,13 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
+    git_cmd = _git_executable()
+    if not git_cmd:
+        return False, "git is not installed or not in PATH."
+
     try:
         result = subprocess.run(
-            ["git", "pull", "--ff-only"],
+            [git_cmd, "pull", "--ff-only"],
             capture_output=True,
             text=True,
             timeout=60,

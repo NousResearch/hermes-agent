@@ -309,7 +309,19 @@ class TestTencentTokenhubContextLength:
     def test_hy3_preview_context_length(self):
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length("hy3-preview")
-        assert ctx == 256000
+        # OpenRouter live API returns 262144 (256 * 1024); static fallback
+        # tracks the same value so tests pass whether resolution comes from
+        # live cache or static table (issue #22268).
+        assert ctx == 262144
+
+    def test_hy3_preview_static_fallback_matches_live(self):
+        """Static DEFAULT_CONTEXT_LENGTHS entry must match OpenRouter live (issue #22268).
+
+        Pins the static value so this stays correct even when the live cache
+        is unavailable in test environments (CI without network).
+        """
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+        assert DEFAULT_CONTEXT_LENGTHS["hy3-preview"] == 262144
 
 
 # =============================================================================

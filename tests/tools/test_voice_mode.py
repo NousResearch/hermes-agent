@@ -216,6 +216,60 @@ class TestDetectAudioEnvironment:
         assert any("Termux:API Android app is not installed" in w for w in result["warnings"])
 
 
+    def test_docker_with_pulse_server_allows_voice(self, monkeypatch):
+        """Docker with PULSE_SERVER set should NOT block voice mode (#21203)."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.setenv("PULSE_SERVER", "unix:/run/user/1000/pulse/native")
+        monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert result["warnings"] == []
+        assert any("Docker" in n for n in result.get("notices", []))
+
+    def test_docker_with_pipewire_remote_allows_voice(self, monkeypatch):
+        """Docker with PIPEWIRE_REMOTE set should NOT block voice mode (#21203)."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.setenv("PIPEWIRE_REMOTE", "/run/user/1000/pipewire-0")
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert result["warnings"] == []
+        assert any("Docker" in n for n in result.get("notices", []))
+
+    def test_docker_without_audio_forwarding_blocks_voice(self, monkeypatch):
+        """Docker without PULSE_SERVER/PIPEWIRE_REMOTE keeps blocking voice mode."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is False
+        assert any("Docker" in w for w in result["warnings"])
+        assert any("PULSE_SERVER" in w or "PIPEWIRE_REMOTE" in w for w in result["warnings"])
+
     def test_termux_api_microphone_allows_voice_without_sounddevice(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")

@@ -102,10 +102,22 @@ def detect_audio_environment() -> dict:
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
         warnings.append("Running over SSH -- no audio devices available")
 
-    # Docker/Podman container detection
+    # Docker/Podman container detection — honor host audio forwarding.
+    # When the user mounts a PulseAudio/PipeWire socket into the container
+    # and points PULSE_SERVER / PIPEWIRE_REMOTE at it, audio works fine
+    # (issue #21203).  Only block when no forwarding is configured.
     from hermes_constants import is_container
     if is_container():
-        warnings.append("Running inside Docker container -- no audio devices")
+        if os.environ.get('PULSE_SERVER') or os.environ.get('PIPEWIRE_REMOTE'):
+            notices.append("Running inside Docker container with host audio forwarding")
+        else:
+            warnings.append(
+                "Running inside Docker container -- no audio devices.\n"
+                "  Forward host audio with one of:\n"
+                "    PulseAudio:  -v /run/user/1000/pulse/native:/run/user/1000/pulse/native \\\n"
+                "                 -e PULSE_SERVER=unix:/run/user/1000/pulse/native\n"
+                "    PipeWire:    -e PIPEWIRE_REMOTE=/run/user/1000/pipewire-0"
+            )
 
     # WSL detection — PulseAudio bridge makes audio work in WSL.
     # Only block if PULSE_SERVER is not configured.

@@ -4026,12 +4026,28 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
         )
         
-        # Extract reply context if this message is a reply
+        # Extract reply context if this message is a reply.
+        # Prefer Telegram's native partial quote (message.quote, TextQuote)
+        # so a user replying to a single selected substring of a prior
+        # multi-section message doesn't get the whole replied-to message
+        # injected into the agent's context — which can cause the agent
+        # to act on unrelated actionable-looking text the user didn't
+        # quote (#22619). Fall back to the full replied-to message text
+        # / caption when no native quote is present.
         reply_to_id = None
         reply_to_text = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
-            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+            quote = getattr(message, "quote", None)
+            quote_text = getattr(quote, "text", None) if quote is not None else None
+            if quote_text:
+                reply_to_text = quote_text
+            else:
+                reply_to_text = (
+                    message.reply_to_message.text
+                    or message.reply_to_message.caption
+                    or None
+                )
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt

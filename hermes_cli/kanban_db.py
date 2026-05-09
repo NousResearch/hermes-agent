@@ -3572,26 +3572,30 @@ def dispatch_once(
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     spawned = 0
-    active_policy_limited = False
+    active_issue_pipeline_profiles = {
+        "backend-eng", "frontend-eng", "fullstack-eng", "data-eng", "devops-eng",
+        "reviewer", "qa-eng", "security-eng", "release-manager",
+    }
+    active_count = 0
     if policy.max_active_issue_pipelines is not None:
-        active_count = conn.execute(
+        active_count = int(conn.execute(
             "SELECT COUNT(*) AS n FROM tasks WHERE status = 'running' AND assignee IN ("
             "'backend-eng','frontend-eng','fullstack-eng','data-eng','devops-eng',"
             "'reviewer','qa-eng','security-eng','release-manager')"
-        ).fetchone()["n"]
-        active_policy_limited = int(active_count) >= policy.max_active_issue_pipelines
+        ).fetchone()["n"])
     for row in ready_rows:
         if max_spawn is not None and spawned >= max_spawn:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        if active_policy_limited and row["assignee"] in {
-            "backend-eng", "frontend-eng", "fullstack-eng", "data-eng", "devops-eng",
-            "reviewer", "qa-eng", "security-eng", "release-manager",
-        }:
-            result.skipped_nonspawnable.append(row["id"])
-            continue
+        if row["assignee"] in active_issue_pipeline_profiles:
+            if (
+                policy.max_active_issue_pipelines is not None
+                and active_count >= policy.max_active_issue_pipelines
+            ):
+                result.skipped_nonspawnable.append(row["id"])
+                continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
@@ -3617,6 +3621,9 @@ def dispatch_once(
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            if row["assignee"] in active_issue_pipeline_profiles:
+                active_count += 1
+            spawned += 1
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -3658,6 +3665,8 @@ def dispatch_once(
             # complete_task).
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
+            if claimed.assignee in active_issue_pipeline_profiles:
+                active_count += 1
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),

@@ -57,6 +57,44 @@ def test_idempotency_key_returns_existing_task(kanban_home):
         conn.close()
 
 
+def test_dispatch_policy_throttle_counts_spawns_in_same_tick(kanban_home, all_assignees_spawnable):
+    policies = kanban_home / "kanban" / "policies"
+    policies.mkdir(parents=True)
+    (policies / "default.json").write_text(json.dumps({"max_active_issue_pipelines": 1}))
+    conn = kb.connect()
+    try:
+        first = kb.create_task(conn, title="first", assignee="backend-eng")
+        second = kb.create_task(conn, title="second", assignee="frontend-eng")
+
+        res = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+
+        assert len(res.spawned) == 1
+        assert res.spawned[0][0] == first
+        assert second in res.skipped_nonspawnable
+        assert kb.get_task(conn, first).status == "running"
+        assert kb.get_task(conn, second).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_dispatch_policy_throttle_counts_dry_run_spawns_in_same_tick(kanban_home, all_assignees_spawnable):
+    policies = kanban_home / "kanban" / "policies"
+    policies.mkdir(parents=True)
+    (policies / "default.json").write_text(json.dumps({"max_active_issue_pipelines": 1}))
+    conn = kb.connect()
+    try:
+        first = kb.create_task(conn, title="first", assignee="backend-eng")
+        second = kb.create_task(conn, title="second", assignee="frontend-eng")
+
+        res = kb.dispatch_once(conn, dry_run=True, spawn_fn=lambda task, ws: None)
+
+        assert len(res.spawned) == 1
+        assert res.spawned[0][0] == first
+        assert second in res.skipped_nonspawnable
+    finally:
+        conn.close()
+
+
 def test_idempotency_key_ignored_for_archived(kanban_home):
     conn = kb.connect()
     try:

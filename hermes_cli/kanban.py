@@ -855,7 +855,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
 def _cmd_cleanup(args: argparse.Namespace) -> int:
     data = kc.cleanup_board(kb.get_current_board(), dry_run=getattr(args, "dry_run", False))
     _print_json_or_summary(data, as_json=getattr(args, "json", False))
-    return 0
+    return 0 if data.get("verified") else 1
 
 
 def _cmd_teardown(args: argparse.Namespace) -> int:
@@ -1784,35 +1784,6 @@ def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
-    # Completion-time linting: warn loudly before writing weak handoffs.
-    # This is non-blocking for backwards compatibility with manual repair/bulk
-    # operations, but the dedicated `kanban validate` command exits non-zero on
-    # hard errors.
-    if len(ids) == 1:
-        try:
-            from hermes_cli import kanban_validation as kv
-            with kb.connect() as conn:
-                task = kb.get_task(conn, ids[0])
-                if task is not None:
-                    class _PendingRun:
-                        def __init__(self, summary, metadata):
-                            self.summary = summary
-                            self.metadata = metadata
-                    pending = _PendingRun(summary if summary is not None else args.result, metadata)
-                    findings = kv.validate_tasks([task], {ids[0]: [pending]}, policy=kp.load_policy(kb.get_current_board()))
-                    completion_findings = [f for f in findings if f.severity == "error"]
-                    if completion_findings:
-                        print(
-                            f"kanban: completion validation warning for {ids[0]} "
-                            f"({len(completion_findings)} error-level issue(s)); "
-                            "completion will proceed, but downstream gates may block:",
-                            file=sys.stderr,
-                        )
-                        for f in completion_findings[:5]:
-                            print(f"  - {f.code}: {f.title}", file=sys.stderr)
-        except Exception as exc:
-            print(f"kanban: completion validation skipped: {exc}", file=sys.stderr)
-
     failed: list[str] = []
     with kb.connect() as conn:
         for tid in ids:
@@ -1836,35 +1807,6 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
-    # Completion-time linting: warn loudly before writing weak handoffs.
-    # This is non-blocking for backwards compatibility with manual repair/bulk
-    # operations, but the dedicated `kanban validate` command exits non-zero on
-    # hard errors.
-    if len(ids) == 1:
-        try:
-            from hermes_cli import kanban_validation as kv
-            with kb.connect() as conn:
-                task = kb.get_task(conn, ids[0])
-                if task is not None:
-                    class _PendingRun:
-                        def __init__(self, summary, metadata):
-                            self.summary = summary
-                            self.metadata = metadata
-                    pending = _PendingRun(summary if summary is not None else args.result, metadata)
-                    findings = kv.validate_tasks([task], {ids[0]: [pending]}, policy=kp.load_policy(kb.get_current_board()))
-                    completion_findings = [f for f in findings if f.severity == "error"]
-                    if completion_findings:
-                        print(
-                            f"kanban: completion validation warning for {ids[0]} "
-                            f"({len(completion_findings)} error-level issue(s)); "
-                            "completion will proceed, but downstream gates may block:",
-                            file=sys.stderr,
-                        )
-                        for f in completion_findings[:5]:
-                            print(f"  - {f.code}: {f.title}", file=sys.stderr)
-        except Exception as exc:
-            print(f"kanban: completion validation skipped: {exc}", file=sys.stderr)
-
     failed: list[str] = []
     with kb.connect() as conn:
         for tid in ids:
@@ -1881,35 +1823,6 @@ def _cmd_archive(args: argparse.Namespace) -> int:
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
-    # Completion-time linting: warn loudly before writing weak handoffs.
-    # This is non-blocking for backwards compatibility with manual repair/bulk
-    # operations, but the dedicated `kanban validate` command exits non-zero on
-    # hard errors.
-    if len(ids) == 1:
-        try:
-            from hermes_cli import kanban_validation as kv
-            with kb.connect() as conn:
-                task = kb.get_task(conn, ids[0])
-                if task is not None:
-                    class _PendingRun:
-                        def __init__(self, summary, metadata):
-                            self.summary = summary
-                            self.metadata = metadata
-                    pending = _PendingRun(summary if summary is not None else args.result, metadata)
-                    findings = kv.validate_tasks([task], {ids[0]: [pending]}, policy=kp.load_policy(kb.get_current_board()))
-                    completion_findings = [f for f in findings if f.severity == "error"]
-                    if completion_findings:
-                        print(
-                            f"kanban: completion validation warning for {ids[0]} "
-                            f"({len(completion_findings)} error-level issue(s)); "
-                            "completion will proceed, but downstream gates may block:",
-                            file=sys.stderr,
-                        )
-                        for f in completion_findings[:5]:
-                            print(f"  - {f.code}: {f.title}", file=sys.stderr)
-        except Exception as exc:
-            print(f"kanban: completion validation skipped: {exc}", file=sys.stderr)
-
     failed: list[str] = []
     with kb.connect() as conn:
         for tid in ids:

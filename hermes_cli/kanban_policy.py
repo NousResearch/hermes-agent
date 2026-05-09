@@ -9,9 +9,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+_BOARD_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]{0,63}$")
+
+
+def normalize_board_slug(board: str) -> str:
+    slug = str(board).strip().lower()
+    if not slug or not _BOARD_SLUG_RE.match(slug):
+        raise ValueError(
+            f"invalid board slug {board!r}: must be 1-64 chars, lowercase alphanumerics / hyphens / underscores"
+        )
+    return slug
 
 
 @dataclass(frozen=True)
@@ -101,7 +114,7 @@ def policies_root(*, home: Path | None = None) -> Path:
 
 
 def policy_path_for_board(board: str, *, home: Path | None = None) -> Path:
-    return policies_root(home=home) / f"{board}.json"
+    return policies_root(home=home) / f"{normalize_board_slug(board)}.json"
 
 
 def default_policy(board: str) -> BoardPolicy:

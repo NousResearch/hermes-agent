@@ -23,6 +23,7 @@ from hermes_cli.kanban_policy import BoardPolicy, load_policy
 class ProcessInfo:
     pid: int
     command: str
+    source: str = "detected"
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,12 @@ def list_registered_worktrees(project_root: Path | None) -> list[WorktreeInfo]:
 
 
 def find_relevant_processes(board: str, policy: BoardPolicy) -> list[ProcessInfo]:
+    """Return processes that should be reported as board-related.
+
+    This intentionally reports broad matches for inventory visibility only.
+    Destructive teardown uses ``find_killable_worker_processes`` instead so a
+    common board slug/path cannot kill unrelated shells, editors, or tests.
+    """
     proc = _run(["ps", "-eo", "pid=,args="])
     if proc.returncode != 0:
         return []
@@ -123,8 +130,38 @@ def find_relevant_processes(board: str, policy: BoardPolicy) -> list[ProcessInfo
             continue
         lower = command.lower()
         if any(n and n in lower for n in needles) and "ps -eo" not in lower:
-            infos.append(ProcessInfo(pid=pid, command=command))
+            infos.append(ProcessInfo(pid=pid, command=command, source="broad_match"))
     return infos
+
+
+def find_killable_worker_processes(board: str) -> list[ProcessInfo]:
+    """Return only DB-recorded running worker PIDs for this board.
+
+    Teardown must not kill by substring. The Kanban DB already tracks worker_pid
+    for running tasks; use that exact metadata and let ambiguous broad matches be
+    reported, not killed.
+    """
+    db_path = kb.kanban_db_path(board=board)
+    if not db_path.exists():
+        return []
+    conn = kb.connect(board=board)
+    try:
+        rows = conn.execute(
+            "SELECT id, worker_pid FROM tasks "
+            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
+    by_pid = {p.pid: p.command for p in find_relevant_processes(board, BoardPolicy(board=board))}
+    workers: list[ProcessInfo] = []
+    for row in rows:
+        try:
+            pid = int(row["worker_pid"])
+        except (TypeError, ValueError):
+            continue
+        command = by_pid.get(pid, f"worker_pid={pid} task={row['id']}")
+        workers.append(ProcessInfo(pid=pid, command=command, source=f"worker_pid:{row['id']}"))
+    return workers
 
 
 def classify_worktree_for_cleanup(info: WorktreeInfo, policy: BoardPolicy, processes: list[ProcessInfo]) -> CleanupDecision:
@@ -197,19 +234,55 @@ def stop_processes(processes: list[ProcessInfo], *, timeout: float = 1.0) -> lis
     return stopped
 
 
+def _remove_git_worktree(project_root: Path | None, path: str) -> tuple[bool, str]:
+    if project_root is None:
+        return False, "policy has no project_root"
+    proc = _run(["git", "worktree", "remove", "--force", path], cwd=project_root)
+    target = Path(path).expanduser().resolve(strict=False)
+    if proc.returncode == 0 and not target.exists():
+        return True, ""
+    error = (proc.stderr or proc.stdout or "worktree path still exists after remove").strip()
+    return False, error
+
+
+def _remove_tree(path: Path) -> tuple[bool, str]:
+    if not path.exists():
+        return True, ""
+    try:
+        shutil.rmtree(path)
+    except Exception as exc:
+        return False, repr(exc)
+    if path.exists():
+        return False, "path still exists after removal"
+    return True, ""
+
+
 def cleanup_board(board: str, *, dry_run: bool = True) -> dict[str, Any]:
     policy = load_policy(board)
     processes = find_relevant_processes(board, policy)
     decisions = [classify_worktree_for_cleanup(w, policy, processes) for w in list_registered_worktrees(policy.project_root)]
     removed: list[str] = []
+    errors: list[dict[str, str]] = []
     if not dry_run:
         for decision in decisions:
             if decision.action == "safe_remove":
-                _run(["git", "worktree", "remove", "--force", decision.path], cwd=policy.project_root)
-                removed.append(decision.path)
+                ok, error = _remove_git_worktree(policy.project_root, decision.path)
+                if ok:
+                    removed.append(decision.path)
+                else:
+                    errors.append({"path": decision.path, "error": error})
         if policy.project_root:
-            _run(["git", "worktree", "prune"], cwd=policy.project_root)
-    return {"board": board, "dry_run": dry_run, "decisions": [d.to_dict() for d in decisions], "removed": removed}
+            prune = _run(["git", "worktree", "prune"], cwd=policy.project_root)
+            if prune.returncode != 0:
+                errors.append({"path": str(policy.project_root), "error": prune.stderr.strip() or "git worktree prune failed"})
+    return {
+        "board": board,
+        "dry_run": dry_run,
+        "decisions": [d.to_dict() for d in decisions],
+        "removed": removed,
+        "errors": errors,
+        "verified": not errors,
+    }
 
 
 def teardown_board(
@@ -228,26 +301,39 @@ def teardown_board(
             "reason": "destructive teardown requires --yes",
             "inventory": inventory_board(board, policy),
         }
-    processes = find_relevant_processes(board, policy)
-    stopped = stop_processes(processes)
+    killable_processes = find_killable_worker_processes(board)
+    stopped = stop_processes(killable_processes)
+    ambiguous_processes = find_relevant_processes(board, policy)
     removed_worktrees: list[str] = []
+    errors: list[dict[str, str]] = []
     if remove_all_worktrees and policy.project_root:
+        removed_any_worktree = False
         for wt in list_registered_worktrees(policy.project_root):
             if wt.main:
                 continue
-            _run(["git", "worktree", "remove", "--force", str(wt.path)], cwd=policy.project_root)
-            removed_worktrees.append(str(wt.path))
-        _run(["git", "worktree", "prune"], cwd=policy.project_root)
+            ok, error = _remove_git_worktree(policy.project_root, str(wt.path))
+            if ok:
+                removed_worktrees.append(str(wt.path))
+                removed_any_worktree = True
+            else:
+                errors.append({"path": str(wt.path), "error": error})
+        if removed_any_worktree:
+            prune = _run(["git", "worktree", "prune"], cwd=policy.project_root)
+            if prune.returncode != 0:
+                errors.append({"path": str(policy.project_root), "error": prune.stderr.strip() or "git worktree prune failed"})
         if policy.worktree_root and policy.worktree_root.exists():
-            shutil.rmtree(policy.worktree_root, ignore_errors=True)
+            ok, error = _remove_tree(policy.worktree_root)
+            if not ok:
+                errors.append({"path": str(policy.worktree_root), "error": error})
     board_removed = False
     if delete_board:
         board_path = kb.board_dir(board)
-        if board_path.exists():
-            shutil.rmtree(board_path, ignore_errors=True)
-        board_removed = not board_path.exists()
+        ok, error = _remove_tree(board_path)
+        board_removed = ok and not board_path.exists()
+        if not ok:
+            errors.append({"path": str(board_path), "error": error})
     remaining_worktrees = [w.to_dict() for w in list_registered_worktrees(policy.project_root) if not w.main]
-    remaining_processes = [asdict(p) for p in find_relevant_processes(board, policy)]
+    remaining_processes = [asdict(p) for p in find_killable_worker_processes(board)]
     remaining_paths = []
     if delete_board and kb.board_dir(board).exists():
         remaining_paths.append(str(kb.board_dir(board)))
@@ -256,10 +342,13 @@ def teardown_board(
     return {
         "board": board,
         "processes_stopped": stopped,
+        "killable_processes": [asdict(p) for p in killable_processes],
+        "ambiguous_processes_reported_only": [asdict(p) for p in ambiguous_processes if p.pid not in set(stopped)],
         "worktrees_removed": removed_worktrees,
         "board_removed": board_removed,
         "remaining_worktrees": remaining_worktrees,
         "remaining_processes": remaining_processes,
         "remaining_paths": remaining_paths,
-        "verified": not remaining_worktrees and not remaining_processes and not remaining_paths,
+        "errors": errors,
+        "verified": not remaining_worktrees and not remaining_processes and not remaining_paths and not errors,
     }

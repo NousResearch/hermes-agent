@@ -7,6 +7,7 @@ from hermes_cli.kanban_policy import (
     default_policy,
     format_policy_guidance,
     load_policy,
+    policy_path_for_board,
     policy_report,
     validate_workspace,
 )
@@ -61,6 +62,11 @@ def test_load_policy_from_json_file(tmp_path, monkeypatch):
     assert policy.base_branch == "development"
     assert policy.max_active_issue_pipelines == 1
     assert policy.project_root == (tmp_path / "Demo").resolve(strict=False)
+
+
+def test_policy_path_rejects_path_traversal_board_slug(tmp_path):
+    with pytest.raises(ValueError, match="invalid board slug"):
+        policy_path_for_board("../evil", home=tmp_path)
 
 
 def test_missing_policy_returns_default(tmp_path, monkeypatch):

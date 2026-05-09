@@ -105,12 +105,33 @@ function widthBetween(value: string, start: number, end: number) {
   return width
 }
 
+function snapToGrapheme(value: string, pos: number): number {
+  if (pos <= 0 || pos >= value.length) {
+    return pos
+  }
+
+  let snapped = 0
+
+  for (const { index, segment } of seg().segment(value)) {
+    const end = index + segment.length
+
+    if (end > pos) {
+      return snapped
+    }
+
+    snapped = end
+  }
+
+  return snapped
+}
+
 /**
  * Mirrors the word-wrap behavior used by the composer TextInput.
  * Returns the zero-based visual line and column of the cursor cell.
  */
 export function cursorLayout(value: string, cursor: number, cols: number) {
-  const pos = Math.max(0, Math.min(cursor, value.length))
+  const rawPos = Math.max(0, Math.min(cursor, value.length))
+  const pos = snapToGrapheme(value, rawPos)
   const w = Math.max(1, cols)
   const lines = visualLines(value, w)
   let lineIndex = 0

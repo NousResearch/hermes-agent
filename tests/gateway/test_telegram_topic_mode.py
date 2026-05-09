@@ -144,6 +144,11 @@ def _make_runner(session_db=None):
     runner._invalidate_session_run_generation = MagicMock()
     runner._begin_session_run_generation = MagicMock(return_value=1)
     runner._is_session_run_current = MagicMock(return_value=True)
+    # Bypass the destructive-slash confirm gate — these tests focus on
+    # /new topic-mode mechanics, not the confirm prompt itself.
+    runner._read_user_config = lambda: {
+        "approvals": {"destructive_slash_confirm": False}
+    }
     runner._release_running_agent_state = MagicMock()
     runner._evict_cached_agent = MagicMock()
     runner._clear_session_boundary_security_state = MagicMock()

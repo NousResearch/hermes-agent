@@ -1,0 +1,15 @@
+{
+  "name": "hermes-workspace",
+  "label": "Workspace",
+  "description": "Hermes orchestration cockpit: agents, profiles, plugins, memory, Kanban launchers and debug shortcuts.",
+  "icon": "Activity",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/workspace",
+    "position": "after:kanban"
+  },
+  "slots": ["chat:top", "header-banner"],
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

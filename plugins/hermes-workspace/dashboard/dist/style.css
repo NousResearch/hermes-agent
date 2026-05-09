@@ -1,0 +1,246 @@
+.hw-root {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  text-transform: none;
+}
+
+.hw-hero,
+.hw-section,
+.hw-chat-top,
+.hw-banner {
+  border: 1px solid rgba(63, 211, 255, 0.28);
+  background: linear-gradient(180deg, rgba(7, 16, 38, 0.92), rgba(5, 9, 26, 0.86));
+  box-shadow: inset 0 0 0 1px rgba(255, 206, 58, 0.08), 0 18px 48px -32px rgba(63, 211, 255, 0.65);
+}
+
+.hw-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
+  gap: 16px;
+  padding: 16px;
+}
+
+.hw-title {
+  margin: 0;
+  font-size: 1.35rem;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+.hw-muted {
+  color: rgb(160, 184, 202);
+}
+
+.hw-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.hw-grid-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.hw-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.hw-grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hw-kpi {
+  border: 1px solid rgba(216, 240, 255, 0.16);
+  background: rgba(255, 255, 255, 0.035);
+  padding: 12px;
+  min-height: 92px;
+}
+
+.hw-kpi strong {
+  display: block;
+  font-size: 1.55rem;
+  line-height: 1.1;
+}
+
+.hw-section {
+  padding: 14px;
+}
+
+.hw-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.hw-section h2,
+.hw-section h3 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.hw-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hw-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(216, 240, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgb(216, 240, 255);
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+}
+
+.hw-pill[data-state="ok"] {
+  border-color: rgba(74, 222, 128, 0.4);
+  color: rgb(134, 239, 172);
+}
+
+.hw-pill[data-state="warn"] {
+  border-color: rgba(255, 206, 58, 0.45);
+  color: rgb(255, 224, 138);
+}
+
+.hw-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid rgba(216, 240, 255, 0.1);
+  padding: 9px 0;
+}
+
+.hw-row:first-child {
+  border-top: 0;
+}
+
+.hw-row-main {
+  min-width: 0;
+}
+
+.hw-row-main strong,
+.hw-row-main span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hw-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hw-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(140px, 180px) minmax(96px, 120px) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.hw-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.hw-field label {
+  color: rgb(160, 184, 202);
+  font-size: 0.72rem;
+}
+
+.hw-field input,
+.hw-field select,
+.hw-field textarea {
+  min-height: 36px;
+  border: 1px solid rgba(216, 240, 255, 0.18);
+  background: rgba(0, 0, 0, 0.18);
+  color: rgb(248, 252, 255);
+  padding: 8px;
+  outline: none;
+}
+
+.hw-field textarea {
+  min-height: 78px;
+  resize: vertical;
+}
+
+.hw-blueprint {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(216, 240, 255, 0.15);
+  background: rgba(255, 255, 255, 0.035);
+  padding: 12px;
+  min-height: 170px;
+}
+
+.hw-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.72rem;
+  word-break: break-all;
+}
+
+.hw-chat-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+}
+
+.hw-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px;
+  color: rgb(216, 240, 255);
+  text-transform: none;
+}
+
+.hw-small {
+  font-size: 0.78rem;
+}
+
+@media (max-width: 1100px) {
+  .hw-grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hw-hero,
+  .hw-grid-3,
+  .hw-grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .hw-form {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .hw-form,
+  .hw-grid-4 {
+    grid-template-columns: 1fr;
+  }
+
+  .hw-section-head,
+  .hw-chat-top,
+  .hw-banner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

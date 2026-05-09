@@ -572,6 +572,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
+    _thread_metadata_for_source,
     merge_pending_message_event,
 )
 from gateway.restart import (
@@ -9320,7 +9321,10 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            if hasattr(self, "_thread_metadata_for_source") and hasattr(self, "_reply_anchor_for_event"):
+                _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            else:
+                _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
             from gateway.platforms.base import should_send_media_as_audio
 
@@ -11389,6 +11393,7 @@ class GatewayRunner:
         if (
             getattr(source, "platform", None) == Platform.TELEGRAM
             and getattr(source, "chat_type", None) == "dm"
+            and str(thread_id).isdigit()
         ):
             metadata["telegram_dm_topic_reply_fallback"] = True
             anchor = reply_to_message_id or getattr(source, "message_id", None)

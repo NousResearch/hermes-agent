@@ -177,7 +177,8 @@ class XAIImageGenProvider(ImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         xai_ar = _XAI_ASPECT_RATIOS.get(aspect, "1:1")
         resolution = _resolve_resolution()
-        xai_res = _XAI_RESOLUTIONS.get(resolution, "1024")
+        # API expects the literal "1k" / "2k" strings, not the numeric mapping
+        xai_res = resolution if resolution in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
 
         payload: Dict[str, Any] = {
             "model": API_MODEL,

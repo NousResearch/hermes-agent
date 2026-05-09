@@ -92,9 +92,38 @@ Cloudflare Pages auto-deploys on push — typically live within 30 seconds.
 
 Each gets its own entry in the hub index.
 
+## Wiki as HTML pages
+
+Gordon maintains his personal wiki in markdown (`/opt/data/wiki/`) and wants it rendered as HTML on Cloudflare. Workflow:
+
+1. **Write markdown** — entities, concepts, comparisons in the wiki dir
+2. **Convert to HTML** — use `/opt/data/scripts/md2html.py`:
+   - Reads all `.md` files under the wiki directory
+   - Applies dark GitHub-style theme (matching the landing page aesthetic)
+   - Adds a top navigation bar with links to key wiki pages
+   - Outputs `.html` files mirroring the wiki structure under `/opt/data/hermes-pages-repo/wiki/`
+   - Strips YAML frontmatter before rendering
+   - Converts wikilinks `[[Page Name]]` to `<a href="Page-Name.html">Page Name</a>`
+3. **Push** — commit to `hermes-pages` repo: `cd /opt/data/hermes-pages-repo && git add wiki/ && git commit -m "Update wiki" && GIT_TERMINAL_PROMPT=0 git push origin main`
+4. **Access control** — Cloudflare Zero Trust Access (free for 50 users) secures the wiki:
+   - Go to **dash.cloudflare.com → Zero Trust → Settings → Authentication → Add identity provider → GitHub** (easiest since Gordon uses GitHub)
+   - Create an Access Policy for `hermes-pages.rouse-gordon.workers.dev/wiki/*`
+   - Include Gordon's email or GitHub identity; action: Allow
+   - Note: this locks the entire `workers.dev` subdomain. If landing pages should stay public, need separate subdomains.
+   - If Gordon can't find Settings: try **cloudflare.com/zero-trust** directly, or in Pages: **Workers & Pages → hermes-pages → Settings → Restrictions**
+
+## Cloudflare Access setup troubleshooting
+
+Gordon couldn't find Settings at cloudflare.com/zero-trust. Possible paths:
+- **Zero Trust dashboard**: dash.cloudflare.com → Left sidebar → Zero Trust → Settings tab
+- **Pages project**: Workers & Pages → hermes-pages project → Settings → General → Access Policy
+- **Direct URL**: cloudflare.com/zero-trust
+- The key setting is under **Access → Applications** to create a policy targeting `/wiki/*`
+
 ## Pitfalls
 
 - **Forgetting to update the index** — results in stale links on the hub page pointing to old filenames
 - **`GITHUB_TOKEN` not set** — `publish_html` returns `{"success": false, "error": "GITHUB_TOKEN is not set"}`. Fix: read from `/opt/data/.git-credentials` as shown above
 - **Interactive git prompts** — never run `git push` without `GIT_TERMINAL_PROMPT=0` in this environment
 - **Git author identity unknown** — always configure `user.email` and `user.name` before committing to hermes-pages repo (different from hermes-agent repo which has its own gitconfig)
+- **Wiki subdirectory in hermes-pages** — the `.git` directory from the original wiki clone can cause `git add` failures. Always `rm -rf /opt/data/hermes-pages-repo/gordons-llm-wiki/.git` before adding.

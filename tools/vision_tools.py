@@ -951,6 +951,26 @@ async def video_analyze_tool(
         local_path = Path(os.path.expanduser(resolved_url))
 
         if local_path.is_file():
+            # SECURITY: Restrict local file access to known video extensions.
+            # Without this, video_analyze can be invoked as a generic local
+            # file reader (e.g. ~/.hermes/.env, ~/.aws/credentials) — the
+            # contents are then base64-encoded into a data URL and shipped
+            # to the multimodal LLM, where they may surface in the tool
+            # result. This bypasses any approval gating that operators have
+            # placed on read_file in policy-restricted deployments.
+            _ALLOWED_VIDEO_SUFFIXES = {
+                ".mp4", ".mov", ".avi", ".mkv", ".webm",
+                ".gif", ".m4v", ".mpg", ".mpeg", ".wmv", ".flv",
+            }
+            if local_path.suffix.lower() not in _ALLOWED_VIDEO_SUFFIXES:
+                return {
+                    "error": (
+                        f"Local file access in video_analyze is restricted "
+                        f"to known video extensions (got "
+                        f"{local_path.suffix!r}). Use a remote URL or copy "
+                        f"to a .mp4/.mov/.webm file first."
+                    )
+                }
             logger.info("Using local video file: %s", video_url)
             temp_video_path = local_path
             should_cleanup = False

@@ -4316,30 +4316,39 @@ class FeishuAdapter(BasePlatformAdapter):
             # reply path.
             effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
-        # In group chats, default to threaded replies so the bot's response
-        # forms a topic instead of flooding the main feed. Opt out via
-        # `feishu.reply_in_thread: false` in config. Only applies when we
-        # have a parent message to reply to — Feishu's API can't create a
-        # topic from a top-level send. DMs (chat_type=dm) are unaffected.
+        # Group-chat anchor fallback. Two distinct cases handled together:
+        #   (a) reply_in_thread is False (no metadata.thread_id) AND no
+        #       reply_to: classic auto-thread — pick a cached user message id
+        #       so the bot's reply starts/joins a topic instead of flooding
+        #       the main feed.
+        #   (b) reply_in_thread is True (metadata carries a thread_id) but no
+        #       reply_to / metadata.reply_to_message_id: the caller wants the
+        #       send inside an existing topic but didn't supply an anchor.
+        #       Without one we'd fall through to a top-level send (Feishu's
+        #       reply API is the *only* way to land in a topic), so the
+        #       thread_id silently no-ops. _deliver_media_from_response is
+        #       the canonical example: it builds metadata={thread_id} only.
+        # In both cases we need an anchor message that lives in (or will
+        # anchor) the right topic. The most recent inbound user message in
+        # this chat is exactly that — the user's own message is in their
+        # topic, and replying to it with reply_in_thread=true joins (case b)
+        # or starts (case a) the topic.
         if (
-            not reply_in_thread
+            not effective_reply_to
             and bool(self.config.extra.get("reply_in_thread", True))
         ):
             chat_mode = await self._get_chat_mode(chat_id)
             # Per Feishu docs, chat_mode is the canonical chat-classification
             # field: "p2p" (DM), "group" (regular group), "topic" (topic
-            # group). Auto-threading only makes sense for "group" — DMs don't
-            # need it and topic groups already enforce a topic structure.
+            # group). The fallback is only safe for "group" — DMs don't need
+            # threading, and topic groups have their own enforcement.
             if chat_mode == "group":
-                # Implicit anchor: when the gateway didn't pass an explicit
-                # reply_to (e.g. tool-progress / status / approval paths in
-                # fresh group chats where source.thread_id is empty), fall
-                # back to the most recent inbound user message in this chat.
-                # Without this, those sends bypass the auto-thread branch and
-                # flood the main feed alongside the threaded final reply.
-                if not effective_reply_to:
-                    effective_reply_to = self._last_user_message_id.get(chat_id)
-                if effective_reply_to:
+                anchor = self._last_user_message_id.get(chat_id)
+                if anchor:
+                    effective_reply_to = anchor
+                    # Always ensure reply_in_thread=true when we supply an
+                    # implicit anchor — covers case (a) and is a no-op for
+                    # case (b) (already True).
                     reply_in_thread = True
         if effective_reply_to:
             body = self._build_reply_message_body(

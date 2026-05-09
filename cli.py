@@ -72,9 +72,10 @@ except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 
 try:
-    from hermes_cli.pt_input_extras import install_shift_enter_alias
+    from hermes_cli.pt_input_extras import install_shift_enter_alias, install_ctrl_enter_alias
     install_shift_enter_alias()
-    del install_shift_enter_alias
+    install_ctrl_enter_alias()
+    del install_shift_enter_alias, install_ctrl_enter_alias
 except Exception:
     pass
 import threading
@@ -1862,6 +1863,37 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 )
 
 
+def _preserve_ctrl_enter_newline() -> bool:
+    """Detect environments where Ctrl+Enter must produce a newline, not submit.
+
+    Native Windows, WSL, SSH sessions, and Windows Terminal all send Ctrl+Enter
+    as bare LF (c-j). On those terminals c-j must NOT be bound to submit;
+    binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
+    submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
+    some thin PTYs without SSH) still need c-j bound to submit, so we keep
+    that binding for those.
+
+    See issue #22379.
+    """
+    if sys.platform == "win32":
+        return True
+    if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
+        return True
+    if os.environ.get("WT_SESSION"):
+        return True
+    if "microsoft" in os.environ.get("WSL_DISTRO_NAME", "").lower():
+        return True
+    # WSL detection — env vars can be scrubbed under sudo, also peek /proc.
+    for p in ("/proc/version", "/proc/sys/kernel/osrelease"):
+        try:
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                if "microsoft" in f.read().lower():
+                    return True
+        except OSError:
+            continue
+    return False
+
+
 def _bind_prompt_submit_keys(kb, handler) -> None:
     """Bind terminal Enter forms to the submit handler.
 
@@ -1869,13 +1901,15 @@ def _bind_prompt_submit_keys(kb, handler) -> None:
     some thin PTYs (docker exec, certain SSH flavors) deliver Enter as LF
     instead of CR — without this, Enter appears dead on those terminals.
 
-    On Windows, Windows Terminal delivers Ctrl+Enter as a distinct c-j key
-    while plain Enter is c-m, so we leave c-j unbound here — it becomes the
-    multi-line newline keystroke, giving Windows users an Enter-involving
-    newline without any terminal settings changes.
+    Exception: on Windows, WSL, SSH sessions, and Windows Terminal,
+    c-j is the wire encoding of Ctrl+Enter (a distinct keystroke from
+    plain Enter / c-m). We leave c-j unbound there so the c-j newline
+    handler registered separately can fire — giving the user an
+    Enter-involving newline keystroke without terminal settings changes.
+    See _preserve_ctrl_enter_newline() and issue #22379.
     """
     kb.add("enter")(handler)
-    if sys.platform != "win32":
+    if sys.platform != "win32" and not _preserve_ctrl_enter_newline():
         kb.add("c-j")(handler)
 
 
@@ -10855,18 +10889,19 @@ class HermesCLI:
             """
             event.current_buffer.insert_text('\n')
 
-        if sys.platform == "win32":
+        if _preserve_ctrl_enter_newline():
             @kb.add('c-j')
-            def handle_ctrl_enter_newline_windows(event):
-                """Ctrl+Enter inserts a newline on Windows.
+            def handle_ctrl_enter_newline(event):
+                """Ctrl+Enter inserts a newline on Windows, WSL, SSH, and WT.
 
-                Windows Terminal delivers Ctrl+Enter as LF (c-j), distinct
-                from plain Enter (c-m). This binding makes Ctrl+Enter the
-                Windows equivalent of Alt+Enter, giving an Enter-involving
-                newline keystroke without requiring terminal settings changes.
-                Ctrl+J (the raw LF keystroke) also triggers this by virtue
-                of being the same key code — a harmless side effect since
-                Ctrl+J has no conflicting Hermes binding.
+                Windows Terminal (incl. WSL/SSH sessions through it) delivers
+                Ctrl+Enter as LF (c-j), distinct from plain Enter (c-m). This
+                binding makes Ctrl+Enter the equivalent of Alt+Enter on those
+                terminals, giving an Enter-involving newline keystroke
+                without requiring terminal settings changes. Ctrl+J (the raw
+                LF keystroke) also triggers this by virtue of being the same
+                key code — a harmless side effect since Ctrl+J has no
+                conflicting Hermes binding. See issue #22379.
                 """
                 event.current_buffer.insert_text('\n')
 

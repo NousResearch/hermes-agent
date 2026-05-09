@@ -381,7 +381,14 @@ def _release_active_session_slot(session: dict | None) -> None:
 
 
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
-    """Best-effort finalize hook + memory commit for a session."""
+    """Best-effort finalize hook + memory commit for a session.
+
+    Fires ``on_session_end`` plugin hook and attempts to persist any
+    unflushed messages before closing the session.  This mirrors the
+    CLI's exit-path behaviour and prevents data loss when the TUI is
+    force-quit (double Ctrl‑C, terminal‑close, SIGHUP) while the agent
+    is mid‑turn.
+    """
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
@@ -397,6 +404,51 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             history = list(session.get("history", []))
     else:
         history = list(session.get("history", []))
+
+    # ── Persist unflushed messages to SQLite ──────────────────────────
+    # Two sources, tried in order of freshness:
+    #   1. agent._session_messages — set by the last _persist_session()
+    #      call inside run_conversation().  This is the most recent
+    #      snapshot the agent thread wrote, and may include partial
+    #      turn data that hasn't reached session["history"] yet.
+    #   2. session["history"] — updated after run_conversation()
+    #      returns.  Stale when the agent is mid‑turn, but correct
+    #      when the turn completed before finalize.
+    # Best‑effort — the agent thread may still be mid‑turn, so only
+    # previously completed messages are guaranteed.
+    if agent is not None and hasattr(agent, "_persist_session"):
+        snapshot = (
+            getattr(agent, "_session_messages", None)
+            or history
+        )
+        if snapshot:
+            try:
+                agent._persist_session(snapshot, conversation_history=history)
+            except Exception:
+                pass
+
+    # ── Plugin hook: on_session_end ────────────────────────────────────
+    # Signals every plugin that the session is closing, with
+    # interrupted=True so crash‑recovery plugins can flush buffers,
+    # persist state, or close connections before the gateway exits.
+    # Mirrors cli.py's atexit handler that fires the same hook when
+    # the user Ctrl‑C's mid‑turn.
+    if agent is not None:
+        try:
+            from hermes_cli.plugins import invoke_hook
+
+            invoke_hook(
+                "on_session_end",
+                session_id=getattr(agent, "session_id", None)
+                or session.get("session_key", ""),
+                completed=False,
+                interrupted=True,
+                model=getattr(agent, "model", "unknown"),
+                platform=getattr(agent, "platform", None) or "tui",
+            )
+        except Exception:
+            pass
+
     if agent is not None and history and hasattr(agent, "commit_memory_session"):
         try:
             agent.commit_memory_session(history)

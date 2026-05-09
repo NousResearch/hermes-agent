@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 import html as _html
 import re
 from typing import Dict, List, Optional, Any
@@ -305,6 +306,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Clarify prompt state: clarify_id → metadata/future for the waiting agent thread.
+        self._clarify_state: Dict[str, dict] = {}
+        self._clarify_counter: int = 0
 
     def _is_callback_user_authorized(
         self,
@@ -1472,6 +1476,107 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return False
 
+    def _normalize_clarify_choice(self, choice: Any, index: int) -> Dict[str, str]:
+        if isinstance(choice, dict):
+            label = str(choice.get("label") or choice.get("title") or choice.get("value") or f"Option {index + 1}").strip()
+            description = str(choice.get("description") or choice.get("subtext") or choice.get("details") or "").strip()
+            value = str(choice.get("value") or label).strip()
+        else:
+            raw = str(choice).strip()
+            label, description = raw, ""
+            for sep in (" — ", " - ", ": "):
+                if sep in raw:
+                    left, right = raw.split(sep, 1)
+                    if left.strip() and right.strip():
+                        label, description = left.strip(), right.strip()
+                        break
+            value = raw
+        return {"label": label[:64], "description": description, "value": value or label}
+
+    async def ask_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[List[Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout_seconds: int = 600,
+    ) -> str:
+        """Send an interactive clarify prompt and wait for button/text response."""
+        if not self._bot:
+            raise RuntimeError("Telegram adapter is not connected")
+
+        self._clarify_counter += 1
+        clarify_id = f"{int(time.time())}-{self._clarify_counter}"
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        normalized = [self._normalize_clarify_choice(c, i) for i, c in enumerate(choices or [])][:4]
+
+        lines = [f"❓ <b>{_html.escape(question)}</b>"]
+        if normalized:
+            lines.append("")
+            for i, item in enumerate(normalized, start=1):
+                lines.append(f"<b>{i}. {_html.escape(item['label'])}</b>")
+                if item.get("description"):
+                    lines.append(f"   <i>{_html.escape(item['description'])}</i>")
+        else:
+            lines.append("\nReply with your answer.")
+
+        rows = []
+        if normalized:
+            for i, item in enumerate(normalized):
+                rows.append([InlineKeyboardButton(item["label"][:48], callback_data=f"cl:{clarify_id}:{i}")])
+            rows.append([InlineKeyboardButton("Other", callback_data=f"cl:{clarify_id}:other")])
+            reply_markup = InlineKeyboardMarkup(rows)
+        else:
+            reply_markup = None
+
+        thread_id = self._metadata_thread_id(metadata)
+        message_thread_id = self._message_thread_id_for_send(thread_id)
+        kwargs: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "text": "\n".join(lines),
+            "parse_mode": ParseMode.HTML,
+            **self._link_preview_kwargs(),
+        }
+        if reply_markup is not None:
+            kwargs["reply_markup"] = reply_markup
+        if message_thread_id is not None:
+            kwargs["message_thread_id"] = message_thread_id
+
+        msg = await self._bot.send_message(**kwargs)
+        self._clarify_state[clarify_id] = {
+            "future": future,
+            "chat_id": str(chat_id),
+            "thread_id": str(thread_id) if thread_id is not None else None,
+            "user_id": str((metadata or {}).get("user_id") or ""),
+            "message_id": str(msg.message_id),
+            "choices": normalized,
+            "waiting_for_other": not normalized,
+        }
+
+        try:
+            return await asyncio.wait_for(future, timeout=timeout_seconds)
+        finally:
+            self._clarify_state.pop(clarify_id, None)
+
+    def _resolve_clarify_text_reply(self, event: MessageEvent) -> bool:
+        """Resolve a pending open-ended/Other clarify prompt from a text message."""
+        for clarify_id, state in list(self._clarify_state.items()):
+            if not state.get("waiting_for_other"):
+                continue
+            if str(event.source.chat_id) != state.get("chat_id"):
+                continue
+            if (state.get("thread_id") or None) != (str(event.source.thread_id) if event.source.thread_id is not None else None):
+                continue
+            wanted_user = state.get("user_id")
+            if wanted_user and str(event.source.user_id) != wanted_user:
+                continue
+            future = state.get("future")
+            if future and not future.done():
+                future.set_result((event.text or "").strip())
+                return True
+        return False
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
@@ -1930,6 +2035,78 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Clarify callbacks (cl:clarify_id:index|other) ---
+        if data.startswith("cl:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid clarify data.")
+                return
+            clarify_id, selection = parts[1], parts[2]
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                return
+
+            state = self._clarify_state.get(clarify_id)
+            if not state:
+                await query.answer(text="This prompt has already been resolved.")
+                return
+            wanted_user = state.get("user_id")
+            if wanted_user and caller_id != wanted_user:
+                await query.answer(text="This prompt is waiting for someone else.")
+                return
+
+            future = state.get("future")
+            if selection == "other":
+                state["waiting_for_other"] = True
+                await query.answer(text="Type your answer as the next message.")
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+                if query.message:
+                    send_kwargs: Dict[str, Any] = {
+                        "chat_id": int(query.message.chat_id),
+                        "text": "Other selected. Type your answer as the next message.",
+                    }
+                    thread_id = getattr(query.message, "message_thread_id", None)
+                    if thread_id is not None:
+                        send_kwargs["message_thread_id"] = thread_id
+                    await self._bot.send_message(**send_kwargs)
+                return
+
+            try:
+                idx = int(selection)
+            except ValueError:
+                await query.answer(text="Invalid selection.")
+                return
+            choices = state.get("choices") or []
+            if idx < 0 or idx >= len(choices):
+                await query.answer(text="Invalid selection.")
+                return
+            selected = choices[idx]
+            response = selected.get("value") or selected.get("label") or ""
+            label = selected.get("label") or response
+            if future and not future.done():
+                future.set_result(response)
+            await query.answer(text=label[:120])
+            try:
+                await query.edit_message_text(
+                    text=f"❓ Clarify answered: <b>{_html.escape(label)}</b>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---
@@ -2994,6 +3171,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        if self._resolve_clarify_text_reply(event):
+            return
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

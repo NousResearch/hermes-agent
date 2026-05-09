@@ -13809,6 +13809,28 @@ class GatewayRunner:
         else:
             _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
+        _clarify_metadata = dict(_status_thread_metadata or {})
+        if source.user_id:
+            _clarify_metadata["user_id"] = source.user_id
+
+        def _clarify_callback_sync(question: str, choices=None) -> str:
+            if not _status_adapter or not hasattr(_status_adapter, "ask_clarify"):
+                return "Clarify is not supported on this gateway platform."
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    _status_adapter.ask_clarify(
+                        _status_chat_id,
+                        question,
+                        choices=choices,
+                        metadata=_clarify_metadata,
+                    ),
+                    _loop_for_step,
+                )
+                return str(fut.result(timeout=660)).strip()
+            except Exception as exc:
+                logger.warning("gateway clarify callback failed: %s", exc, exc_info=True)
+                return f"Clarify failed: {exc}"
+
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
                 return
@@ -14071,6 +14093,7 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
+            agent.clarify_callback = _clarify_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}

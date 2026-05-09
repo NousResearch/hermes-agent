@@ -12,7 +12,7 @@ a thin dispatcher that delegates to a platform-provided callback.
 """
 
 import json
-from typing import List, Optional, Callable
+from typing import Any, List, Optional, Callable
 
 
 # Maximum number of predefined choices the agent can offer.
@@ -22,7 +22,7 @@ MAX_CHOICES = 4
 
 def clarify_tool(
     question: str,
-    choices: Optional[List[str]] = None,
+    choices: Optional[List[Any]] = None,
     callback: Optional[Callable] = None,
 ) -> str:
     """
@@ -44,13 +44,28 @@ def clarify_tool(
 
     question = question.strip()
 
-    # Validate and trim choices
+    # Validate and trim choices. Choices may be plain strings or objects like
+    # {"label": "Fast", "description": "Shortest path", "value": "fast"}.
     if choices is not None:
         if not isinstance(choices, list):
-            return tool_error("choices must be a list of strings.")
-        choices = [str(c).strip() for c in choices if str(c).strip()]
-        if len(choices) > MAX_CHOICES:
-            choices = choices[:MAX_CHOICES]
+            return tool_error("choices must be a list of strings or choice objects.")
+        normalized_choices = []
+        for choice in choices:
+            if isinstance(choice, dict):
+                label = str(choice.get("label") or choice.get("title") or choice.get("value") or "").strip()
+                description = str(choice.get("description") or choice.get("subtext") or choice.get("details") or "").strip()
+                value = str(choice.get("value") or label).strip()
+                if label:
+                    normalized_choices.append({
+                        "label": label,
+                        "description": description,
+                        "value": value,
+                    })
+            else:
+                text = str(choice).strip()
+                if text:
+                    normalized_choices.append(text)
+        choices = normalized_choices[:MAX_CHOICES]
         if not choices:
             choices = None  # empty list → open-ended
 
@@ -111,10 +126,23 @@ CLARIFY_SCHEMA = {
             },
             "choices": {
                 "type": "array",
-                "items": {"type": "string"},
+                "items": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                                "description": {"type": "string"},
+                                "value": {"type": "string"},
+                            },
+                            "required": ["label"],
+                        },
+                    ]
+                },
                 "maxItems": MAX_CHOICES,
                 "description": (
-                    "Up to 4 answer choices. Omit this parameter entirely to "
+                    "Up to 4 answer choices, either strings or {label, description, value} objects. Omit this parameter entirely to "
                     "ask an open-ended question. When provided, the UI "
                     "automatically appends an 'Other (type your answer)' option."
                 ),

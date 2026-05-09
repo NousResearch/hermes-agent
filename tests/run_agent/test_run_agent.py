@@ -517,6 +517,42 @@ class TestExtractReasoning:
         msg = _mock_assistant_msg(content=content)
         assert agent._extract_reasoning(msg) == expected
 
+    def test_content_list_thinking_blocks_extracted(self, agent):
+        """DeepSeek V4 Pro returns content as a typed-block list (issue #21944).
+
+        Without this branch thinking text is silently dropped → HTTP 400 on
+        the next turn ("thinking must be passed back to the API").
+        """
+        msg = _mock_assistant_msg(
+            content=[
+                {"type": "thinking", "thinking": "deep analysis here"},
+                {"type": "output", "text": "final answer"},
+            ]
+        )
+        result = agent._extract_reasoning(msg)
+        assert result == "deep analysis here"
+
+    def test_content_list_non_thinking_blocks_ignored(self, agent):
+        """Non-thinking blocks in a content list must not be treated as reasoning."""
+        msg = _mock_assistant_msg(
+            content=[
+                {"type": "text", "text": "just a regular response"},
+            ]
+        )
+        assert agent._extract_reasoning(msg) is None
+
+    def test_content_list_thinking_prefers_structured_field(self, agent):
+        """Structured ``reasoning`` field wins over content-list thinking blocks."""
+        msg = _mock_assistant_msg(
+            reasoning="from structured field",
+            content=[
+                {"type": "thinking", "thinking": "from content list"},
+            ],
+        )
+        result = agent._extract_reasoning(msg)
+        # structured field was found first → content-list branch skipped
+        assert result == "from structured field"
+
 
 class TestCleanSessionContent:
     def test_none_passthrough(self):

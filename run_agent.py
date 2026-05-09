@@ -3529,6 +3529,19 @@ class AIAgent:
         # instead of returning structured reasoning fields.  Only fall back
         # to inline extraction when no structured reasoning was found.
         content = getattr(assistant_message, "content", None)
+        if not reasoning_parts and isinstance(content, list):
+            # DeepSeek V4 Pro (and compatible providers) return content as a
+            # list of typed blocks, e.g.:
+            #   [{"type": "thinking", "thinking": "..."}, {"type": "output", ...}]
+            # Without this branch the thinking text is silently dropped and the
+            # next turn fails with HTTP 400 ("thinking must be passed back").
+            # Refs #21944.
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "thinking":
+                    thinking_text = block.get("thinking") or block.get("text") or ""
+                    thinking_text = thinking_text.strip()
+                    if thinking_text and thinking_text not in reasoning_parts:
+                        reasoning_parts.append(thinking_text)
         if not reasoning_parts and isinstance(content, str) and content:
             inline_patterns = (
                 r"<think>(.*?)</think>",

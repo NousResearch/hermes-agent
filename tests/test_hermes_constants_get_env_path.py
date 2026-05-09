@@ -14,8 +14,7 @@ class TestGetEnvPath:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HOME", str(tmp_path))
         result = get_env_path()
-        assert result.name == ".env"
-        assert result.parent.name == ".hermes"
+        assert result == tmp_path / ".hermes" / ".env"
 
     def test_filename_is_always_dotenv(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -6581,6 +6581,60 @@ def _is_termux_env(env: dict[str, str] | None = None) -> bool:
     return "com.termux" in prefix or prefix.startswith("/data/data/com.termux/")
 
 
+def _is_android_python() -> bool:
+    return sys.platform == "android"
+
+
+def _install_psutil_android_compat(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Install psutil on Android by patching upstream platform detection.
+
+    psutil's setup currently gates Linux sources behind
+    ``sys.platform.startswith('linux')``. On Termux Python reports
+    ``sys.platform == 'android'``, so setup aborts with
+    "platform android is not supported" despite compiling fine when using the
+    Linux source path.
+
+    We patch only the extracted build tree used for this install attempt;
+    nothing is persisted in the repository.
+    """
+    import tarfile
+    import tempfile
+    import urllib.request
+
+    psutil_url = (
+        "https://files.pythonhosted.org/packages/aa/c6/"
+        "d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/"
+        "psutil-7.2.2.tar.gz"
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        archive = tmp_path / "psutil.tar.gz"
+        urllib.request.urlretrieve(psutil_url, archive)
+        with tarfile.open(archive) as tar:
+            tar.extractall(tmp_path)
+
+        src_root = next(
+            p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("psutil-")
+        )
+        common_py = src_root / "psutil" / "_common.py"
+        content = common_py.read_text(encoding="utf-8")
+        marker = 'LINUX = sys.platform.startswith("linux")'
+        replacement = 'LINUX = sys.platform.startswith(("linux", "android"))'
+        if marker not in content:
+            raise RuntimeError("psutil Android compatibility patch marker not found")
+        common_py.write_text(content.replace(marker, replacement), encoding="utf-8")
+
+        _run_install_with_heartbeat(
+            install_cmd_prefix + ["install", "--no-build-isolation", str(src_root)],
+            env=env,
+        )
+
+
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     """Best-effort uv bootstrap on Termux for faster update installs."""
     uv_bin = shutil.which("uv")
@@ -7341,6 +7395,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)
+            if _is_termux_env(uv_env) and _is_android_python():
+                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+                _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
             _install_python_dependencies_with_optional_fallback(
                 [uv_bin, "pip"], env=uv_env
             )
@@ -7363,6 +7420,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     cwd=PROJECT_ROOT,
                     check=True,
                 )
+            if _is_termux_env() and _is_android_python():
+                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+                _install_psutil_android_compat(pip_cmd)
             _install_python_dependencies_with_optional_fallback(pip_cmd)
 
         _update_node_dependencies()

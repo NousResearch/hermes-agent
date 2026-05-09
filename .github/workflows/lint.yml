@@ -121,8 +121,12 @@ jobs:
           path: .lint-reports/
           retention-days: 14
 
+      # Fork PRs: upstream issue comment APIs often return 403 for GITHUB_TOKEN
+      # (“Resource not accessible by integration”). Diff + artifact still succeed;
+      # only this best-effort comment may fail — do not fail the whole job.
       - name: Post / update PR comment
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |

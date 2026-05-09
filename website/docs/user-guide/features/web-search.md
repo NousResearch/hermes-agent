@@ -7,13 +7,12 @@ sidebar_position: 6
 
 # Web Search & Extract
 
-Hermes Agent includes three web tools backed by multiple providers:
+Hermes Agent includes two model-callable web tools backed by multiple providers:
 
 - **`web_search`** — search the web and return ranked results
-- **`web_extract`** — fetch and extract readable content from one or more URLs
-- **`web_crawl`** — recursively crawl a site and return structured content
+- **`web_extract`** — fetch and extract readable content from one or more URLs (with built-in deep-crawl support when the backend provides it)
 
-All three are configured through a single backend selection. Providers are chosen via `hermes tools` or set directly in `config.yaml`.
+Both are configured through a single backend selection. Providers are chosen via `hermes tools` or set directly in `config.yaml`. Recursive crawling capabilities (Firecrawl/Tavily) are exposed through `web_extract` rather than as a separate `web_crawl` tool.
 
 ## Backends
 
@@ -71,7 +70,7 @@ When `FIRECRAWL_API_URL` is set, the API key is optional (disable server auth wi
 
 SearXNG is a privacy-respecting, open-source metasearch engine that aggregates results from 70+ search engines. **No API key required** — just point Hermes at a running SearXNG instance.
 
-SearXNG is **search-only** — `web_extract` and `web_crawl` require a separate extract provider.
+SearXNG is **search-only** — `web_extract` (including its crawl modes) requires a separate extract provider.
 
 #### Option A — Self-host with Docker (recommended)
 
@@ -180,7 +179,7 @@ Public instances have rate limits, variable uptime, and may disable JSON format 
 
 #### Pair SearXNG with an extract provider
 
-SearXNG handles search; you need a separate provider for `web_extract` and `web_crawl`. Use the per-capability keys:
+SearXNG handles search; you need a separate provider for `web_extract` (including any deep-crawl modes). Use the per-capability keys:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -252,7 +251,7 @@ Use different providers for search vs extract. This lets you combine free search
 # ~/.hermes/config.yaml
 web:
   search_backend: "searxng"     # used by web_search
-  extract_backend: "firecrawl"  # used by web_extract and web_crawl
+  extract_backend: "firecrawl"  # used by web_extract (and its deep-crawl modes)
 ```
 
 When per-capability keys are empty, both fall through to `web.backend`. When `web.backend` is also empty, the backend is auto-detected from whichever API key/URL is present.

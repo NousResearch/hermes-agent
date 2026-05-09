@@ -63,6 +63,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
 | `hermes-achievements` | dashboard tab | Steam-style collectible badges generated from your real Hermes session history |
+| `kanban/dashboard` | dashboard tab | Kanban board UI for the multi-agent dispatcher — tasks, comments, fan-out, board switching. See [Kanban Multi-Agent](./kanban.md). |
 | `example-dashboard` | dashboard example | Reference dashboard plugin for [Extending the Dashboard](./extending-the-dashboard.md) |
 | `strike-freedom-cockpit` | dashboard skin | Sample custom dashboard skin |
 

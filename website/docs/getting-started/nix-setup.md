@@ -692,15 +692,15 @@ A build-time collision check prevents plugin packages from shadowing core hermes
 
 ### Dev Shell
 
-The flake provides a development shell with Python 3.11, uv, Node.js, and all runtime tools:
+The flake provides a development shell with Python 3.12, uv, Node.js, and all runtime tools:
 
 ```bash
 cd hermes-agent
 nix develop
 
 # Shell provides:
-#   - Python 3.11 + uv (deps installed into .venv on first entry)
-#   - Node.js 20, ripgrep, git, openssh, ffmpeg on PATH
+#   - Python 3.12 + uv (deps installed into .venv on first entry)
+#   - Node.js 22, ripgrep, git, openssh, ffmpeg on PATH
 #   - Stamp-file optimization: re-entry is near-instant if deps haven't changed
 
 hermes setup
@@ -869,8 +869,8 @@ Same layout, mounted into the container:
 ## Updating
 
 ```bash
-# Update the flake input
-nix flake update hermes-agent --flake /etc/nixos
+# Update the flake input (run from the directory containing flake.nix)
+cd /etc/nixos && nix flake update hermes-agent
 
 # Rebuild
 sudo nixos-rebuild switch

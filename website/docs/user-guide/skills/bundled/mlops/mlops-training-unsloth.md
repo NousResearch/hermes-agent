@@ -20,6 +20,7 @@ Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM.
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `unsloth`, `torch`, `transformers`, `trl`, `datasets`, `peft` |
+| Platforms | linux, macos |
 | Tags | `Fine-Tuning`, `Unsloth`, `Fast Training`, `LoRA`, `QLoRA`, `Memory-Efficient`, `Optimization`, `Llama`, `Mistral`, `Gemma`, `Qwen` |
 
 ## Reference: full SKILL.md

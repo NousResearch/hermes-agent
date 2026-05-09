@@ -610,7 +610,7 @@ compression:
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
   compression:
-    model: "google/gemini-3-flash-preview"          # Model for summarization
+    model: ""                                       # Empty = use main chat model. Override with e.g. "google/gemini-3-flash-preview" for cheaper/faster compression.
     provider: "auto"                                # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
     base_url: null                                  # Custom OpenAI-compatible endpoint (overrides provider)
 ```
@@ -699,14 +699,14 @@ Warnings are injected into the last tool result's JSON (as a `_budget_warning` f
 ```yaml
 agent:
   max_turns: 90                # Max iterations per conversation turn (default: 90)
-  api_max_retries: 2           # Retries per provider before fallback engages (default: 2)
+  api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
 ```
 
 Budget pressure is enabled by default. The agent sees warnings naturally as part of tool results, encouraging it to consolidate its work and deliver a response before running out of iterations.
 
 When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`. If the budget runs out during active work, the agent generates a summary of what was accomplished before stopping.
 
-`agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `2` — three attempts total, matching the OpenAI SDK default. If you have [fallback providers](/docs/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
+`agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/docs/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
 ### API Timeouts
 
@@ -1179,7 +1179,9 @@ display:
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
-  runtime_metadata_footer: false  # Gateway: append a runtime-context footer to final replies
+  runtime_footer:         # Gateway: append a runtime-context footer to final replies
+    enabled: false
+    fields: ["model", "context_pct", "cwd"]
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | ja | de | es | fr | tr | uk
 ```
 
@@ -1207,12 +1209,16 @@ In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in mess
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_metadata_footer: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn — same info the CLI shows in its status bar (model, session duration, tokens, cost). Off by default; opt in per-gateway if your team wants every reply to include the provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn — same info the CLI shows in its status bar (model, context %, cwd, session duration, tokens, cost). Off by default; opt in per-gateway if your team wants every reply to include the provenance.
 
 ```yaml
 display:
-  runtime_metadata_footer: true
+  runtime_footer:
+    enabled: true
+    fields: ["model", "context_pct", "cwd"]   # any of: model, context_pct, cwd, duration, tokens, cost
 ```
+
+The `/footer` slash command toggles this at runtime in any session.
 
 Example footer appended to a Telegram/Discord/Slack reply:
 
@@ -1600,8 +1606,8 @@ Automatic filesystem snapshots before destructive file operations. See the [Chec
 
 ```yaml
 checkpoints:
-  enabled: true                  # Enable automatic checkpoints (also: hermes --checkpoints)
-  max_snapshots: 50              # Max checkpoints to keep per directory
+  enabled: false                 # Enable automatic checkpoints (also: hermes chat --checkpoints). Default: false (opt-in).
+  max_snapshots: 20              # Max checkpoints to keep per directory (default: 20)
 ```
 
 

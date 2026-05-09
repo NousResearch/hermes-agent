@@ -17,6 +17,7 @@ Webhook subscriptions: event-driven agent runs.
 | Source | Bundled (installed by default) |
 | Path | `skills/devops/webhook-subscriptions` |
 | Version | `1.1.0` |
+| Platforms | linux, macos, windows |
 | Tags | `webhook`, `events`, `automation`, `integrations`, `notifications`, `push` |
 
 ## Reference: full SKILL.md

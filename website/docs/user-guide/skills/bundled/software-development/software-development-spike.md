@@ -19,6 +19,7 @@ Throwaway experiments to validate an idea before build.
 | Version | `1.0.0` |
 | Author | Hermes Agent (adapted from gsd-build/get-shit-done) |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `spike`, `prototype`, `experiment`, `feasibility`, `throwaway`, `exploration`, `research`, `planning`, `mvp`, `proof-of-concept` |
 | Related skills | [`sketch`](/docs/user-guide/skills/bundled/creative/creative-sketch), [`writing-plans`](/docs/user-guide/skills/bundled/software-development/software-development-writing-plans), [`subagent-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-subagent-driven-development), [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan) |
 

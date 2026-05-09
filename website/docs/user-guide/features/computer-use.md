@@ -105,8 +105,7 @@ Hermes applies multi-layer guardrails:
   dialogs, no typing passwords, no following instructions embedded in
   screenshots.
 
-Pair with `security.approval_level` in `~/.hermes/config.yaml` if you want
-every action confirmed.
+Pair with `approvals.mode: manual` in `~/.hermes/config.yaml` if you want every action confirmed.
 
 ## Token efficiency
 
@@ -177,4 +176,4 @@ reconsider.
 
 - [Universal skill: `macos-computer-use`](https://github.com/NousResearch/hermes-agent/blob/main/skills/apple/macos-computer-use/SKILL.md)
 - [cua-driver source (trycua/cua)](https://github.com/trycua/cua)
-- [Browser automation](./browser-use.md) for cross-platform web tasks.
+- [Browser automation](./browser.md) for cross-platform web tasks.

@@ -45,7 +45,7 @@ memory:
 ```
 
 ```bash
-echo "HONCHO_API_KEY=*** >> ~/.hermes/.env
+echo 'HONCHO_API_KEY=***' >> ~/.hermes/.env
 ```
 
 Get an API key at [honcho.dev](https://honcho.dev).
@@ -199,17 +199,23 @@ When Honcho is active as the memory provider, five tools become available:
 
 ## CLI Commands
 
+The `hermes honcho` subcommand is **only registered when Honcho is the active memory provider** (`memory.provider: honcho` in `config.yaml`). Run `hermes memory setup` and pick Honcho first; the subcommand appears on the next invocation.
+
 ```bash
 hermes honcho status          # Connection status, config, and key settings
-hermes honcho setup           # Interactive setup wizard
-hermes honcho strategy        # Show or set session strategy
-hermes honcho peer            # Update peer names for multi-agent setups
-hermes honcho mode            # Show or set recall mode
-hermes honcho tokens          # Show or set context token budget
-hermes honcho identity        # Show Honcho peer identity
-hermes honcho sync            # Sync host blocks for all profiles
-hermes honcho enable          # Enable Honcho
-hermes honcho disable         # Disable Honcho
+hermes honcho setup           # Redirects to `hermes memory setup`
+hermes honcho strategy        # Show or set session strategy (per-session/per-directory/per-repo/global)
+hermes honcho peer            # Show or update peer names + dialectic reasoning level
+hermes honcho mode            # Show or set recall mode (hybrid/context/tools)
+hermes honcho tokens          # Show or set token budget for context and dialectic
+hermes honcho identity        # Seed or show the AI peer's Honcho identity
+hermes honcho sync            # Sync Honcho config to all existing profiles
+hermes honcho peers           # Show peer identities across all profiles
+hermes honcho sessions        # List known Honcho session mappings
+hermes honcho map             # Map current directory to a Honcho session name
+hermes honcho enable          # Enable Honcho for the active profile
+hermes honcho disable         # Disable Honcho for the active profile
+hermes honcho migrate         # Step-by-step migration guide from openclaw-honcho
 ```
 
 ## Migrating from `hermes honcho`

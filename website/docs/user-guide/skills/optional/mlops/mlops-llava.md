@@ -20,6 +20,7 @@ Large Language and Vision Assistant. Enables visual instruction tuning and image
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `transformers`, `torch`, `pillow` |
+| Platforms | linux, macos, windows |
 | Tags | `LLaVA`, `Vision-Language`, `Multimodal`, `Visual Question Answering`, `Image Chat`, `CLIP`, `Vicuna`, `Conversational AI`, `Instruction Tuning`, `VQA` |
 
 ## Reference: full SKILL.md

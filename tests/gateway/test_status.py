@@ -287,6 +287,30 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
 
+    def test_write_runtime_status_overwrites_stale_argv_on_restart(self, tmp_path, monkeypatch):
+        """Regression: gateway_state.json must not keep the previous launch argv."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 1000.0,
+            "kind": "hermes-gateway",
+            "argv": ["/old/path/hermes", "gateway", "run"],
+            "platforms": {},
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+
+        monkeypatch.setattr(status.sys, "argv", ["/new/path/hermes", "gateway", "run"])
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 2000)
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["argv"] == ["/new/path/hermes", "gateway", "run"]
+        assert payload["pid"] == os.getpid()
+        assert payload["start_time"] == 2000
+
     def test_write_runtime_status_records_platform_failure(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

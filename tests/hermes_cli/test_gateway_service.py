@@ -1,7 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
-import pwd
+pwd = pytest.importorskip("pwd")
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -1284,7 +1284,7 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_auto_detected_root_is_rejected(self, monkeypatch):
         """When root is auto-detected (not explicitly requested), raise."""
-        import pwd
+        pwd = pytest.importorskip("pwd")
         import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
@@ -1297,7 +1297,7 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_explicit_root_is_allowed(self, monkeypatch):
         """When root is explicitly passed via --run-as-user root, allow it."""
-        import pwd
+        pwd = pytest.importorskip("pwd")
         import grp
 
         root_info = pwd.getpwnam("root")
@@ -1309,7 +1309,7 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_non_root_user_passes_through(self, monkeypatch):
         """Normal non-root user works as before."""
-        import pwd
+        pwd = pytest.importorskip("pwd")
         import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)

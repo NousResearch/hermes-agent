@@ -4368,6 +4368,57 @@ def unseen_events_for_sub(
     return max_id, out
 
 
+def claim_unseen_events_for_sub(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+) -> tuple[int, int, list[Event]]:
+    """Atomically claim unseen notification events for one subscription.
+
+    Returns ``(old_cursor, new_cursor, events)``. When events are returned,
+    ``kanban_notify_subs.last_event_id`` has already been advanced to
+    ``new_cursor`` inside a ``BEGIN IMMEDIATE`` transaction. That makes the
+    notifier's read/claim step single-owner across multiple gateway watcher
+    processes pointed at the same board DB: concurrent watchers serialize on
+    SQLite's writer lock, and only the first process sees and claims a given
+    event range.
+
+    Callers should send the claimed events, then either leave the cursor at
+    ``new_cursor`` on success or call :func:`rewind_notify_cursor` if delivery
+    failed before any terminal unsubscribe removed the row.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT last_event_id FROM kanban_notify_subs "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (task_id, platform, chat_id, thread_id or ""),
+        ).fetchone()
+        if row is None:
+            return 0, 0, []
+        old_cursor = int(row["last_event_id"])
+        new_cursor, events = unseen_events_for_sub(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            kinds=kinds,
+        )
+        if not events:
+            return old_cursor, old_cursor, []
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ?",
+            (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
+        )
+        return old_cursor, new_cursor, events
+
+
 def advance_notify_cursor(
     conn: sqlite3.Connection,
     *,
@@ -4383,6 +4434,35 @@ def advance_notify_cursor(
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
             (int(new_cursor), task_id, platform, chat_id, thread_id or ""),
         )
+
+
+def rewind_notify_cursor(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    claimed_cursor: int,
+    old_cursor: int,
+) -> bool:
+    """Undo a notification claim when delivery fails.
+
+    The CAS guard only rewinds if no later notifier advanced the row after our
+    claim. This keeps retry behavior for transient send failures without
+    clobbering newer progress.
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ?",
+            (
+                int(old_cursor), task_id, platform, chat_id, thread_id or "",
+                int(claimed_cursor),
+            ),
+        )
+    return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------

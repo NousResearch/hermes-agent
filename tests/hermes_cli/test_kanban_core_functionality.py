@@ -568,6 +568,57 @@ def test_notify_cursor_advances(kanban_home):
         conn.close()
 
 
+def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
+    conn1 = kb.connect()
+    conn2 = kb.connect()
+    try:
+        tid = kb.create_task(conn1, title="x", assignee="w")
+        kb.add_notify_sub(conn1, task_id=tid, platform="telegram", chat_id="123")
+        kb.complete_task(conn1, tid, result="ok")
+
+        old_cursor, claimed_cursor, events = kb.claim_unseen_events_for_sub(
+            conn1,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["completed", "blocked"],
+        )
+        assert old_cursor == 0
+        assert claimed_cursor > old_cursor
+        assert [ev.kind for ev in events] == ["completed"]
+
+        # A concurrent notifier instance sees the advanced cursor and cannot
+        # claim/send the same event range.
+        _, _, duplicate_events = kb.claim_unseen_events_for_sub(
+            conn2,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["completed", "blocked"],
+        )
+        assert duplicate_events == []
+
+        assert kb.rewind_notify_cursor(
+            conn1,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            claimed_cursor=claimed_cursor,
+            old_cursor=old_cursor,
+        ) is True
+        _, retried_events = kb.unseen_events_for_sub(
+            conn2,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["completed", "blocked"],
+        )
+        assert [ev.kind for ev in retried_events] == ["completed"]
+    finally:
+        conn1.close()
+        conn2.close()
+
+
 # ---------------------------------------------------------------------------
 # GC + retention
 # ---------------------------------------------------------------------------

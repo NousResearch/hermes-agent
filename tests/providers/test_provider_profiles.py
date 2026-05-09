@@ -121,6 +121,52 @@ class TestOpenRouterProfile:
         eb, _ = p.build_api_kwargs_extras(supports_reasoning=True)
         assert eb["reasoning"] == {"enabled": True, "effort": "medium"}
 
+    def test_grok_session_id_sets_cache_affinity_header(self):
+        """OpenRouter + Grok model + session_id => x-grok-conv-id header."""
+        p = get_provider_profile("openrouter")
+        _, tl = p.build_api_kwargs_extras(
+            model="x-ai/grok-4",
+            session_id="sess-abc123",
+        )
+        assert tl["extra_headers"]["x-grok-conv-id"] == "sess-abc123"
+
+    def test_grok_xai_prefix_also_supported(self):
+        """xai/ prefix (without dash) should also get the header."""
+        p = get_provider_profile("openrouter")
+        _, tl = p.build_api_kwargs_extras(
+            model="xai/grok-3",
+            session_id="sess-xyz",
+        )
+        assert tl["extra_headers"]["x-grok-conv-id"] == "sess-xyz"
+
+    def test_non_grok_model_no_affinity_header(self):
+        """OpenRouter + non-Grok model => no x-grok-conv-id header."""
+        p = get_provider_profile("openrouter")
+        _, tl = p.build_api_kwargs_extras(
+            model="anthropic/claude-sonnet-4.6",
+            session_id="sess-abc123",
+        )
+        assert "extra_headers" not in tl
+        assert "x-grok-conv-id" not in tl
+
+    def test_grok_without_session_id_no_header(self):
+        """Grok model but no session_id => no header (nothing to pin)."""
+        p = get_provider_profile("openrouter")
+        _, tl = p.build_api_kwargs_extras(model="x-ai/grok-4")
+        assert "extra_headers" not in tl
+
+    def test_grok_reasoning_and_header_together(self):
+        """Reasoning extra_body and Grok header should coexist."""
+        p = get_provider_profile("openrouter")
+        eb, tl = p.build_api_kwargs_extras(
+            model="x-ai/grok-4",
+            session_id="sess-123",
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert eb["reasoning"] == {"enabled": True, "effort": "high"}
+        assert tl["extra_headers"]["x-grok-conv-id"] == "sess-123"
+
 
 class TestNousProfile:
     def test_tags(self):

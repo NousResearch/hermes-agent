@@ -21,9 +21,13 @@ from __future__ import annotations
 
 import logging
 import base64
+import binascii
+import ipaddress
 import mimetypes
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -81,6 +85,15 @@ _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation requests by "
     "using the image_generation tool when provided."
 )
+_MAX_REFERENCE_IMAGES = 16
+_MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024
+_ALLOWED_IMAGE_MIMES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+}
+_DATA_IMAGE_RE = re.compile(r"^data:(image/(?:png|jpeg|jpg|webp|gif));base64,", re.I)
 
 
 # ---------------------------------------------------------------------------
@@ -164,30 +177,133 @@ def _build_codex_client():
         return None
 
 
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _allowed_reference_roots() -> List[Path]:
+    """Local roots that may be read as image references.
+
+    The image tool is exposed to gateway sessions, so local references must
+    not become an arbitrary file-read primitive. Allow generated/uploaded
+    image locations and Xiaoyaner/Xiaomiao photo libraries, not the whole
+    Hermes home where config.yaml, auth.json, logs, and state.db live.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home().expanduser().resolve()
+    except Exception:
+        hermes_home = Path.home() / ".hermes"
+
+    roots = [
+        hermes_home / "cache",
+        hermes_home / "xiaoyaner" / "photos",
+        hermes_home / "xiaomiao" / "photos",
+    ]
+    return [root.expanduser().resolve() for root in roots]
+
+
+def _assert_allowed_local_reference(path: Path) -> None:
+    resolved = path.expanduser().resolve()
+    if not any(_path_is_relative_to(resolved, root) for root in _allowed_reference_roots()):
+        raise ValueError(
+            "Local reference images must live under Hermes cache/upload "
+            "directories or Xiaoyaner/Xiaomiao photo libraries; refusing "
+            "to read arbitrary local path"
+        )
+
+
+def _detect_image_mime(data: bytes) -> Optional[str]:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _validate_data_image_url(ref: str) -> str:
+    match = _DATA_IMAGE_RE.match(ref)
+    if not match:
+        raise ValueError("data reference_images must be base64 PNG/JPEG/WEBP/GIF data:image URLs")
+    encoded = ref[match.end():]
+    if len(encoded) > _MAX_REFERENCE_IMAGE_BYTES * 4 // 3 + 4096:
+        raise ValueError("Reference image data URL is too large")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("Reference image data URL is not valid base64") from exc
+    if len(raw) > _MAX_REFERENCE_IMAGE_BYTES:
+        raise ValueError("Reference image data URL is too large")
+    detected = _detect_image_mime(raw[:64])
+    declared = match.group(1).lower().replace("image/jpg", "image/jpeg")
+    if detected not in _ALLOWED_IMAGE_MIMES or detected != declared:
+        raise ValueError("Reference image data URL content does not match its declared image type")
+    return ref
+
+
+def _validate_http_image_url(ref: str) -> str:
+    parsed = urlparse(ref)
+    host = parsed.hostname or ""
+    if parsed.scheme not in {"http", "https"} or not host:
+        raise ValueError("reference_images URLs must be valid http(s) URLs")
+    if host.lower() in {"localhost", "localhost.localdomain"}:
+        raise ValueError("Localhost reference image URLs are not allowed")
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return ref
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+        raise ValueError("Private/internal reference image URLs are not allowed")
+    return ref
+
+
 def _image_ref_to_input_item(reference: str) -> Dict[str, str]:
     """Convert a local path or URL into a Responses ``input_image`` item."""
+    if not isinstance(reference, str):
+        raise ValueError("reference_images entries must be strings")
     ref = str(reference or "").strip()
     if not ref:
         raise ValueError("reference_images entries must be non-empty strings")
 
-    if ref.startswith(("http://", "https://", "data:image/")):
-        image_url = ref
+    if ref.startswith("data:image/"):
+        image_url = _validate_data_image_url(ref)
+    elif ref.startswith(("http://", "https://")):
+        image_url = _validate_http_image_url(ref)
     else:
         path = Path(ref).expanduser()
         if not path.exists() or not path.is_file():
             raise ValueError(f"Reference image not found: {ref}")
-        mime = mimetypes.guess_type(path.name)[0] or "image/png"
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        image_url = f"data:{mime};base64,{encoded}"
+        _assert_allowed_local_reference(path)
+        if path.stat().st_size > _MAX_REFERENCE_IMAGE_BYTES:
+            raise ValueError("Reference image file is too large")
+        raw = path.read_bytes()
+        detected = _detect_image_mime(raw[:64])
+        guessed = mimetypes.guess_type(path.name)[0]
+        if detected not in _ALLOWED_IMAGE_MIMES:
+            raise ValueError("Reference file is not a supported image (PNG/JPEG/WEBP/GIF)")
+        if guessed in _ALLOWED_IMAGE_MIMES and guessed != detected:
+            raise ValueError("Reference image extension does not match its content")
+        encoded = base64.b64encode(raw).decode("ascii")
+        image_url = f"data:{detected};base64,{encoded}"
 
     return {"type": "input_image", "image_url": image_url}
 
 
 def _build_input_content(prompt: str, reference_images: Optional[Sequence[str]]) -> List[Dict[str, str]]:
     content: List[Dict[str, str]] = [{"type": "input_text", "text": prompt}]
+    if isinstance(reference_images, str):
+        raise ValueError("reference_images must be a list of image references, not a string")
     refs = list(reference_images or [])
-    if len(refs) > 16:
-        raise ValueError("gpt-image reference-image workflows support at most 16 images")
+    if len(refs) > _MAX_REFERENCE_IMAGES:
+        raise ValueError(f"gpt-image reference-image workflows support at most {_MAX_REFERENCE_IMAGES} images")
     content.extend(_image_ref_to_input_item(ref) for ref in refs)
     return content
 

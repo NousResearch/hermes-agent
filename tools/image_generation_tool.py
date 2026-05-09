@@ -884,9 +884,11 @@ IMAGE_GENERATE_SCHEMA = {
             "reference_images": {
                 "type": "array",
                 "items": {"type": "string"},
+                "maxItems": 16,
                 "description": (
                     "Optional local file paths, HTTP(S) URLs, or data URLs to use as "
-                    "reference/input images when the configured backend supports image editing."
+                    "reference/input images when the configured backend supports image editing. "
+                    "Local paths are restricted by the backend to trusted image/cache directories."
                 ),
             },
         },

@@ -203,7 +203,8 @@ class TestGenerate:
     def test_reference_images_are_sent_as_input_images_and_force_edit_action(self, provider, monkeypatch, tmp_path):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
 
-        ref_path = tmp_path / "ref.png"
+        ref_path = tmp_path / "cache" / "ref.png"
+        ref_path.parent.mkdir(parents=True)
         ref_path.write_bytes(bytes.fromhex(_PNG_HEX))
 
         captured = {}
@@ -244,6 +245,39 @@ class TestGenerate:
         tool = captured["tools"][0]
         assert tool["type"] == "image_generation"
         assert tool["action"] == "edit"
+
+
+    def test_reference_images_reject_arbitrary_local_paths(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        secret = tmp_path / "secret.png"
+        secret.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        result = provider.generate("a cat", reference_images=[str(secret)])
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "refusing to read arbitrary local path" in result["error"]
+
+    def test_reference_images_reject_non_image_local_files(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        ref_path = tmp_path / "cache" / "not_image.png"
+        ref_path.parent.mkdir(parents=True)
+        ref_path.write_text("not actually an image", encoding="utf-8")
+
+        result = provider.generate("a cat", reference_images=[str(ref_path)])
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "not a supported image" in result["error"]
+
+    def test_reference_images_reject_string_instead_of_list(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        result = provider.generate("a cat", reference_images="/tmp/ref.png")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "must be a list" in result["error"]
 
     def test_partial_image_event_used_when_done_missing(self, provider, monkeypatch):
         """If the stream never emits output_item.done, fall back to the

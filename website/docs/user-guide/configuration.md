@@ -931,6 +931,28 @@ Use `extra_body` only when your provider documents OpenAI-compatible request-bod
 `extra_body` is only effective when your provider actually supports the field you send. If the provider does not expose a native OpenAI-compatible reasoning-off flag, Hermes cannot synthesize one on its behalf.
 :::
 
+### OpenRouter routing & Pareto Code for auxiliary tasks
+
+When an auxiliary task resolves to OpenRouter (either explicitly or via `provider: "main"` while your main agent is on OpenRouter), the main agent's `provider_routing` and `openrouter.min_coding_score` settings **do not propagate** — by design, each auxiliary task is independent. To set OpenRouter provider preferences or use the [Pareto Code router](/docs/integrations/providers#openrouter-pareto-code-router) for a specific aux task, set them per-task via `extra_body`:
+
+```yaml
+auxiliary:
+  compression:
+    provider: openrouter
+    model: openrouter/pareto-code         # use the Pareto Code router for this task
+    extra_body:
+      provider:                            # OpenRouter provider routing prefs
+        order: [anthropic, google]         # try these providers in order
+        sort: throughput                   # or "price" | "latency"
+        # only: [anthropic]                # restrict to a specific provider
+        # ignore: [deepinfra]              # exclude specific providers
+      plugins:                             # OpenRouter Pareto Code router knob
+        - id: pareto-router
+          min_coding_score: 0.5            # 0.0–1.0; higher = stronger coders
+```
+
+The shape mirrors what OpenRouter accepts in the chat completions request body. Hermes forwards the entire `extra_body` verbatim, so any other OpenRouter request-body field documented at [openrouter.ai/docs](https://openrouter.ai/docs) works the same way.
+
 ### Changing the Vision Model
 
 To use GPT-4o instead of Gemini Flash for image analysis:

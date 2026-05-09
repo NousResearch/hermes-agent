@@ -34,5 +34,5 @@ class TestGetHermesDir:
         first = get_hermes_dir("cache/x", "old")
         monkeypatch.setenv("HERMES_HOME", str(b))
         second = get_hermes_dir("cache/x", "old")
-        assert str(first).startswith(str(a))
-        assert str(second).startswith(str(b))
+        assert first == a / "cache" / "x"
+        assert second == b / "cache" / "x"

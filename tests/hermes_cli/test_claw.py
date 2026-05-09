@@ -631,6 +631,49 @@ class TestCmdCleanup:
         assert not openclaw.exists()
         assert not clawdbot.exists()
 
+    def test_archive_prompt_default_is_false(self, tmp_path):
+        """prompt_yes_no must be called with default=False so Enter does NOT archive."""
+        openclaw = tmp_path / ".openclaw"
+        openclaw.mkdir()
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        args = Namespace(source=None, dry_run=False, yes=False)
+        with (
+            patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]),
+            patch.object(claw_mod, "prompt_yes_no", return_value=False) as mock_prompt,
+            patch("sys.stdin", mock_stdin),
+        ):
+            claw_mod._cmd_cleanup(args)
+
+        mock_prompt.assert_called_once()
+        _, kwargs = mock_prompt.call_args
+        assert kwargs.get("default") is False, (
+            "prompt_yes_no must default to False so a bare Enter cancels the archive"
+        )
+
+    def test_archive_prompt_includes_unbootable_warning(self, tmp_path):
+        """Prompt text must warn that archiving makes OpenClaw unbootable."""
+        openclaw = tmp_path / ".openclaw"
+        openclaw.mkdir()
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        args = Namespace(source=None, dry_run=False, yes=False)
+        with (
+            patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]),
+            patch.object(claw_mod, "prompt_yes_no", return_value=False) as mock_prompt,
+            patch("sys.stdin", mock_stdin),
+        ):
+            claw_mod._cmd_cleanup(args)
+
+        prompt_text = mock_prompt.call_args[0][0]
+        assert "unbootable" in prompt_text.lower(), (
+            f"Prompt must mention 'unbootable' to warn users, got: {prompt_text!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # _print_migration_report

@@ -440,6 +440,32 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _flattened_agent_failure(result: Any) -> bool:
+    """True when the run finished with an error and no usable assistant text.
+
+    Without this guard, :func:`_handle_chat_completions` mapped ``result["error"]``
+    into normal assistant ``content``, so HTTP 200 responses looked like success
+    (GitHub #22496).
+    """
+    if not isinstance(result, dict):
+        return False
+    if result.get("completed", True):
+        return False
+    err = result.get("error")
+    if err is None or (isinstance(err, str) and not err.strip()):
+        return False
+    fr = result.get("final_response")
+    if fr is not None and str(fr).strip():
+        return False
+    return True
+
+
+def _json_agent_failure_envelope(result: dict) -> Dict[str, Any]:
+    msg = str(result.get("error") or "Agent run failed")
+    code = "output_truncation_failed" if result.get("partial") else "agent_run_failed"
+    return _openai_error(msg, err_type="server_error", code=code)
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -1201,6 +1227,21 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=500,
                 )
 
+        if _flattened_agent_failure(result):
+            response_headers = {
+                "X-Hermes-Session-Id": result.get("session_id", session_id),
+                "X-Hermes-Completed": "false",
+            }
+            if result.get("partial"):
+                response_headers["X-Hermes-Partial"] = "true"
+            if gateway_session_key:
+                response_headers["X-Hermes-Session-Key"] = gateway_session_key
+            return web.json_response(
+                _json_agent_failure_envelope(result),
+                status=500,
+                headers=response_headers,
+            )
+
         final_response = result.get("final_response", "")
         if not final_response:
             final_response = result.get("error", "(No response generated)")
@@ -1331,6 +1372,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            result: Any = None
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
@@ -1338,10 +1380,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
 
             # Finish chunk
+            finish_reason = "stop"
+            if isinstance(result, dict) and _flattened_agent_failure(result):
+                finish_reason = "error"
+                await response.write(
+                    f"data: {json.dumps(_json_agent_failure_envelope(result))}\n\n".encode()
+                )
             finish_chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                 "usage": {
                     "prompt_tokens": usage.get("input_tokens", 0),
                     "completion_tokens": usage.get("output_tokens", 0),
@@ -2200,6 +2248,21 @@ class APIServerAdapter(BasePlatformAdapter):
                     _openai_error(f"Internal server error: {e}", err_type="server_error"),
                     status=500,
                 )
+
+        if _flattened_agent_failure(result):
+            response_headers = {
+                "X-Hermes-Session-Id": session_id,
+                "X-Hermes-Completed": "false",
+            }
+            if result.get("partial"):
+                response_headers["X-Hermes-Partial"] = "true"
+            if gateway_session_key:
+                response_headers["X-Hermes-Session-Key"] = gateway_session_key
+            return web.json_response(
+                _json_agent_failure_envelope(result),
+                status=500,
+                headers=response_headers,
+            )
 
         final_response = result.get("final_response", "")
         if not final_response:

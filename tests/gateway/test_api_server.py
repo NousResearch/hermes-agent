@@ -29,6 +29,7 @@ from gateway.platforms.api_server import (
     _IdempotencyCache,
     _CORS_HEADERS,
     _derive_chat_session_id,
+    _flattened_agent_failure,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -38,6 +39,37 @@ from gateway.platforms.api_server import (
 # ---------------------------------------------------------------------------
 # check_api_server_requirements
 # ---------------------------------------------------------------------------
+
+
+class TestFlattenedAgentFailure:
+    def test_partial_error_without_assistant_text(self):
+        assert _flattened_agent_failure(
+            {
+                "final_response": None,
+                "completed": False,
+                "partial": True,
+                "error": "Response truncated due to output length limit",
+            }
+        )
+
+    def test_false_when_assistant_text_present(self):
+        assert not _flattened_agent_failure(
+            {
+                "final_response": "partial body",
+                "completed": False,
+                "partial": True,
+                "error": "Response remained truncated after 3 continuation attempts",
+            }
+        )
+
+    def test_false_when_completed(self):
+        assert not _flattened_agent_failure(
+            {
+                "final_response": "",
+                "completed": True,
+                "error": "ignored",
+            }
+        )
 
 
 class TestCheckRequirements:
@@ -649,6 +681,73 @@ class TestChatCompletionsEndpoint:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_incomplete_run_with_error_returns_500_openai_envelope(self, adapter):
+        """Do not surface internal failure strings as HTTP-200 assistant content (issue #22496)."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+
+            async def _mock_run_agent(**kwargs):
+                return (
+                    {
+                        "final_response": None,
+                        "completed": False,
+                        "partial": True,
+                        "error": "Response truncated due to output length limit",
+                        "messages": [],
+                    },
+                    {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "x"}],
+                    },
+                )
+            assert resp.status == 500
+            data = await resp.json()
+            assert data["error"]["code"] == "output_truncation_failed"
+            assert "truncated" in data["error"]["message"].lower()
+            assert resp.headers.get("X-Hermes-Partial") == "true"
+            assert resp.headers.get("X-Hermes-Completed") == "false"
+
+    @pytest.mark.asyncio
+    async def test_stream_incomplete_run_emits_error_finish_reason(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb(None)
+                return (
+                    {
+                        "final_response": None,
+                        "completed": False,
+                        "partial": True,
+                        "error": "Response truncated due to output length limit",
+                        "messages": [],
+                    },
+                    {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "x"}],
+                        "stream": True,
+                    },
+                )
+            assert resp.status == 200
+            body = await resp.text()
+            assert '"finish_reason": "error"' in body
+            assert "output_truncation_failed" in body
+
+    @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):
         """stream=true returns SSE format with the full response."""
         app = _create_app(adapter)
@@ -1226,6 +1325,27 @@ class TestResponsesEndpoint:
             assert resp.status == 400
             data = await resp.json()
             assert "input" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_incomplete_run_returns_500_openai_envelope(self, adapter):
+        mock_result = {
+            "final_response": None,
+            "completed": False,
+            "partial": True,
+            "error": "Response truncated due to output length limit",
+            "messages": [],
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi"},
+                )
+            assert resp.status == 500
+            data = await resp.json()
+            assert data["error"]["code"] == "output_truncation_failed"
 
     @pytest.mark.asyncio
     async def test_invalid_json_returns_400(self, adapter):

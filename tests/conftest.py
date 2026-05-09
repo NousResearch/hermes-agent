@@ -440,6 +440,15 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # --- agent.i18n --- cached translations can bleed across workers/tests and
+    #     make assertions see raw keys instead of localized strings (e.g. gateway restart).
+    try:
+        from agent import i18n as _i18n_mod
+
+        _i18n_mod.reset_language_cache()
+    except Exception:
+        pass
+
     yield
 
 

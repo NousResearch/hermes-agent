@@ -1414,6 +1414,11 @@ def get_model_context_length(
         if ctx:
             return ctx
 
+    # Stable pin before OpenRouter: live metadata may diverge from our defaults
+    # (hy3-preview is 256K in DEFAULT_CONTEXT_LENGTHS; OR may list 262144).
+    if model.strip().lower() == "hy3-preview":
+        return DEFAULT_CONTEXT_LENGTHS["hy3-preview"]
+
     # 6. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
     if model in metadata:

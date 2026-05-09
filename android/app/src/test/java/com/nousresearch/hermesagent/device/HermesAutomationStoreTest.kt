@@ -919,6 +919,93 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeExposesProviderBackedCalendarWatcherActions() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val status = org.json.JSONObject(HermesAutomationBridge.performActionJson(context, "calendar_watcher_status"))
+        assertTrue(status.toString(), status.getBoolean("success"))
+        assertTrue(status.getJSONArray("available_actions").toString().contains("start_calendar_watcher"))
+        assertEquals(0, status.getInt("enabled_calendar_record_count"))
+
+        val emptyStart = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "start_calendar_watcher",
+                org.json.JSONObject().put("scan_interval_seconds", 1),
+            ),
+        )
+        assertFalse(emptyStart.toString(), emptyStart.getBoolean("success"))
+        assertTrue(emptyStart.getString("error").contains("calendar_event"))
+
+        val created = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_file_write_task",
+                org.json.JSONObject()
+                    .put("id", "auto-calendar-watch")
+                    .put("path", "calendar-watch.txt")
+                    .put("content", "%CALNAME|%CALTITLE|%CALDESCR|%CALLOC")
+                    .put("trigger", "calendar_event")
+                    .put("calendar_name", "Work")
+                    .put("title_contains", "Planning")
+                    .put("description_contains", "Hermes")
+                    .put("location_contains", "Office"),
+            ),
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+        assertEquals(1, HermesCalendarWatcherBridge.enabledCalendarRecordCount(context))
+
+        val scan = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "scan_calendar_events",
+                org.json.JSONObject()
+                    .put("reset_cursor", true)
+                    .put(
+                        "events",
+                        org.json.JSONArray()
+                            .put(
+                                org.json.JSONObject()
+                                    .put("event_id", "ignored")
+                                    .put("calendar_name", "Personal")
+                                    .put("calendar_title", "Planning")
+                                    .put("calendar_description", "Hermes")
+                                    .put("calendar_location", "Office")
+                                    .put("calendar_begin_epoch_ms", 1000L)
+                                    .put("calendar_end_epoch_ms", 2000L),
+                            )
+                            .put(
+                                org.json.JSONObject()
+                                    .put("event_id", "work-1")
+                                    .put("calendar_name", "Work")
+                                    .put("calendar_title", "Planning sync")
+                                    .put("calendar_description", "Hermes release")
+                                    .put("calendar_location", "Office 2")
+                                    .put("calendar_begin_epoch_ms", 3000L)
+                                    .put("calendar_end_epoch_ms", 4000L),
+                            ),
+                    ),
+            ),
+        )
+        assertTrue(scan.toString(), scan.getBoolean("success"))
+        assertEquals(TRIGGER_CALENDAR_EVENT, scan.getString("trigger"))
+        assertEquals(2, scan.getInt("scanned_event_count"))
+        assertEquals(1, scan.getInt("matched_count"))
+        assertEquals("Work", store.getVariable("CALNAME"))
+        assertEquals("Planning sync", store.getVariable("CALTITLE"))
+        assertEquals("Hermes release", store.getVariable("CALDESCR"))
+        assertEquals("Office 2", store.getVariable("CALLOC"))
+
+        val triggerResult = scan.getJSONArray("results").getJSONObject(0)
+        val recordResult = triggerResult.getJSONArray("results").getJSONObject(0)
+        assertTrue(recordResult.toString(), recordResult.getBoolean("success"))
+        val filePath = recordResult.getJSONObject("result").getString("path")
+        assertEquals("Work|Planning sync|Hermes release|Office 2", java.io.File(filePath).readText())
+    }
+
+    @Test
     fun bridgeCreatesAndRunsLocationTriggerRecords() {
         val context = RuntimeEnvironment.getApplication()
         val store = HermesAutomationStore(context)

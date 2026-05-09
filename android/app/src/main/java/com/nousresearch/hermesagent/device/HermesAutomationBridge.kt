@@ -65,6 +65,7 @@ object HermesAutomationBridge {
             "import_tasker_xml", "import_tasker_data_uri", "import_tasker_project", "import_tasker_task" -> importTaskerXmlJson(context, arguments)
             "logcat_watcher_status", "start_logcat_watcher", "stop_logcat_watcher", "scan_logcat_entries", "reset_logcat_watcher_cursor", "reset_logcat_cursor", "clear_logcat_watcher_cursor" -> HermesLogcatWatcherBridge.performActionJson(context, action, arguments)
             "sensor_watcher_status", "sensor_status", "watch_sensor_status", "watch_sensors_status", "start_sensor_watcher", "start_sensor_watch", "watch_sensors", "watch_sensor", "stop_sensor_watcher", "stop_sensor_watch" -> HermesSensorWatcherBridge.performActionJson(context, action, arguments)
+            "calendar_watcher_status", "calendar_status", "watch_calendar_status", "start_calendar_watcher", "start_calendar_watch", "watch_calendar", "watch_calendar_events", "stop_calendar_watcher", "stop_calendar_watch", "scan_calendar_events", "scan_calendar", "run_calendar_watch_once", "reset_calendar_watcher_cursor", "reset_calendar_cursor", "clear_calendar_watcher_cursor" -> HermesCalendarWatcherBridge.performActionJson(context, action, arguments)
             "run", "run_now", "trigger" -> runAutomationJson(context, arguments.optString("id"), "manual")
             "run_trigger", "trigger_event", "run_event" -> runTriggerJson(
                 context,
@@ -4243,6 +4244,11 @@ object HermesAutomationBridge {
         "sensor_watcher_status",
         "start_sensor_watcher",
         "stop_sensor_watcher",
+        "calendar_watcher_status",
+        "start_calendar_watcher",
+        "stop_calendar_watcher",
+        "scan_calendar_events",
+        "reset_calendar_watcher_cursor",
         "run",
         "run_trigger",
         "run_app_foreground_trigger",

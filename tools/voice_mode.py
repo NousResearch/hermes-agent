@@ -109,14 +109,15 @@ def detect_audio_environment() -> dict:
     from hermes_constants import is_container
     if is_container():
         if os.environ.get('PULSE_SERVER') or os.environ.get('PIPEWIRE_REMOTE'):
-            notices.append("Running inside Docker container with host audio forwarding")
+            notices.append("Running inside container (Docker/Podman/LXC) with host audio forwarding")
         else:
             warnings.append(
-                "Running inside Docker container -- no audio devices.\n"
-                "  Forward host audio with one of:\n"
-                "    PulseAudio:  -v /run/user/1000/pulse/native:/run/user/1000/pulse/native \\\n"
-                "                 -e PULSE_SERVER=unix:/run/user/1000/pulse/native\n"
-                "    PipeWire:    -e PIPEWIRE_REMOTE=/run/user/1000/pipewire-0"
+                "Running inside container (Docker/Podman/LXC) -- no audio devices.\n"
+                "  Forward host audio with one of (substitute $XDG_RUNTIME_DIR for your runtime dir,\n"
+                "  typically /run/user/$UID):\n"
+                "    PulseAudio:  -v $XDG_RUNTIME_DIR/pulse/native:$XDG_RUNTIME_DIR/pulse/native \\\n"
+                "                 -e PULSE_SERVER=unix:$XDG_RUNTIME_DIR/pulse/native\n"
+                "    PipeWire:    -e PIPEWIRE_REMOTE=$XDG_RUNTIME_DIR/pipewire-0"
             )
 
     # WSL detection — PulseAudio bridge makes audio work in WSL.

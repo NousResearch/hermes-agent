@@ -17,6 +17,8 @@ Usage:
     hermes cron                # Manage cron jobs
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
+    hermes proactive prompt    # Print safe proactive reflection prompt
+    hermes proactive install   # Install safe proactive synthesis cron job
     hermes doctor              # Check configuration and dependencies
     hermes honcho setup                    # Configure Honcho AI memory integration
     hermes honcho status                   # Show Honcho config and connection status
@@ -5256,6 +5258,13 @@ def cmd_cron(args):
     cron_command(args)
 
 
+def cmd_proactive(args):
+    """Safe proactive reflection helpers."""
+    from hermes_cli.proactive import cmd_proactive as proactive_command
+
+    return proactive_command(args)
+
+
 def cmd_webhook(args):
     """Webhook subscription management."""
     from hermes_cli.webhook import webhook_command
@@ -8881,7 +8890,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "mcp", "memory", "model",
-        "pairing", "plugins", "profile", "sessions", "setup", "skills",
+        "pairing", "plugins", "proactive", "profile", "sessions", "setup", "skills",
         "slack", "status", "tools", "uninstall", "update", "version",
         "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -9628,6 +9637,60 @@ def main():
     _add_accept_hooks_flag(cron_tick)
     _add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)
+
+    # =========================================================================
+    # proactive command
+    # =========================================================================
+    proactive_parser = subparsers.add_parser(
+        "proactive",
+        help="Safe proactive reflection setup",
+        description="Build or install the safe proactive synthesis cron job",
+    )
+    proactive_subparsers = proactive_parser.add_subparsers(dest="proactive_command")
+
+    proactive_prompt = proactive_subparsers.add_parser(
+        "prompt",
+        help="Print the prompt used by the proactive synthesis cron job",
+    )
+    proactive_prompt.add_argument("--lookback-days", type=int, default=7)
+    proactive_prompt.add_argument("--max-sessions", type=int, default=30)
+    proactive_prompt.add_argument(
+        "--min-confidence",
+        choices=["medium", "high"],
+        default="high",
+        help="Minimum confidence before the job messages the user",
+    )
+    proactive_prompt.add_argument("--json", action="store_true", help="Print JSON output")
+
+    proactive_install = proactive_subparsers.add_parser(
+        "install",
+        help="Create or update the safe proactive synthesis cron job",
+    )
+    proactive_install.add_argument(
+        "--schedule",
+        default="0 9 * * *",
+        help="Schedule like 'every 4h' or '0 9 * * *' (default: daily at 09:00)",
+    )
+    proactive_install.add_argument(
+        "--deliver",
+        default="local",
+        help="Cron delivery target (default: local; use telegram/origin/etc. to message proactively)",
+    )
+    proactive_install.add_argument("--lookback-days", type=int, default=7)
+    proactive_install.add_argument("--max-sessions", type=int, default=30)
+    proactive_install.add_argument(
+        "--min-confidence",
+        choices=["medium", "high"],
+        default="high",
+        help="Minimum confidence before the job messages the user",
+    )
+    proactive_install.add_argument(
+        "--paused",
+        action="store_true",
+        help="Create/update the job but leave it paused for review",
+    )
+    proactive_install.add_argument("--json", action="store_true", help="Print JSON output")
+    proactive_parser.set_defaults(func=cmd_proactive)
 
     # =========================================================================
     # webhook command

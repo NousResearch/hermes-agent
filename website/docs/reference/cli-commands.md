@@ -47,6 +47,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
+| `hermes proactive` | Build or install a safe proactive synthesis cron job. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
@@ -337,6 +338,31 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `remove` | Delete a scheduled job. |
 | `status` | Check whether the cron scheduler is running. |
 | `tick` | Run due jobs once and exit. |
+
+## `hermes proactive`
+
+```bash
+hermes proactive <prompt|install>
+```
+
+Creates a conservative synthesis prompt for a recurring cron job that reviews recent sessions and only messages the user when there is one safe, timely, high-confidence nudge. If nothing is worth saying, the prompt tells the cron agent to return `[SILENT]`, which suppresses delivery while still saving output locally for audit.
+
+| Subcommand | Description |
+|------------|-------------|
+| `prompt` | Print the prompt used by the proactive synthesis cron job. |
+| `install` | Create or update the idempotent `Proactive synthesis / safe nudges` cron job. |
+
+Common options:
+
+| Option | Description |
+|--------|-------------|
+| `--schedule` | Install schedule, e.g. `every 4h` or `0 9 * * *` (default: daily at 09:00). |
+| `--deliver` | Cron delivery target. Defaults to `local`; set `telegram`, `origin`, etc. to proactively message. |
+| `--lookback-days` | Recent interaction window to inspect (clamped to 1–90). |
+| `--max-sessions` | Maximum recent sessions to review (clamped to 1–200). |
+| `--min-confidence` | `high` (default) or `medium` threshold before messaging. |
+| `--paused` | Install/update the cron job but leave it paused for review. |
+| `--json` | Print machine-readable output. |
 
 ## `hermes kanban`
 

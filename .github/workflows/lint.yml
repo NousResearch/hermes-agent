@@ -121,7 +121,10 @@ jobs:
           path: .lint-reports/
           retention-days: 14
 
+      # Fork PRs: GITHUB_TOKEN often cannot write comments on the upstream repo (403 integration).
+      # Step summary + upload-artifact remain authoritative; this step is best-effort only.
       - name: Post / update PR comment
+        continue-on-error: true
         if: github.event_name == 'pull_request'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:

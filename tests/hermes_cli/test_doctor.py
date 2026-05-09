@@ -662,7 +662,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-    (home / ".env").write_text("KIMI_CN_API_KEY=sk-test\n", encoding="utf-8")
+    (home / ".env").write_text("KIMI_CN_API_KEY=***", encoding="utf-8")
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
 
@@ -731,6 +731,8 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
     except ImportError:
         pass
 
@@ -744,6 +746,7 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
     import httpx
     monkeypatch.setattr(httpx, "get", fake_get)
 
+    import io, contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         doctor_mod.run_doctor(Namespace(fix=False))
@@ -759,6 +762,95 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
         url == "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
         for url, _, _ in calls
     )
+
+
+def test_run_doctor_ignores_missing_api_keys_for_disabled_toolsets(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: (
+            ["web"],
+            [{"name": "rl", "missing_vars": ["TINKER_API_KEY", "WANDB_API_KEY"]}],
+        ),
+        TOOLSET_REQUIREMENTS={"web": {"name": "web"}},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+        import httpx
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: types.SimpleNamespace(status_code=200))
+        from hermes_cli import config as _config_mod
+        from hermes_cli import tools_config as _tools_mod
+        monkeypatch.setattr(_config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["web"]}})
+        monkeypatch.setattr(_tools_mod, "_get_platform_tools", lambda *a, **kw: {"web"})
+    except Exception:
+        pass
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "⚠ rl" in out or "rl" in out
+    assert "Run 'hermes setup' to configure missing API keys for enabled toolsets" not in out
+
+
+def test_run_doctor_reports_missing_api_keys_for_enabled_toolsets(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: (
+            [],
+            [{"name": "web", "missing_vars": ["OPENROUTER_API_KEY"]}],
+        ),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+        import httpx
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: types.SimpleNamespace(status_code=200))
+        from hermes_cli import config as _config_mod
+        from hermes_cli import tools_config as _tools_mod
+        monkeypatch.setattr(_config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["web"]}})
+        monkeypatch.setattr(_tools_mod, "_get_platform_tools", lambda *a, **kw: {"web"})
+    except Exception:
+        pass
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "Run 'hermes setup' to configure missing API keys for enabled toolsets" in out
 
 
 @pytest.mark.parametrize("base_url", [None, "https://opencode.ai/zen/go/v1"])

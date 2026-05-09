@@ -1776,10 +1776,24 @@ def run_doctor(args):
             else:
                 check_warn(item["name"], "(system dependency not met)")
 
-        # Count disabled tools with API key requirements
-        api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
+        # Only summarize missing API keys for toolsets actually enabled in the CLI.
+        # Otherwise default-off / disabled toolsets (for example rl) create noisy
+        # false positives in the final "Found N issue(s)" summary.
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.tools_config import _get_platform_tools
+
+            enabled_cli_toolsets = set(_get_platform_tools(load_config(), "cli", include_default_mcp_servers=False))
+        except Exception:
+            enabled_cli_toolsets = set()
+
+        api_disabled = [
+            u for u in unavailable
+            if (u.get("missing_vars") or u.get("env_vars"))
+            and (not enabled_cli_toolsets or u.get("name") in enabled_cli_toolsets)
+        ]
         if api_disabled:
-            issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+            issues.append("Run 'hermes setup' to configure missing API keys for enabled toolsets")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
     

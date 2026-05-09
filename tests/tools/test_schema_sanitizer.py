@@ -197,6 +197,54 @@ def test_items_sanitized_in_array_schema():
     assert items == {"type": "object", "properties": {}}
 
 
+def test_array_without_items_gets_empty_items_schema():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "values": {"type": "array"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    values = out[0]["function"]["parameters"]["properties"]["values"]
+    assert values == {"type": "array", "items": {}}
+
+
+def test_prefix_items_tuple_schema_gets_openai_required_items():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "ports": {
+                "type": "object",
+                "additionalProperties": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "integer"},
+                        {
+                            "type": "array",
+                            "prefixItems": [
+                                {"type": "string"},
+                                {"type": "integer"},
+                            ],
+                            "minItems": 2,
+                            "maxItems": 2,
+                        },
+                    ],
+                },
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    array_variant = (
+        out[0]["function"]["parameters"]
+        ["properties"]["ports"]
+        ["additionalProperties"]["anyOf"][2]
+    )
+    assert array_variant["items"] == {
+        "anyOf": [{"type": "string"}, {"type": "integer"}]
+    }
+    assert array_variant["prefixItems"] == [{"type": "string"}, {"type": "integer"}]
+
+
 def test_empty_tools_list_returns_empty():
     assert sanitize_tool_schemas([]) == []
 

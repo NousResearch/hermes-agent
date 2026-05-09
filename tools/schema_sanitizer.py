@@ -17,6 +17,8 @@ The failure modes we've seen in the wild:
   (malformed MCP server output, e.g. ``additionalProperties: "object"``).
 * ``"type": ["string", "null"]`` array types — many converters only accept
   single-string ``type``.
+* ``{"type": "array"}`` with no ``items`` — OpenAI strict function schemas
+  reject array nodes unless the element schema is explicit.
 * ``anyOf`` / ``oneOf`` unions whose only purpose is to permit ``null`` for
   optional fields (common Pydantic/MCP shape). Anthropic rejects these at
   the top of ``input_schema``; collapse them to the non-null branch.
@@ -196,6 +198,9 @@ def _sanitize_node(node: Any, path: str) -> Any:
     - Replaces bare-string schema values ("object", "string", ...) with
       ``{"type": <value>}`` so downstream consumers see a dict.
     - Injects ``properties: {}`` into object-typed nodes missing it.
+    - Injects ``items: {}`` into array-typed nodes missing it; tuple-style
+      list-valued ``items`` is collapsed to a homogeneous ``anyOf`` item
+      schema for strict OpenAI compatibility.
     - Normalizes ``type: [X, "null"]`` arrays to single ``type: X`` (keeping
       ``nullable: true`` as a hint).
     - Recurses into ``properties``, ``items``, ``additionalProperties``,
@@ -262,6 +267,11 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 out[key] = value
             else:
                 out[key] = _sanitize_node(value, f"{path}.{key}")
+        elif key == "prefixItems" and isinstance(value, list):
+            out[key] = [
+                _sanitize_node(item, f"{path}.{key}[{i}]")
+                for i, item in enumerate(value)
+            ]
         elif key in {"anyOf", "oneOf", "allOf"} and isinstance(value, list):
             out[key] = [
                 _sanitize_node(item, f"{path}.{key}[{i}]")
@@ -283,6 +293,21 @@ def _sanitize_node(node: Any, path: str) -> Any:
     # llama.cpp's grammar generator can't constrain a free-form object.
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
+
+    # Array nodes must declare an element schema for OpenAI strict tool
+    # validation. Pydantic tuple schemas may use draft-2020-12 ``prefixItems``
+    # without ``items``; keep the tuple hint but add a permissive homogeneous
+    # items schema so strict validators have the required key.
+    if out.get("type") == "array":
+        items = out.get("items")
+        if isinstance(items, list):
+            out["items"] = {"anyOf": items} if len(items) > 1 else (items[0] if items else {})
+        elif "items" not in out or not isinstance(items, (dict, bool)):
+            prefix_items = out.get("prefixItems")
+            if isinstance(prefix_items, list) and prefix_items:
+                out["items"] = {"anyOf": prefix_items} if len(prefix_items) > 1 else prefix_items[0]
+            else:
+                out["items"] = {}
 
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but

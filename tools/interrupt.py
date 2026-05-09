@@ -1,12 +1,22 @@
 """Per-thread interrupt signaling for all tools.
 
-Provides thread-scoped interrupt tracking so that interrupting one agent
-session does not kill tools running in other sessions.  This is critical
-in the gateway where multiple agents run concurrently in the same process.
+In gateway mode multiple agent sessions run concurrently in the same
+process. The previous implementation used a single global
+``threading.Event``, which meant that interrupting *one* session
+interrupted *all* running sessions simultaneously.
 
-The agent stores its execution thread ID at the start of run_conversation()
-and passes it to set_interrupt()/clear_interrupt().  Tools call
-is_interrupted() which checks the CURRENT thread — no argument needed.
+This module replaces the global event with a **per-thread** set keyed by
+``threading.get_ident()``. Each session runs in its own
+``ThreadPoolExecutor`` thread, so interrupt state is naturally isolated.
+
+Backward-compatibility notes:
+- ``set_interrupt(active)`` still works; it now targets the calling thread.
+- ``set_interrupt(active, thread_id=<int>)`` lets the gateway/agent set the
+  flag on a *specific* thread (required because the interrupt arrives on the
+  HTTP-handler thread, not the agent thread).
+- ``is_interrupted()`` is unchanged (checks the current thread).
+- ``_interrupt_event`` shim provides ``.is_set()`` / ``.set()`` /
+  ``.clear()`` / ``.wait()`` for legacy callers that imported it directly.
 
 Usage in tools:
     from tools.interrupt import is_interrupted
@@ -17,18 +27,12 @@ Usage in tools:
 import logging
 import os
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
-# Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in
-# tools/environments/base.py.  Enables per-call logging of set/check so the
-# caller thread, target thread, and current state are visible when
-# diagnosing "interrupt signaled but tool never saw it" reports.
 _DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
-
 if _DEBUG_INTERRUPT:
-    # AIAgent's quiet_mode path forces `tools` logger to ERROR on CLI startup.
-    # Force our own logger back to INFO so the trace is visible in agent.log.
     logger.setLevel(logging.INFO)
 
 # Set of thread idents that have been interrupted.
@@ -37,12 +41,13 @@ _lock = threading.Lock()
 
 
 def set_interrupt(active: bool, thread_id: int | None = None) -> None:
-    """Set or clear interrupt for a specific thread.
+    """Set or clear the interrupt flag for a specific thread.
 
     Args:
         active: True to signal interrupt, False to clear it.
-        thread_id: Target thread ident.  When None, targets the
-                   current thread (backward compat for CLI/tests).
+        thread_id: Target thread ident. When ``None``, targets the
+                   calling thread (backward-compatible default for
+                   CLI / single-session usage).
     """
     tid = thread_id if thread_id is not None else threading.current_thread().ident
     with _lock:
@@ -71,28 +76,46 @@ def is_interrupted() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Backward-compatible _interrupt_event proxy
+# Backward-compatible _interrupt_event shim
 # ---------------------------------------------------------------------------
-# Some legacy call sites (code_execution_tool, process_registry, tests)
-# import _interrupt_event directly and call .is_set() / .set() / .clear().
-# This shim maps those calls to the per-thread functions above so existing
-# code keeps working while the underlying mechanism is thread-scoped.
+# Legacy call sites import ``_interrupt_event`` directly and call
+# ``.is_set()`` / ``.set()`` / ``.clear()`` / ``.wait()``.  This proxy
+# maps those calls to the per-thread functions above.
+
 
 class _ThreadAwareEventProxy:
-    """Drop-in proxy that maps threading.Event methods to per-thread state."""
+    """Drop-in proxy that maps threading.Event API to per-thread state."""
 
-    def is_set(self) -> bool:
+    def is_set(self) -> bool:  # noqa: D102
         return is_interrupted()
 
     def set(self) -> None:  # noqa: A003
         set_interrupt(True)
 
-    def clear(self) -> None:
+    def clear(self) -> None:  # noqa: D102
         set_interrupt(False)
 
     def wait(self, timeout: float | None = None) -> bool:
-        """Not truly supported — returns current state immediately."""
-        return self.is_set()
+        """Block until the current thread is interrupted or *timeout* elapses.
+
+        Returns True if the interrupt was set, False on timeout.
+        Note: the legacy threading.Event.wait() semantics are preserved —
+        callers that rely on blocking up to *timeout* seconds will work
+        correctly instead of spinning.
+        """
+        if timeout is None:
+            # Block indefinitely — poll at 50 ms to stay interruptible.
+            while not is_interrupted():
+                time.sleep(0.05)
+            return True
+
+        deadline = time.monotonic() + timeout
+        while not is_interrupted():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
+        return True
 
 
 _interrupt_event = _ThreadAwareEventProxy()

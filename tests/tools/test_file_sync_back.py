@@ -1,6 +1,6 @@
 """Tests for FileSyncManager.sync_back() — pull remote changes to host."""
 
-import fcntl
+fcntl = __import__("pytest").importorskip("fcntl")
 import io
 import logging
 import os

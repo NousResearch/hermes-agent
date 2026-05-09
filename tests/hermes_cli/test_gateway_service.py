@@ -1,7 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
-import pwd
+pwd = __import__("pytest").importorskip("pwd")
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace

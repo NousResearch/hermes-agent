@@ -610,6 +610,10 @@ Check logs first:
 grep -i "failed to send\|error" ~/.hermes/logs/gateway.log | tail -20
 ```
 
+### Telegram: "Can you see the HTML pages you sent me earlier?"
+
+No. Hermes cannot see Telegram's conversation history automatically — each session starts fresh. See `references/telegram-chat-history.md` for the full architecture explanation and session_search workaround.
+
 Common gateway problems:
 - **Gateway dies on SSH logout**: Enable linger: `sudo loginctl enable-linger $USER`
 - **Gateway dies on WSL2 close**: WSL2 requires `systemd=true` in `/etc/wsl.conf` for systemd services to work. Without it, gateway falls back to `nohup` (dies when session closes).

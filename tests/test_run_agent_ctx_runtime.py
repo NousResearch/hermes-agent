@@ -35,3 +35,9 @@ def test_aiagent_includes_ctx_note_in_system_prompt(monkeypatch):
     prompt = agent._build_system_prompt()
     assert "ctx task `task-1`" in prompt
     assert "/tmp/ctx-worktree" in prompt
+    assert "When dispatching Codex workers" in prompt
+    assert "Slack" in prompt
+    assert "Moshi" in prompt
+    assert "webhook URLs" in prompt
+    assert "external status-report/notification endpoints" in prompt
+    assert "unless the task explicitly requires notification work" in prompt

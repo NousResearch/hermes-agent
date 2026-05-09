@@ -141,7 +141,10 @@ class CtxBinding:
             "If the codex_delegate tool is available, act as the engineering manager: "
             "launch bounded local Codex implementation runs, inspect their status and "
             "results, and course-correct with follow-up runs instead of delegating "
-            "the Linear issue to cloud Codex.]"
+            "the Linear issue to cloud Codex. "
+            "When dispatching Codex workers, require them not to call Slack, Moshi, "
+            "webhook URLs, or external status-report/notification endpoints unless "
+            "the task explicitly requires notification work.]"
         )
 
 

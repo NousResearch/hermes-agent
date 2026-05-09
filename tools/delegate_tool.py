@@ -81,6 +81,12 @@ def _get_max_concurrent_children() -> int:
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+NO_EXTERNAL_NOTIFICATIONS_INSTRUCTION = (
+    "External notification rule: Do not call Slack, Moshi, webhook URLs, "
+    "or any external status-report or notification endpoint unless the "
+    "delegated task explicitly requires notification work. Return status "
+    "only in your final summary to the parent agent."
+)
 
 
 def check_delegate_requirements() -> bool:
@@ -117,6 +123,7 @@ def _build_child_system_prompt(
         "- Any issues encountered\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
+        f"{NO_EXTERNAL_NOTIFICATIONS_INSTRUCTION}\n\n"
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
     )
@@ -1026,6 +1033,7 @@ DELEGATE_TASK_SCHEMA = {
         "info (file paths, error messages, constraints) via the 'context' field.\n"
         "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
         "execute_code.\n"
+        f"- {NO_EXTERNAL_NOTIFICATIONS_INSTRUCTION}\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     ),

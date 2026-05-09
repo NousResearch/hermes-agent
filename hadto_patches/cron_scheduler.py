@@ -254,9 +254,9 @@ def _build_ownership_audit_prompt_prefix(job: dict) -> str:
         "records shaped as: Selection=<selected|denied|skipped reason=... dedupe_key=workspace-orchestrator:HAD-...>; "
         "Execution=<started|skipped reason=live_execution|planning_only|repo_unresolved>; "
         "Comment=<commented|denied|skipped reason=commented|writeback_skipped>; "
-        "Delegate=<delegated|denied|skipped reason=delegate_allowed|delegate_denied|de_novo_block|human_owned|already_undelegated|writeback_skipped>; "
-        "Assign=<assigned|denied|skipped reason=assign_allowed|assign_denied|de_novo_block|human_owned|writeback_skipped>. "
-        "Keep reason strings terse and stable: de_novo_block, human_owned, explicit_thread_override, already_undelegated, "
+        "Delegate=<delegated|denied|skipped reason=delegate_allowed|delegate_denied|owner_label_missing|owner_label_mismatch|owner_label_conflict|human_owned|already_undelegated|writeback_skipped>; "
+        "Assign=<assigned|denied|skipped reason=assign_allowed|assign_denied|owner_label_missing|owner_label_mismatch|owner_label_conflict|human_owned|writeback_skipped>. "
+        "Keep reason strings terse and stable: owner_label_missing, owner_label_mismatch, owner_label_conflict, human_owned, already_undelegated, "
         "repo_unresolved, planning_only, selected, writeback_skipped, delegate_denied, delegate_allowed, assign_denied, assign_allowed. "
         "Do not create extra Linear comments only for this audit; attach it to the canonical workspace-orchestrator issue comment when a writeback is already being made.]"
     )

@@ -55,6 +55,16 @@ def _make_empty_chunk(model=None, usage=None):
     return SimpleNamespace(choices=[], model=model, usage=usage)
 
 
+def _make_agent(**kwargs):
+    """Create an AIAgent for streaming unit tests without provider credentials."""
+    from run_agent import AIAgent
+
+    kwargs.setdefault("api_key", "test-key")
+    kwargs.setdefault("base_url", "https://example.test/v1")
+    kwargs.setdefault("provider", "custom")
+    return AIAgent(**kwargs)
+
+
 # ── Test: Streaming Accumulator ──────────────────────────────────────────
 
 
@@ -79,7 +89,7 @@ class TestStreamingAccumulator:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -119,7 +129,7 @@ class TestStreamingAccumulator:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -166,7 +176,7 @@ class TestStreamingAccumulator:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -204,7 +214,7 @@ class TestStreamingAccumulator:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -244,7 +254,7 @@ class TestStreamingCallbacks:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -276,7 +286,7 @@ class TestStreamingCallbacks:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -307,7 +317,7 @@ class TestStreamingCallbacks:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -345,7 +355,7 @@ class TestStreamingCallbacks:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -380,7 +390,7 @@ class TestStreamingCallbacks:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -427,7 +437,7 @@ class TestStreamingFallback:
         )
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -454,7 +464,7 @@ class TestStreamingFallback:
         )
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -476,7 +486,7 @@ class TestStreamingFallback:
         mock_client.chat.completions.create.side_effect = Exception("stream broke")
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -499,7 +509,7 @@ class TestStreamingFallback:
         mock_client.chat.completions.create.side_effect = httpx.ConnectError("socket closed")
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -541,7 +551,7 @@ class TestStreamingFallback:
         mock_client.chat.completions.create.side_effect = sse_error
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -576,7 +586,7 @@ class TestStreamingFallback:
         mock_client.chat.completions.create.side_effect = sse_error
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -618,7 +628,7 @@ class TestReasoningStreaming:
         mock_client.chat.completions.create.return_value = iter(chunks)
         mock_create.return_value = mock_client
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -645,7 +655,7 @@ class TestHasStreamConsumers:
 
     def test_no_consumers(self):
         from run_agent import AIAgent
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -655,7 +665,7 @@ class TestHasStreamConsumers:
 
     def test_delta_callback_set(self):
         from run_agent import AIAgent
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -666,7 +676,7 @@ class TestHasStreamConsumers:
 
     def test_stream_callback_set(self):
         from run_agent import AIAgent
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -687,7 +697,7 @@ class TestCodexStreamCallbacks:
 
         deltas = []
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -728,7 +738,7 @@ class TestCodexStreamCallbacks:
     def test_codex_stream_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -791,7 +801,7 @@ class TestCodexStreamCallbacks:
             "peer closed connection without sending complete message body"
         )
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -809,7 +819,7 @@ class TestCodexStreamCallbacks:
     def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,
@@ -860,7 +870,7 @@ class TestAnthropicStreamCallbacks:
     def test_anthropic_stream_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
 
-        agent = AIAgent(
+        agent = _make_agent(
             model="test/model",
             quiet_mode=True,
             skip_context_files=True,

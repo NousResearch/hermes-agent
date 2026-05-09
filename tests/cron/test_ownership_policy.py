@@ -6,7 +6,6 @@ from hadto_patches.ownership_policy import (
     canonical_ownership_dedupe_key,
     evaluate_ownership_policy,
     format_ownership_decision_audit,
-    ownership_policy_override,
 )
 
 
@@ -14,9 +13,19 @@ from hadto_patches.ownership_policy import (
     ("name", "facts", "expected"),
     [
         (
-            "de_novo_default_deny",
-            IssueOwnershipFacts(project_name="De Novo", state_type="backlog"),
+            "non_hermes_owner_label",
+            IssueOwnershipFacts(
+                project_name="De Novo",
+                state_type="backlog",
+                label_names=("owner:denovo",),
+                required_owner_label="owner:hermes",
+            ),
             {"selectable": False, "commentable": True, "ownable": False},
+        ),
+        (
+            "de_novo_project_name_without_owner_gate",
+            IssueOwnershipFacts(project_name="De Novo", state_type="backlog"),
+            {"selectable": True, "commentable": True, "ownable": True},
         ),
         (
             "human_owned",
@@ -56,7 +65,25 @@ def test_issue_ownership_policy_contract_table(name, facts, expected):
 
 
 def test_policy_exposes_stable_operator_reason_strings():
-    de_novo = evaluate_ownership_policy(IssueOwnershipFacts(project_name="De Novo", state_type="backlog"))
+    owner_mismatch = evaluate_ownership_policy(
+        IssueOwnershipFacts(
+            project_name="De Novo",
+            state_type="backlog",
+            label_names=("owner:denovo",),
+            required_owner_label="owner:hermes",
+        )
+    )
+    owner_missing = evaluate_ownership_policy(
+        IssueOwnershipFacts(project_name="Hadto.co", state_type="backlog", required_owner_label="owner:hermes")
+    )
+    owner_conflict = evaluate_ownership_policy(
+        IssueOwnershipFacts(
+            project_name="Hadto.co",
+            state_type="backlog",
+            label_names=("owner:hermes", "owner:denovo"),
+            required_owner_label="owner:hermes",
+        )
+    )
     human_owned = evaluate_ownership_policy(
         IssueOwnershipFacts(
             project_name="Hadto.co",
@@ -67,9 +94,14 @@ def test_policy_exposes_stable_operator_reason_strings():
     )
     normal = evaluate_ownership_policy(IssueOwnershipFacts(project_name="Hadto.co", state_type="backlog"))
 
-    assert de_novo.selectable.reason == "de_novo_block"
-    assert de_novo.delegateable.reason == "de_novo_block"
-    assert de_novo.assignable.reason == "de_novo_block"
+    assert owner_mismatch.selectable.reason == "owner_label_mismatch"
+    assert owner_mismatch.delegateable.reason == "owner_label_mismatch"
+    assert owner_mismatch.assignable.reason == "owner_label_mismatch"
+    assert owner_mismatch.selectable.detail == "owner:denovo"
+    assert owner_missing.selectable.reason == "owner_label_missing"
+    assert owner_missing.selectable.detail == "owner:hermes"
+    assert owner_conflict.selectable.reason == "owner_label_conflict"
+    assert owner_conflict.selectable.detail == "owner:denovo,owner:hermes"
     assert human_owned.selectable.reason == "human_owned"
     assert normal.selectable.reason == "selected"
     assert normal.delegateable.reason == "delegate_allowed"
@@ -92,36 +124,21 @@ def test_issue_text_guard_blocks_selection_and_ownership_but_not_comments():
     assert decision.ownable.reason == "issue_text_guard"
 
 
-def test_explicit_thread_local_override_allows_de_novo_ownership_temporarily():
-    facts = IssueOwnershipFacts(project_name="De Novo", state_type="backlog")
-
-    assert evaluate_ownership_policy(facts).ownable.allowed is False
-
-    with ownership_policy_override("HAD-511 operator-approved De Novo pickup"):
-        decision = evaluate_ownership_policy(facts)
-
-    assert decision.selectable.allowed is True
-    assert decision.ownable.allowed is True
-    assert decision.selectable.reason == "selected"
-    assert decision.ownable.detail == "explicit_thread_override"
-    assert decision.override_reason == "HAD-511 operator-approved De Novo pickup"
-    assert evaluate_ownership_policy(facts).ownable.allowed is False
-
-
-def test_explicit_input_override_allows_de_novo_ownership():
+def test_explicit_input_override_does_not_bypass_owner_label_gate():
     decision = evaluate_ownership_policy(
         IssueOwnershipFacts(
             project_name="DeNovo",
             state_type="backlog",
+            label_names=("owner:denovo",),
+            required_owner_label="owner:hermes",
             explicit_override=True,
             explicit_override_reason="HAD-511 manual review",
         )
     )
 
-    assert decision.selectable.allowed is True
-    assert decision.ownable.allowed is True
-    assert decision.selectable.reason == "selected"
-    assert decision.ownable.detail == "explicit_thread_override"
+    assert decision.selectable.allowed is False
+    assert decision.ownable.allowed is False
+    assert decision.selectable.reason == "owner_label_mismatch"
     assert decision.override_reason == "HAD-511 manual review"
 
 
@@ -131,6 +148,8 @@ def test_audit_records_distinguish_selected_execution_comment_and_denied_delegat
         issue_key="HAD-514",
         project_name="De Novo",
         state_type="backlog",
+        label_names=("owner:denovo",),
+        required_owner_label="owner:hermes",
         planning_only=True,
     )
 
@@ -145,7 +164,7 @@ def test_audit_records_distinguish_selected_execution_comment_and_denied_delegat
 
     assert payloads[0]["action"] == "select"
     assert payloads[0]["outcome"] == "denied"
-    assert payloads[0]["reason"] == "de_novo_block"
+    assert payloads[0]["reason"] == "owner_label_mismatch"
     assert payloads[1]["action"] == "execute"
     assert payloads[1]["outcome"] == "skipped"
     assert payloads[1]["reason"] == "planning_only"
@@ -160,7 +179,7 @@ def test_audit_records_distinguish_selected_execution_comment_and_denied_delegat
     output = format_ownership_decision_audit(records)
     assert "issue=HAD-514" in output
     assert "dedupe_key=workspace-orchestrator:HAD-514" in output
-    assert "action=select outcome=denied reason=de_novo_block" in output
+    assert "action=select outcome=denied reason=owner_label_mismatch" in output
     assert "action=execute outcome=skipped reason=planning_only" in output
     assert "action=delegate outcome=skipped reason=planning_only policy_reason=delegate_denied" in output
 

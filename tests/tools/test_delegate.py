@@ -23,6 +23,7 @@ from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _get_max_concurrent_children,
     MAX_DEPTH,
+    NO_EXTERNAL_NOTIFICATIONS_INSTRUCTION,
     check_delegate_requirements,
     delegate_task,
     _build_child_agent,
@@ -80,6 +81,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("toolsets", props)
         self.assertIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+        self.assertIn(NO_EXTERNAL_NOTIFICATIONS_INSTRUCTION, DELEGATE_TASK_SCHEMA["description"])
 
 
 class TestChildSystemPrompt(unittest.TestCase):
@@ -98,6 +100,15 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+    def test_blocks_unsolicited_external_notifications(self):
+        prompt = _build_child_system_prompt("Fix HAD-787", "Use the ctx worktree")
+        self.assertIn(NO_EXTERNAL_NOTIFICATIONS_INSTRUCTION, prompt)
+        self.assertIn("Slack", prompt)
+        self.assertIn("Moshi", prompt)
+        self.assertIn("webhook URLs", prompt)
+        self.assertIn("external status-report or notification endpoint", prompt)
+        self.assertIn("unless the delegated task explicitly requires notification work", prompt)
 
 
 class TestStripBlockedTools(unittest.TestCase):

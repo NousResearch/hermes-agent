@@ -3437,6 +3437,7 @@ class TestMemoryNudgeCounterPersistence:
             )
         assert hasattr(a, "_turns_since_memory")
         assert hasattr(a, "_iters_since_skill")
+        assert a._client_kwargs["api_key"] == "test-key"
         assert a._turns_since_memory == 0
         assert a._iters_since_skill == 0
 

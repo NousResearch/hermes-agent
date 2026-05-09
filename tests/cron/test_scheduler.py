@@ -1059,9 +1059,9 @@ class TestBuildJobPromptSilentHint:
         assert "Ownership Decisions" in result
         assert "Selection=<selected|denied|skipped reason=..." in result
         assert "Execution=<started|skipped reason=live_execution|planning_only|repo_unresolved>" in result
-        assert "Delegate=<delegated|denied|skipped reason=delegate_allowed|delegate_denied|de_novo_block|human_owned|already_undelegated|writeback_skipped>" in result
+        assert "Delegate=<delegated|denied|skipped reason=delegate_allowed|delegate_denied|owner_label_missing|owner_label_mismatch|owner_label_conflict|human_owned|already_undelegated|writeback_skipped>" in result
         assert "workspace-orchestrator:HAD-" in result
-        assert "de_novo_block, human_owned, explicit_thread_override" in result
+        assert "owner_label_missing, owner_label_mismatch, owner_label_conflict" in result
 
     def test_hadto_heartbeat_injects_routine_delivery_gate(self):
         job = {

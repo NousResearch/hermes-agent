@@ -10,7 +10,7 @@ import threading
 from typing import Any, Dict, Iterator, List, Optional
 
 
-_DENIED_PROJECTS = {"de novo", "denovo"}
+_OWNER_LABEL_PREFIX = "owner:"
 _TERMINAL_STATES = {"done", "completed", "closed", "canceled", "cancelled"}
 _THREAD_LOCAL = threading.local()
 _ORCHESTRATOR_DEDUPE_PREFIX = "workspace-orchestrator"
@@ -43,6 +43,8 @@ class IssueOwnershipFacts:
     delegate_id: Optional[str] = None
     delegate_name: Optional[str] = None
     delegate_is_hermes: bool = False
+    label_names: tuple[str, ...] = ()
+    required_owner_label: Optional[str] = None
     issue_text_has_guard: bool = False
     issue_text_guard_reason: Optional[str] = None
     explicit_override: bool = False
@@ -116,6 +118,10 @@ def _normalize(value: Optional[str]) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
 
 
+def _normalize_owner_label(value: Optional[str]) -> str:
+    return str(value or "").strip().lower()
+
+
 def _status_token(key: str, value: Any) -> str:
     text = re.sub(r"\s+", " ", str(value)).strip()
     if not text:
@@ -174,6 +180,27 @@ def _active_override(facts: IssueOwnershipFacts) -> Optional[OwnershipPolicyOver
     return _input_override(facts) or current_ownership_policy_override()
 
 
+def _owner_label_denial(facts: IssueOwnershipFacts) -> Optional[OwnershipDimensionDecision]:
+    required = _normalize_owner_label(facts.required_owner_label)
+    if not required:
+        return None
+
+    owner_labels = sorted(
+        {
+            normalized
+            for label in facts.label_names
+            if (normalized := _normalize_owner_label(label)).startswith(_OWNER_LABEL_PREFIX)
+        }
+    )
+    if required in owner_labels and len(owner_labels) == 1:
+        return None
+    if len(owner_labels) > 1:
+        return OwnershipDimensionDecision(False, "owner_label_conflict", ",".join(owner_labels))
+    if owner_labels:
+        return OwnershipDimensionDecision(False, "owner_label_mismatch", owner_labels[0])
+    return OwnershipDimensionDecision(False, "owner_label_missing", required)
+
+
 def _denied_decision(
     *,
     selectable: OwnershipDimensionDecision,
@@ -197,7 +224,6 @@ def evaluate_ownership_policy(facts: IssueOwnershipFacts) -> OwnershipPolicyDeci
     """Return independent selectable/commentable/ownable decisions for an issue."""
 
     override = _active_override(facts)
-    project = _normalize(facts.project_name)
     state_values = [
         value
         for value in (
@@ -211,7 +237,6 @@ def evaluate_ownership_policy(facts: IssueOwnershipFacts) -> OwnershipPolicyDeci
         (value for value in state_values if value in _TERMINAL_STATES),
         None,
     )
-    is_de_novo = project in _DENIED_PROJECTS
     human_owned = facts.assignee_is_human and not facts.delegate_is_hermes
 
     commentable = OwnershipDimensionDecision(True, "status_comments_allowed")
@@ -235,6 +260,16 @@ def evaluate_ownership_policy(facts: IssueOwnershipFacts) -> OwnershipPolicyDeci
             override=override,
         )
 
+    owner_label_denial = _owner_label_denial(facts)
+    if owner_label_denial:
+        return _denied_decision(
+            selectable=owner_label_denial,
+            commentable=commentable,
+            own_reason=owner_label_denial.reason,
+            own_detail=owner_label_denial.detail,
+            override=override,
+        )
+
     if human_owned:
         return _denied_decision(
             selectable=OwnershipDimensionDecision(False, "human_owned", facts.assignee_name),
@@ -244,16 +279,7 @@ def evaluate_ownership_policy(facts: IssueOwnershipFacts) -> OwnershipPolicyDeci
             override=override,
         )
 
-    if is_de_novo and override is None:
-        return _denied_decision(
-            selectable=OwnershipDimensionDecision(False, "de_novo_block", facts.project_name),
-            commentable=commentable,
-            own_reason="de_novo_block",
-            own_detail=facts.project_name,
-            override=None,
-        )
-
-    detail = "explicit_thread_override" if is_de_novo and override else "normal_backlog"
+    detail = "normal_backlog"
     if facts.delegate_is_hermes:
         detail = "hermes_delegate"
     return OwnershipPolicyDecision(

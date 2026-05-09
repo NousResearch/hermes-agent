@@ -15,6 +15,21 @@
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [Groq](https://groq.com) for automatic OpenAI availability fallback, [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
 
+## Hadto Symphony Workflow Source Of Truth
+
+On the Hadto Lenovo host, Hermes-owned Linear execution policy is migrating to
+Symphony. The source of truth is the Go-track Symphony workflow in
+[`taboularasa/symphony` PR #12](https://github.com/taboularasa/symphony/pull/12),
+specifically `hermes/WORKFLOW.md` plus its prompt trace, ctx hook, and rollback
+docs.
+
+For this Hadto workflow, Hermes keeps generic runtime prompt assembly,
+ctx binding, Slack gateway, and platform messaging behavior here. The legacy
+Hermes project-name ownership block, old `de_novo_block` reason, and
+Hermes-local EM policy source are retired in favor of Symphony owner-label and
+claim-assignee routing. The paired cleanup is
+[`taboularasa/hermes-agent` PR #100](https://github.com/taboularasa/hermes-agent/pull/100).
+
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
 <tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>

@@ -140,6 +140,31 @@ class TestGenerateZsh:
         # gateway has subcommands so a _cmds array must be generated
         assert "gateway_cmds" in out
 
+    def test_options_have_valid_arguments_syntax(self):
+        """_arguments specs must have braces outside quotes for zsh to expand them.
+        
+        Broken: '(-h --help){-h,--help}[Show help and exit]'
+        Correct: '(-h --help)'{-h,--help}'[Show help and exit]'
+        """
+        out = generate_zsh(_make_parser())
+        assert "'(-h --help)'{-h,--help}'[Show help and exit]'" in out
+        assert "'(-V --version)'{-V,--version}'[Show version and exit]'" in out
+        assert "'(-p --profile)'{-p,--profile}'[Profile name]:profile:_hermes_profiles'" in out
+        # Ensure the old broken form is gone
+        assert "'(-h --help){-h,--help}[Show help and exit]'" not in out
+
+    def test_valid_zsh_syntax(self):
+        """Script must pass zsh -n syntax check."""
+        out = generate_zsh(_make_parser())
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".zsh", delete=False) as f:
+            f.write(out)
+            path = f.name
+        try:
+            result = subprocess.run(["zsh", "-n", path], capture_output=True)
+            assert result.returncode == 0, result.stderr.decode()
+        finally:
+            os.unlink(path)
+
 
 # ---------------------------------------------------------------------------
 # 4. Fish output

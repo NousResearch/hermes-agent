@@ -910,6 +910,7 @@ AUTHOR_MAP = {
     "wtyopenclaw@gmail.com": "WuTianyi123",  # PR #20275 salvage of #13723 (feishu markdown)
     "zhicheng.han@mathematik.uni-goettingen.de": "hanzckernel",  # PR #20311 (api-server approval events)
     "agentsmithlaor@gmail.com": "oferlaor",  # PR #22356 salvage (cron origin sender identity)
+    "257965685+HiddenPuppy@users.noreply.github.com": "HiddenPuppy",  # PR #22413 (telegram image fail-fast)
     # pander: empty email, salvaged via PR #19665 from #16126 by @ms-alan
 }
 

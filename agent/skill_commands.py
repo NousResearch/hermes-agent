@@ -245,8 +245,11 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
     global _skill_commands, _skill_commands_platform
-    _skill_commands_platform = _resolve_skill_commands_platform()
-    _skill_commands = {}
+    next_platform = _resolve_skill_commands_platform()
+    # Build into a local mapping. Only commit to module state on success
+    # so that an import or scan failure does not silently wipe a previously
+    # populated cache (#18659).
+    new_commands: Dict[str, Dict[str, Any]] = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
@@ -291,7 +294,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
-                    _skill_commands[f"/{cmd_name}"] = {
+                    new_commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
@@ -300,7 +303,12 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                 except Exception:
                     continue
     except Exception:
-        pass
+        # Top-level scan failed (e.g. ImportError from skills_tool /
+        # skill_utils). Preserve the existing cache rather than wiping it.
+        return _skill_commands
+
+    _skill_commands = new_commands
+    _skill_commands_platform = next_platform
     return _skill_commands
 
 

@@ -766,3 +766,51 @@ class TestInlineShellExpansion:
         # The command's intended stdout never made it through — only the
         # timeout marker (which echoes the command text) survives.
         assert "DYN_MARKER" not in msg.replace("sleep 5 && printf DYN_MARKER", "")
+
+
+class TestScanPreservesCacheOnFailure:
+    """Regression for #18659.
+
+    ``scan_skill_commands`` previously cleared ``_skill_commands`` before
+    its outer ``try`` block. Any exception during the scan silently wiped
+    a previously populated mapping. The fix builds into a local dict and
+    only commits to module state on success.
+    """
+
+    def test_scan_failure_keeps_previous_cache(self, tmp_path):
+        import agent.skill_commands as mod
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "kept-skill")
+            commands = scan_skill_commands()
+
+        assert "/kept-skill" in commands
+        snapshot_before = dict(commands)
+
+        def _boom(*args, **kwargs):
+            raise ImportError("simulated skills_tool failure")
+
+        with patch(
+            "tools.skills_tool._get_disabled_skill_names", side_effect=_boom
+        ):
+            result = mod.scan_skill_commands()
+
+        # Cache must be preserved, not wiped.
+        assert result == snapshot_before
+        assert mod._skill_commands == snapshot_before
+
+    def test_successful_scan_replaces_cache(self, tmp_path):
+        import agent.skill_commands as mod
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "first-skill")
+            scan_skill_commands()
+            assert "/first-skill" in mod._skill_commands
+
+            (tmp_path / "first-skill" / "SKILL.md").unlink()
+            (tmp_path / "first-skill").rmdir()
+            _make_skill(tmp_path, "second-skill")
+            result = scan_skill_commands()
+
+        assert "/first-skill" not in result
+        assert "/second-skill" in result

@@ -8070,6 +8070,11 @@ class AIAgent:
                     "Fallback to %s failed: provider not configured",
                     fb_provider)
                 return self._try_activate_fallback()  # try next in chain
+            # Use the model the router actually resolved to (it may drop or
+            # adjust an incompatible override under provider: auto). Fall back
+            # to the configured value only if the router returned None.
+            if _resolved_fb_model:
+                fb_model = _resolved_fb_model
             try:
                 from hermes_cli.model_normalize import normalize_model_for_provider
 

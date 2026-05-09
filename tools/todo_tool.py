@@ -189,10 +189,10 @@ def todo_tool(
         except (json.JSONDecodeError, TypeError):
             return tool_error(f"todo: 'todos' must be a JSON array, got string: {todos[:80]!r}")
 
-    if not isinstance(todos, list):
-        return tool_error(f"todo: 'todos' must be a list, got {type(todos).__name__}")
-
     if todos is not None:
+        # Defensive: type check only when todos is provided
+        if not isinstance(todos, list):
+            return tool_error(f"todo: 'todos' must be a list, got {type(todos).__name__}")
         items = store.write(todos, merge)
     else:
         items = store.read()

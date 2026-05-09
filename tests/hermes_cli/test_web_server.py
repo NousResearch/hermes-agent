@@ -2016,6 +2016,54 @@ class TestPtyWebSocket:
                 pass
         assert exc.value.code == 4401
 
+    def test_pty_ws_yields_to_event_loop_before_spawn(self, monkeypatch):
+        """Regression for #22864: pty_ws must ``await asyncio.sleep(0)``
+        after ``ws.accept()`` so uvicorn flushes the HTTP 101 upgrade
+        before the synchronous ``PtyBridge.spawn`` blocks the event loop.
+        """
+        import asyncio
+        import sys
+        from unittest.mock import MagicMock
+
+        call_log: list[str] = []
+        real_sleep = asyncio.sleep
+
+        async def recording_sleep(delay, *args, **kwargs):
+            # Only record sleep(0) calls coming from pty_ws itself, so
+            # asyncio/starlette internals don't pollute the order log.
+            if delay == 0 and sys._getframe(1).f_code.co_name == "pty_ws":
+                call_log.append("sleep_zero")
+            return await real_sleep(delay, *args, **kwargs)
+
+        fake_bridge = MagicMock()
+        fake_bridge.read.return_value = None  # EOF — reader exits cleanly
+
+        def recording_spawn(cls, *args, **kwargs):
+            call_log.append("spawn")
+            return fake_bridge
+
+        monkeypatch.setattr(asyncio, "sleep", recording_sleep)
+        monkeypatch.setattr(
+            self.ws_module.PtyBridge,
+            "spawn",
+            classmethod(recording_spawn),
+        )
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (["/bin/true"], None, None),
+        )
+
+        with self.client.websocket_connect(self._url()):
+            # Disconnect immediately; the handler runs accept → sleep(0)
+            # → spawn between two awaits, so all three happen before
+            # the writer loop processes the disconnect.
+            pass
+
+        assert call_log == ["sleep_zero", "spawn"], (
+            f"expected ['sleep_zero', 'spawn'], got: {call_log}"
+        )
+
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(
             self.ws_module,

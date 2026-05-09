@@ -3125,6 +3125,7 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     await ws.accept()
+    await asyncio.sleep(0)  # yield once so uvicorn flushes the HTTP 101 upgrade before PTY spawn blocks the loop
 
     # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
     # client and close cleanly rather than pretending the feature works.

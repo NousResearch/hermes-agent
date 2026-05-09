@@ -1663,15 +1663,39 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"Select a provider:"
             )
 
-            thread_id = metadata.get("thread_id") if metadata else None
-            msg = await self._bot.send_message(
-                chat_id=int(chat_id),
-                text=text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=keyboard,
-                message_thread_id=int(thread_id) if thread_id else None,
-                **self._link_preview_kwargs(),
+            raw_thread_id = metadata.get("thread_id") if metadata else None
+            effective_thread_id = self._message_thread_id_for_send(
+                str(raw_thread_id) if raw_thread_id is not None else None
             )
+            try:
+                msg = await self._bot.send_message(
+                    chat_id=int(chat_id),
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                    message_thread_id=effective_thread_id,
+                    **self._link_preview_kwargs(),
+                )
+            except Exception as send_err:
+                if (
+                    self._is_thread_not_found_error(send_err)
+                    and effective_thread_id is not None
+                ):
+                    logger.warning(
+                        "[%s] thread %s not found for model picker, retrying without message_thread_id",
+                        self.name,
+                        effective_thread_id,
+                    )
+                    msg = await self._bot.send_message(
+                        chat_id=int(chat_id),
+                        text=text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=keyboard,
+                        message_thread_id=None,
+                        **self._link_preview_kwargs(),
+                    )
+                else:
+                    raise
 
             # Store picker state keyed by chat_id
             self._model_picker_state[str(chat_id)] = {

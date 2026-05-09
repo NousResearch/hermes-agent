@@ -247,7 +247,14 @@ export function useMainApp(gw: GatewayClient) {
 
   const detailsVisible = detailsLayoutKey !== 'hidden:hidden'
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
-  const composerInputCols = stableComposerColumns(cols, userPromptWidth)
+  // Mirror ComposerPane: shell-mode (`!`-prefixed input) renders a `$` prompt
+  // instead of the brand prompt, which can change the wrap width used by
+  // TextInput. Compute the active prompt width from the same source so the
+  // global Up/Down handler stays in sync with the composer.
+  const composerShellMode = (composerState.inputBuf[0] ?? composerState.input).startsWith('!')
+  const composerPromptText = composerShellMode ? '$' : ui.theme.brand.prompt
+  const composerActivePromptWidth = composerPromptWidth(composerPromptText)
+  const composerInputCols = stableComposerColumns(cols, composerActivePromptWidth)
   const composerColsRef = useRef(composerInputCols)
   composerColsRef.current = composerInputCols
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`

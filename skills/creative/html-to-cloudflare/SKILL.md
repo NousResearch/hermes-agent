@@ -154,7 +154,7 @@ Live in ~30 seconds.
 
 **Enterprise upgrade path:** Set up **Cloudflare Zero Trust** → cloudflare.com/zero-trust → Authentication → Add GitHub identity provider → Access Policy for `/wiki/*`. Replaces client-side auth with proper OAuth/GitHub login. Remove client-side auth check scripts when that is done.
 
-## Wiki content strategy
+### Wiki content strategy
 
 Gordon's wiki is a long-term knowledge base. When incorporating new information (e.g. from chat exports):
 
@@ -170,6 +170,8 @@ Gordon's wiki is a long-term knowledge base. When incorporating new information 
 - Generic questions answered quickly
 - Things that would be outdated in 6 months
 
+**Content sensitivity:** Gordon corrects overstatements. E.g. Sidekick Studio is a **hobby project** — don't frame it as a career pivot or viable post-Ventura option. When in doubt, understate rather than overstate significance. Gordon will correct you if you go too far; don't make him repeat it.
+
 **How to incorporate:**
 1. Read the JSON export (`/opt/data/cache/documents/`) — scan titles first with a quick loop to identify meaty conversations
 2. Read the content of significant ones
@@ -182,6 +184,13 @@ Gordon's wiki is a long-term knowledge base. When incorporating new information 
 4. Re-run `python3 /opt/data/scripts/md2html.py /opt/data/wiki`
 5. Git add, commit, push
 6. Update nav bar in `md2html.py` if adding entirely new categories
+
+### Wiki page category conventions
+
+- **Day Hikes** — separate from overnight trips. Day hike content goes in `hobbies/hiking.md`
+- **Backpacking** — overnight wilderness trips (hiking + camping). Goes in `hobbies/backpacking.md`. This is where Tinker Knob and training hikes belong.
+- **Fishing** — specifically backcountry/trout fishing, which is a component of backpacking trips. Goes in `hobbies/backcountry-fishing.md`.
+- These are three distinct categories — don't conflate them.
 
 ## Pitfalls
 

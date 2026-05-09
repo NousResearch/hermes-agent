@@ -126,11 +126,13 @@ class TestBasePlatformTopicSessions:
         event = _make_event("-1001", "17585")
         await adapter._process_message_background(event, build_session_key(event.source))
 
+        # Telegram forum/supergroup topics are routed via thread metadata, not
+        # reply_to the triggering message (_reply_anchor_for_event → None).
         assert adapter.sent == [
             {
                 "chat_id": "-1001",
                 "content": "ack",
-                "reply_to": "1",
+                "reply_to": None,
                 "metadata": {"thread_id": "17585"},
             }
         ]

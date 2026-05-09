@@ -572,6 +572,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
+    _thread_metadata_for_source,
     merge_pending_message_event,
 )
 from gateway.restart import (
@@ -9320,7 +9321,12 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            # Use module-level helpers so callers may invoke this with a dummy
+            # ``self`` (unit tests); instance methods would AttributeError on object().
+            _thread_meta = _thread_metadata_for_source(
+                event.source,
+                _reply_anchor_for_event(event),
+            )
 
             from gateway.platforms.base import should_send_media_as_audio
 

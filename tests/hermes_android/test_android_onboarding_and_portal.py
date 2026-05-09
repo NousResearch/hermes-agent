@@ -25,7 +25,7 @@ def test_settings_screen_includes_new_user_guidance():
     assert 'New here?' in strings
     assert 'Getting started' in strings
     assert 'Hermes chat: use voice input, chat commands, or the cog button' in strings
-    assert 'Use Accounts if you want Corr3xt-based sign-in flows' in strings
+    assert 'Use Accounts for Corr3xt app sign-in with email, phone, or Google' in strings
     assert 'Choose the provider you want Hermes to call directly.' in strings
     assert 'Paste the key for the selected provider, then tap Save' in strings
     assert 'rememberScrollState()' in settings

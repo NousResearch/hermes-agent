@@ -31,7 +31,9 @@ def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
     assert 'secure callback' in auth_screen
     assert 'Sign in' in auth_screen
     assert 'option.supportsApiKeySetup' in auth_screen
+    assert 'option.supportsBrowserSignIn' in auth_screen
     assert 'strings.useApiKeyInSettings()' in auth_screen
+    assert 'strings.setUpApiKeyFor(option.label)' in auth_screen
     assert 'viewModel.prepareApiKeySetup(option.id)' in auth_screen
     assert 'onOpenSettings()' in auth_screen
     assert 'FlowRow' in auth_screen
@@ -83,6 +85,7 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'currentStrings().authHostCouldNotBeResolved(probe.host)' in auth_view_model
     assert 'currentStrings().authPageCouldNotBeReached(probe.errorName)' in auth_view_model
     assert 'fun prepareApiKeySetup' in auth_view_model
+    assert 'if (!option.browserSignInSupported && option.scope == AuthScope.RuntimeProvider)' in auth_view_model
     assert 'authApiKeySetupReady(option.label)' in auth_view_model
     assert 'currentStrings().authOpenedCorr3xt(option.label)' in auth_view_model
     assert 'currentStrings().authNoBrowser()' in auth_view_model
@@ -104,3 +107,19 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'status = "unknown_host"' in corr3xt_auth_client
     assert 'status = "network_error"' in corr3xt_auth_client
     assert 'encodedQuery(null)' in corr3xt_auth_client
+
+
+def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default():
+    auth_models = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/AuthModels.kt").read_text(encoding="utf-8")
+    auth_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthScreen.kt").read_text(encoding="utf-8")
+    auth_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthViewModel.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+
+    for provider in ["openrouter", "chatgpt", "claude", "gemini", "qwen", "zai"]:
+        block = auth_models.split(f'id = "{provider}"', 1)[1].split("AuthOption(", 1)[0]
+        assert "browserSignInSupported = false" in block
+
+    assert "if (option.supportsBrowserSignIn)" in auth_screen
+    assert "strings.setUpApiKeyFor(option.label)" in auth_screen
+    assert "prepareApiKeySetup(methodId)" in auth_view_model
+    assert "providers use secure API keys or tokens in Settings" in strings

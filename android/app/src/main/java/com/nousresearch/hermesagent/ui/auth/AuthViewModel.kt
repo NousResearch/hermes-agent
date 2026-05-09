@@ -37,11 +37,12 @@ data class AuthOptionUiState(
     val status: String = "Not signed in",
     val accountHint: String = "",
     val supportsApiKeySetup: Boolean = false,
+    val supportsBrowserSignIn: Boolean = true,
 )
 
 data class AuthUiState(
     val corr3xtBaseUrl: String = Corr3xtAuthClient.DEFAULT_BASE_URL,
-    val globalStatus: String = "Use Corr3xt to sign into the app or connect provider accounts.",
+    val globalStatus: String = "Use Corr3xt to sign into the app; set up providers with secure API keys or tokens.",
     val pendingMethodLabel: String = "",
     val hasPendingRequest: Boolean = false,
     val apiKeyFallbackMethodId: String = "",
@@ -108,6 +109,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startAuth(methodId: String) {
         val option = AuthCatalog.find(methodId) ?: return
+        if (!option.browserSignInSupported && option.scope == AuthScope.RuntimeProvider) {
+            prepareApiKeySetup(methodId)
+            return
+        }
         val normalizedBaseUrl = Corr3xtAuthClient.normalizeConfiguredBaseUrl(_uiState.value.corr3xtBaseUrl)
         if (normalizedBaseUrl == null) {
             _uiState.update {
@@ -280,6 +285,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 signedIn = session.signedIn,
                 status = localizedStatus,
                 supportsApiKeySetup = option.scope == AuthScope.RuntimeProvider && option.runtimeProvider.isNotBlank(),
+                supportsBrowserSignIn = option.browserSignInSupported,
                 accountHint = listOf(session.displayName, session.email, session.phone)
                     .firstOrNull { it.isNotBlank() }
                     .orEmpty(),

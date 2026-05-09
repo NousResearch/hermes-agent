@@ -194,8 +194,10 @@ fun AuthScreen(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Button(onClick = { viewModel.startAuth(option.id) }) {
-                                    Text(if (option.signedIn) strings.reconnect.ifBlank { "Reconnect" } else strings.signIn.ifBlank { "Sign in" })
+                                if (option.supportsBrowserSignIn) {
+                                    Button(onClick = { viewModel.startAuth(option.id) }) {
+                                        Text(if (option.signedIn) strings.reconnect.ifBlank { "Reconnect" } else strings.signIn.ifBlank { "Sign in" })
+                                    }
                                 }
                                 if (option.supportsApiKeySetup) {
                                     Button(
@@ -204,7 +206,13 @@ fun AuthScreen(
                                             onOpenSettings()
                                         },
                                     ) {
-                                        Text(strings.useApiKeyInSettings())
+                                        Text(
+                                            if (option.supportsBrowserSignIn) {
+                                                strings.useApiKeyInSettings()
+                                            } else {
+                                                strings.setUpApiKeyFor(option.label)
+                                            }
+                                        )
                                     }
                                 }
                                 if (option.signedIn) {

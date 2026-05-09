@@ -155,12 +155,12 @@ data class HermesStrings(
     }
 
     fun providerDirectCallHelp(): String = when (language) {
-        AppLanguage.CHINESE -> "选择 Hermes 要直接调用的提供商。浏览器登录请使用账户页面；基于 API 密钥的设置请使用这里。"
-        AppLanguage.SPANISH -> "Elige el proveedor al que Hermes llamará directamente. Usa Cuentas para inicios de sesión por navegador; usa Ajustes para la configuración con clave API."
-        AppLanguage.GERMAN -> "Wähle den Anbieter, den Hermes direkt aufrufen soll. Nutze Konten für browserbasierte Anmeldungen und Einstellungen für API-Schlüssel."
-        AppLanguage.PORTUGUESE -> "Escolha o provedor que o Hermes vai chamar diretamente. Use Contas para logins no navegador; use Configurações para ajustes com chave API."
-        AppLanguage.FRENCH -> "Choisissez le fournisseur que Hermes doit appeler directement. Utilisez Comptes pour les connexions navigateur et Réglages pour la configuration par clé API."
-        AppLanguage.ENGLISH -> "Choose the provider you want Hermes to call directly. Use Accounts for browser-based sign-ins; use Settings for API-key based setup."
+        AppLanguage.CHINESE -> "选择 Hermes 要直接调用的提供商。提供商密钥或令牌在这里保存；应用账户登录请使用账户页面。"
+        AppLanguage.SPANISH -> "Elige el proveedor al que Hermes llamará directamente. Guarda aquí claves o tokens de proveedor; usa Cuentas para iniciar sesión en la app."
+        AppLanguage.GERMAN -> "Wähle den Anbieter, den Hermes direkt aufrufen soll. Speichere Anbieter-Schlüssel oder Tokens hier; nutze Konten für die App-Anmeldung."
+        AppLanguage.PORTUGUESE -> "Escolha o provedor que o Hermes vai chamar diretamente. Salve chaves ou tokens de provedor aqui; use Contas para login no app."
+        AppLanguage.FRENCH -> "Choisissez le fournisseur que Hermes doit appeler directement. Enregistrez ici les clés ou jetons fournisseur ; utilisez Comptes pour la connexion à l’application."
+        AppLanguage.ENGLISH -> "Choose the provider you want Hermes to call directly. Save provider keys or tokens here; use Accounts for app sign-in."
     }
 
     fun defaultBaseUrlSummary(providerLabel: String, defaultBaseUrl: String): String = when (language) {
@@ -246,12 +246,12 @@ data class HermesStrings(
 
     fun gettingStartedStep(index: Int): String = when (index) {
         1 -> when (language) {
-            AppLanguage.CHINESE -> "1. 账户：连接 ChatGPT、Claude、Gemini、电子邮件、电话或 Google。"
-            AppLanguage.SPANISH -> "1. Cuentas: conecta ChatGPT, Claude, Gemini, email, teléfono o Google."
-            AppLanguage.GERMAN -> "1. Konten: Verbinde ChatGPT, Claude, Gemini, E-Mail, Telefon oder Google."
-            AppLanguage.PORTUGUESE -> "1. Contas: conecte ChatGPT, Claude, Gemini, email, telefone ou Google."
-            AppLanguage.FRENCH -> "1. Comptes : connectez ChatGPT, Claude, Gemini, e-mail, téléphone ou Google."
-            AppLanguage.ENGLISH -> "1. Accounts: connect ChatGPT, Claude, Gemini, email, phone, or Google."
+            AppLanguage.CHINESE -> "1. 账户：使用 Corr3xt 登录邮箱、电话或 Google；提供商密钥在设置中配置。"
+            AppLanguage.SPANISH -> "1. Cuentas: inicia sesión por Corr3xt con correo, teléfono o Google; configura claves de proveedores en Ajustes."
+            AppLanguage.GERMAN -> "1. Konten: Melde dich per Corr3xt mit E-Mail, Telefon oder Google an; Anbieter-Schlüssel richtest du in Einstellungen ein."
+            AppLanguage.PORTUGUESE -> "1. Contas: entre pelo Corr3xt com e-mail, telefone ou Google; configure chaves de provedores nas Configurações."
+            AppLanguage.FRENCH -> "1. Comptes : connectez-vous via Corr3xt avec e-mail, téléphone ou Google ; configurez les clés fournisseur dans Paramètres."
+            AppLanguage.ENGLISH -> "1. Accounts: sign in through Corr3xt with email, phone, or Google; configure provider keys in Settings."
         }
         2 -> when (language) {
             AppLanguage.CHINESE -> "2. 设置：选择提供商，确认基础 URL/模型，并保存 API 密钥。"
@@ -433,12 +433,12 @@ data class HermesStrings(
     }
 
     fun authGlobalStatusDefault(): String = when (language) {
-        AppLanguage.CHINESE -> "使用 Corr3xt 登录应用或连接提供商账户。"
-        AppLanguage.SPANISH -> "Usa Corr3xt para iniciar sesión en la app o conectar cuentas de proveedor."
-        AppLanguage.GERMAN -> "Nutze Corr3xt, um dich in der App anzumelden oder Anbieter-Konten zu verbinden."
-        AppLanguage.PORTUGUESE -> "Use o Corr3xt para entrar no app ou conectar contas de provedor."
-        AppLanguage.FRENCH -> "Utilisez Corr3xt pour vous connecter à l’application ou lier des comptes fournisseurs."
-        AppLanguage.ENGLISH -> "Use Corr3xt to sign into the app or connect provider accounts."
+        AppLanguage.CHINESE -> "使用 Corr3xt 登录应用；提供商访问请用安全 API 密钥或令牌设置。"
+        AppLanguage.SPANISH -> "Usa Corr3xt para iniciar sesión en la app; configura proveedores con claves API o tokens seguros."
+        AppLanguage.GERMAN -> "Nutze Corr3xt für die App-Anmeldung; richte Anbieter mit sicheren API-Schlüsseln oder Tokens ein."
+        AppLanguage.PORTUGUESE -> "Use o Corr3xt para entrar no app; configure provedores com chaves API ou tokens seguros."
+        AppLanguage.FRENCH -> "Utilisez Corr3xt pour vous connecter à l’application ; configurez les fournisseurs avec des clés API ou jetons sécurisés."
+        AppLanguage.ENGLISH -> "Use Corr3xt to sign into the app; set up providers with secure API keys or tokens."
     }
 
     fun authWaitingCallback(label: String): String = when (language) {
@@ -594,43 +594,43 @@ data class HermesStrings(
                 AppLanguage.ENGLISH -> fallback
             }
             "chatgpt" -> when (language) {
-                AppLanguage.CHINESE -> "验证 ChatGPT Web 访问并自动同步到 Hermes Android。"
-                AppLanguage.SPANISH -> "Autentica el acceso a ChatGPT Web y sincronízalo automáticamente con Hermes Android."
-                AppLanguage.GERMAN -> "Authentifiziere den Zugriff auf ChatGPT Web und synchronisiere ihn automatisch mit Hermes Android."
-                AppLanguage.PORTUGUESE -> "Autentique o acesso ao ChatGPT Web e sincronize-o automaticamente com o Hermes Android."
-                AppLanguage.FRENCH -> "Authentifiez l’accès à ChatGPT Web et synchronisez-le automatiquement avec Hermes Android."
+                AppLanguage.CHINESE -> "粘贴 ChatGPT Web 访问令牌并同步到 Hermes Android。"
+                AppLanguage.SPANISH -> "Pega un token de acceso de ChatGPT Web y sincronízalo con Hermes Android."
+                AppLanguage.GERMAN -> "Füge ein ChatGPT-Web-Zugriffstoken ein und synchronisiere es mit Hermes Android."
+                AppLanguage.PORTUGUESE -> "Cole um token de acesso do ChatGPT Web e sincronize-o com o Hermes Android."
+                AppLanguage.FRENCH -> "Collez un jeton d’accès ChatGPT Web et synchronisez-le avec Hermes Android."
                 AppLanguage.ENGLISH -> fallback
             }
             "claude" -> when (language) {
-                AppLanguage.CHINESE -> "验证 Anthropic / Claude 凭据并将其应用到 Hermes Android。"
-                AppLanguage.SPANISH -> "Autentica credenciales de Anthropic / Claude y aplícalas a Hermes Android."
-                AppLanguage.GERMAN -> "Authentifiziere Anthropic-/Claude-Zugangsdaten und wende sie auf Hermes Android an."
-                AppLanguage.PORTUGUESE -> "Autentique credenciais Anthropic / Claude e aplique-as ao Hermes Android."
-                AppLanguage.FRENCH -> "Authentifiez les identifiants Anthropic / Claude et appliquez-les à Hermes Android."
+                AppLanguage.CHINESE -> "使用 Anthropic / Claude API 密钥进行 Hermes Android 远程模型调用。"
+                AppLanguage.SPANISH -> "Usa una clave API de Anthropic / Claude para llamadas remotas de Hermes Android."
+                AppLanguage.GERMAN -> "Nutze einen Anthropic-/Claude-API-Schlüssel für Hermes-Android-Remote-Modellaufrufe."
+                AppLanguage.PORTUGUESE -> "Use uma chave API Anthropic / Claude para chamadas remotas do Hermes Android."
+                AppLanguage.FRENCH -> "Utilisez une clé API Anthropic / Claude pour les appels de modèle distants Hermes Android."
                 AppLanguage.ENGLISH -> fallback
             }
             "gemini" -> when (language) {
-                AppLanguage.CHINESE -> "验证 Google AI Studio / Gemini 访问并将其应用到 Hermes Android。"
-                AppLanguage.SPANISH -> "Autentica el acceso a Google AI Studio / Gemini y aplícalo a Hermes Android."
-                AppLanguage.GERMAN -> "Authentifiziere den Zugriff auf Google AI Studio / Gemini und wende ihn auf Hermes Android an."
-                AppLanguage.PORTUGUESE -> "Autentique o acesso ao Google AI Studio / Gemini e aplique-o ao Hermes Android."
-                AppLanguage.FRENCH -> "Authentifiez l’accès Google AI Studio / Gemini et appliquez-le à Hermes Android."
+                AppLanguage.CHINESE -> "使用 Google AI Studio / Gemini API 密钥进行 Hermes Android 远程模型调用。"
+                AppLanguage.SPANISH -> "Usa una clave API de Google AI Studio / Gemini para llamadas remotas de Hermes Android."
+                AppLanguage.GERMAN -> "Nutze einen Google-AI-Studio-/Gemini-API-Schlüssel für Hermes-Android-Remote-Modellaufrufe."
+                AppLanguage.PORTUGUESE -> "Use uma chave API Google AI Studio / Gemini para chamadas remotas do Hermes Android."
+                AppLanguage.FRENCH -> "Utilisez une clé API Google AI Studio / Gemini pour les appels de modèle distants Hermes Android."
                 AppLanguage.ENGLISH -> fallback
             }
             "qwen" -> when (language) {
-                AppLanguage.CHINESE -> "验证 Qwen OAuth 访问并自动同步到 Hermes Android。"
-                AppLanguage.SPANISH -> "Autentica el acceso con Qwen OAuth y sincronízalo automáticamente con Hermes Android."
-                AppLanguage.GERMAN -> "Authentifiziere den Zugriff über Qwen OAuth und synchronisiere ihn automatisch mit Hermes Android."
-                AppLanguage.PORTUGUESE -> "Autentique o acesso do Qwen OAuth e sincronize-o automaticamente com o Hermes Android."
-                AppLanguage.FRENCH -> "Authentifiez l’accès Qwen OAuth et synchronisez-le automatiquement avec Hermes Android."
+                AppLanguage.CHINESE -> "粘贴 Qwen 访问令牌或 API 密钥并同步到 Hermes Android。"
+                AppLanguage.SPANISH -> "Pega un token de acceso o clave API de Qwen y sincronízalo con Hermes Android."
+                AppLanguage.GERMAN -> "Füge ein Qwen-Zugriffstoken oder einen API-Schlüssel ein und synchronisiere es mit Hermes Android."
+                AppLanguage.PORTUGUESE -> "Cole um token de acesso ou chave API Qwen e sincronize-o com o Hermes Android."
+                AppLanguage.FRENCH -> "Collez un jeton d’accès ou une clé API Qwen et synchronisez-le avec Hermes Android."
                 AppLanguage.ENGLISH -> fallback
             }
             "zai" -> when (language) {
-                AppLanguage.CHINESE -> "验证 Z.AI / GLM 访问并将其应用到 Hermes Android。"
-                AppLanguage.SPANISH -> "Autentica el acceso de Z.AI / GLM y aplícalo a Hermes Android."
-                AppLanguage.GERMAN -> "Authentifiziere den Zugriff auf Z.AI / GLM und wende ihn auf Hermes Android an."
-                AppLanguage.PORTUGUESE -> "Autentique o acesso da Z.AI / GLM e aplique-o ao Hermes Android."
-                AppLanguage.FRENCH -> "Authentifiez l’accès Z.AI / GLM et appliquez-le à Hermes Android."
+                AppLanguage.CHINESE -> "使用 Z.AI / GLM API 密钥进行 Hermes Android 远程模型调用。"
+                AppLanguage.SPANISH -> "Usa una clave API de Z.AI / GLM para llamadas remotas de Hermes Android."
+                AppLanguage.GERMAN -> "Nutze einen Z.AI-/GLM-API-Schlüssel für Hermes-Android-Remote-Modellaufrufe."
+                AppLanguage.PORTUGUESE -> "Use uma chave API Z.AI / GLM para chamadas remotas do Hermes Android."
+                AppLanguage.FRENCH -> "Utilisez une clé API Z.AI / GLM pour les appels de modèle distants Hermes Android."
                 AppLanguage.ENGLISH -> fallback
             }
             else -> fallback
@@ -934,7 +934,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             hermesLogoDescription = "Hermes 标志",
             settingsNewHereTitle = "首次使用？",
             settingsHelpStart = "如果你已经有 API 密钥，请先从 OpenRouter 或其他 API 提供商开始。",
-            settingsHelpAccounts = "如果你想使用 ChatGPT、Claude、Gemini、邮箱、电话或 Google 的 Corr3xt 登录流程，请使用账户页面。",
+            settingsHelpAccounts = "如果你想使用邮箱、电话或 Google 的 Corr3xt 应用登录流程，请使用账户页面；提供商密钥保留在设置中。",
             appLanguageTitle = "应用语言",
             appLanguageDescription = "轻点旗帜即可立即保存并切换应用语言。",
             onDeviceInferenceTitle = "端侧推理",
@@ -957,7 +957,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             settings = "设置",
             messageHermes = "向 Hermes 发送消息",
             send = "发送",
-            authIntro = "Corr3xt 会在浏览器中打开，并通过安全回调返回 Hermes。",
+            authIntro = "Corr3xt 用于应用登录；提供商访问使用设置中的安全 API 密钥或令牌。",
             corr3xtAuthBaseUrl = "Corr3xt 认证基础 URL",
             saveAuthUrl = "保存认证 URL",
             refresh = "刷新",
@@ -1009,7 +1009,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             hermesLogoDescription = "Logo de Hermes",
             settingsNewHereTitle = "¿Nuevo aquí?",
             settingsHelpStart = "Empieza con OpenRouter u otro proveedor con API si ya tienes una clave.",
-            settingsHelpAccounts = "Usa Cuentas si quieres flujos de inicio de sesión Corr3xt para ChatGPT, Claude, Gemini, correo, teléfono o Google.",
+            settingsHelpAccounts = "Usa Cuentas para flujos Corr3xt de la app con correo, teléfono o Google; las claves de proveedores quedan en Ajustes.",
             appLanguageTitle = "Idioma de la app",
             appLanguageDescription = "Toca una bandera para guardar y cambiar el idioma al instante.",
             onDeviceInferenceTitle = "Inferencia en el dispositivo",
@@ -1032,7 +1032,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             settings = "Ajustes",
             messageHermes = "Enviar mensaje a Hermes",
             send = "Enviar",
-            authIntro = "Corr3xt se abre en tu navegador y vuelve a Hermes mediante un callback seguro.",
+            authIntro = "Corr3xt se usa para iniciar sesión en la app; los proveedores usan claves API o tokens seguros en Ajustes.",
             corr3xtAuthBaseUrl = "URL base de autenticación Corr3xt",
             saveAuthUrl = "Guardar URL de autenticación",
             refresh = "Actualizar",
@@ -1084,7 +1084,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             hermesLogoDescription = "Hermes-Logo",
             settingsNewHereTitle = "Neu hier?",
             settingsHelpStart = "Beginne mit OpenRouter oder einem anderen API-Anbieter, wenn du bereits einen Schlüssel hast.",
-            settingsHelpAccounts = "Nutze Konten für Corr3xt-Anmeldungen bei ChatGPT, Claude, Gemini, E-Mail, Telefon oder Google.",
+            settingsHelpAccounts = "Nutze Konten für Corr3xt-App-Anmeldungen mit E-Mail, Telefon oder Google; Anbieter-Schlüssel bleiben in den Einstellungen.",
             appLanguageTitle = "App-Sprache",
             appLanguageDescription = "Tippe auf eine Flagge, um die Sprache sofort zu speichern und zu wechseln.",
             onDeviceInferenceTitle = "On-Device-Inferenz",
@@ -1107,7 +1107,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             settings = "Einstellungen",
             messageHermes = "Hermes Nachricht senden",
             send = "Senden",
-            authIntro = "Corr3xt öffnet sich im Browser und kehrt per sicherem Callback zu Hermes zurück.",
+            authIntro = "Corr3xt wird für die App-Anmeldung genutzt; Anbieter verwenden sichere API-Schlüssel oder Tokens in den Einstellungen.",
             corr3xtAuthBaseUrl = "Corr3xt-Auth-Basis-URL",
             saveAuthUrl = "Auth-URL speichern",
             refresh = "Aktualisieren",
@@ -1159,7 +1159,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             hermesLogoDescription = "Logo do Hermes",
             settingsNewHereTitle = "Novo por aqui?",
             settingsHelpStart = "Comece com OpenRouter ou outro provedor de API se você já tiver uma chave.",
-            settingsHelpAccounts = "Use Contas se quiser fluxos Corr3xt para ChatGPT, Claude, Gemini, e-mail, telefone ou Google.",
+            settingsHelpAccounts = "Use Contas para fluxos Corr3xt do app com e-mail, telefone ou Google; chaves de provedores ficam nas Configurações.",
             appLanguageTitle = "Idioma do app",
             appLanguageDescription = "Toque em uma bandeira para salvar e trocar o idioma imediatamente.",
             onDeviceInferenceTitle = "Inferência no dispositivo",
@@ -1182,7 +1182,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             settings = "Configurações",
             messageHermes = "Mensagem para Hermes",
             send = "Enviar",
-            authIntro = "O Corr3xt abre no navegador e retorna ao Hermes por um callback seguro.",
+            authIntro = "O Corr3xt é usado para login no app; provedores usam chaves API ou tokens seguros nas Configurações.",
             corr3xtAuthBaseUrl = "URL base de autenticação Corr3xt",
             saveAuthUrl = "Salvar URL de autenticação",
             refresh = "Atualizar",
@@ -1234,7 +1234,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             hermesLogoDescription = "Logo Hermes",
             settingsNewHereTitle = "Nouveau ici ?",
             settingsHelpStart = "Commencez avec OpenRouter ou un autre fournisseur API si vous avez déjà une clé.",
-            settingsHelpAccounts = "Utilisez Comptes si vous voulez les flux Corr3xt pour ChatGPT, Claude, Gemini, e-mail, téléphone ou Google.",
+            settingsHelpAccounts = "Utilisez Comptes pour les flux Corr3xt de l’application avec e-mail, téléphone ou Google ; les clés fournisseur restent dans Paramètres.",
             appLanguageTitle = "Langue de l’application",
             appLanguageDescription = "Touchez un drapeau pour enregistrer et changer la langue immédiatement.",
             onDeviceInferenceTitle = "Inférence sur l’appareil",
@@ -1257,7 +1257,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             settings = "Réglages",
             messageHermes = "Message à Hermes",
             send = "Envoyer",
-            authIntro = "Corr3xt s’ouvre dans votre navigateur puis revient à Hermes via un rappel sécurisé.",
+            authIntro = "Corr3xt sert à la connexion à l’application ; les fournisseurs utilisent des clés API ou jetons sécurisés dans Paramètres.",
             corr3xtAuthBaseUrl = "URL de base d’authentification Corr3xt",
             saveAuthUrl = "Enregistrer l’URL d’authentification",
             refresh = "Actualiser",
@@ -1309,7 +1309,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             hermesLogoDescription = "Hermes logo",
             settingsNewHereTitle = "New here?",
             settingsHelpStart = "Start with OpenRouter or another API provider if you already have a key.",
-            settingsHelpAccounts = "Use Accounts if you want Corr3xt-based sign-in flows for ChatGPT, Claude, Gemini, email, phone, or Google.",
+            settingsHelpAccounts = "Use Accounts for Corr3xt app sign-in with email, phone, or Google; keep provider keys in Settings.",
             appLanguageTitle = "App language",
             appLanguageDescription = "Tap a flag to save and switch the app language immediately.",
             onDeviceInferenceTitle = "On-device inference",
@@ -1332,7 +1332,7 @@ fun hermesStringsFor(language: AppLanguage): HermesStrings {
             settings = "Settings",
             messageHermes = "Message Hermes",
             send = "Send",
-            authIntro = "Corr3xt opens in your browser and returns to Hermes through a secure callback.",
+            authIntro = "Corr3xt is used for app sign-in; providers use secure API keys or tokens in Settings.",
             corr3xtAuthBaseUrl = "Corr3xt auth base URL",
             saveAuthUrl = "Save auth URL",
             refresh = "Refresh",

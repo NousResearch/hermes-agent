@@ -57,6 +57,7 @@ class Corr3xtAuthClientTest {
             assertTrue("${option.id} should declare runtimeProvider", option.runtimeProvider.isNotBlank())
             assertTrue("${option.id} should declare defaultBaseUrl", option.defaultBaseUrl.isNotBlank())
             assertTrue("${option.id} should declare defaultModel", option.defaultModel.isNotBlank())
+            assertTrue("${option.id} should prefer local key setup over unavailable Corr3xt", !option.browserSignInSupported)
         }
     }
 }

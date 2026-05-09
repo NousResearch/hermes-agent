@@ -131,7 +131,7 @@ private fun SettingsHelpCard(
             // Text("New here?")
             Text(strings.settingsNewHereTitle.ifBlank { "New here?" }, style = MaterialTheme.typography.titleMedium)
             Text(strings.settingsHelpStart)
-            // Use Accounts if you want Corr3xt-based sign-in flows
+            // Accounts keeps app sign-in separate from provider key setup.
             Text(strings.settingsHelpAccounts)
             Text(strings.currentProviderProfile(providerLabel))
         }

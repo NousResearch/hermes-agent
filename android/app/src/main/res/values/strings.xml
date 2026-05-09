@@ -22,4 +22,15 @@
     <string name="hermes_tasker_plugin_label_hint">Optional label shown in Tasker</string>
     <string name="hermes_tasker_plugin_save">Save</string>
     <string name="hermes_tasker_plugin_missing_id">Choose or enter a Hermes automation ID.</string>
+    <string name="hermes_tasker_condition_plugin_label">Hermes condition</string>
+    <string name="hermes_tasker_condition_title">Hermes condition</string>
+    <string name="hermes_tasker_condition_summary">Choose a Hermes or Shizuku state that Tasker can use in a profile.</string>
+    <string name="hermes_tasker_condition_type">Condition</string>
+    <string name="hermes_tasker_condition_variable">Hermes variable</string>
+    <string name="hermes_tasker_condition_variable_hint">Variable name, such as %READY</string>
+    <string name="hermes_tasker_condition_expected_value">Expected value</string>
+    <string name="hermes_tasker_condition_expected_value_hint">Required only for variable equals</string>
+    <string name="hermes_tasker_condition_blurb_label">Tasker condition label</string>
+    <string name="hermes_tasker_condition_label_hint">Optional label shown in Tasker</string>
+    <string name="hermes_tasker_condition_invalid">Choose a valid Hermes condition.</string>
 </resources>

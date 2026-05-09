@@ -49,11 +49,11 @@ logger = logging.getLogger(__name__)
 
 try:
     import fcntl
-except Exception:
+except ImportError:
     fcntl = None
 try:
     import msvcrt
-except Exception:
+except ImportError:
     msvcrt = None
 
 # =============================================================================
@@ -837,11 +837,11 @@ def _load_global_auth_store() -> Dict[str, Any]:
             try:
                 if global_path.resolve(strict=False) == real_root.resolve(strict=False):
                     return {}
-            except Exception:
+            except OSError:
                 pass
     try:
         return _load_auth_store(global_path)
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         # A malformed global store must not break profile reads. The
         # profile's own auth store is still authoritative.
         return {}
@@ -949,12 +949,12 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
 
     try:
         raw = json.loads(auth_file.read_text())
-    except Exception as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         corrupt_path = auth_file.with_suffix(".json.corrupt")
         try:
             import shutil
             shutil.copy2(auth_file, corrupt_path)
-        except Exception:
+        except OSError:
             pass
         logger.warning(
             "auth: failed to parse %s (%s) — starting with empty store. "
@@ -1487,7 +1487,7 @@ def _parse_iso_timestamp(value: Any) -> Optional[float]:
         text = text[:-1] + "+00:00"
     try:
         parsed = datetime.fromisoformat(text)
-    except Exception:
+    except ValueError:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
@@ -1504,7 +1504,7 @@ def _is_expiring(expires_at_iso: Any, skew_seconds: int) -> bool:
 def _coerce_ttl_seconds(expires_in: Any) -> int:
     try:
         ttl = int(expires_in)
-    except Exception:
+    except (TypeError, ValueError):
         ttl = 0
     return max(0, ttl)
 
@@ -1524,7 +1524,7 @@ def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
     try:
         raw = base64.urlsafe_b64decode(payload.encode("utf-8"))
         claims = json.loads(raw.decode("utf-8"))
-    except Exception:
+    except (ValueError, UnicodeDecodeError):
         return {}
     return claims if isinstance(claims, dict) else {}
 

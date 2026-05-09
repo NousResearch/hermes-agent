@@ -25,7 +25,7 @@ Language resolution order:
     3. ``display.language`` from config.yaml
     4. ``"en"`` (baseline)
 
-Supported languages: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
+Supported languages: en, zh, ja, de, es, fr, pt, pt_BR, tr, uk.  Unknown values fall back to en.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_LANGUAGES: tuple[str, ...] = ("en", "zh", "ja", "de", "es", "fr", "tr", "uk")
+SUPPORTED_LANGUAGES: tuple[str, ...] = ("en", "zh", "ja", "de", "es", "fr", "pt", "pt_BR", "tr", "uk")
 DEFAULT_LANGUAGE = "en"
 
 # Accept a few natural aliases so users who type "chinese" / "zh-CN" / "jp"
@@ -51,6 +51,9 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "german": "de", "deutsch": "de", "de-de": "de",
     "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es",
     "french": "fr", "français": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
+    "portuguese": "pt", "português": "pt", "portugues": "pt", "pt-pt": "pt",
+    "brazilian portuguese": "pt_BR", "português brasileiro": "pt_BR", "portugues brasileiro": "pt_BR",
+    "pt-br": "pt_BR", "pt_br": "pt_BR",
     "ukrainian": "uk", "ukrainisch": "uk", "українська": "uk", "uk-ua": "uk", "ua": "uk",
     "turkish": "tr", "türkçe": "tr", "tr-tr": "tr",
 }

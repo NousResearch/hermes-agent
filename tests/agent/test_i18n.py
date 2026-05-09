@@ -81,6 +81,7 @@ def test_catalog_placeholders_match_english(lang: str):
 def test_normalize_lang_accepts_supported():
     assert i18n._normalize_lang("zh") == "zh"
     assert i18n._normalize_lang("EN") == "en"
+    assert i18n._normalize_lang("pt") == "pt"
 
 
 def test_normalize_lang_accepts_aliases():
@@ -95,6 +96,9 @@ def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("Turkish") == "tr"
     assert i18n._normalize_lang("tr-TR") == "tr"
     assert i18n._normalize_lang("türkçe") == "tr"
+    assert i18n._normalize_lang("Português") == "pt"
+    assert i18n._normalize_lang("pt-BR") == "pt_BR"
+    assert i18n._normalize_lang("português brasileiro") == "pt_BR"
 
 
 def test_normalize_lang_unknown_falls_back():

@@ -34,3 +34,21 @@ def test_messaging_extra_includes_qrcode_for_weixin_setup():
 
     messaging_extra = optional_dependencies["messaging"]
     assert any(dep.startswith("qrcode") for dep in messaging_extra)
+
+
+def test_dingtalk_extra_includes_qrcode_for_qr_auth():
+    """DingTalk's QR-code device-flow auth (hermes_cli/dingtalk_auth.py)
+    needs the qrcode package."""
+    optional_dependencies = _load_optional_dependencies()
+
+    dingtalk_extra = optional_dependencies["dingtalk"]
+    assert any(dep.startswith("qrcode") for dep in dingtalk_extra)
+
+
+def test_feishu_extra_includes_qrcode_for_qr_login():
+    """Feishu's QR login flow (gateway/platforms/feishu.py) needs the
+    qrcode package."""
+    optional_dependencies = _load_optional_dependencies()
+
+    feishu_extra = optional_dependencies["feishu"]
+    assert any(dep.startswith("qrcode") for dep in feishu_extra)

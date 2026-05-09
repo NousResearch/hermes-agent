@@ -107,6 +107,10 @@ def adapter():
         user=SimpleNamespace(id=99999, name="HermesBot"),
     )
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
+    # Slash auth is exercised in test_discord_slash_auth.py — bypass it here
+    # so registration / dispatch / thread behavior tests don't have to
+    # construct a full auth context (allowlist / channel scope).
+    adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
 
 
@@ -117,6 +121,10 @@ def adapter():
 
 @pytest.mark.asyncio
 async def test_registers_native_thread_slash_command(adapter):
+    # The /thread slash closure now delegates ALL the work — including
+    # defer() — to _handle_thread_create_slash so the auth gate can send
+    # an ephemeral rejection on the still-unresponded interaction. The
+    # closure should just forward.
     adapter._handle_thread_create_slash = AsyncMock()
     adapter._register_slash_commands()
 
@@ -127,7 +135,9 @@ async def test_registers_native_thread_slash_command(adapter):
 
     await command(interaction, name="Planning", message="", auto_archive_duration=1440)
 
-    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    # defer is now performed inside _handle_thread_create_slash, AFTER the
+    # auth check passes — not by the closure.
+    interaction.response.defer.assert_not_awaited()
     adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", 1440)
 
 
@@ -164,7 +174,7 @@ async def test_auto_registers_missing_gateway_commands(adapter):
 
     # These commands are gateway-available but were not in the original
     # hardcoded registration list — they should be auto-registered.
-    expected_auto = {"debug", "yolo", "reload", "profile"}
+    expected_auto = {"debug", "yolo", "profile"}
     for name in expected_auto:
         assert name in tree_names, f"/{name} should be auto-registered on Discord"
 
@@ -199,6 +209,89 @@ async def test_auto_registered_command_with_args(adapter):
     )
 
 
+@pytest.mark.asyncio
+async def test_auto_registers_plugin_commands_for_discord(adapter):
+    """Plugin slash commands should appear as native Discord app commands."""
+    adapter._run_simple_slash = AsyncMock()
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_commands",
+        return_value={
+            "metricas": {
+                "handler": lambda _a: "ok",
+                "description": "Metrics dashboard",
+                "args_hint": "dias:7 formato:json",
+                "plugin": "metrics-plugin",
+            }
+        },
+    ):
+        adapter._register_slash_commands()
+
+    tree_names = set(adapter._client.tree.commands.keys())
+    assert "metricas" in tree_names
+
+    metricas_cmd = adapter._client.tree.commands["metricas"]
+    interaction = SimpleNamespace()
+    await metricas_cmd.callback(interaction, args="dias:7 formato:json")
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/metricas dias:7 formato:json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_registered_plugin_command_without_args_hint(adapter):
+    """Plugin commands without args_hint should register as parameterless."""
+    adapter._run_simple_slash = AsyncMock()
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_commands",
+        return_value={
+            "ping": {
+                "handler": lambda _a: "pong",
+                "description": "Ping the plugin",
+                "args_hint": "",
+                "plugin": "ping-plugin",
+            }
+        },
+    ):
+        adapter._register_slash_commands()
+
+    assert "ping" in adapter._client.tree.commands
+    ping_cmd = adapter._client.tree.commands["ping"]
+    interaction = SimpleNamespace()
+    await ping_cmd.callback(interaction)
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/ping")
+
+
+@pytest.mark.asyncio
+async def test_plugin_command_name_conflict_skipped(adapter):
+    """A plugin command that collides with a built-in must not override it."""
+    adapter._run_simple_slash = AsyncMock()
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_commands",
+        return_value={
+            "status": {
+                "handler": lambda _a: "plugin-status",
+                "description": "Plugin status",
+                "args_hint": "",
+                "plugin": "shadow-plugin",
+            }
+        },
+    ):
+        adapter._register_slash_commands()
+
+    # Built-ins are registered via @tree.command as plain functions. A
+    # plugin-registered override would install a _FakeCommand instance
+    # (has .callback) via tree.add_command. If the conflict-skip logic
+    # fires, the slot remains a bare function.
+    status_entry = adapter._client.tree.commands["status"]
+    assert callable(status_entry) and not hasattr(status_entry, "callback"), (
+        "plugin registration overrode the built-in /status command — "
+        "the already_registered skip must prevent this"
+    )
+
+
 # ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------
@@ -215,6 +308,7 @@ async def test_handle_thread_create_slash_reports_success(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
@@ -243,6 +337,7 @@ async def test_handle_thread_create_slash_dispatches_session_when_message_provid
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     adapter._dispatch_thread_session = AsyncMock()
@@ -265,6 +360,7 @@ async def test_handle_thread_create_slash_no_dispatch_without_message(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     adapter._dispatch_thread_session = AsyncMock()
@@ -288,6 +384,7 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
@@ -312,6 +409,7 @@ async def test_handle_thread_create_slash_reports_failure(adapter):
         channel_id=123,
         user=SimpleNamespace(display_name="Jezza", id=42),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "", 1440)

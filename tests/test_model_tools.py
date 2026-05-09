@@ -1,7 +1,7 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
-from unittest.mock import call, patch
+from unittest.mock import ANY, call, patch
 
 import pytest
 
@@ -71,8 +71,46 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                duration_ms=ANY,
+            ),
+            call(
+                "transform_tool_result",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                duration_ms=ANY,
             ),
         ]
+
+    def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
+        """Regression: post_tool_call and transform_tool_result hooks must
+        receive a non-negative integer ``duration_ms`` kwarg measuring
+        dispatch latency.  Inspired by Claude Code 2.1.119, which added
+        ``duration_ms`` to its PostToolUse hook inputs.
+        """
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            handle_function_call("web_search", {"q": "test"}, task_id="t1")
+
+        kwargs_by_hook = {
+            c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list
+        }
+        assert "duration_ms" in kwargs_by_hook["post_tool_call"]
+        assert "duration_ms" in kwargs_by_hook["transform_tool_result"]
+
+        post_duration = kwargs_by_hook["post_tool_call"]["duration_ms"]
+        transform_duration = kwargs_by_hook["transform_tool_result"]["duration_ms"]
+        assert isinstance(post_duration, int)
+        assert post_duration >= 0
+        # Both hooks should observe the same measured duration.
+        assert post_duration == transform_duration
+        # pre_tool_call does NOT get duration_ms (nothing has run yet).
+        assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
 
 # =========================================================================
@@ -155,8 +193,15 @@ class TestPreToolCallBlocking:
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
         assert result == {"ok": True}
 
-    def test_skip_flag_prevents_double_block_check(self, monkeypatch):
-        """When skip_pre_tool_call_hook=True, blocking is not checked (caller did it)."""
+    def test_skip_flag_prevents_double_fire(self, monkeypatch):
+        """When skip_pre_tool_call_hook=True, the hook does not fire again.
+
+        The caller (e.g. run_agent._invoke_tool) has already called
+        get_pre_tool_call_block_message(), which fires the hook once.
+        handle_function_call must NOT fire it a second time — that was
+        the classic double-fire bug where observer hooks logged every
+        tool call twice.
+        """
         hook_calls = []
 
         def fake_invoke_hook(hook_name, **kwargs):
@@ -170,10 +215,58 @@ class TestPreToolCallBlocking:
         handle_function_call("web_search", {"q": "test"}, task_id="t1",
                              skip_pre_tool_call_hook=True)
 
-        # Hook still fires for observer notification, but get_pre_tool_call_block_message
-        # is not called — invoke_hook fires directly in the skip=True branch.
-        assert "pre_tool_call" in hook_calls
+        # Single-fire contract: when skip=True the caller already fired
+        # pre_tool_call, so handle_function_call must not fire it again.
+        assert hook_calls.count("pre_tool_call") == 0, (
+            f"pre_tool_call fired {hook_calls.count('pre_tool_call')} times "
+            f"with skip_pre_tool_call_hook=True; expected 0 "
+            f"(caller already fired it). hook_calls={hook_calls}"
+        )
+        # post_tool_call and transform_tool_result still fire — only the
+        # pre-call block-check path is suppressed by the skip flag.
         assert "post_tool_call" in hook_calls
+        assert "transform_tool_result" in hook_calls
+
+    def test_run_agent_pattern_fires_pre_tool_call_exactly_once(self, monkeypatch):
+        """End-to-end regression for the double-fire bug.
+
+        Mirrors run_agent._invoke_tool: first calls
+        get_pre_tool_call_block_message() (which fires the hook as part of
+        its block-directive poll), then calls
+        handle_function_call(skip_pre_tool_call_hook=True).  The plugin
+        hook MUST fire exactly once across both calls — not twice as it
+        did before the fix (observer plugins were seeing every tool
+        execution logged twice).
+        """
+        from hermes_cli.plugins import get_pre_tool_call_block_message
+
+        hook_calls = []
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append(hook_name)
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch",
+                            lambda *a, **kw: json.dumps({"ok": True}))
+
+        # Step 1: caller checks for a block directive (this fires pre_tool_call once).
+        block = get_pre_tool_call_block_message(
+            "web_search", {"q": "test"}, task_id="t1",
+        )
+        assert block is None
+
+        # Step 2: caller dispatches with skip=True so the hook isn't re-fired.
+        handle_function_call(
+            "web_search", {"q": "test"}, task_id="t1",
+            skip_pre_tool_call_hook=True,
+        )
+
+        assert hook_calls.count("pre_tool_call") == 1, (
+            f"pre_tool_call fired {hook_calls.count('pre_tool_call')} times "
+            f"across the run_agent (block-check + dispatch) path; "
+            f"expected exactly 1. hook_calls={hook_calls}"
+        )
 
 
 # =========================================================================
@@ -222,3 +315,46 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+
+# =========================================================================
+# _coerce_number — inf / nan must fall through to the original string
+# (regression: fix: eliminate duplicate checkpoint entries and JSON-unsafe coercion)
+# =========================================================================
+
+class TestCoerceNumberInfNan:
+    """_coerce_number must honor its documented contract ("Returns original
+    string on failure") for inf/nan inputs, because float('inf') and
+    float('nan') are not JSON-compliant under strict serialization."""
+
+    def test_inf_returns_original_string(self):
+        from model_tools import _coerce_number
+        assert _coerce_number("inf") == "inf"
+
+    def test_negative_inf_returns_original_string(self):
+        from model_tools import _coerce_number
+        assert _coerce_number("-inf") == "-inf"
+
+    def test_nan_returns_original_string(self):
+        from model_tools import _coerce_number
+        assert _coerce_number("nan") == "nan"
+
+    def test_infinity_spelling_returns_original_string(self):
+        from model_tools import _coerce_number
+        # Python's float() parses "Infinity" too — still not JSON-safe.
+        assert _coerce_number("Infinity") == "Infinity"
+
+    def test_coerced_result_is_strict_json_safe(self):
+        """Whatever _coerce_number returns for inf/nan must round-trip
+        through strict (allow_nan=False) json.dumps without raising."""
+        from model_tools import _coerce_number
+        for s in ("inf", "-inf", "nan", "Infinity"):
+            result = _coerce_number(s)
+            json.dumps({"x": result}, allow_nan=False)  # must not raise
+
+    def test_normal_numbers_still_coerce(self):
+        """Guard against over-correction — real numbers still coerce."""
+        from model_tools import _coerce_number
+        assert _coerce_number("42") == 42
+        assert _coerce_number("3.14") == 3.14
+        assert _coerce_number("1e3") == 1000

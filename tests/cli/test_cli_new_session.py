@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from hermes_state import SessionDB
@@ -33,7 +33,6 @@ class _FakeAgent:
         self._todo_store.write(
             [{"id": "t1", "content": "unfinished task", "status": "in_progress"}]
         )
-        self.flush_memories = MagicMock()
         self.commit_memory_session = MagicMock()
         self._invalidate_system_prompt = MagicMock()
 
@@ -157,7 +156,6 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     assert cli.agent._todo_store.read() == []
     assert cli.session_start > old_session_start
     assert cli.agent.session_start == cli.session_start
-    cli.agent.flush_memories.assert_called_once_with([{"role": "user", "content": "hello"}])
     cli.agent._invalidate_system_prompt.assert_called_once()
 
 
@@ -221,3 +219,59 @@ def test_new_session_resets_token_counters(tmp_path):
     assert comp.last_total_tokens == 0
     assert comp.compression_count == 0
     assert comp._context_probed is False
+
+
+def test_new_session_with_title(capsys):
+    """new_session(title=...) creates a session and sets the title."""
+    cli = _make_cli()
+    cli._session_db = MagicMock()
+    cli.agent = _FakeAgent("old_session_id", datetime.now())
+    cli.conversation_history = []
+
+    cli.new_session(title="My Test Session")
+
+    # Assert set_session_title was called with the new session ID and sanitized title
+    cli._session_db.set_session_title.assert_called_once()
+    call_args = cli._session_db.set_session_title.call_args
+    assert call_args[0][0] == cli.session_id
+    assert call_args[0][1] == "My Test Session"
+
+    captured = capsys.readouterr()
+    assert "My Test Session" in captured.out
+
+
+def test_new_session_with_duplicate_title_surfaces_error(capsys):
+    """new_session(title=...) handles ValueError from a duplicate-title conflict.
+
+    The session is still created; the title assignment fails; the success banner
+    must not claim the rejected title as the session name.
+    """
+    cli = _make_cli()
+    cli._session_db = MagicMock()
+    cli._session_db.set_session_title.side_effect = ValueError(
+        "Title 'Dup' is already in use by session abc-123"
+    )
+    cli.agent = _FakeAgent("old_session_id", datetime.now())
+    cli.conversation_history = []
+
+    # Capture warnings printed via cli._cprint. After importlib.reload(),
+    # the method's __globals__ dict is the one from the live module — patch
+    # the exact dict the method will read.
+    warnings: list[str] = []
+    method_globals = cli.new_session.__globals__
+    original = method_globals["_cprint"]
+    method_globals["_cprint"] = lambda msg: warnings.append(msg)
+    try:
+        cli.new_session(title="Dup")
+    finally:
+        method_globals["_cprint"] = original
+
+    cli._session_db.set_session_title.assert_called_once()
+    joined = "\n".join(warnings)
+    assert "already in use" in joined
+    assert "session started untitled" in joined
+
+    # The success banner must NOT claim the rejected title as the session name.
+    captured = capsys.readouterr()
+    assert "New session started: Dup" not in captured.out
+    assert "New session started!" in captured.out

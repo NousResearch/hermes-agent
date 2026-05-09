@@ -32,7 +32,7 @@ Every installed skill is automatically available as a slash command:
 /excalidraw
 ```
 
-The bundled `plan` skill is a good example of a skill-backed slash command with custom behavior. Running `/plan [request]` tells Hermes to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.hermes/plans/` relative to the active workspace/backend working directory.
+The bundled `plan` skill is a good example. Running `/plan [request]` loads the skill's instructions, telling Hermes to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.hermes/plans/` relative to the active workspace/backend working directory.
 
 You can also interact with skills through natural conversation:
 
@@ -273,6 +273,8 @@ hermes skills install openai/skills/k8s           # Install with security scan
 hermes skills install official/security/1password
 hermes skills install skills-sh/vercel-labs/json-render/json-render-react --force
 hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mintlify
+hermes skills install https://sharethis.chat/SKILL.md              # Direct URL (single-file SKILL.md)
+hermes skills install https://example.com/SKILL.md --name my-skill # Override name when frontmatter has none
 hermes skills list --source hub                   # List hub-installed skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
@@ -292,6 +294,7 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 | `official` | `official/security/1password` | Optional skills shipped with Hermes. |
 | `skills-sh` | `skills-sh/vercel-labs/agent-skills/vercel-react-best-practices` | Searchable via `hermes skills search <query> --source skills-sh`. Hermes resolves alias-style skills when the skills.sh slug differs from the repo folder. |
 | `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills served directly from `/.well-known/skills/index.json` on a website. Search using the site or docs URL. |
+| `url` | `https://sharethis.chat/SKILL.md` | Direct HTTP(S) URL to a single-file `SKILL.md`. Name resolution: frontmatter → URL slug → interactive prompt → `--name` flag. |
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
 | `clawhub`, `lobehub`, `claude-marketplace` | Source-specific identifiers | Community or marketplace integrations. |
 
@@ -384,6 +387,35 @@ Hermes can search and convert agent entries from LobeHub's public catalog into i
 - Backing repo: [lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
 - Hermes source id: `lobehub`
 
+#### 8. Direct URL (`url`)
+
+Install a single-file `SKILL.md` directly from any HTTP(S) URL — useful when an author hosts a skill on their own site (no hub listing, no GitHub path to type). Hermes fetches the URL, parses the YAML frontmatter, security-scans it, and installs.
+
+- Hermes source id: `url`
+- Identifier: the URL itself (no prefix needed)
+- Scope: **single-file `SKILL.md`** only. Multi-file skills with `references/` or `scripts/` need a manifest and should be published via one of the other sources above.
+
+```bash
+hermes skills install https://sharethis.chat/SKILL.md
+hermes skills install https://example.com/my-skill/SKILL.md --category productivity
+```
+
+Name resolution, in order:
+1. `name:` field in the SKILL.md YAML frontmatter (recommended — every well-formed skill has one).
+2. Parent directory name from the URL path (e.g. `.../my-skill/SKILL.md` → `my-skill`, or `.../my-skill.md` → `my-skill`), when it's a valid identifier (`^[a-z][a-z0-9_-]*$`).
+3. Interactive prompt on a terminal with a TTY.
+4. On non-interactive surfaces (the `/skills install` slash command inside the TUI, gateway platforms, scripts), a clean error pointing at the `--name` override.
+
+```bash
+# Frontmatter has no name and the URL slug is unhelpful — supply one:
+hermes skills install https://example.com/SKILL.md --name sharethis-chat
+
+# Or inside a chat session:
+/skills install https://example.com/SKILL.md --name sharethis-chat
+```
+
+Trust level is always `community` — the same security scan runs as for every other source. The URL is stored as the install identifier, so `hermes skills update` re-fetches from the same URL automatically when you want to refresh.
+
 ### Security scanning and `--force`
 
 All hub-installed skills go through a **security scanner** that checks for data exfiltration, prompt injection, destructive commands, supply-chain signals, and other threats.
@@ -431,6 +463,119 @@ This uses the stored source identifier plus the current upstream bundle content 
 :::tip GitHub rate limits
 Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.
 :::
+
+### Publishing a custom skill tap
+
+If you want to share a curated set of skills — for your team, your org, or publicly — you can publish them as a **tap**: a GitHub repository other Hermes users add with `hermes skills tap add <owner/repo>`. No server, no registry sign-up, no release pipeline. Just a directory of `SKILL.md` files.
+
+#### Repo layout
+
+A tap is any GitHub repo (public or private — private needs `GITHUB_TOKEN`) laid out like this:
+
+```
+owner/repo
+├── skills/                       # default path; configurable per-tap
+│   ├── my-workflow/
+│   │   ├── SKILL.md              # required
+│   │   ├── references/           # optional supporting files
+│   │   ├── templates/
+│   │   └── scripts/
+│   ├── another-skill/
+│   │   └── SKILL.md
+│   └── third-skill/
+│       └── SKILL.md
+└── README.md                     # optional but helpful
+```
+
+Rules:
+- Each skill lives in its own directory under the tap's root path (default `skills/`).
+- The directory name becomes the skill's install slug.
+- Each skill directory must contain a `SKILL.md` with standard [SKILL.md frontmatter](#skillmd-format) (`name`, `description`, plus optional `metadata.hermes.tags`, `version`, `author`, `platforms`, `metadata.hermes.config`).
+- Subdirectories like `references/`, `templates/`, `scripts/`, `assets/` are downloaded alongside `SKILL.md` at install time.
+- Skills whose directory name starts with `.` or `_` are ignored.
+
+Hermes discovers skills by listing every subdirectory of the tap path and probing each for `SKILL.md`.
+
+#### Minimal tap example
+
+```
+my-org/hermes-skills
+└── skills/
+    └── deploy-runbook/
+        └── SKILL.md
+```
+
+`skills/deploy-runbook/SKILL.md`:
+
+```markdown
+---
+name: deploy-runbook
+description: Our deployment runbook — services, rollback, Slack channels
+version: 1.0.0
+author: My Org Platform Team
+metadata:
+  hermes:
+    tags: [deployment, runbook, internal]
+---
+
+# Deploy Runbook
+
+Step 1: ...
+```
+
+After pushing that to GitHub, any Hermes user can subscribe and install:
+
+```bash
+hermes skills tap add my-org/hermes-skills
+hermes skills search deploy
+hermes skills install my-org/hermes-skills/deploy-runbook
+```
+
+#### Non-default paths
+
+If your skills don't live under `skills/` (common when you're adding a `skills/` subtree to an existing project), edit the tap entry in `~/.hermes/.hub/taps.json`:
+
+```json
+{
+  "taps": [
+    {"repo": "my-org/platform-docs", "path": "internal/skills/"}
+  ]
+}
+```
+
+The `hermes skills tap add` CLI defaults new taps to `path: "skills/"`; edit the file directly if you need a different path. `hermes skills tap list` shows the effective path per tap.
+
+#### Installing individual skills directly (without adding a tap)
+
+Users can also install a single skill from any public GitHub repo without adding the whole repo as a tap:
+
+```bash
+hermes skills install owner/repo/skills/my-workflow
+```
+
+Useful when you want to share one skill without asking the user to subscribe to your whole registry.
+
+#### Trust levels for taps
+
+New taps are assigned `community` trust by default. Skills installed from them run through the standard security scan and show the third-party warning panel on first install. If your org or a widely-trusted source should get higher trust, add its repo to `TRUSTED_REPOS` in `tools/skills_hub.py` (requires a Hermes core PR).
+
+#### Tap management
+
+```bash
+hermes skills tap list                                # show all configured taps
+hermes skills tap add myorg/skills-repo               # add (default path: skills/)
+hermes skills tap remove myorg/skills-repo            # remove
+```
+
+Inside a running session:
+
+```
+/skills tap list
+/skills tap add myorg/skills-repo
+/skills tap remove myorg/skills-repo
+```
+
+Taps are stored in `~/.hermes/.hub/taps.json` (created on demand).
 
 ## Bundled skill updates (`hermes skills reset`)
 

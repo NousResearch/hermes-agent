@@ -18,7 +18,7 @@ _OTHER_PROVIDER_KEYS = (
     "XAI_API_KEY", "KIMI_API_KEY", "KIMI_CN_API_KEY",
     "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY", "AI_GATEWAY_API_KEY",
     "KILOCODE_API_KEY", "HF_TOKEN", "GLM_API_KEY", "ZAI_API_KEY",
-    "XIAOMI_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+    "XIAOMI_API_KEY", "TOKENHUB_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
 )
 
 
@@ -115,12 +115,12 @@ class TestArceeCredentials:
 
 class TestArceeModelCatalog:
     def test_static_model_list(self):
+        """Arcee has a static _PROVIDER_MODELS catalog entry. Specific model
+        names change with releases and don't belong in tests.
+        """
         from hermes_cli.models import _PROVIDER_MODELS
         assert "arcee" in _PROVIDER_MODELS
-        models = _PROVIDER_MODELS["arcee"]
-        assert "trinity-large-thinking" in models
-        assert "trinity-large-preview" in models
-        assert "trinity-mini" in models
+        assert len(_PROVIDER_MODELS["arcee"]) >= 1
 
     def test_canonical_provider_entry(self):
         from hermes_cli.models import CANONICAL_PROVIDERS

@@ -178,6 +178,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         messages = self._build_messages(reasoning="Let me think...")
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -187,6 +189,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         messages = self._build_messages(reasoning=None)
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -201,6 +205,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         ]
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -210,6 +216,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         messages = self._build_messages(reasoning="")
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -473,6 +481,7 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         agent.verbose_logging = False
         agent.reasoning_callback = None
         agent.stream_delta_callback = None  # non-streaming by default
+        agent._stream_callback = None  # non-streaming by default
         return agent
 
     def test_single_think_block_extracted(self):
@@ -583,6 +592,8 @@ class TestEndToEndPipeline(unittest.TestCase):
 
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -619,6 +630,7 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent = AIAgent.__new__(AIAgent)
         agent.reasoning_callback = None
         agent.stream_delta_callback = None
+        agent._stream_callback = None
         agent.verbose_logging = False
         return agent
 

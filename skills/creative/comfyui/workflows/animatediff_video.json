@@ -1,0 +1,64 @@
+{
+  "_comment": "AnimateDiff text-to-video at 16 frames. Required: comfyui-animatediff-evolved + comfyui-videohelpersuite custom nodes; SD1.5 checkpoint; AnimateDiff motion module (e.g. mm_sd_v15_v2.ckpt in models/animatediff_models/). Outputs a webp animation.",
+  "3": {
+    "class_type": "KSampler",
+    "_meta": {"title": "KSampler"},
+    "inputs": {
+      "seed": 42, "steps": 25, "cfg": 7.5,
+      "sampler_name": "dpmpp_sde", "scheduler": "karras", "denoise": 1.0,
+      "model": ["10", 0],
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "latent_image": ["5", 0]
+    }
+  },
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {"title": "Checkpoint"},
+    "inputs": {"ckpt_name": "v1-5-pruned-emaonly.safetensors"}
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "_meta": {"title": "Latent (16 frames)"},
+    "inputs": {"width": 512, "height": 512, "batch_size": 16}
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Positive Prompt"},
+    "inputs": {"text": "a hot air balloon drifting over a mountain valley, sunset, cinematic", "clip": ["4", 1]}
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Negative Prompt"},
+    "inputs": {"text": "low quality, blurry, deformed, watermark", "clip": ["4", 1]}
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "_meta": {"title": "VAE Decode"},
+    "inputs": {"samples": ["3", 0], "vae": ["4", 2]}
+  },
+  "9": {
+    "class_type": "VHS_VideoCombine",
+    "_meta": {"title": "Video Combine"},
+    "inputs": {
+      "frame_rate": 8.0,
+      "loop_count": 0,
+      "filename_prefix": "animatediff",
+      "format": "video/h264-mp4",
+      "pingpong": false,
+      "save_output": true,
+      "images": ["8", 0]
+    }
+  },
+  "10": {
+    "class_type": "ADE_AnimateDiffLoaderWithContext",
+    "_meta": {"title": "AnimateDiff Loader"},
+    "inputs": {
+      "model": ["4", 0],
+      "model_name": "mm_sd_v15_v2.ckpt",
+      "beta_schedule": "sqrt_linear (AnimateDiff)",
+      "motion_scale": 1.0,
+      "apply_v2_models_properly": true
+    }
+  }
+}

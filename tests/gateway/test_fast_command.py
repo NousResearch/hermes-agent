@@ -4,7 +4,7 @@ import sys
 import threading
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 import yaml
@@ -53,7 +53,6 @@ def _make_runner():
     runner._service_tier = None
     runner._provider_routing = {}
     runner._fallback_model = None
-    runner._smart_model_routing = {}
     runner._running_agents = {}
     runner._pending_model_notes = {}
     runner._session_db = None
@@ -97,13 +96,7 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
         "credential_pool": None,
     }
 
-    with patch("agent.smart_model_routing.resolve_turn_route", return_value={
-        "model": "gpt-5.4",
-        "runtime": dict(runtime_kwargs),
-        "label": None,
-        "signature": ("gpt-5.4", "openrouter", "https://openrouter.ai/api/v1", "chat_completions", None, ()),
-    }):
-        route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
 
     assert route["runtime"]["provider"] == "openrouter"
     assert route["runtime"]["api_mode"] == "chat_completions"
@@ -123,15 +116,9 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
         "credential_pool": None,
     }
 
-    with patch("agent.smart_model_routing.resolve_turn_route", return_value={
-        "model": "gpt-5.3-codex",
-        "runtime": dict(runtime_kwargs),
-        "label": None,
-        "signature": ("gpt-5.3-codex", "openrouter", "https://openrouter.ai/api/v1", "chat_completions", None, ()),
-    }):
-        route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.3-codex", runtime_kwargs)
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.3-codex", runtime_kwargs)
 
-    assert route["request_overrides"] is None
+    assert route["request_overrides"] == {}
 
 
 @pytest.mark.asyncio

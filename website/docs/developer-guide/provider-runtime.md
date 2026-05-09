@@ -20,8 +20,12 @@ Primary implementation:
 - `hermes_cli/auth.py` — provider registry, `resolve_provider()`
 - `hermes_cli/model_switch.py` — shared `/model` switch pipeline (CLI + gateway)
 - `agent/auxiliary_client.py` — auxiliary model routing
+- `providers/` — ABC + registry entry points (`ProviderProfile`, `register_provider`, `get_provider_profile`, `list_providers`)
+- `plugins/model-providers/<name>/` — per-provider plugins (bundled) that declare `api_mode`, `base_url`, `env_vars`, `fallback_models` and register themselves into the registry on first access. User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override bundled ones of the same name.
 
-If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) alongside this page.
+`get_provider_profile()` in `providers/` returns a `ProviderProfile` for a given provider id. `runtime_provider.py` calls this at resolution time to get the canonical `base_url`, `env_vars` priority list, `api_mode`, and `fallback_models` without needing to duplicate that data in multiple files. Adding a new plugin under `plugins/model-providers/<your-provider>/` (or `$HERMES_HOME/plugins/model-providers/<your-provider>/`) that calls `register_provider()` is enough for `runtime_provider.py` to pick it up — no branch needed in the resolver itself.
+
+If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) and the [Model Provider Plugin guide](./model-provider-plugin.md) alongside this page.
 
 ## Resolution precedence
 
@@ -179,8 +183,9 @@ Hermes supports a configured fallback model/provider pair, allowing runtime fail
 ### What does NOT support fallback
 
 - **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's provider but not the fallback config
-- **Cron jobs** (`cron/`): run with a fixed provider, no fallback mechanism
 - **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above)
+
+Cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or legacy `fallback_model`) from `config.yaml` and passes it to `AIAgent(fallback_model=...)`, matching the gateway's `_load_fallback_model()` pattern. See [Cron Internals](./cron-internals.md).
 
 ### Test coverage
 

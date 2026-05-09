@@ -201,19 +201,45 @@ FEISHU_GROUP_POLICY=allowlist   # default
 | `allowlist` | Hermes only responds to @mentions from users listed in `FEISHU_ALLOWED_USERS`. |
 | `disabled` | Hermes ignores all group messages entirely. |
 
-In all modes, the bot must be explicitly @mentioned (or @all) in the group before the message is processed. Direct messages bypass this gate.
+In all modes, the bot must be explicitly @mentioned (or @all) in the group before the message is processed. Direct messages always bypass this gate.
 
-### Bot Identity for @Mention Gating
-
-For precise @mention detection in groups, the adapter needs to know the bot's identity. It can be provided explicitly:
+Set `FEISHU_REQUIRE_MENTION=false` to let Hermes read all group traffic without requiring an @mention:
 
 ```bash
-FEISHU_BOT_OPEN_ID=ou_xxx
-FEISHU_BOT_USER_ID=xxx
-FEISHU_BOT_NAME=MyBot
+FEISHU_REQUIRE_MENTION=false
 ```
 
-If none of these are set, the adapter will attempt to auto-discover the bot name via the Application Info API on startup. For this to work, grant the `admin:app.info:readonly` or `application:application:self_manage` permission scope.
+For per-chat control, set `require_mention` on a `group_rules` entry — see [Per-Group Access Control](#per-group-access-control) below.
+
+### Bot Identity
+
+Hermes auto-detects the bot's `open_id` and display name on startup. You only need to set these manually when auto-detection cannot reach the Feishu API, or when your app uses tenant-scoped user IDs:
+
+```bash
+FEISHU_BOT_OPEN_ID=ou_xxx     # only when auto-detection fails
+FEISHU_BOT_USER_ID=xxx        # required if your app uses sender_id_type=user_id
+FEISHU_BOT_NAME=MyBot         # only when auto-detection fails
+```
+
+## Bot-to-Bot Messaging
+
+By default Hermes ignores messages sent by other bots. Enable bot-to-bot messaging when you want Hermes to participate in A2A orchestration or receive notifications from other bots in the same group.
+
+```bash
+FEISHU_ALLOW_BOTS=mentions   # default: none
+```
+
+| Value | Behavior |
+|-------|----------|
+| `none` | Ignore all messages from other bots (default). |
+| `mentions` | Accept only when the peer bot @mentions Hermes. |
+| `all` | Accept every peer bot message. |
+
+Also configurable as `feishu.allow_bots` in `config.yaml` (env wins when both are set).
+
+Peer bots do not need to be added to `FEISHU_ALLOWED_USERS` — that allowlist applies to human senders only.
+
+Grant the `application:bot.basic_info:read` scope to display peer bot names; without it, peer bots still route correctly but appear as their `open_id`.
 
 ## Interactive Card Actions
 
@@ -243,6 +269,54 @@ Interactive cards require **three** configuration steps in the Feishu Developer 
 :::warning
 Without all three steps, Feishu will successfully *send* interactive cards (sending only requires `im:message:send` permission), but clicking any button will return error 200340. The card appears to work — the error only surfaces when a user interacts with it.
 :::
+
+## Document Comment Intelligent Reply
+
+Beyond chat, the adapter can also answer `@`-mentions left on **Feishu/Lark documents**. When a user comments on a document (local text selection or whole-doc comment) and @-mentions the bot, Hermes reads the document plus the surrounding comment thread and posts an LLM reply inline on the thread.
+
+Powered by the `drive.notice.comment_add_v1` event, the handler:
+
+- Fetches the document content and comment timeline in parallel (20 messages for whole-doc threads, 12 for local-selection threads).
+- Runs the agent with the `feishu_doc` + `feishu_drive` toolsets scoped to that single comment session.
+- Chunks replies at 4000 chars and posts them back as threaded replies.
+- Caches per-document sessions for 1 hour with a 50-message cap so follow-up comments on the same doc keep context.
+
+### 3-Tier Access Control
+
+Document-comment replies are **explicit-grant only** — there is no implicit allow-all mode. Permissions resolve in this order (first match wins, per field):
+
+1. **Exact doc** — rule scoped to a specific document token.
+2. **Wildcard** — rule that matches a pattern of docs.
+3. **Top-level** — default rule for the workspace.
+
+Two policies are available per rule:
+
+- **`allowlist`** — a static list of users / tenants.
+- **`pairing`** — static list ∪ runtime-approved store. Useful for rollouts where moderators can grant access live.
+
+Rules live in `~/.hermes/feishu_comment_rules.json` (pairing grants in `~/.hermes/feishu_comment_pairing.json`) with mtime-cached hot-reload — edits take effect on the next comment event without restarting the gateway.
+
+CLI:
+
+```bash
+# Inspect current rules and pairing state
+python -m gateway.platforms.feishu_comment_rules status
+
+# Simulate an access check for a specific doc + user
+python -m gateway.platforms.feishu_comment_rules check <fileType:fileToken> <user_open_id>
+
+# Manage pairing grants at runtime
+python -m gateway.platforms.feishu_comment_rules pairing list
+python -m gateway.platforms.feishu_comment_rules pairing add <user_open_id>
+python -m gateway.platforms.feishu_comment_rules pairing remove <user_open_id>
+```
+
+### Required Feishu App Configuration
+
+On top of the chat/card permissions already granted, add the drive comment event:
+
+- Subscribe to `drive.notice.comment_add_v1` in **Event Subscriptions**.
+- Grant the `docs:doc:readonly` and `drive:drive:readonly` scopes so the handler can read document content.
 
 ## Media Support
 
@@ -287,13 +361,11 @@ If the Feishu API rejects the post payload (e.g., due to unsupported markdown co
 
 Plain text messages (no markdown detected) are sent as the simple `text` message type.
 
-## ACK Emoji Reactions
+## Processing Status Reactions
 
-When the adapter receives an inbound message, it immediately adds an ✅ (OK) emoji reaction to signal that the message was received and is being processed. This provides visual feedback before the agent completes its response.
+While the agent is working, the bot shows a `Typing` reaction on your message. It's cleared when the reply arrives, or replaced with `CrossMark` if processing failed.
 
-The reaction is persistent — it remains on the message after the response is sent, serving as a receipt marker.
-
-User reactions on bot messages are also tracked. If a user adds or removes an emoji reaction on a message sent by the bot, it is routed as a synthetic text event (`reaction:added:EMOJI_TYPE` or `reaction:removed:EMOJI_TYPE`) so the agent can respond to feedback.
+Set `FEISHU_REACTIONS=false` to turn it off.
 
 ## Burst Protection and Batching
 
@@ -380,6 +452,9 @@ platforms:
           policy: "blacklist"
           blacklist:
             - "ou_blocked_user"
+        "oc_free_chat":
+          policy: "open"
+          require_mention: false       # overrides FEISHU_REQUIRE_MENTION for this chat
 ```
 
 | Policy | Description |
@@ -389,6 +464,8 @@ platforms:
 | `blacklist` | Everyone except users in the group's `blacklist` can use the bot |
 | `admin_only` | Only users in the global `admins` list can use the bot in this group |
 | `disabled` | Bot ignores all messages in this group |
+
+Set `require_mention: false` on a `group_rules` entry to skip the @-mention requirement for that specific chat. When omitted, the chat inherits the global `FEISHU_REQUIRE_MENTION` value.
 
 Groups not listed in `group_rules` fall back to `default_group_policy` (defaults to the value of `FEISHU_GROUP_POLICY`).
 
@@ -409,6 +486,8 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_DOMAIN` | — | `feishu` | `feishu` (China) or `lark` (international) |
 | `FEISHU_CONNECTION_MODE` | — | `websocket` | `websocket` or `webhook` |
 | `FEISHU_ALLOWED_USERS` | — | _(empty)_ | Comma-separated open_id list for user allowlist |
+| `FEISHU_ALLOW_BOTS` | — | `none` | Accept messages from other bots: `none`, `mentions`, or `all` |
+| `FEISHU_REQUIRE_MENTION` | — | `true` | Whether group messages must @mention the bot |
 | `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
 | `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |
 | `FEISHU_VERIFICATION_TOKEN` | — | _(empty)_ | Verification token for webhook payload auth |
@@ -441,7 +520,9 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | `Webhook rejected: invalid signature` | Ensure `FEISHU_ENCRYPT_KEY` matches the encrypt key in your Feishu app config |
 | Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |
 | Images/files not received by bot | Grant `im:message` and `im:resource` permission scopes to your Feishu app |
-| Bot identity not auto-detected | Grant `admin:app.info:readonly` scope, or set `FEISHU_BOT_OPEN_ID` / `FEISHU_BOT_NAME` manually |
+| Bot identity not auto-detected | Usually a transient network issue reaching Feishu's bot info endpoint. Set `FEISHU_BOT_OPEN_ID` and `FEISHU_BOT_NAME` manually as a workaround. |
+| Peer bot messages still ignored after enabling `FEISHU_ALLOW_BOTS` | Hermes can't identify itself yet — set `FEISHU_BOT_OPEN_ID` (and `FEISHU_BOT_USER_ID` if your app uses `sender_id_type=user_id`). |
+| Peer bots show as `ou_xxxxxx` instead of by name | Grant the `application:bot.basic_info:read` scope. |
 | Error 200340 when clicking approval buttons | Enable **Interactive Card** capability and configure **Card Request URL** in the Feishu Developer Console. See [Required Feishu App Configuration](#required-feishu-app-configuration) above. |
 | `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |
 

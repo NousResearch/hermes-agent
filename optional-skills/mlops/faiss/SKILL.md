@@ -5,6 +5,7 @@ version: 1.0.0
 author: Orchestra Research
 license: MIT
 dependencies: [faiss-cpu, faiss-gpu, numpy]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [RAG, FAISS, Similarity Search, Vector Search, Facebook AI, GPU Acceleration, Billion-Scale, K-NN, HNSW, High Performance, Large Scale]

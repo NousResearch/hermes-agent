@@ -33,6 +33,8 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
+from utils import atomic_replace
+
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
 try:
@@ -157,7 +159,7 @@ class MemoryStore:
         if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
             lock_path.write_text(" ", encoding="utf-8")
 
-        fd = open(lock_path, "r+" if msvcrt else "a+")
+        fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
         try:
             if fcntl:
                 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -448,7 +450,7 @@ class MemoryStore:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                os.replace(tmp_path, str(path))  # Atomic on same filesystem
+                atomic_replace(tmp_path, path)
             except BaseException:
                 # Clean up temp file on any failure
                 try:

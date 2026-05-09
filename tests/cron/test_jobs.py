@@ -254,6 +254,15 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_create_job_preserves_full_auto_generated_name(self, tmp_cron_dir):
+        prompt = "A" * 80
+
+        job = create_job(prompt=prompt, schedule="every 1h")
+
+        assert job["name"] == prompt
+        fetched = get_job(job["id"])
+        assert fetched["name"] == prompt
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -359,6 +368,25 @@ class TestMarkJobRun:
         updated = get_job(job["id"])
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "timeout"
+
+
+class TestJobNormalization:
+    def test_list_jobs_preserves_full_fallback_name_for_legacy_records(self, tmp_cron_dir):
+        prompt = "B" * 90
+        save_jobs([
+            {
+                "id": "longname123456",
+                "name": None,
+                "prompt": prompt,
+                "schedule_display": "every 60m",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "enabled": True,
+            }
+        ])
+
+        jobs = list_jobs()
+
+        assert jobs[0]["name"] == prompt
 
     def test_delivery_error_tracked_separately(self, tmp_cron_dir):
         """Agent succeeds but delivery fails — both tracked independently."""

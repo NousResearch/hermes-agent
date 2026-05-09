@@ -1109,6 +1109,13 @@ setup_path() {
     # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
     # can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
+    # Remove any prior entry first: on systems that installed an older layout
+    # ($command_link_dir/hermes was a symlink to venv/bin/hermes), `cat >`
+    # follows the symlink and overwrites the pip-generated entry point with
+    # the shim body, producing a self-execing wrapper that hangs on every
+    # invocation. Deleting first ensures the shim is a regular file in
+    # $command_link_dir and the venv entry point survives. (#21454, #21513)
+    rm -f "$command_link_dir/hermes"
     cat > "$command_link_dir/hermes" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH

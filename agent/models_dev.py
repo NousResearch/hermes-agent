@@ -512,6 +512,14 @@ def list_agentic_models(provider: str) -> List[str]:
 # Rich dataclass constructors — parse raw models.dev JSON into dataclasses
 # ---------------------------------------------------------------------------
 
+def _safe_cost_float(value: Any, default: float = 0.0) -> float:
+    """Convert a cost field to float, returning default on non-numeric values."""
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
 def _parse_model_info(model_id: str, raw: Dict[str, Any], provider_id: str) -> ModelInfo:
     """Convert a raw models.dev model entry dict into a ModelInfo dataclass."""
     limit = raw.get("limit") or {}
@@ -552,10 +560,10 @@ def _parse_model_info(model_id: str, raw: Dict[str, Any], provider_id: str) -> M
         context_window=ctx_int,
         max_output=out_int,
         max_input=inp_int,
-        cost_input=float(cost.get("input", 0) or 0),
-        cost_output=float(cost.get("output", 0) or 0),
-        cost_cache_read=float(cost["cache_read"]) if "cache_read" in cost and cost["cache_read"] is not None else None,
-        cost_cache_write=float(cost["cache_write"]) if "cache_write" in cost and cost["cache_write"] is not None else None,
+        cost_input=_safe_cost_float(cost.get("input", 0)),
+        cost_output=_safe_cost_float(cost.get("output", 0)),
+        cost_cache_read=_safe_cost_float(cost["cache_read"]) if "cache_read" in cost and cost["cache_read"] is not None else None,
+        cost_cache_write=_safe_cost_float(cost["cache_write"]) if "cache_write" in cost and cost["cache_write"] is not None else None,
         knowledge_cutoff=raw.get("knowledge", "") or "",
         release_date=raw.get("release_date", "") or "",
         status=raw.get("status", "") or "",

@@ -299,3 +299,58 @@ class TestGetModelCapabilities:
         with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "nonexistent-model")
         assert caps is None
+
+# ---------------------------------------------------------------------------
+# _safe_cost_float / _parse_model_info — non-numeric cost field robustness
+# ---------------------------------------------------------------------------
+
+
+class TestSafeCostFloat:
+    def test_numeric_string_converted(self):
+        from agent.models_dev import _safe_cost_float
+        assert _safe_cost_float("0.5") == 0.5
+
+    def test_none_returns_zero(self):
+        from agent.models_dev import _safe_cost_float
+        assert _safe_cost_float(None) == 0.0
+
+    def test_non_numeric_string_returns_default(self):
+        from agent.models_dev import _safe_cost_float
+        # Before fix, float("variable") raised ValueError in _parse_model_info.
+        assert _safe_cost_float("variable") == 0.0
+
+    def test_non_numeric_string_custom_default(self):
+        from agent.models_dev import _safe_cost_float
+        assert _safe_cost_float("N/A", default=1.5) == 1.5
+
+
+class TestParseModelInfoNonNumericCost:
+    """get_model_info must not raise ValueError when cost fields are strings."""
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_string_cost_fields_return_zero(self, mock_fetch):
+        from agent.models_dev import get_model_info
+
+        mock_fetch.return_value = {
+            "openai": {
+                "models": {
+                    "gpt-test": {
+                        "cost": {
+                            # API returning non-numeric strings (malformed response)
+                            "input": "variable",
+                            "output": "N/A",
+                            "cache_read": "unknown",
+                            "cache_write": "unknown",
+                        }
+                    }
+                }
+            }
+        }
+
+        # Before fix this raised ValueError; now returns ModelInfo with 0.0 costs.
+        info = get_model_info("openai", "gpt-test")
+        assert info is not None
+        assert info.cost_input == 0.0
+        assert info.cost_output == 0.0
+        assert info.cost_cache_read == 0.0
+        assert info.cost_cache_write == 0.0

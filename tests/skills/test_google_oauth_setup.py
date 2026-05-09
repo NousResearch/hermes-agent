@@ -351,15 +351,24 @@ class _RefreshableCreds:
         return json.dumps(self._payload)
 
 
-def _install_google_auth_fakes(monkeypatch, creds):
-    """Inject fake google.oauth2.credentials + google.auth.transport.requests."""
+def _install_google_auth_fakes(monkeypatch, creds=None, *, credentials_factory=None):
+    """Inject fake google.oauth2.credentials + google.auth.transport.requests.
+
+    Always creates fresh `types.ModuleType('google')` and child packages
+    rather than mutating an existing real `google` namespace package, so
+    attribute mutations cannot leak into other tests (monkeypatch can
+    restore sys.modules entries but not attributes on a real module).
+    """
+    if credentials_factory is None:
+        credentials_factory = lambda _path: creds
+
     creds_mod = types.ModuleType("google.oauth2.credentials")
     creds_mod.Credentials = types.SimpleNamespace(
-        from_authorized_user_file=lambda _path: creds,
+        from_authorized_user_file=credentials_factory,
     )
     oauth2_mod = types.ModuleType("google.oauth2")
     oauth2_mod.credentials = creds_mod
-    google_mod = sys.modules.get("google") or types.ModuleType("google")
+    google_mod = types.ModuleType("google")
     google_mod.oauth2 = oauth2_mod
 
     transport_mod = types.ModuleType("google.auth.transport")
@@ -392,12 +401,11 @@ class TestCheckAuthRefreshBranches:
         def boom(_path):
             raise ValueError("corrupt token")
 
-        creds_mod = types.ModuleType("google.oauth2.credentials")
-        creds_mod.Credentials = types.SimpleNamespace(from_authorized_user_file=boom)
-        monkeypatch.setitem(sys.modules, "google.oauth2.credentials", creds_mod)
-        requests_mod = types.ModuleType("google.auth.transport.requests")
-        requests_mod.Request = lambda: object()
-        monkeypatch.setitem(sys.modules, "google.auth.transport.requests", requests_mod)
+        # Install the full fake `google.*` module tree; without parent
+        # packages in sys.modules the import chain
+        # `from google.oauth2.credentials import Credentials` fails when
+        # google-auth isn't installed.
+        _install_google_auth_fakes(monkeypatch, credentials_factory=boom)
 
         assert setup_module.check_auth() is False
         out = capsys.readouterr().out

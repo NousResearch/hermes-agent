@@ -3533,16 +3533,30 @@ class GatewayRunner:
                 self._request_clean_exit(reason)
                 return True
             if enabled_platform_count > 0:
-                reason = "; ".join(startup_retryable_errors) or "all configured messaging platforms failed to connect"
-                logger.error("Gateway failed to connect any configured messaging platform: %s", reason)
-                try:
-                    from gateway.status import write_runtime_status
-                    write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
-                except Exception:
-                    pass
-                return False
-            logger.warning("No messaging platforms enabled.")
-            logger.info("Gateway will continue running for cron job execution.")
+                if startup_retryable_errors:
+                    # At least one platform attempted a connection and failed —
+                    # this is a real startup error that should block the gateway.
+                    reason = "; ".join(startup_retryable_errors)
+                    logger.error("Gateway failed to connect any configured messaging platform: %s", reason)
+                    try:
+                        from gateway.status import write_runtime_status
+                        write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                    except Exception:
+                        pass
+                    return False
+                # All enabled platforms had no adapter (missing library or credentials).
+                # In fleet deployments the same config.yaml is shared across nodes that
+                # may only have credentials for a subset of platforms.  Rather than
+                # failing hard, degrade gracefully and allow cron jobs to run (#5196).
+                logger.warning(
+                    "No adapter could be created for any of the %d configured platform(s). "
+                    "Check that required dependencies are installed and credentials are set. "
+                    "Gateway will continue for cron job execution.",
+                    enabled_platform_count,
+                )
+            else:
+                logger.warning("No messaging platforms enabled.")
+                logger.info("Gateway will continue running for cron job execution.")
         
         # Update delivery router with adapters
         self.delivery_router.adapters = self.adapters

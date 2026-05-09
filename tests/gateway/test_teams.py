@@ -1,15 +1,19 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
 import asyncio
+import json
 import os
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig, HomeChannel
+from plugins.teams_pipeline.models import TeamsMeetingRef, TeamsMeetingSummaryPayload
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 
@@ -177,6 +181,7 @@ if _mt and _teams_mod.TypingActivityInput is None:
     _teams_mod.TypingActivityInput = _mt.TypingActivityInput
 
 TeamsAdapter = _teams_mod.TeamsAdapter
+TeamsSummaryWriter = _teams_mod.TeamsSummaryWriter
 check_requirements = _teams_mod.check_requirements
 check_teams_requirements = _teams_mod.check_teams_requirements
 validate_config = _teams_mod.validate_config
@@ -355,7 +360,7 @@ class TestTeamsInteractiveSetup:
         assert "TEAMS_TENANT_ID=tenant-id" in env_text
 
 class TestTeamsConnect:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_connect_fails_without_sdk(self, monkeypatch):
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
         adapter = TeamsAdapter(_make_config(
@@ -364,7 +369,7 @@ class TestTeamsConnect:
         result = await adapter.connect()
         assert result is False
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_connect_fails_without_credentials(self):
         adapter = TeamsAdapter(_make_config())
         adapter._client_id = ""
@@ -373,7 +378,7 @@ class TestTeamsConnect:
         result = await adapter.connect()
         assert result is False
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_disconnect_cleans_up(self):
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
@@ -395,7 +400,7 @@ class TestTeamsConnect:
 # ---------------------------------------------------------------------------
 
 class TestTeamsSend:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_send_returns_error_without_app(self):
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
@@ -405,7 +410,7 @@ class TestTeamsSend:
         assert result.success is False
         assert "not initialized" in result.error
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_send_calls_app_send(self):
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
@@ -421,7 +426,7 @@ class TestTeamsSend:
         assert result.message_id == "msg-123"
         mock_app.send.assert_awaited_once_with("conv-id", "Hello")
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_send_handles_error(self):
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
@@ -434,7 +439,7 @@ class TestTeamsSend:
         assert result.success is False
         assert "Network error" in result.error
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_send_typing(self):
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
@@ -447,6 +452,108 @@ class TestTeamsSend:
         mock_app.send.assert_awaited_once()
         call_args = mock_app.send.call_args
         assert call_args[0][0] == "conv-id"
+
+
+def _make_summary_payload():
+    return TeamsMeetingSummaryPayload(
+        meeting_ref=TeamsMeetingRef(meeting_id="meeting-123"),
+        title="Weekly Sync",
+        summary="Discussed launch readiness.",
+        key_decisions=["Proceed with staged rollout."],
+        action_items=["Send launch checklist."],
+        risks=["QA sign-off still pending."],
+    )
+
+
+class TestTeamsSummaryWriter:
+    @pytest.mark.anyio
+    async def test_incoming_webhook_posts_summary_text(self):
+        seen = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(200, json={"ok": True})
+
+        writer = TeamsSummaryWriter(transport=httpx.MockTransport(_handler))
+        payload = _make_summary_payload()
+
+        result = await writer.write_summary(
+            payload,
+            {
+                "delivery_mode": "incoming_webhook",
+                "incoming_webhook_url": "https://example.test/teams-webhook",
+            },
+        )
+
+        assert result["delivery_mode"] == "incoming_webhook"
+        assert seen["url"] == "https://example.test/teams-webhook"
+        assert "Weekly Sync" in seen["body"]["text"]
+        assert "Proceed with staged rollout." in seen["body"]["text"]
+
+    @pytest.mark.anyio
+    async def test_graph_delivery_posts_to_channel(self):
+        graph_client = SimpleNamespace(
+            post_json=AsyncMock(return_value={"id": "msg-123", "webUrl": "https://teams.example/messages/123"})
+        )
+        writer = TeamsSummaryWriter(graph_client=graph_client)
+        payload = _make_summary_payload()
+
+        result = await writer.write_summary(
+            payload,
+            {
+                "delivery_mode": "graph",
+                "team_id": "team-1",
+                "channel_id": "channel-1",
+            },
+        )
+
+        assert result["target_type"] == "channel"
+        assert result["message_id"] == "msg-123"
+        graph_client.post_json.assert_awaited_once()
+        path = graph_client.post_json.await_args.args[0]
+        body = graph_client.post_json.await_args.kwargs["json_body"]
+        assert path == "/teams/team-1/channels/channel-1/messages"
+        assert body["body"]["contentType"] == "html"
+        assert "Weekly Sync" in body["body"]["content"]
+
+    @pytest.mark.anyio
+    async def test_graph_delivery_falls_back_to_platform_home_channel(self):
+        graph_client = SimpleNamespace(post_json=AsyncMock(return_value={"id": "msg-home"}))
+        platform_config = PlatformConfig(
+            enabled=True,
+            extra={"team_id": "team-home", "delivery_mode": "graph"},
+            home_channel=HomeChannel(
+                platform=Platform("teams"),
+                chat_id="channel-home",
+                name="Teams Home",
+            ),
+        )
+        writer = TeamsSummaryWriter(platform_config=platform_config, graph_client=graph_client)
+
+        await writer.write_summary(_make_summary_payload(), {})
+
+        graph_client.post_json.assert_awaited_once()
+        assert graph_client.post_json.await_args.args[0] == "/teams/team-home/channels/channel-home/messages"
+
+    @pytest.mark.anyio
+    async def test_existing_record_is_reused_without_force_resend(self):
+        graph_client = SimpleNamespace(post_json=AsyncMock())
+        writer = TeamsSummaryWriter(graph_client=graph_client)
+        existing = {"delivery_mode": "graph", "message_id": "msg-existing"}
+
+        result = await writer.write_summary(
+            _make_summary_payload(),
+            {
+                "delivery_mode": "graph",
+                "team_id": "team-1",
+                "channel_id": "channel-1",
+            },
+            existing_record=existing,
+        )
+
+        assert result == existing
+        graph_client.post_json.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +594,7 @@ class TestTeamsMessageHandling:
         ctx.activity = activity
         return ctx
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_personal_message_creates_dm_event(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -503,7 +610,7 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "dm"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_group_message_creates_group_event(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -518,7 +625,7 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_channel_message_creates_channel_event(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -533,7 +640,7 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "channel"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_user_id_uses_aad_object_id(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -548,7 +655,7 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.user_id == "aad-stable-id"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_self_message_filtered(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -562,7 +669,7 @@ class TestTeamsMessageHandling:
 
         adapter.handle_message.assert_not_awaited()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_bot_mention_stripped_from_text(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -580,7 +687,7 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.text == "what is the weather?"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_deduplication(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",
@@ -596,3 +703,177 @@ class TestTeamsMessageHandling:
         await adapter._on_message(ctx)
 
         assert adapter.handle_message.await_count == 1
+
+
+# ── _standalone_send (out-of-process cron delivery) ──────────────────────
+
+
+class _FakeAiohttpResponse:
+    def __init__(self, status: int, payload, text_body: str = ""):
+        self.status = status
+        self._payload = payload
+        self._text = text_body or (str(payload) if payload is not None else "")
+
+    async def json(self):
+        return self._payload
+
+    async def text(self):
+        return self._text
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class _FakeAiohttpSession:
+    """Scripted aiohttp.ClientSession with a queue of responses so tests
+    can assert calls in order."""
+
+    def __init__(self, scripts):
+        self._scripts = list(scripts)
+        self.calls: list[tuple[str, dict]] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if not self._scripts:
+            raise AssertionError(f"No scripted response for POST {url}")
+        return self._scripts.pop(0)
+
+
+def _install_fake_aiohttp(monkeypatch, session):
+    """Replace ``aiohttp`` in ``sys.modules`` so ``import aiohttp as _aiohttp``
+    inside ``_standalone_send`` picks up our fake."""
+    fake_aiohttp = types.SimpleNamespace(
+        ClientSession=lambda timeout=None: session,
+        ClientTimeout=lambda total=None: None,
+    )
+    monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+
+
+class TestTeamsStandaloneSend:
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_acquires_token_and_posts_activity(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        monkeypatch.delenv("TEAMS_SERVICE_URL", raising=False)
+
+        token_resp = _FakeAiohttpResponse(200, {"access_token": "the-token"})
+        activity_resp = _FakeAiohttpResponse(200, {"id": "msg-99"})
+        session = _FakeAiohttpSession([token_resp, activity_resp])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:abc@thread.skype",
+            "hello cron",
+        )
+
+        assert result == {"success": True, "message_id": "msg-99"}
+        assert len(session.calls) == 2
+
+        token_url, token_kwargs = session.calls[0]
+        assert "login.microsoftonline.com/tenant/oauth2/v2.0/token" in token_url
+        assert token_kwargs["data"]["client_id"] == "client-id"
+        assert token_kwargs["data"]["client_secret"] == "secret"
+        assert token_kwargs["data"]["scope"] == "https://api.botframework.com/.default"
+
+        activity_url, activity_kwargs = session.calls[1]
+        # Default service URL when TEAMS_SERVICE_URL is unset
+        assert "smba.trafficmanager.net" in activity_url
+        assert "/v3/conversations/19:abc@thread.skype/activities" in activity_url
+        assert activity_kwargs["headers"]["Authorization"] == "Bearer the-token"
+        assert activity_kwargs["json"]["text"] == "hello cron"
+        assert activity_kwargs["json"]["type"] == "message"
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_returns_error_when_unconfigured(self, monkeypatch):
+        for var in ("TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"):
+            monkeypatch.delenv(var, raising=False)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:abc@thread.skype",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "TEAMS_CLIENT_ID" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_propagates_token_failure(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+
+        token_resp = _FakeAiohttpResponse(
+            401,
+            {"error": "unauthorized_client"},
+            text_body='{"error":"unauthorized_client"}',
+        )
+        session = _FakeAiohttpSession([token_resp])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:abc@thread.skype",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "401" in result["error"]
+        assert "token" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_rejects_off_allowlist_service_url(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        # SSRF attempt: point us at an attacker-controlled host
+        monkeypatch.setenv("TEAMS_SERVICE_URL", "https://attacker.example.com/teams/")
+
+        # If the allowlist check fails to fire, the fake session will assert
+        # because no scripts are queued; a passing test means we returned
+        # before any HTTP call.
+        session = _FakeAiohttpSession([])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:abc@thread.skype",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "allowlist" in result["error"].lower()
+        assert len(session.calls) == 0, "must not call any HTTP endpoint with a tampered service URL"
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_rejects_chat_id_with_path_traversal(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        monkeypatch.delenv("TEAMS_SERVICE_URL", raising=False)
+
+        session = _FakeAiohttpSession([])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        # Attempt to break out of /v3/conversations/<id>/activities via a `/`
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:abc/activities/19:other@thread.skype",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "Bot Framework conversation ID" in result["error"]
+        assert len(session.calls) == 0

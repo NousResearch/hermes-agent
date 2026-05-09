@@ -16,6 +16,24 @@ The self-improving AI agent built by [Nous Research](https://nousresearch.com). 
   <a href="https://github.com/NousResearch/hermes-agent" style={{display: 'inline-block', padding: '0.6rem 1.2rem', border: '1px solid rgba(255,215,0,0.2)', borderRadius: '8px', textDecoration: 'none'}}>View on GitHub</a>
 </div>
 
+## Install
+
+**Linux / macOS / WSL2**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+```
+
+**Windows (native, PowerShell)** — *early beta, [details →](/docs/user-guide/windows-native)*
+
+```powershell
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+```
+
+**Android (Termux)** — same curl one-liner as Linux; the installer auto-detects Termux.
+
+See the full **[Installation Guide](/docs/getting-started/installation)** for what the installer does, the per-user vs root layout, and Windows-specific notes.
+
 ## What is Hermes Agent?
 
 It's not a coding copilot tethered to an IDE or a chatbot wrapper around a single API. It's an **autonomous agent** that gets more capable the longer it runs. It lives wherever you put it — a $5 VPS, a GPU cluster, or serverless infrastructure (Daytona, Modal) that costs nearly nothing when idle. Talk to it from Telegram while it works on a cloud VM you never SSH into yourself. It's not tied to your laptop.
@@ -24,7 +42,7 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 
 | | |
 |---|---|
-| 🚀 **[Installation](/docs/getting-started/installation)** | Install in 60 seconds on Linux, macOS, or WSL2 |
+| 🚀 **[Installation](/docs/getting-started/installation)** | Install in 60 seconds on Linux, macOS, WSL2, or native Windows (early beta) |
 | 📖 **[Quickstart Tutorial](/docs/getting-started/quickstart)** | Your first conversation and key features to try |
 | 🗺️ **[Learning Path](/docs/getting-started/learning-path)** | Find the right docs for your experience level |
 | ⚙️ **[Configuration](/docs/user-guide/configuration)** | Config file, providers, models, and options |

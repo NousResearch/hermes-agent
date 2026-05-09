@@ -373,7 +373,16 @@ def _handle_comment(args: dict, **kw) -> str:
     body = args.get("body")
     if not body or not str(body).strip():
         return tool_error("body is required")
-    author = args.get("author") or os.environ.get("HERMES_PROFILE") or "worker"
+    # Author is intentionally derived from the worker's own runtime
+    # identity, NOT from caller-supplied args. Comments are injected
+    # into the next worker's system prompt by ``build_worker_context``
+    # as ``**{author}** (timestamp): {body}`` — accepting an
+    # ``args["author"]`` override let a worker forge a comment from
+    # an authoritative-looking name like ``hermes-system`` and poison
+    # the future-worker context with what reads as a system directive.
+    # Cross-task commenting itself remains unrestricted (see #19713) —
+    # comments are the deliberate handoff channel between tasks.
+    author = os.environ.get("HERMES_PROFILE") or "worker"
     try:
         kb, conn = _connect()
         try:
@@ -655,13 +664,6 @@ KANBAN_COMMENT_SCHEMA = {
             "body": {
                 "type": "string",
                 "description": "Markdown-supported comment body.",
-            },
-            "author": {
-                "type": "string",
-                "description": (
-                    "Override author name. Defaults to the current "
-                    "profile (HERMES_PROFILE env)."
-                ),
             },
         },
         "required": ["task_id", "body"],

@@ -101,6 +101,7 @@ class Platform(Enum):
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
+    MSGRAPH_WEBHOOK = "msgraph_webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
@@ -376,6 +377,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.SMS: lambda cfg: bool(os.getenv("TWILIO_ACCOUNT_SID")),
     Platform.API_SERVER: lambda cfg: True,
     Platform.WEBHOOK: lambda cfg: True,
+    Platform.MSGRAPH_WEBHOOK: lambda cfg: True,
     Platform.FEISHU: lambda cfg: bool(cfg.extra.get("app_id")),
     Platform.WECOM: lambda cfg: bool(cfg.extra.get("bot_id")),
     Platform.WECOM_CALLBACK: lambda cfg: bool(
@@ -1406,6 +1408,62 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # Microsoft Graph webhook platform
+    msgraph_webhook_enabled = os.getenv("MSGRAPH_WEBHOOK_ENABLED", "").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    msgraph_webhook_port = os.getenv("MSGRAPH_WEBHOOK_PORT")
+    msgraph_webhook_client_state = os.getenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "")
+    msgraph_webhook_resources = os.getenv("MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES", "")
+    msgraph_webhook_allowed_cidrs = os.getenv(
+        "MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS", ""
+    )
+    if (
+        msgraph_webhook_enabled
+        or Platform.MSGRAPH_WEBHOOK in config.platforms
+        or msgraph_webhook_port
+        or msgraph_webhook_client_state
+        or msgraph_webhook_resources
+        or msgraph_webhook_allowed_cidrs
+    ):
+        if Platform.MSGRAPH_WEBHOOK not in config.platforms:
+            config.platforms[Platform.MSGRAPH_WEBHOOK] = PlatformConfig()
+        if msgraph_webhook_enabled:
+            config.platforms[Platform.MSGRAPH_WEBHOOK].enabled = True
+        if msgraph_webhook_port:
+            try:
+                config.platforms[Platform.MSGRAPH_WEBHOOK].extra["port"] = int(
+                    msgraph_webhook_port
+                )
+            except ValueError:
+                pass
+        if msgraph_webhook_client_state:
+            config.platforms[Platform.MSGRAPH_WEBHOOK].extra["client_state"] = (
+                msgraph_webhook_client_state
+            )
+        if msgraph_webhook_resources:
+            resources = [
+                resource.strip()
+                for resource in msgraph_webhook_resources.split(",")
+                if resource.strip()
+            ]
+            if resources:
+                config.platforms[Platform.MSGRAPH_WEBHOOK].extra[
+                    "accepted_resources"
+                ] = resources
+        if msgraph_webhook_allowed_cidrs:
+            cidrs = [
+                cidr.strip()
+                for cidr in msgraph_webhook_allowed_cidrs.split(",")
+                if cidr.strip()
+            ]
+            if cidrs:
+                config.platforms[Platform.MSGRAPH_WEBHOOK].extra[
+                    "allowed_source_cidrs"
+                ] = cidrs
 
     # DingTalk
     dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")

@@ -4,6 +4,7 @@ description: Set up and use 1Password CLI (op). Use when installing the CLI, ena
 version: 1.0.0
 author: arceus77-7, enhanced by Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [security, secrets, 1password, op, cli]

@@ -598,7 +598,7 @@ def run_doctor(args):
         # Detect stale root-level model keys (known bug source — PR #4329)
         try:
             import yaml
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 raw_config = yaml.safe_load(f) or {}
             stale_root_keys = [k for k in ("provider", "base_url") if k in raw_config and isinstance(raw_config[k], str)]
             if stale_root_keys:
@@ -1035,10 +1035,13 @@ def run_doctor(args):
         check_ok("Node.js")
         # Check if agent-browser is installed
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
+        agent_browser_ok = False
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
+            agent_browser_ok = True
         elif shutil.which("agent-browser"):
             check_ok("agent-browser", "(browser automation)")
+            agent_browser_ok = True
         else:
             if _is_termux():
                 check_info("agent-browser is not installed (expected in the tested Termux path)")
@@ -1048,6 +1051,56 @@ def run_doctor(args):
                     check_info(step)
             else:
                 check_warn("agent-browser not installed", "(run: npm install)")
+
+        # Chromium presence — the browser tools silently fail to register when
+        # agent-browser is found but no Playwright-managed Chromium is on disk
+        # (tools/browser_tool.py::check_browser_requirements filters them out
+        # before the agent ever sees them).  Reuse the exact predicate it uses
+        # so the two checks cannot diverge.  Skip on Termux (not a tested
+        # path).
+        if agent_browser_ok and not _is_termux():
+            try:
+                # Lazy import: browser_tool is a ~150KB module we don't want
+                # to eagerly load in every `hermes doctor` invocation.
+                from tools.browser_tool import (
+                    _chromium_installed,
+                    _is_camofox_mode,
+                    _get_cloud_provider,
+                    _get_cdp_override,
+                    _using_lightpanda_engine,
+                )
+            except Exception:
+                # If browser_tool can't even import, that's a separate bug
+                # surfaced elsewhere; don't crash doctor.
+                pass
+            else:
+                # Only warn about Chromium if the installed engine actually
+                # requires it: Camofox, CDP override, a cloud provider, or
+                # Lightpanda all bypass the local Chromium requirement.
+                skip_chromium_check = (
+                    _is_camofox_mode()
+                    or bool(_get_cdp_override())
+                    or _get_cloud_provider() is not None
+                    or _using_lightpanda_engine()
+                )
+                if not skip_chromium_check:
+                    if _chromium_installed():
+                        check_ok("Playwright Chromium", "(browser engine)")
+                    else:
+                        check_warn(
+                            "Playwright Chromium not installed",
+                            "(browser_* tools will be hidden from the agent)",
+                        )
+                        if sys.platform == "win32":
+                            check_info(
+                                f"Install with: cd {PROJECT_ROOT} && "
+                                "npx playwright install chromium"
+                            )
+                        else:
+                            check_info(
+                                f"Install with: cd {PROJECT_ROOT} && "
+                                "npx playwright install --with-deps chromium"
+                            )
     else:
         if _is_termux():
             check_info("Node.js not found (browser tools are optional in the tested Termux path)")
@@ -1059,7 +1112,8 @@ def run_doctor(args):
             check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
-    if _safe_which("npm"):
+    _npm_bin = _safe_which("npm")
+    if _npm_bin:
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),
             (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
@@ -1068,8 +1122,10 @@ def run_doctor(args):
             if not (npm_dir / "node_modules").exists():
                 continue
             try:
+                # Use resolved absolute path so Windows can execute
+                # npm.cmd (CreateProcessW can't run bare .cmd names).
                 audit_result = subprocess.run(
-                    ["npm", "audit", "--json"],
+                    [_npm_bin, "audit", "--json"],
                     cwd=str(npm_dir),
                     capture_output=True, text=True, timeout=30,
                 )
@@ -1087,9 +1143,16 @@ def run_doctor(args):
                         f"{label} deps",
                         f"({critical} critical, {high} high, {moderate} moderate — run: cd {npm_dir} && npm audit fix)"
                     )
-                    issues.append(f"{label} has {total} npm vulnerability(ies)")
+                    issues.append(
+                        f"{label} has {total} npm "
+                        f"{'vulnerability' if total == 1 else 'vulnerabilities'}"
+                    )
                 else:
-                    check_ok(f"{label} deps", f"({moderate} moderate vulnerability(ies))")
+                    check_ok(
+                        f"{label} deps",
+                        f"({moderate} moderate "
+                        f"{'vulnerability' if moderate == 1 else 'vulnerabilities'})",
+                    )
             except Exception:
                 pass
 
@@ -1396,7 +1459,7 @@ def run_doctor(args):
         import yaml as _yaml
         _mem_cfg_path = HERMES_HOME / "config.yaml"
         if _mem_cfg_path.exists():
-            with open(_mem_cfg_path) as _f:
+            with open(_mem_cfg_path, encoding="utf-8") as _f:
                 _raw_cfg = _yaml.safe_load(_f) or {}
             _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
     except Exception:

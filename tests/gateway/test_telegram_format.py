@@ -716,3 +716,44 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
     assert len(sent_texts) > 1
     assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[0])
     assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[-1])
+
+
+# =========================================================================
+# edit_message — streaming Markdown safety
+# =========================================================================
+
+
+class TestEditMessageStreamingSafety:
+    @pytest.mark.asyncio
+    async def test_non_final_edit_uses_plain_text_without_markdown(self):
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+
+        result = await adapter.edit_message("123", "456", "partial **bold", finalize=False)
+
+        assert result.success is True
+        adapter._bot.edit_message_text.assert_awaited_once_with(
+            chat_id=123,
+            message_id=456,
+            text="partial **bold",
+        )
+
+    @pytest.mark.asyncio
+    async def test_final_edit_uses_markdownv2_with_plain_fallback(self):
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock(side_effect=[Exception("bad markdown"), None])
+
+        result = await adapter.edit_message("123", "456", "final **bold**", finalize=True)
+
+        assert result.success is True
+        first_call = adapter._bot.edit_message_text.await_args_list[0].kwargs
+        second_call = adapter._bot.edit_message_text.await_args_list[1].kwargs
+        assert "parse_mode" in first_call
+        assert first_call["text"] == "final *bold*"
+        assert second_call == {
+            "chat_id": 123,
+            "message_id": 456,
+            "text": "final **bold**",
+        }

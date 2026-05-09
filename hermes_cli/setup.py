@@ -2446,6 +2446,7 @@ def setup_gateway(config: dict):
 
         _is_linux = _platform.system() == "Linux"
         _is_macos = _platform.system() == "Darwin"
+        _is_windows = _platform.system() == "Windows"
 
         from hermes_cli.gateway import (
             _is_service_installed,
@@ -2470,7 +2471,7 @@ def setup_gateway(config: dict):
         service_installed = _is_service_installed()
         service_running = _is_service_running()
         supports_systemd = supports_systemd_services()
-        supports_service_manager = supports_systemd or _is_macos
+        supports_service_manager = supports_systemd or _is_macos or _is_windows
 
         print()
         if supports_systemd and has_conflicting_systemd_units():
@@ -2490,6 +2491,9 @@ def setup_gateway(config: dict):
                         systemd_restart()
                     elif _is_macos:
                         launchd_restart()
+                    elif _is_windows:
+                        from hermes_cli import gateway_windows
+                        gateway_windows.restart()
                 except UserSystemdUnavailableError as e:
                     print_error("  Restart failed — user systemd not reachable:")
                     for line in str(e).splitlines():
@@ -2512,6 +2516,9 @@ def setup_gateway(config: dict):
                         systemd_start()
                     elif _is_macos:
                         launchd_start()
+                    elif _is_windows:
+                        from hermes_cli import gateway_windows
+                        gateway_windows.start()
                 except UserSystemdUnavailableError as e:
                     print_error("  Start failed — user systemd not reachable:")
                     for line in str(e).splitlines():
@@ -2522,7 +2529,12 @@ def setup_gateway(config: dict):
                 except Exception as e:
                     print_error(f"  Start failed: {e}")
         elif supports_service_manager:
-            svc_name = "systemd" if supports_systemd else "launchd"
+            if supports_systemd:
+                svc_name = "systemd"
+            elif _is_macos:
+                svc_name = "launchd"
+            else:
+                svc_name = "Scheduled Task"
             if prompt_yes_no(
                 f"  Install the gateway as a {svc_name} service? (runs in background, starts on boot)",
                 True,
@@ -2530,13 +2542,23 @@ def setup_gateway(config: dict):
                 try:
                     installed_scope = None
                     did_install = False
+                    started_inline = False
                     if supports_systemd:
                         installed_scope, did_install = install_linux_gateway_from_setup(force=False)
-                    else:
+                    elif _is_macos:
                         launchd_install(force=False)
                         did_install = True
+                    else:
+                        # gateway_windows.install() registers the Scheduled
+                        # Task AND starts it immediately (via schtasks /Run
+                        # or a direct spawn fallback), so no separate start
+                        # prompt is needed here.
+                        from hermes_cli import gateway_windows
+                        gateway_windows.install(force=False)
+                        did_install = True
+                        started_inline = True
                     print()
-                    if did_install and prompt_yes_no("  Start the service now?", True):
+                    if did_install and not started_inline and prompt_yes_no("  Start the service now?", True):
                         try:
                             if supports_systemd:
                                 systemd_start(system=installed_scope == "system")
@@ -3240,22 +3262,23 @@ def _offer_launch_chat():
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
-    """Streamlined first-time setup: provider + model only.
+    """Streamlined first-time setup: provider, model, terminal & messaging.
 
-    Applies sensible defaults for TTS (Edge), terminal (local), agent
-    settings, and tools — the user can customize later via
-    ``hermes setup <section>``.
+    Applies sensible defaults for TTS (Edge), agent settings, and tools —
+    the user can customize later via ``hermes setup <section>``.
     """
     # Step 1: Model & Provider (essential — skips rotation/vision/TTS)
     setup_model_provider(config, quick=True)
 
-    # Step 2: Apply defaults for everything else
+    # Step 2: Terminal Backend — where commands run is a core decision
+    setup_terminal_backend(config)
+
+    # Step 3: Apply defaults for everything else
     _apply_default_agent_settings(config)
-    config.setdefault("terminal", {}).setdefault("backend", "local")
 
     save_config(config)
 
-    # Step 3: Offer messaging gateway setup
+    # Step 4: Offer messaging gateway setup
     print()
     gateway_choice = prompt_choice(
         "Connect a messaging platform? (Telegram, Discord, etc.)",

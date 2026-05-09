@@ -163,22 +163,40 @@ class TestBusyInputMode:
 
 
 class TestPromptToolkitTerminalCompatibility:
-    def test_lf_enter_binds_to_submit_handler(self):
-        """Some thin PTYs deliver Enter as LF/c-j instead of CR/enter."""
+    def test_lf_enter_binds_to_submit_handler_posix(self):
+        """Some thin PTYs deliver Enter as LF/c-j instead of CR/enter.
+
+        On POSIX we keep the c-j → submit binding so Enter works on thin
+        PTYs (docker exec, certain SSH configurations). On Windows c-j is
+        reclaimed as the newline keystroke because Windows Terminal
+        delivers Ctrl+Enter as LF, and we want an Enter-involving newline
+        without requiring terminal-settings changes.
+        """
+        import sys as _sys
+        from unittest.mock import patch as _patch
         from prompt_toolkit.key_binding import KeyBindings
 
         from cli import _bind_prompt_submit_keys
 
-        kb = KeyBindings()
-
         def submit_handler(event):
             return None
 
-        _bind_prompt_submit_keys(kb, submit_handler)
+        # POSIX: both enter and c-j submit
+        with _patch.object(_sys, "platform", "linux"):
+            kb = KeyBindings()
+            _bind_prompt_submit_keys(kb, submit_handler)
+            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+            assert bindings[("c-m",)] is submit_handler
+            assert bindings[("c-j",)] is submit_handler
 
-        bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
-        assert bindings[("c-m",)] is submit_handler
-        assert bindings[("c-j",)] is submit_handler
+        # Windows: only enter submits; c-j is free for the newline binding
+        # added separately in the prompt setup.
+        with _patch.object(_sys, "platform", "win32"):
+            kb = KeyBindings()
+            _bind_prompt_submit_keys(kb, submit_handler)
+            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+            assert bindings[("c-m",)] is submit_handler
+            assert ("c-j",) not in bindings
 
     def test_cpr_warning_callback_is_disabled(self):
         from cli import _disable_prompt_toolkit_cpr_warning

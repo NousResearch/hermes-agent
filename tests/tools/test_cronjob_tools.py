@@ -122,6 +122,28 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_list_handles_partial_legacy_job_records(self):
+        from cron.jobs import save_jobs
+
+        save_jobs([
+            {
+                "id": "abc123deadbe",
+                "name": None,
+                "prompt": None,
+                "schedule_display": None,
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+            }
+        ])
+
+        listing = json.loads(cronjob(action="list"))
+
+        assert listing["success"] is True
+        assert listing["jobs"][0]["name"] == "abc123deadbe"
+        assert listing["jobs"][0]["prompt_preview"] == ""
+        assert listing["jobs"][0]["schedule"] == "every 60m"
+
     def test_pause_and_resume(self):
         created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
         job_id = created["job_id"]

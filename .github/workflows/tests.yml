@@ -76,13 +76,18 @@ jobs:
           uv pip install -e ".[all,dev]"
 
       - name: Run integration tests
+        # Override the default `-m 'not integration'` from
+        # pyproject.toml addopts so the integration-marked tests
+        # actually execute. Pass through repository secrets when
+        # configured; tests that require live API keys must skip
+        # gracefully when the corresponding env var is empty.
         run: |
           source .venv/bin/activate
-          python -m pytest tests/integration -v --tb=short
+          python -m pytest tests/integration -v --tb=short -o addopts= -m integration
         env:
-          OPENROUTER_API_KEY: ""
-          OPENAI_API_KEY: ""
-          NOUS_API_KEY: ""
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
 
   e2e:
     runs-on: ubuntu-latest

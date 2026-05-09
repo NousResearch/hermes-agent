@@ -55,9 +55,10 @@ if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
     uv pip install --quiet --python "$PYTHON" "pytest-split>=0.9,<1"
   else
     echo "error: pytest-split is not installed and neither pip nor uv is available." >&2
-    echo "       Re-create the venv with the dev extra, e.g.:" >&2
-    echo "         uv pip install -e \".[dev]\" --python \"$PYTHON\"" >&2
-    echo "       or install pip into the venv first." >&2
+    echo "       Bootstrap pip into the venv first, then install the dev extra:" >&2
+    echo "         \"$PYTHON\" -m ensurepip --upgrade" >&2
+    echo "         \"$PYTHON\" -m pip install -e \".[dev]\"" >&2
+    echo "       Or install uv (https://docs.astral.sh/uv/) and re-run." >&2
     exit 1
   fi
 fi

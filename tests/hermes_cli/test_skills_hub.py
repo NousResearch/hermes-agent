@@ -1,11 +1,12 @@
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_install, do_list, do_publish, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -524,3 +525,21 @@ def test_existing_categories_returns_empty_when_skills_dir_missing(monkeypatch, 
 
     from hermes_cli.skills_hub import _existing_categories
     assert _existing_categories() == []
+
+
+def test_do_publish_rejects_traversal_path(hub_env, monkeypatch):
+    """do_publish must reject paths resolving outside SKILLS_DIR."""
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_publish("../../etc/passwd", target="github", repo="owner/repo", console=console)
+    assert "Invalid skill path" in sink.getvalue()
+
+
+def test_github_publish_rejects_traversal_path(hub_env, monkeypatch):
+    """_github_publish must reject skill_path outside SKILLS_DIR."""
+    from hermes_cli.skills_hub import _github_publish
+
+    auth = object()
+    success, msg = _github_publish(Path("../../etc/passwd"), "evil", "owner/repo", auth)
+    assert success is False
+    assert "Invalid skill path" in msg

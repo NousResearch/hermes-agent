@@ -994,6 +994,11 @@ def skill_view(
         if not skill_md:
             for search_dir in all_dirs:
                 for found_md in search_dir.rglob(f"{name}.md"):
+                    try:
+                        if not str(found_md.resolve()).startswith(str(search_dir.resolve())):
+                            continue
+                    except (OSError, ValueError):
+                        continue
                     if found_md.name != "SKILL.md":
                         skill_md = found_md
                         break
@@ -1122,27 +1127,34 @@ def skill_view(
                 }
 
                 # Scan for all readable files
-                for f in skill_dir.rglob("*"):
-                    if f.is_file() and f.name != "SKILL.md":
-                        rel = str(f.relative_to(skill_dir))
-                        if rel.startswith("references/"):
-                            available_files["references"].append(rel)
-                        elif rel.startswith("templates/"):
-                            available_files["templates"].append(rel)
-                        elif rel.startswith("assets/"):
-                            available_files["assets"].append(rel)
-                        elif rel.startswith("scripts/"):
-                            available_files["scripts"].append(rel)
-                        elif f.suffix in [
-                            ".md",
-                            ".py",
-                            ".yaml",
-                            ".yml",
-                            ".json",
-                            ".tex",
-                            ".sh",
-                        ]:
-                            available_files["other"].append(rel)
+                try:
+                    if not str(skill_dir.resolve()).startswith(str(SKILLS_DIR.resolve())):
+                        skill_dir = None
+                except (OSError, ValueError):
+                    skill_dir = None
+
+                if skill_dir:
+                    for f in skill_dir.rglob("*"):
+                        if f.is_file() and f.name != "SKILL.md":
+                            rel = str(f.relative_to(skill_dir))
+                            if rel.startswith("references/"):
+                                available_files["references"].append(rel)
+                            elif rel.startswith("templates/"):
+                                available_files["templates"].append(rel)
+                            elif rel.startswith("assets/"):
+                                available_files["assets"].append(rel)
+                            elif rel.startswith("scripts/"):
+                                available_files["scripts"].append(rel)
+                            elif f.suffix in [
+                                ".md",
+                                ".py",
+                                ".yaml",
+                                ".yml",
+                                ".json",
+                                ".tex",
+                                ".sh",
+                            ]:
+                                available_files["other"].append(rel)
 
                 # Remove empty categories
                 available_files = {k: v for k, v in available_files.items() if v}

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
+    _build_skill_message,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
     resolve_skill_command_key,
@@ -766,3 +767,23 @@ class TestInlineShellExpansion:
         # The command's intended stdout never made it through — only the
         # timeout marker (which echoes the command text) survives.
         assert "DYN_MARKER" not in msg.replace("sleep 5 && printf DYN_MARKER", "")
+
+
+class TestBuildSkillMessageTraversalGuard:
+    """Regression tests for supporting-files rglob guard (#18693)."""
+
+    def test_supporting_files_blocked_outside_skills_dir(self, tmp_path):
+        """_build_skill_message must not rglob supporting files outside SKILLS_DIR."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        evil_dir = tmp_path / "evil"
+        evil_dir.mkdir()
+        (evil_dir / "references").mkdir()
+        (evil_dir / "references" / "secret.md").write_text("SECRET")
+
+        loaded_skill = {"content": "test", "linked_files": {}}
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            msg = _build_skill_message(loaded_skill, evil_dir, activation_note="note")
+            assert "SECRET" not in msg
+            assert "references/secret.md" not in msg

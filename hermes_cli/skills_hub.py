@@ -1068,6 +1068,15 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     # Resolve relative to skills dir if not absolute
     if not path.is_absolute():
         path = SKILLS_DIR / path
+
+    try:
+        if not str(path.resolve()).startswith(str(SKILLS_DIR.resolve())):
+            c.print(f"[bold red]Error:[/] Invalid skill path: {path}\n")
+            return
+    except (OSError, ValueError):
+        c.print(f"[bold red]Error:[/] Invalid skill path: {path}\n")
+        return
+
     if not path.exists() or not (path / "SKILL.md").exists():
         c.print(f"[bold red]Error:[/] No SKILL.md found at {path}\n")
         return
@@ -1129,6 +1138,13 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
                     auth) -> tuple:
     """Create a PR to a GitHub repo with the skill. Returns (success, message)."""
     import httpx
+    from tools.skills_hub import SKILLS_DIR
+
+    try:
+        if not str(skill_path.resolve()).startswith(str(SKILLS_DIR.resolve())):
+            return False, "Invalid skill path: outside the skills directory"
+    except (OSError, ValueError):
+        return False, f"Invalid skill path: {skill_path}"
 
     headers = auth.get_headers()
 

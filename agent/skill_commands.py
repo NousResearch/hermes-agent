@@ -203,13 +203,20 @@ def _build_skill_message(
             supporting.extend(entries)
 
     if not supporting and skill_dir:
-        for subdir in ("references", "templates", "scripts", "assets"):
-            subdir_path = skill_dir / subdir
-            if subdir_path.exists():
-                for f in sorted(subdir_path.rglob("*")):
-                    if f.is_file() and not f.is_symlink():
-                        rel = str(f.relative_to(skill_dir))
-                        supporting.append(rel)
+        try:
+            if not str(skill_dir.resolve()).startswith(str(SKILLS_DIR.resolve())):
+                skill_dir = None
+        except (OSError, ValueError):
+            skill_dir = None
+
+        if skill_dir:
+            for subdir in ("references", "templates", "scripts", "assets"):
+                subdir_path = skill_dir / subdir
+                if subdir_path.exists():
+                    for f in sorted(subdir_path.rglob("*")):
+                        if f.is_file() and not f.is_symlink():
+                            rel = str(f.relative_to(skill_dir))
+                            supporting.append(rel)
 
     if supporting and skill_dir:
         try:

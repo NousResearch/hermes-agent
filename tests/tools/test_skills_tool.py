@@ -1076,3 +1076,51 @@ Do the legacy thing.
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
+
+
+class TestSkillViewRglobTraversalGuard:
+    """Regression tests for rglob path injection guards (#18693)."""
+
+    def test_legacy_rglob_skips_symlink_escaping_skills_dir(self, tmp_path):
+        """rglob should skip files in subdirs that resolve outside SKILLS_DIR."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        subdir = skills_dir / "category"
+        subdir.mkdir()
+
+        outside = tmp_path / "evil.md"
+        outside.write_text("SECRET")
+        symlink_file = subdir / "evil.md"
+        try:
+            symlink_file.symlink_to(outside)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        assert not (skills_dir / "evil.md").exists()
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            result = json.loads(skill_view("evil"))
+            assert result["success"] is False
+            assert "not found" in result["error"].lower()
+
+    def test_file_listing_blocks_skill_dir_outside(self, tmp_path):
+        """file listing blocks skill_dir that resolves outside SKILLS_DIR."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        evil_target = tmp_path / "evil"
+        evil_target.mkdir()
+        (evil_target / "SKILL.md").write_text("---\nname: evil\n---")
+        (evil_target / "references").mkdir()
+        (evil_target / "references" / "secret.md").write_text("SECRET")
+
+        evil_link = skills_dir / "evil"
+        try:
+            evil_link.symlink_to(evil_target, target_is_directory=True)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            result = json.loads(skill_view("evil", file_path="nonexistent"))
+            assert result["success"] is False
+            assert "SECRET" not in json.dumps(result)

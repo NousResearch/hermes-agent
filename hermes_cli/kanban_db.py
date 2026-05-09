@@ -1804,6 +1804,31 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + int(ttl_seconds)
     with write_txn(conn):
+        # Structural invariant: never transition ready -> running while any
+        # parent is not yet 'done'. This is the single enforcement point
+        # regardless of which writer (create_task, link_tasks, unblock_task,
+        # release_stale_claims, manual SQL) set status='ready'. If a racy
+        # writer promoted a task with undone parents, demote it back to
+        # 'todo' here — recompute_ready will re-promote when the parents
+        # actually finish. See RCA at
+        # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
+        undone = conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if undone:
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id = ? AND status = 'ready'",
+                (task_id,),
+            )
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "parents_not_done"},
+            )
+            return None
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
@@ -2503,14 +2528,30 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
                 """,
                 (now, int(stale["current_run_id"])),
             )
-        cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', current_run_id = NULL "
-            "WHERE id = ? AND status = 'blocked'",
+        # Re-gate on parent completion before flipping 'blocked' back to
+        # 'ready'. Unconditionally setting status='ready' here bypasses the
+        # parent-completion invariant (the dispatcher trusts that column);
+        # if parents are still in progress the task must wait in 'todo'
+        # until recompute_ready picks it up. RCA: Bug 2 at
+        # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
+        undone_parents = conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
             (task_id,),
+        ).fetchone()
+        new_status = "todo" if undone_parents else "ready"
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, current_run_id = NULL "
+            "WHERE id = ? AND status = 'blocked'",
+            (new_status, task_id),
         )
         if cur.rowcount != 1:
             return False
-        _append_event(conn, task_id, "unblocked", None)
+        _append_event(
+            conn, task_id, "unblocked",
+            {"status": new_status} if new_status != "ready" else None,
+        )
         return True
 
 

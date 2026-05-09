@@ -610,7 +610,7 @@ compression:
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
   compression:
-    model: "google/gemini-3-flash-preview"          # Model for summarization
+    model: ""                                       # Empty = use main chat model. Override with e.g. "google/gemini-3-flash-preview" for cheaper/faster compression.
     provider: "auto"                                # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
     base_url: null                                  # Custom OpenAI-compatible endpoint (overrides provider)
 ```

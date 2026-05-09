@@ -255,6 +255,32 @@ class TestJobCRUD:
         assert job["deliver"] == "local"
 
 
+class TestLoadJobsMalformedShapes:
+    """load_jobs must tolerate jobs.json files whose root is not a dict."""
+
+    @pytest.mark.parametrize("payload", [
+        "[]",
+        '[{"id": "x"}]',
+        "null",
+        '"oops"',
+        "42",
+        "true",
+    ])
+    def test_non_dict_root_returns_empty(self, tmp_cron_dir, payload):
+        jobs_file = tmp_cron_dir / "cron" / "jobs.json"
+        jobs_file.parent.mkdir(parents=True, exist_ok=True)
+        jobs_file.write_text(payload, encoding="utf-8")
+
+        assert load_jobs() == []
+
+    def test_jobs_value_not_a_list_returns_empty(self, tmp_cron_dir):
+        jobs_file = tmp_cron_dir / "cron" / "jobs.json"
+        jobs_file.parent.mkdir(parents=True, exist_ok=True)
+        jobs_file.write_text('{"jobs": "not-a-list"}', encoding="utf-8")
+
+        assert load_jobs() == []
+
+
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="every 1h", name="Old Name")

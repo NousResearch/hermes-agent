@@ -407,13 +407,24 @@ def load_jobs() -> List[Dict[str, Any]]:
     try:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("jobs", [])
+            if not isinstance(data, dict):
+                logger.warning(
+                    "jobs.json root is not a JSON object (got %s); returning empty job list",
+                    type(data).__name__,
+                )
+                return []
+            jobs = data.get("jobs", [])
+            return jobs if isinstance(jobs, list) else []
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
+                if not isinstance(data, dict):
+                    return []
                 jobs = data.get("jobs", [])
+                if not isinstance(jobs, list):
+                    return []
                 if jobs:
                     # Auto-repair: rewrite with proper escaping
                     save_jobs(jobs)

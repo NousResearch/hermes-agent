@@ -2615,6 +2615,21 @@ class HermesCLI:
             self._last_invalidate = now
             self._app.invalidate()
 
+    def _print_process_notification(self, evt: dict) -> bool:
+        """Render background process notifications without queuing user input."""
+        text = _format_process_notification(evt)
+        if not text:
+            return False
+        _cprint("\nBackground process notification")
+        _cprint(text)
+        app = getattr(self, "_app", None)
+        if app:
+            try:
+                app.invalidate()
+            except Exception:
+                pass
+        return True
+
     def _force_full_redraw(self) -> None:
         """Force a clean full-screen repaint of the prompt_toolkit UI.
 
@@ -12326,9 +12341,8 @@ class HermesCLI:
                                     if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
                                         pass  # already delivered via tool result
                                     else:
-                                        _synth = _format_process_notification(evt)
-                                        if _synth:
-                                            self._pending_input.put(_synth)
+                                        if self._print_process_notification(evt):
+                                            app.invalidate()
                             except Exception:
                                 pass
                         continue
@@ -12438,9 +12452,8 @@ class HermesCLI:
                                 _evt_sid = evt.get("session_id", "")
                                 if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
                                     continue  # already delivered via tool result
-                                _synth = _format_process_notification(evt)
-                                if _synth:
-                                    self._pending_input.put(_synth)
+                                if self._print_process_notification(evt):
+                                    app.invalidate()
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 

@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -222,6 +222,7 @@ CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id),
     role TEXT NOT NULL,
+    message_type TEXT DEFAULT 'model',
     content TEXT,
     tool_call_id TEXT,
     tool_calls TEXT,
@@ -241,10 +242,22 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS task_frame_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    schema_version INTEGER NOT NULL,
+    turn_id TEXT,
+    compression_generation INTEGER DEFAULT 0,
+    frame_json TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_task_frame_ledger_session
+    ON task_frame_ledger(session_id, created_at DESC, id DESC);
 """
 
 FTS_SQL = """
@@ -650,6 +663,25 @@ class SessionDB:
                     "UPDATE schema_version SET version = ?",
                     (SCHEMA_VERSION,),
                 )
+
+        # v12: continuity-aware message types.  _reconcile_columns() adds the
+        # column to existing DBs with SQLite's declared DEFAULT value.  That
+        # backfills legacy rows as 'model', which is wrong for historical user,
+        # assistant, and tool turns.  Repair untyped/defaulted legacy rows on
+        # every startup so DBs opened by an earlier buggy v12 build self-heal too.
+        cursor.execute(
+            """
+            UPDATE messages
+               SET message_type = CASE role
+                   WHEN 'user' THEN 'real_user_prompt'
+                   WHEN 'assistant' THEN 'model_assistant_content'
+                   WHEN 'tool' THEN 'tool_result'
+                   ELSE COALESCE(message_type, 'model')
+               END
+             WHERE (message_type IS NULL OR message_type = 'model')
+               AND role IN ('user', 'assistant', 'tool')
+            """
+        )
 
         # Unique title index — always ensure it exists
         try:
@@ -1427,11 +1459,23 @@ class SessionDB:
                 return content
         return content
 
+    @staticmethod
+    def _default_message_type(role: str) -> str:
+        """Return the continuity-aware default type for a message role."""
+        if role == "user":
+            return "real_user_prompt"
+        if role == "assistant":
+            return "model_assistant_content"
+        if role == "tool":
+            return "tool_result"
+        return "model"
+
     def append_message(
         self,
         session_id: str,
         role: str,
         content: str = None,
+        message_type: str = None,
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
@@ -1466,6 +1510,7 @@ class SessionDB:
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
+        stored_message_type = message_type or self._default_message_type(role)
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -1474,14 +1519,15 @@ class SessionDB:
 
         def _do(conn):
             cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                """INSERT INTO messages (session_id, role, message_type, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
+                    stored_message_type,
                     stored_content,
                     tool_call_id,
                     tool_calls_json,
@@ -1555,16 +1601,18 @@ class SessionDB:
                     json.dumps(codex_message_items) if codex_message_items else None
                 )
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                message_type = msg.get("message_type") or self._default_message_type(role)
 
                 conn.execute(
-                    """INSERT INTO messages (session_id, role, content, tool_call_id,
+                    """INSERT INTO messages (session_id, role, message_type, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                        codex_message_items)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
+                        message_type,
                         self._encode_content(msg.get("content")),
                         msg.get("tool_call_id"),
                         tool_calls_json,
@@ -1592,6 +1640,57 @@ class SessionDB:
             )
 
         self._execute_write(_do)
+
+    def append_task_frame_ledger(
+        self, session_id: str, frame: Dict[str, Any]
+    ) -> int:
+        """Persist a compact structured task frame for compression continuity."""
+        payload = dict(frame or {})
+        schema_version = int(payload.get("schema_version") or 1)
+        turn_id = payload.get("turn_id") or None
+        compression_generation = int(payload.get("compression_generation") or 0)
+        frame_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO task_frame_ledger (
+                       session_id, schema_version, turn_id,
+                       compression_generation, frame_json, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    schema_version,
+                    turn_id,
+                    compression_generation,
+                    frame_json,
+                    time.time(),
+                ),
+            )
+            return cursor.lastrowid
+
+        return self._execute_write(_do)
+
+    def get_latest_task_frame_ledger(
+        self, session_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the newest task frame ledger payload for a session."""
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT frame_json FROM task_frame_ledger
+                   WHERE session_id = ?
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT 1""",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        raw = row["frame_json"] if isinstance(row, sqlite3.Row) else row[0]
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Failed to deserialize task_frame_ledger payload")
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages for a session, ordered by timestamp."""
@@ -1694,7 +1793,7 @@ class SessionDB:
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                "SELECT role, content, tool_call_id, tool_calls, tool_name, "
+                "SELECT role, content, message_type, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items "
                 f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
@@ -1707,6 +1806,9 @@ class SessionDB:
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
+            message_type = row["message_type"]
+            if message_type and message_type != self._default_message_type(row["role"]):
+                msg["message_type"] = message_type
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:
@@ -2835,4 +2937,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

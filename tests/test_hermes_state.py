@@ -1414,7 +1414,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 11
+        assert version == 12
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1703,15 +1703,20 @@ class TestSchemaInit:
             "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
             ("existing", "cli", 1000.0),
         )
+        conn.execute(
+            """INSERT INTO messages (session_id, role, content, timestamp)
+               VALUES (?, ?, ?, ?)""",
+            ("existing", "user", "legacy real user prompt", 1001.0),
+        )
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v9
+        # Open with SessionDB — should migrate to current schema.
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 12
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1724,12 +1729,89 @@ class TestSchemaInit:
         )
         assert cursor.fetchone()[0] == 0
 
+        # Verify v12 backfills continuity-aware message types on legacy rows.
+        replay = migrated_db.get_messages_as_conversation("existing")
+        assert replay[0]["content"] == "legacy real user prompt"
+        assert replay[0].get("message_type") is None
+
+        from agent.task_continuity import classify_message_type
+
+        assert classify_message_type(replay[0]) == "real_user_prompt"
+
         # Verify we can set title on migrated session
         assert migrated_db.set_session_title("existing", "Migrated Title") is True
         session = migrated_db.get_session("existing")
         assert session["title"] == "Migrated Title"
 
         migrated_db.close()
+
+    def test_v12_startup_repairs_legacy_default_message_type(self, tmp_path):
+        """DBs opened by an early v12 build may already have legacy user rows
+        backfilled as message_type='model'.  Startup must self-heal them.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "v12_default_message_type.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (12);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                source TEXT NOT NULL,
+                parent_session_id TEXT,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                message_type TEXT DEFAULT 'model',
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT
+            );
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("existing", "cli", 1000.0),
+        )
+        conn.execute(
+            """INSERT INTO messages (session_id, role, message_type, content, timestamp)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("existing", "user", "model", "legacy real user prompt", 1001.0),
+        )
+        conn.commit()
+        conn.close()
+
+        migrated_db = SessionDB(db_path=db_path)
+        try:
+            replay = migrated_db.get_messages_as_conversation("existing")
+            assert replay[0]["content"] == "legacy real user prompt"
+            assert replay[0].get("message_type") is None
+
+            from agent.task_continuity import classify_message_type
+
+            assert classify_message_type(replay[0]) == "real_user_prompt"
+        finally:
+            migrated_db.close()
 
     def test_reconciliation_adds_missing_columns(self, tmp_path):
         """Columns present in SCHEMA_SQL but missing from the live table
@@ -2906,7 +2988,6 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 11
+            assert version == 12
         finally:
             session_db.close()
-

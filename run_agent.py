@@ -158,6 +158,14 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
+from agent.task_continuity import (
+    build_task_frame_ledger_payload,
+    capture_current_task_frame,
+    classify_message_type,
+    detect_task_state_conflict,
+    format_continuity_check_response,
+    parse_continuity_resolution_choice,
+)
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -1373,6 +1381,14 @@ class AIAgent:
         self.request_overrides = dict(request_overrides or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
+
+        # Post-compression task-continuity guard state.
+        self._compressed_this_turn = False
+        self._last_compression_task_frame = None
+        self._post_compression_task_conflict = None
+        self._current_real_user_message = ""
+        self._last_continuity_conflict = None
+        self._last_continuity_resolution = None
         
         # Anthropic prompt caching: auto-enabled for Claude models on native
         # Anthropic, OpenRouter, and third-party gateways that speak the
@@ -4223,6 +4239,7 @@ class AIAgent:
                     session_id=self.session_id,
                     role=role,
                     content=content,
+                    message_type=msg.get("message_type"),
                     tool_name=msg.get("tool_name"),
                     tool_calls=tool_calls_data,
                     tool_call_id=msg.get("tool_call_id"),
@@ -9273,6 +9290,7 @@ class AIAgent:
             "content": _san_content,
             "reasoning": reasoning_text,
             "finish_reason": finish_reason,
+            "message_type": "model_assistant_content",
         }
 
         raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
@@ -9725,7 +9743,11 @@ class AIAgent:
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
+            compressed.append({
+                "role": "user",
+                "content": todo_snapshot,
+                "message_type": "preserved_task_list",
+            })
 
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
@@ -9834,7 +9856,90 @@ class AIAgent:
             self.session_id or "none", _pre_msg_count, len(compressed),
             f"{_compressed_est:,}",
         )
+        self._compressed_this_turn = True
+        try:
+            self._last_compression_task_frame = capture_current_task_frame(
+                compressed,
+                current_todo_items=self._todo_store.read(),
+                compression_count=self.context_compressor.compression_count,
+                latest_real_user_message=self._current_real_user_message,
+            )
+            self._persist_task_frame_ledger(self._last_compression_task_frame)
+            self._record_post_compression_task_conflict(
+                compressed,
+                self._current_real_user_message,
+            )
+        except Exception as _tc_err:
+            logger.debug("task-continuity frame capture failed: %s", _tc_err)
         return compressed, new_system_prompt
+
+    def _record_post_compression_task_conflict(
+        self,
+        messages: list,
+        latest_real_user_message: str,
+        extra_structured_context: str = "",
+    ) -> None:
+        """Record a post-compression conflict if synthetic task surfaces drift."""
+        frame = getattr(self, "_last_compression_task_frame", None)
+        if frame is None:
+            try:
+                frame = capture_current_task_frame(
+                    messages,
+                    current_todo_items=self._todo_store.read(),
+                    compression_count=self.context_compressor.compression_count,
+                    latest_real_user_message=latest_real_user_message,
+                )
+                self._last_compression_task_frame = frame
+            except Exception as _tc_err:
+                logger.debug("task-continuity fallback frame capture failed: %s", _tc_err)
+                return
+
+        structured_contexts = []
+        background_notifications = []
+        for msg in messages or []:
+            if not isinstance(msg, dict):
+                continue
+            msg_type = classify_message_type(msg)
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                content = str(content) if content is not None else ""
+            if msg_type == "structured_context_injection" and content.strip():
+                structured_contexts.append(content.strip())
+            elif msg_type == "background_process_notification" and content.strip():
+                background_notifications.append(content.strip())
+
+        conflict = detect_task_state_conflict(
+            frame,
+            structured_context_injection="\n\n".join(structured_contexts[-3:]),
+            background_process_notification="\n\n".join(background_notifications[-3:]),
+            extra_structured_context=extra_structured_context,
+        )
+        if conflict.should_block_tools:
+            self._post_compression_task_conflict = conflict
+
+    def _persist_task_frame_ledger(
+        self,
+        frame,
+        *,
+        resolution_choice: str = "",
+    ) -> None:
+        """Persist a compact structured task frame if the session DB is active."""
+        if not self._session_db or not self.session_id or frame is None:
+            return
+        try:
+            payload = build_task_frame_ledger_payload(
+                frame,
+                turn_id=str(self._user_turn_count),
+                resolution_choice=resolution_choice,
+            )
+            self._session_db.append_task_frame_ledger(self.session_id, payload)
+        except Exception as _tc_err:
+            logger.debug("task-continuity ledger persist failed: %s", _tc_err)
+
+    def _pop_post_compression_task_conflict(self):
+        conflict = getattr(self, "_post_compression_task_conflict", None)
+        self._post_compression_task_conflict = None
+        return conflict
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
@@ -10882,7 +10987,7 @@ class AIAgent:
             for msg in messages:
                 api_msg = msg.copy()
                 self._copy_reasoning_content_for_api(msg, api_msg)
-                for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
+                for internal_field in ("reasoning", "finish_reason", "_thinking_prefill", "message_type"):
                     api_msg.pop(internal_field, None)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
@@ -11261,6 +11366,22 @@ class AIAgent:
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
 
+        continuity_resolution_choice = parse_continuity_resolution_choice(
+            original_user_message if isinstance(original_user_message, str) else ""
+        )
+        if continuity_resolution_choice and self._last_continuity_conflict is not None:
+            self._last_continuity_resolution = continuity_resolution_choice
+            self._persist_task_frame_ledger(
+                getattr(self, "_last_compression_task_frame", None),
+                resolution_choice=continuity_resolution_choice,
+            )
+
+        # Reset post-compression continuity state after original_user_message is
+        # assigned, so _current_real_user_message always reflects the real turn.
+        self._compressed_this_turn = False
+        self._post_compression_task_conflict = None
+        self._current_real_user_message = original_user_message if isinstance(original_user_message, str) else ""
+
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on
         # how many tool iterations THIS turn used.
@@ -11274,7 +11395,7 @@ class AIAgent:
                 self._turns_since_memory = 0
 
         # Add user message
-        user_msg = {"role": "user", "content": user_message}
+        user_msg = {"role": "user", "content": user_message, "message_type": "real_user_prompt"}
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
@@ -11438,6 +11559,13 @@ class AIAgent:
                 _plugin_user_context = "\n\n".join(_ctx_parts)
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
+
+        if self._compressed_this_turn and _plugin_user_context:
+            self._record_post_compression_task_conflict(
+                messages,
+                original_user_message if isinstance(original_user_message, str) else "",
+                extra_structured_context=_plugin_user_context,
+            )
 
         # Main conversation loop
         api_call_count = 0
@@ -11668,6 +11796,8 @@ class AIAgent:
                     api_msg.pop("finish_reason")
                 # Strip internal thinking-prefill marker
                 api_msg.pop("_thinking_prefill", None)
+                # Strip internal continuity classification marker before provider calls.
+                api_msg.pop("message_type", None)
                 # Strip Codex Responses API fields (call_id, response_item_id) for
                 # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
                 # Uses new dicts so the internal messages list retains the fields
@@ -14062,6 +14192,21 @@ class AIAgent:
                     assistant_message.tool_calls = self._deduplicate_tool_calls(
                         assistant_message.tool_calls
                     )
+
+                    continuity_conflict = self._pop_post_compression_task_conflict()
+                    if continuity_conflict is not None:
+                        _turn_exit_reason = "task_continuity_check"
+                        self._last_continuity_conflict = continuity_conflict
+                        final_response = format_continuity_check_response(continuity_conflict)
+                        self._emit_status(
+                            "Post-compression task conflict detected — blocked tool execution"
+                        )
+                        messages.append({
+                            "role": "assistant",
+                            "content": final_response,
+                            "message_type": "model_assistant_content",
+                        })
+                        break
 
                     assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                     

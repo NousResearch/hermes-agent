@@ -200,6 +200,10 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
         return ActionResult(ok=True, action="focus_app")
 
+    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+        self.calls.append(("set_value", {"value": value, "element": element}))
+        return ActionResult(ok=True, action="set_value")
+
 
 # ---------------------------------------------------------------------------
 # Dispatch

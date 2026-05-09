@@ -113,6 +113,43 @@ class TestGenerateTitle:
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
 
+    def test_strips_think_block_from_title(self):
+        """Thinking models embed <think>...</think> in content (issue #18529)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "<think>The user is asking about Docker. Let me think...</think>"
+            "Setting Up Docker Environment"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("docker setup", "first install...")
+            assert title == "Setting Up Docker Environment"
+
+    def test_strips_thinking_tag_variant(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "<thinking>reasoning leak</thinking>Kubernetes Pod Debugging"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("k8s issue", "let me check")
+            assert title == "Kubernetes Pod Debugging"
+
+    def test_falls_back_to_reasoning_field_when_content_empty(self):
+        """Reasoning models may put title in message.reasoning when content is empty."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].message.reasoning = "Reasoning Field Title"
+        mock_response.choices[0].message.reasoning_content = None
+        mock_response.choices[0].message.reasoning_details = None
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("q", "a")
+            assert title == "Reasoning Field Title"
+
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""

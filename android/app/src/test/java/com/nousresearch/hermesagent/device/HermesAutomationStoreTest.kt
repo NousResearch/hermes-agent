@@ -71,6 +71,77 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesAndRunsVariableTransformRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+        store.setVariable("COUNT", "2")
+        store.setVariable("MESSAGE", "hello tasker")
+
+        val add = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_variable_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-var-add")
+                    .put("variable_action", "add")
+                    .put("name", "%COUNT")
+                    .put("value", "5")
+                    .put("automation_enabled", false),
+            ),
+        )
+        assertTrue(add.toString(), add.getBoolean("success"))
+        assertEquals(ACTION_TYPE_VARIABLE_ACTION, add.getJSONObject("automation").getString("action_type"))
+        assertTrue(
+            org.json.JSONObject(
+                HermesAutomationBridge.performActionJson(context, "run", org.json.JSONObject().put("id", "auto-var-add")),
+            ).getBoolean("success"),
+        )
+        assertEquals("7", store.getVariable("COUNT"))
+
+        val append = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_variable_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-var-append")
+                    .put("variable_action", "append")
+                    .put("name", "MESSAGE")
+                    .put("value", " %COUNT")
+                    .put("automation_enabled", false),
+            ),
+        )
+        assertTrue(append.toString(), append.getBoolean("success"))
+        assertTrue(
+            org.json.JSONObject(
+                HermesAutomationBridge.performActionJson(context, "run", org.json.JSONObject().put("id", "auto-var-append")),
+            ).getBoolean("success"),
+        )
+        assertEquals("hello tasker 7", store.getVariable("MESSAGE"))
+
+        val replace = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_variable_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-var-replace")
+                    .put("variable_action", "replace")
+                    .put("name", "MESSAGE")
+                    .put("search", "tasker")
+                    .put("replacement", "Hermes")
+                    .put("automation_enabled", false),
+            ),
+        )
+        assertTrue(replace.toString(), replace.getBoolean("success"))
+        assertTrue(
+            org.json.JSONObject(
+                HermesAutomationBridge.performActionJson(context, "run", org.json.JSONObject().put("id", "auto-var-replace")),
+            ).getBoolean("success"),
+        )
+        assertEquals("hello Hermes 7", store.getVariable("MESSAGE"))
+    }
+
+    @Test
     fun bridgeCreatesAndRunsClipboardRecords() {
         val context = RuntimeEnvironment.getApplication()
         val store = HermesAutomationStore(context)
@@ -2081,6 +2152,52 @@ class HermesAutomationStoreTest {
         assertTrue(payloads.any { it.getString("method") == "HEAD" && it.getString("url") == "https://example.com/head" })
         assertTrue(payloads.any { it.getString("method") == "POST" && it.getString("body") == "body=%MESSAGE" })
         assertTrue(payloads.any { it.getString("method") == "PUT" && it.getString("body") == "modern=%MESSAGE" })
+    }
+
+    @Test
+    fun bridgeImportsTaskerVariableTransformActionsDisabled() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val taskerXml = """
+            <TaskerData sr="" dvi="1" tv="6.6.18">
+              <Task sr="task1">
+                <nme>Hermes Variable Controls</nme>
+                <Action><code>888</code><Str sr="arg0" ve="3">%COUNT</Str><Str sr="arg1" ve="3">3</Str></Action>
+                <Action><code>890</code><Str sr="arg0" ve="3">%COUNT</Str><Str sr="arg1" ve="3">1</Str></Action>
+                <Action><code>598</code><Str sr="arg0" ve="3">%MESSAGE</Str><Str sr="arg1" ve="3">old</Str><Int sr="arg6" val="1" /><Str sr="arg7" ve="3">new</Str></Action>
+              </Task>
+            </TaskerData>
+        """.trimIndent()
+
+        val imported = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "import_tasker_xml",
+                org.json.JSONObject()
+                    .put("tasker_xml", taskerXml)
+                    .put("replace", true),
+            ),
+        )
+        assertTrue(imported.toString(), imported.getBoolean("success"))
+        assertEquals(3, imported.getInt("tasker_imported_action_count"))
+        assertEquals(0, imported.getJSONArray("tasker_skipped_actions").length())
+
+        val records = store.list()
+        assertEquals(3, records.size)
+        assertTrue(records.all { it.actionType == ACTION_TYPE_VARIABLE_ACTION })
+        assertTrue(records.none { it.enabled })
+        val payloads = records.map { org.json.JSONObject(it.command) }
+        assertTrue(payloads.any { it.getString("variable_action") == "add" && it.getString("value") == "3" })
+        assertTrue(payloads.any { it.getString("variable_action") == "subtract" && it.getString("value") == "1" })
+        assertTrue(
+            payloads.any {
+                it.getString("variable_action") == "replace" &&
+                    it.getString("search") == "old" &&
+                    it.getString("replacement") == "new"
+            },
+        )
     }
 
     @Test

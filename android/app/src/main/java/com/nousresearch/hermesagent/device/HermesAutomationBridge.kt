@@ -680,7 +680,7 @@ object HermesAutomationBridge {
                         else -> VARIABLE_ACTION_CLEAR
                     }
                 },
-        ) ?: return errorJson("create_variable_action_task supports variable_action set or clear")
+        ) ?: return errorJson("create_variable_action_task supports variable_action set, clear, append, add, subtract, or replace")
         val rawName = stringArgument(arguments, "name", "variable", "variable_name", "variableName")
             ?.trim()
             ?: return errorJson("create_variable_action_task requires a variable name like NAME or %NAME")
@@ -689,13 +689,29 @@ object HermesAutomationBridge {
         val payload = JSONObject()
             .put("variable_action", variableAction)
             .put("name", normalized)
-        if (variableAction == VARIABLE_ACTION_SET) {
-            val value = stringArgument(arguments, "value", "variable_value", "text", "content", allowEmpty = true)
-                ?: return errorJson("create_variable_action_task set requires a value argument")
-            if (value.indexOf('\u0000') >= 0) {
-                return errorJson("create_variable_action_task value must not contain NUL bytes")
+        when (variableAction) {
+            VARIABLE_ACTION_SET,
+            VARIABLE_ACTION_APPEND,
+            VARIABLE_ACTION_ADD,
+            VARIABLE_ACTION_SUBTRACT -> {
+                val value = stringArgument(arguments, "value", "variable_value", "text", "content", "operand", allowEmpty = true)
+                    ?: return errorJson("create_variable_action_task $variableAction requires a value argument")
+                if (value.indexOf('\u0000') >= 0) {
+                    return errorJson("create_variable_action_task value must not contain NUL bytes")
+                }
+                payload.put("value", value)
             }
-            payload.put("value", value)
+            VARIABLE_ACTION_REPLACE -> {
+                val search = stringArgument(arguments, "search", "find", "pattern", "match")
+                    ?: return errorJson("create_variable_action_task replace requires a search argument")
+                val replacement = stringArgument(arguments, "replacement", "replace", "replace_with", "with", allowEmpty = true).orEmpty()
+                if (search.isBlank() || search.indexOf('\u0000') >= 0 || replacement.indexOf('\u0000') >= 0) {
+                    return errorJson("create_variable_action_task replace fields must not be blank or contain NUL bytes")
+                }
+                payload.put("search", search)
+                    .put("replacement", replacement)
+            }
+            VARIABLE_ACTION_CLEAR -> Unit
         }
         return createRecordJson(
             context = context,
@@ -1708,6 +1724,56 @@ object HermesAutomationBridge {
                     .put("name", normalized)
                     .put("removed", removed)
                     .put("message", "Cleared Android automation variable %$normalized")
+            }
+            VARIABLE_ACTION_APPEND -> {
+                val value = expandVariables(payload.optString("value"), variables)
+                if (value.indexOf('\u0000') >= 0) {
+                    return JSONObject(errorJson("Saved variable_action value must not contain NUL bytes"))
+                }
+                val updatedValue = ((store.getVariable(normalized) ?: "") + value).take(MAX_VARIABLE_VALUE_CHARS)
+                store.setVariable(normalized, updatedValue)
+                JSONObject()
+                    .put("success", true)
+                    .put("exit_code", 0)
+                    .put("action", VARIABLE_ACTION_APPEND)
+                    .put("name", normalized)
+                    .put("value", updatedValue)
+                    .put("message", "Appended Android automation variable %$normalized")
+            }
+            VARIABLE_ACTION_ADD,
+            VARIABLE_ACTION_SUBTRACT -> {
+                val current = (store.getVariable(normalized) ?: "0").trim().ifBlank { "0" }.toDoubleOrNull()
+                    ?: return JSONObject(errorJson("Saved variable_action $variableAction current value must be numeric"))
+                val operand = expandVariables(payload.optString("value"), variables).trim().toDoubleOrNull()
+                    ?: return JSONObject(errorJson("Saved variable_action $variableAction value must be numeric"))
+                val updatedNumber = if (variableAction == VARIABLE_ACTION_ADD) current + operand else current - operand
+                val updatedValue = formatVariableNumber(updatedNumber)
+                store.setVariable(normalized, updatedValue)
+                JSONObject()
+                    .put("success", true)
+                    .put("exit_code", 0)
+                    .put("action", variableAction)
+                    .put("name", normalized)
+                    .put("value", updatedValue)
+                    .put("message", "Updated numeric Android automation variable %$normalized")
+            }
+            VARIABLE_ACTION_REPLACE -> {
+                val search = expandVariables(payload.optString("search"), variables)
+                val replacement = expandVariables(payload.optString("replacement"), variables)
+                if (search.isBlank() || search.indexOf('\u0000') >= 0 || replacement.indexOf('\u0000') >= 0) {
+                    return JSONObject(errorJson("Saved variable_action replace fields must not be blank or contain NUL bytes"))
+                }
+                val updatedValue = (store.getVariable(normalized) ?: "")
+                    .replace(search, replacement)
+                    .take(MAX_VARIABLE_VALUE_CHARS)
+                store.setVariable(normalized, updatedValue)
+                JSONObject()
+                    .put("success", true)
+                    .put("exit_code", 0)
+                    .put("action", VARIABLE_ACTION_REPLACE)
+                    .put("name", normalized)
+                    .put("value", updatedValue)
+                    .put("message", "Replaced text in Android automation variable %$normalized")
             }
             else -> JSONObject(errorJson("Unsupported saved variable action: $variableAction"))
         }
@@ -4053,7 +4119,19 @@ object HermesAutomationBridge {
         return when (action.trim().lowercase().replace("-", "_").replace(" ", "_")) {
             "set", "variable_set", "set_variable", "assign" -> VARIABLE_ACTION_SET
             "clear", "delete", "remove", "variable_clear", "variable_delete", "delete_variable" -> VARIABLE_ACTION_CLEAR
+            "append", "concat", "concatenate", "variable_append", "append_variable" -> VARIABLE_ACTION_APPEND
+            "add", "increment", "plus", "variable_add" -> VARIABLE_ACTION_ADD
+            "subtract", "sub", "decrement", "minus", "variable_subtract" -> VARIABLE_ACTION_SUBTRACT
+            "replace", "search_replace", "search_and_replace", "variable_replace" -> VARIABLE_ACTION_REPLACE
             else -> null
+        }
+    }
+
+    private fun formatVariableNumber(value: Double): String {
+        return if (value.isFinite() && value % 1.0 == 0.0) {
+            value.toLong().toString()
+        } else {
+            value.toString()
         }
     }
 
@@ -4532,6 +4610,10 @@ object HermesAutomationBridge {
     private val BRACE_VARIABLE_PATTERN = Regex("\\{\\{([A-Za-z_][A-Za-z0-9_]{0,63})\\}\\}")
     private const val VARIABLE_ACTION_SET = "set"
     private const val VARIABLE_ACTION_CLEAR = "clear"
+    private const val VARIABLE_ACTION_APPEND = "append"
+    private const val VARIABLE_ACTION_ADD = "add"
+    private const val VARIABLE_ACTION_SUBTRACT = "subtract"
+    private const val VARIABLE_ACTION_REPLACE = "replace"
     private const val CLIPBOARD_ACTION_SET = "set"
     private const val VIBRATION_ACTION_VIBRATE = "vibrate"
     private const val AUTOMATION_TIMEOUT_SECONDS = 30

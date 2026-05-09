@@ -244,6 +244,13 @@ object HermesTaskerImportBridge {
                             .toString(),
                     )
             }
+            TASKER_VARIABLE_ADD,
+            TASKER_VARIABLE_SUBTRACT -> {
+                variableMathRecordFromTaskerAction(base, code, action) ?: return null
+            }
+            TASKER_VARIABLE_SEARCH_REPLACE -> {
+                variableSearchReplaceRecordFromTaskerAction(base, action) ?: return null
+            }
             TASKER_SET_CLIPBOARD -> {
                 val text = argText(action, 0)
                 if (text.indexOf('\u0000') >= 0) return null
@@ -355,6 +362,46 @@ object HermesTaskerImportBridge {
         return base.put("action_type", ACTION_TYPE_SHIZUKU_ACTION)
             .put("use_shizuku", true)
             .put("command", payload.toString())
+    }
+
+    private fun variableMathRecordFromTaskerAction(base: JSONObject, code: Int, action: Element): JSONObject? {
+        val name = argText(action, 0).trim()
+        val normalized = HermesAutomationStore.normalizeVariableName(name) ?: return null
+        val value = argText(action, 1).trim()
+        if (value.isBlank() || value.indexOf('\u0000') >= 0) return null
+        val variableAction = if (code == TASKER_VARIABLE_ADD) "add" else "subtract"
+        return base.put("action_type", ACTION_TYPE_VARIABLE_ACTION)
+            .put(
+                "command",
+                JSONObject()
+                    .put("variable_action", variableAction)
+                    .put("name", normalized)
+                    .put("value", value.take(MAX_VARIABLE_VALUE_CHARS))
+                    .toString(),
+            )
+    }
+
+    private fun variableSearchReplaceRecordFromTaskerAction(base: JSONObject, action: Element): JSONObject? {
+        val name = argText(action, 0).trim()
+        val normalized = HermesAutomationStore.normalizeVariableName(name) ?: return null
+        val search = argText(action, 1)
+        if (search.isBlank() || search.indexOf('\u0000') >= 0) return null
+        val replaceMatches = argBoolean(action, 6)
+        if (!replaceMatches) {
+            return null
+        }
+        val replacement = argText(action, 7)
+        if (replacement.indexOf('\u0000') >= 0) return null
+        return base.put("action_type", ACTION_TYPE_VARIABLE_ACTION)
+            .put(
+                "command",
+                JSONObject()
+                    .put("variable_action", "replace")
+                    .put("name", normalized)
+                    .put("search", search.take(MAX_VARIABLE_VALUE_CHARS))
+                    .put("replacement", replacement.take(MAX_VARIABLE_VALUE_CHARS))
+                    .toString(),
+            )
     }
 
     private fun httpRequestRecordFromTaskerAction(base: JSONObject, code: Int, action: Element): JSONObject? {
@@ -764,7 +811,10 @@ object HermesTaskerImportBridge {
     private const val TASKER_VARIABLE_SET = 547
     private const val TASKER_FLASH = 548
     private const val TASKER_VARIABLE_CLEAR = 549
+    private const val TASKER_VARIABLE_SEARCH_REPLACE = 598
     private const val TASKER_END_CALL = 733
+    private const val TASKER_VARIABLE_ADD = 888
+    private const val TASKER_VARIABLE_SUBTRACT = 890
     private const val TASKER_NFC_SETTINGS = 956
     private const val MAX_TASKER_XML_CHARS = 512_000
     private const val MAX_LABEL_CHARS = 80
@@ -943,7 +993,10 @@ object HermesTaskerImportBridge {
         TASKER_VARIABLE_SET to "Variable Set",
         TASKER_FLASH to "Flash",
         TASKER_VARIABLE_CLEAR to "Variable Clear",
+        TASKER_VARIABLE_SEARCH_REPLACE to "Variable Search Replace",
         TASKER_END_CALL to "End Call",
+        TASKER_VARIABLE_ADD to "Variable Add",
+        TASKER_VARIABLE_SUBTRACT to "Variable Subtract",
         TASKER_NFC_SETTINGS to "NFC Settings",
     )
 }

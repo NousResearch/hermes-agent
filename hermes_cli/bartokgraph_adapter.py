@@ -28,6 +28,7 @@ also run it standalone via ``hermes bartokgraph build <path>``.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -139,8 +140,7 @@ class BartokGraphAdapter:
             if not os.path.exists(graph_path):
                 logger.debug("BartokGraphAdapter: no graph at %s", graph_path)
                 return None
-            import json
-            with open(graph_path) as f:
+            with open(graph_path, encoding="utf-8") as f:
                 data = json.load(f)
             node_count = len(data.get("nodes", []))
             logger.debug("BartokGraphAdapter: loaded graph with %d nodes from %s", node_count, graph_path)
@@ -193,7 +193,30 @@ def _resolve_local_model_provider() -> Dict[str, str]:
     except Exception:
         pass
 
-    # 4. Topology-only fallback (no LLM needed for basic overlap detection)
+    # 4. Other common local ports (OpenAI-compatible /v1/models)
+    try:
+        import urllib.error
+        import urllib.request
+
+        for port in _LOCAL_PORTS:
+            if port in (11434, 1234):
+                continue
+            url = f"http://127.0.0.1:{port}/v1/models"
+            try:
+                with urllib.request.urlopen(url, timeout=2) as r:
+                    if r.status == 200:
+                        logger.debug("BartokGraph: OpenAI-compatible server at port %s", port)
+                        return {
+                            "name": f"local_compat_{port}",
+                            "base_url": f"http://127.0.0.1:{port}/v1",
+                            "model": "auto",
+                        }
+            except (urllib.error.URLError, TimeoutError, OSError):
+                continue
+    except Exception:
+        pass
+
+    # 5. Topology-only fallback (no LLM needed for basic overlap detection)
     logger.debug("BartokGraph: no local LLM detected — using topology-only graph traversal")
     return {"name": "topology_only"}
 

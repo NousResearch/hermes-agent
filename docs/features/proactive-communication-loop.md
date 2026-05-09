@@ -10,6 +10,25 @@
 
 ---
 
+## Quick Start
+
+These three steps describe what you need once the gateway scheduler and delivery path are wired (same rollout pattern as other Hermes subsystems):
+
+```bash
+# 1) Opt in via Hermes config (defaults keep the loop off)
+echo 'proactive_communication.enabled: true' >> ~/.hermes/config.yaml
+
+# 2) Point BartokGraph at a workspace that contains a built graph (see below)
+#    Default workspace is home — graph path: ~/.bartokgraph/graph.json
+
+# 3) Trigger or schedule the synthesis pass (gateway hookup — follow-up PR)
+#    Engine API: ProactiveCommunicationLoop.run_synthesis(session_id)
+```
+
+Without a `graph.json` file, the loop still runs in **recency-only** mode (conversation history only).
+
+---
+
 ## What This Is
 
 The **Proactive Communication Loop** gives Hermes a synthesis-and-initiative pass that runs
@@ -75,40 +94,71 @@ It is included with this PR as an **optional bundled plugin** (`plugins/bartokgr
 4. **Runs locally** using Ollama (default model: `qwen3:8b`) — **zero API cost**.
 5. **Supports** any OpenAI-compatible endpoint as an alternative.
 
-### Running BartokGraph standalone
+### How BartokGraph builds the graph (design contract)
 
-Users who want to explore their knowledge graph without the proactive loop can use it directly:
+The proactive loop’s **adapter** reads a pre-built `graph.json` under the configured workspace.
+The **full graph builder** (scanner, weighting, edge extraction) ships as the broader BartokGraph
+tooling; this PR wires Hermes to the graph **file format** and traversal.
 
-```bash
-# Build a graph from your Hermes workspace
-hermes bartokgraph build ~/my-notes
+When the builder runs against your workspace, it typically:
 
-# Query the graph
-hermes bartokgraph query ~/my-notes "what connects my AI work to my health goals?"
+**Sources scanned**
 
-# Generate a report
-hermes bartokgraph report ~/my-notes
+| Source | Role |
+|--------|------|
+| `SOUL.md` and similar identity / preference docs | High signal “who the user is” |
+| Daily memory / journal-style captures | Medium signal “what happened recently” |
+| Project notes (`README`, specs, research markdown) | Structured project context |
+| Code files | Lower-weight lexical hooks into implementation |
 
-# Use a specific local model (default: qwen3:8b via Ollama)
-BARTOKGRAPH_LLM_MODEL=gemma2:27b hermes bartokgraph build ~/my-notes
+**Default node weights (design targets for the scanner)**
 
-# Use OpenAI or any compatible endpoint
-BARTOKGRAPH_API_BASE=https://api.openai.com/v1 \
-BARTOKGRAPH_API_KEY=$OPENAI_API_KEY \
-BARTOKGRAPH_LLM_MODEL=gpt-4o-mini \
-hermes bartokgraph build ~/my-notes
-```
+| Source kind | Weight |
+|-------------|--------|
+| SOUL.md–class identity docs | 50 |
+| Daily memory entries | 20 |
+| Project notes / markdown docs | 15 |
+| Code files | 1 |
 
-### Local model priority
+**Typed edges the builder detects** (examples)
 
-BartokGraph checks for available providers in this order:
+| Edge | Meaning |
+|------|---------|
+| `TEACHES` | One concept explains or introduces another |
+| `BUILDS_ON` | Extension or continuation of prior work |
+| `CONTRADICTS` | Tension or disagreement between ideas |
+| `MENTIONS` | Lightweight co-occurrence / reference |
+| `IS_ABOUT` | Topical linkage |
+| `IMPLEMENTS` | Code realizing a concept |
 
-1. `BARTOKGRAPH_API_BASE` + `BARTOKGRAPH_API_KEY` + `BARTOKGRAPH_LLM_MODEL` (explicit override)
-2. Ollama at `http://localhost:11434` with `BARTOKGRAPH_LLM_MODEL` (default: `qwen3:8b`)
-3. LM Studio at `http://localhost:1234` (auto-detected)
-4. Any OpenAI-compatible server discovered on common local ports
+The adapter consumes **nodes** with `content`, `weight`, `last_seen_ts`, and optional `node_type`,
+and uses word overlap plus dormancy (not touched in the last 24h) to propose connections.
 
-This means **users with a local LLM already running pay zero API cost** for graph building.
+### Runtime graph location
+
+Hermes loads:
+
+`{workspace}/.bartokgraph/graph.json`
+
+with `workspace` from `proactive_communication.bartokgraph.workspace` (default `"~"`, expanded).
+If the file is missing, malformed, or uses an unsupported schema, traversal is skipped and the
+loop stays on recency-only synthesis — **no crash, no user-visible error**.
+
+### Local model detection (for graph tooling)
+
+`BartokGraphAdapter` and `_resolve_local_model_provider()` probe hosts in order:
+
+1. `BARTOKGRAPH_API_BASE` + `BARTOKGRAPH_API_KEY` + `BARTOKGRAPH_LLM_MODEL` (explicit API)
+2. Ollama — `OLLAMA_URL` (default `http://localhost:11434`) — `GET /api/tags`, **2s timeout**
+3. LM Studio — `http://localhost:1234/v1/models`, **2s timeout**
+4. Other common ports — `http://127.0.0.1:{8080,8000,5000}/v1/models`, **2s timeout** each
+5. **`topology_only`** — overlap-based traversal still works without an LLM
+
+### Standalone `hermes bartokgraph` CLI
+
+The plugin package documents future commands such as `hermes bartokgraph build <path>`.
+End-to-end CLI registration is **not** part of this PR; use an external BartokGraph build or place
+a valid `graph.json` at the path above until the CLI is wired.
 
 ---
 
@@ -145,7 +195,7 @@ This means **users with a local LLM already running pay zero API cost** for grap
 └───────────────────────────────────────────────────────────────┘
 ```
 
-### New files
+### New files (this PR)
 
 ```
 hermes_cli/
@@ -153,19 +203,40 @@ hermes_cli/
 └── bartokgraph_adapter.py            ← BartokGraph → Hermes bridge
 
 plugins/bartokgraph/
-├── __init__.py                       ← Plugin registration
-├── builder.py                        ← Graph construction (Python wrapper)
-├── query.py                          ← Graph query interface
-├── local_model.py                    ← Local model provider detection
-└── cli_commands.py                   ← `hermes bartokgraph` commands
+└── __init__.py                       ← Plugin metadata / exports
 
 docs/features/
 └── proactive-communication-loop.md   ← This document
 
 tests/
 ├── test_proactive_communication_loop.py
-└── test_bartokgraph_adapter.py
+├── test_proactive_smoke.py
+└── fixtures/bartokgraph_graph.json   ← Synthetic graph for adapter tests
 ```
+
+---
+
+## Configuration reference
+
+| Config key | Type | Default | Used by engine |
+|------------|------|---------|----------------|
+| `proactive_communication.enabled` | bool | `false` | Gateway / installer (loop is opt-in) |
+| `proactive_communication.schedule` | string | `"0 22 * * *"` | Gateway cron (not read inside `ProactiveCommunicationLoop`) |
+| `proactive_communication.threshold` | string | `conservative` | Yes — `conservative` (0.75), `balanced` (0.55), `eager` (0.35), or `@register_threshold` name |
+| `proactive_communication.max_per_day` | int | `1` | Yes — hard cap via `SessionDB.get_proactive_sent` |
+| `proactive_communication.bartokgraph.enabled` | bool | `true` | Yes — if false, adapter not loaded |
+| `proactive_communication.bartokgraph.workspace` | string | `"~"` | Yes — expanded path; graph at `{workspace}/.bartokgraph/graph.json` |
+| `proactive_communication.bartokgraph.local_model` | string | `qwen3:8b` | Documented for operators; graph **building** uses env `BARTOKGRAPH_LLM_MODEL` |
+| `proactive_communication.bartokgraph.rebuild_interval_days` | int | `7` | Reserved for scheduled rebuilds (not read by adapter in this PR) |
+
+**Environment variables (BartokGraph tooling / detection)**
+
+| Variable | Purpose |
+|----------|---------|
+| `BARTOKGRAPH_API_BASE` | OpenAI-compatible API base URL |
+| `BARTOKGRAPH_API_KEY` | API key when using hosted inference |
+| `BARTOKGRAPH_LLM_MODEL` | Model id (default `qwen3:8b`) |
+| `OLLAMA_URL` | Override Ollama base URL (default `http://localhost:11434`) |
 
 ---
 
@@ -174,28 +245,34 @@ tests/
 - **Opt-in by default**: `proactive_communication.enabled = false`
 - **Rate limiting**: hard cap of `max_per_day` messages (default: 1)
 - **Audit log**: every synthesis pass recorded with reasoning, whether sent or not
-- **Kill switch**: `hermes proactive off` immediately stops all future proactive messages
-- **BartokGraph privacy**: redacts personal identifiers (phone numbers, email, VIP IDs) before graph storage
+- **Kill switch**: `hermes proactive off` immediately stops all future proactive messages (when CLI exists)
+- **BartokGraph privacy**: redacts personal identifiers (phone numbers, email, VIP IDs) before graph storage (builder responsibility)
 - **Local first**: BartokGraph runs entirely on-device with local models — no data leaves the machine
 - **No graph = graceful degradation**: if BartokGraph is not installed or has no data, falls back to recency-only synthesis. The loop never fails.
 
 ---
 
-## Configuration
+## Troubleshooting
 
-```yaml
-# ~/.hermes/config.yaml
-proactive_communication:
-  enabled: false              # opt-in
-  schedule: "0 22 * * *"     # 10pm nightly (cron expression)
-  threshold: conservative     # conservative | balanced | eager
-  max_per_day: 1
-  bartokgraph:
-    enabled: true             # use graph augmentation when available
-    workspace: "~"            # what to graph (default: home dir)
-    local_model: qwen3:8b     # model for graph building (Ollama)
-    rebuild_interval_days: 7  # how often to rebuild the full graph
-```
+### “BartokGraph not finding connections”
+
+- Confirm `graph.json` exists at `{workspace}/.bartokgraph/graph.json` after expanding `~`.
+- Nodes must have `last_seen_ts` **older than ~24 hours** to count as “dormant” versus today’s topics.
+- Overlap uses simple word overlap with a minimum strength **0.35** — sparse or very short nodes may never match.
+- If JSON is invalid or the schema omits `nodes`, the adapter returns no graph context (recency-only).
+
+### “Local model not detected”
+
+- Expected when nothing listens on the probed URLs; the adapter falls back to **`topology_only`** (still usable).
+- Check Ollama: `curl -sS --max-time 2 "$OLLAMA_URL/api/tags"` (default port 11434).
+- Check LM Studio: `curl -sS --max-time 2 http://localhost:1234/v1/models`.
+- All probes use **2 second** timeouts so startup cannot hang indefinitely.
+
+### “Messages not sending”
+
+- Combined score must clear the threshold: `0.6 * novelty + 0.4 * relevance` (each clamped to `[0,1]`).
+- The JSON field `should_send` can veto delivery even when scores are high.
+- Empty history, daily cap, or parse failures yield **no send** by design.
 
 ---
 
@@ -227,6 +304,7 @@ The remaining work to wire it into a running gateway deployment:
 1. Gateway cron scheduling hookup (triggers `run_synthesis` at configured time)
 2. Per-provider LLM call implementation (wires into session's configured model)
 3. Delivery path integration (uses `callbacks.py` notify to send via configured channels)
+4. `hermes bartokgraph` CLI registration for build/query/report commands
 
 The scaffolding pattern (ship the engine cleanly, wire it in a follow-up) is how GoalManager
 was landed. It keeps this diff reviewable while establishing the complete design.

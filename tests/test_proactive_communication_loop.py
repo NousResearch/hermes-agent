@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
+from pathlib import Path
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from hermes_cli.bartokgraph_adapter import (
+    BartokGraphAdapter,
+    _overlap_score,
+    _resolve_local_model_provider,
+)
 
 from hermes_cli.proactive_communication_loop import (
     ProactiveCommunicationLoop,
@@ -102,8 +112,8 @@ def test_prompt_with_empty_connections_has_no_bartokgraph_section():
 def test_prompt_instructs_natural_message():
     prompt = _build_synthesis_prompt("h", "n", graph_ctx=None)
     assert "natural" in prompt.lower() or "conversation" in prompt.lower()
-    # Must explicitly tell agent NOT to mention BartokGraph in the message
-    assert "Never mention BartokGraph" in prompt or "mechanism" in prompt
+    assert "Never mention BartokGraph" in prompt
+    assert "mechanism" in prompt.lower()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -139,8 +149,7 @@ def test_custom_threshold_can_block():
 # ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_run_synthesis_no_send_on_exception():
+def test_run_synthesis_no_send_on_exception():
     """Any error → no-send result, never raises."""
     db = MagicMock()
     db.get_messages_since.side_effect = RuntimeError("db exploded")
@@ -150,14 +159,13 @@ async def test_run_synthesis_no_send_on_exception():
 
     with patch("hermes_cli.proactive_communication_loop.ProactiveCommunicationLoop._try_load_bartokgraph", return_value=None):
         loop = ProactiveCommunicationLoop(session_db=db, config=cfg)
-    result = await loop.run_synthesis("session-1")
+    result = asyncio.run(loop.run_synthesis("session-1"))
 
     assert result.should_send is False
     assert result.message is None
 
 
-@pytest.mark.asyncio
-async def test_run_synthesis_no_send_on_empty_history():
+def test_run_synthesis_no_send_on_empty_history():
     db = MagicMock()
     db.get_messages_since.return_value = []
     db.get_proactive_sent.return_value = []
@@ -166,14 +174,13 @@ async def test_run_synthesis_no_send_on_empty_history():
 
     with patch("hermes_cli.proactive_communication_loop.ProactiveCommunicationLoop._try_load_bartokgraph", return_value=None):
         loop = ProactiveCommunicationLoop(session_db=db, config=cfg)
-    result = await loop.run_synthesis("session-empty")
+    result = asyncio.run(loop.run_synthesis("session-empty"))
 
     assert result.should_send is False
     assert "no conversation history" in result.reasoning
 
 
-@pytest.mark.asyncio
-async def test_run_synthesis_respects_daily_limit():
+def test_run_synthesis_respects_daily_limit():
     """If daily limit reached, never sends."""
     db = MagicMock()
     db.get_messages_since.return_value = [{"role": "user", "content": "hello"}]
@@ -186,7 +193,7 @@ async def test_run_synthesis_respects_daily_limit():
 
     with patch("hermes_cli.proactive_communication_loop.ProactiveCommunicationLoop._try_load_bartokgraph", return_value=None):
         loop = ProactiveCommunicationLoop(session_db=db, config=cfg)
-    result = await loop.run_synthesis("session-limited")
+    result = asyncio.run(loop.run_synthesis("session-limited"))
 
     assert result.should_send is False
     assert "daily message limit" in result.reasoning
@@ -197,8 +204,7 @@ async def test_run_synthesis_respects_daily_limit():
 # ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_high_score_sends_with_conservative_threshold():
+def test_high_score_sends_with_conservative_threshold():
     """High novelty + relevance → sends even with conservative threshold."""
     db = MagicMock()
     db.get_messages_since.return_value = [
@@ -225,15 +231,14 @@ async def test_high_score_sends_with_conservative_threshold():
         "candidates": ["log result"],
     })
     with patch.object(loop, "_call_synthesis_model", new=AsyncMock(return_value=high_score)):
-        result = await loop.run_synthesis("session-logs")
+        result = asyncio.run(loop.run_synthesis("session-logs"))
 
     assert result.should_send is True
     assert result.message is not None
     assert result.novelty_score == pytest.approx(0.9)
 
 
-@pytest.mark.asyncio
-async def test_low_score_blocked_by_conservative_threshold():
+def test_low_score_blocked_by_conservative_threshold():
     """Low scores → no send even if model says should_send=True."""
     db = MagicMock()
     db.get_messages_since.return_value = [{"role": "user", "content": "hi"}]
@@ -257,14 +262,13 @@ async def test_low_score_blocked_by_conservative_threshold():
         "candidates": [],
     })
     with patch.object(loop, "_call_synthesis_model", new=AsyncMock(return_value=low_score)):
-        result = await loop.run_synthesis("session-low")
+        result = asyncio.run(loop.run_synthesis("session-low"))
 
     # combined = 0.6*0.2 + 0.4*0.3 = 0.24 < 0.75 (conservative)
     assert result.should_send is False
 
 
-@pytest.mark.asyncio
-async def test_bartokgraph_temporal_bridge_triggers_send():
+def test_bartokgraph_temporal_bridge_triggers_send():
     """A BartokGraph temporal bridge with high scores → sends."""
     db = MagicMock()
     db.get_messages_since.return_value = [
@@ -304,8 +308,205 @@ async def test_bartokgraph_temporal_bridge_triggers_send():
         "candidates": ["Kenya soil project"],
     })
     with patch.object(loop, "_call_synthesis_model", new=AsyncMock(return_value=bridge_msg)):
-        result = await loop.run_synthesis("session-bridge")
+        result = asyncio.run(loop.run_synthesis("session-bridge"))
 
     assert result.should_send is True
     assert result.connection_type == "temporal_bridge"
     assert "Kenya" in (result.message or "")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# record_sent
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_record_sent_writes_to_db():
+    db = MagicMock()
+    cfg = MagicMock()
+    with patch(
+        "hermes_cli.proactive_communication_loop.ProactiveCommunicationLoop._try_load_bartokgraph",
+        return_value=None,
+    ):
+        loop = ProactiveCommunicationLoop(session_db=db, config=cfg)
+
+    result = SynthesisResult(
+        should_send=True,
+        message="Hello — finished the scan.",
+        reasoning="done",
+        novelty_score=0.9,
+        relevance_score=0.85,
+        combined_score=0.88,
+        connection_type="temporal_bridge",
+    )
+    asyncio.run(loop.record_sent("session-record", result))
+
+    db.record_proactive_sent.assert_called_once()
+    sid, payload = db.record_proactive_sent.call_args[0]
+    assert sid == "session-record"
+    assert payload["connection_type"] == "temporal_bridge"
+    assert "Hello" in payload["summary"]
+    assert payload["score"] == pytest.approx(0.88)
+    assert "ts" in payload
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BartokGraphAdapter + graph fixture
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def bartok_graph_fixture_path() -> Path:
+    return Path(__file__).resolve().parent / "fixtures" / "bartokgraph_graph.json"
+
+
+def test_bartokgraph_adapter_loads_fixture_graph_json(bartok_graph_fixture_path, tmp_path):
+    bg_dir = tmp_path / ".bartokgraph"
+    bg_dir.mkdir()
+    shutil.copy(bartok_graph_fixture_path, bg_dir / "graph.json")
+
+    cfg = MagicMock()
+    cfg.get.side_effect = lambda k, d=None: {
+        "proactive_communication.bartokgraph.workspace": str(tmp_path),
+    }.get(k, d)
+
+    with patch(
+        "hermes_cli.bartokgraph_adapter._resolve_local_model_provider",
+        return_value={"name": "topology_only"},
+    ):
+        adapter = BartokGraphAdapter(config=cfg)
+
+    assert adapter.is_available is True
+
+    ctx = asyncio.run(
+        adapter.get_connections(
+            active_topics=["soil", "carbon", "regime"],
+            top_k=10,
+            min_strength=0.35,
+        )
+    )
+    assert ctx is not None
+    assert len(ctx.connections) >= 1
+    assert ctx.connections[0].connection_type in (
+        "temporal_bridge",
+        "cross_domain",
+        "person_knowledge",
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Local model provider / overlap
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_resolve_local_model_provider_returns_topology_when_no_servers(monkeypatch):
+    """When no HTTP LLM endpoints respond, fall back to topology-only traversal."""
+
+    def boom(*_a, **_kw):
+        raise OSError("connection refused")
+
+    monkeypatch.setenv("BARTOKGRAPH_API_BASE", "")
+    monkeypatch.setenv("BARTOKGRAPH_API_KEY", "")
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        boom,
+    )
+    info = _resolve_local_model_provider()
+    assert info["name"] == "topology_only"
+
+
+def test_overlap_score_stopwords_only_returns_zero():
+    assert _overlap_score("the a an", "of and or") == 0.0
+
+
+def test_overlap_score_unicode_and_long_strings():
+    assert _overlap_score("café résumé", "café résumé détail") > 0.0
+    long_a = "word " * 500 + "uniqueanchor"
+    long_b = "other " * 500 + "uniqueanchor"
+    assert 0.0 < _overlap_score(long_a, long_b) <= 1.0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Custom threshold during synthesis + model should_send flag
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_custom_threshold_used_in_synthesis_pass():
+    """Registered threshold gates send via impossible score when should_send is False."""
+
+    @register_threshold("pcl_integration_strict")
+    class StrictNovelty:
+        def should_send(self, result: SynthesisResult) -> bool:
+            return result.novelty_score >= 0.95
+
+    db = MagicMock()
+    db.get_messages_since.return_value = [{"role": "user", "content": "hello"}]
+    db.get_proactive_sent.return_value = []
+    cfg = MagicMock()
+    cfg.get.side_effect = lambda k, d=None: {
+        "proactive_communication.threshold": "pcl_integration_strict",
+        "proactive_communication.max_per_day": 3,
+        "proactive_communication.bartokgraph.enabled": False,
+    }.get(k, d)
+
+    with patch(
+        "hermes_cli.proactive_communication_loop.ProactiveCommunicationLoop._try_load_bartokgraph",
+        return_value=None,
+    ):
+        loop = ProactiveCommunicationLoop(session_db=db, config=cfg)
+
+    blocked = json.dumps({
+        "should_send": True,
+        "message": "Hi",
+        "novelty": 0.8,
+        "relevance": 0.9,
+        "connection_type": "none",
+        "reasoning": "below strict novelty",
+        "candidates": [],
+    })
+    with patch.object(loop, "_call_synthesis_model", new=AsyncMock(return_value=blocked)):
+        result = asyncio.run(loop.run_synthesis("s1"))
+    assert result.should_send is False
+
+    allowed = json.dumps({
+        "should_send": True,
+        "message": "Insight!",
+        "novelty": 0.96,
+        "relevance": 0.9,
+        "connection_type": "none",
+        "reasoning": "passes strict novelty",
+        "candidates": [],
+    })
+    with patch.object(loop, "_call_synthesis_model", new=AsyncMock(return_value=allowed)):
+        result2 = asyncio.run(loop.run_synthesis("s2"))
+    assert result2.should_send is True
+
+
+def test_model_should_send_false_blocks_despite_high_scores():
+    db = MagicMock()
+    db.get_messages_since.return_value = [{"role": "user", "content": "hello"}]
+    db.get_proactive_sent.return_value = []
+    cfg = MagicMock()
+    cfg.get.side_effect = lambda k, d=None: {
+        "proactive_communication.threshold": "eager",
+        "proactive_communication.max_per_day": 3,
+        "proactive_communication.bartokgraph.enabled": False,
+    }.get(k, d)
+
+    with patch(
+        "hermes_cli.proactive_communication_loop.ProactiveCommunicationLoop._try_load_bartokgraph",
+        return_value=None,
+    ):
+        loop = ProactiveCommunicationLoop(session_db=db, config=cfg)
+
+    raw = json.dumps({
+        "should_send": False,
+        "message": "would spam",
+        "novelty": 0.99,
+        "relevance": 0.99,
+        "connection_type": "none",
+        "reasoning": "model veto",
+        "candidates": [],
+    })
+    with patch.object(loop, "_call_synthesis_model", new=AsyncMock(return_value=raw)):
+        result = asyncio.run(loop.run_synthesis("s-veto"))
+    assert result.should_send is False

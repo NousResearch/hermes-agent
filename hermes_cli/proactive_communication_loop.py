@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
@@ -297,20 +298,27 @@ class ProactiveCommunicationLoop:
         parsed = _parse_synthesis_response(raw)
 
         # 5. Score and threshold check
-        combined = 0.6 * parsed.get("novelty", 0.0) + 0.4 * parsed.get("relevance", 0.0)
+        novelty = _clamp_unit_interval(parsed.get("novelty", 0.0))
+        relevance = _clamp_unit_interval(parsed.get("relevance", 0.0))
+        combined = 0.6 * novelty + 0.4 * relevance
         threshold_name = self._cfg.get(
             "proactive_communication.threshold", DEFAULT_THRESHOLD
         )
         threshold_score = _get_threshold_score(threshold_name, combined, parsed)
 
-        should_send = combined >= threshold_score and bool(parsed.get("message"))
+        model_wants_send = bool(parsed.get("should_send", True))
+        should_send = (
+            model_wants_send
+            and combined >= threshold_score
+            and bool(parsed.get("message"))
+        )
 
         return SynthesisResult(
             should_send=should_send,
             message=parsed.get("message") if should_send else None,
             reasoning=parsed.get("reasoning", ""),
-            novelty_score=parsed.get("novelty", 0.0),
-            relevance_score=parsed.get("relevance", 0.0),
+            novelty_score=novelty,
+            relevance_score=relevance,
             combined_score=combined,
             connection_type=parsed.get("connection_type", "none"),
             candidates=parsed.get("candidates", []),
@@ -353,8 +361,9 @@ class ProactiveCommunicationLoop:
     async def _extract_topics_from_history(self, history: str) -> List[str]:
         """Extract top topics from recent history for BartokGraph traversal.
 
-        Simple heuristic: noun phrases longer than 2 words that appear
-        in the history. In production, replace with a lightweight NER call.
+        Uses word-frequency over non-stopword tokens (length > 3). Good enough
+        for an initial implementation; replace with NER or phrase extraction when
+        graph quality needs improvement.
         """
         words = history.lower().split()
         stopwords = {"the", "a", "an", "in", "on", "at", "to", "for", "of", "and",
@@ -387,6 +396,17 @@ class ProactiveCommunicationLoop:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _clamp_unit_interval(value: Any) -> float:
+    """Clamp model-provided scores to [0, 1] with safe float coercion."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(v):
+        return 0.0
+    return max(0.0, min(1.0, v))
+
+
 def _get_threshold_score(
     threshold_name: str,
     combined_score: float,
@@ -403,8 +423,8 @@ def _get_threshold_score(
             should_send=True,
             message=parsed.get("message"),
             reasoning=parsed.get("reasoning", ""),
-            novelty_score=parsed.get("novelty", 0.0),
-            relevance_score=parsed.get("relevance", 0.0),
+            novelty_score=_clamp_unit_interval(parsed.get("novelty", 0.0)),
+            relevance_score=_clamp_unit_interval(parsed.get("relevance", 0.0)),
             combined_score=combined_score,
         )
         # If custom threshold says no, return 1.1 (impossible to reach)

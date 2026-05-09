@@ -1,0 +1,35 @@
+{
+  "nodes": [
+    {
+      "content": "soil carbon",
+      "weight": 1.2,
+      "last_seen_ts": 1700000000,
+      "node_type": "topic"
+    },
+    {
+      "content": "regime hmm",
+      "weight": 1.1,
+      "last_seen_ts": 1700604800,
+      "node_type": "topic"
+    },
+    {
+      "content": "Alice kenya",
+      "weight": 0.9,
+      "last_seen_ts": 1701209600,
+      "node_type": "person_link"
+    },
+    {
+      "content": "field trials",
+      "weight": 0.85,
+      "last_seen_ts": 1701814400,
+      "node_type": "research"
+    },
+    {
+      "content": "checksum alpha",
+      "weight": 0.4,
+      "last_seen_ts": 1702419200,
+      "node_type": "topic"
+    }
+  ],
+  "edges": []
+}

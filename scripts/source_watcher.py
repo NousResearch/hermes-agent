@@ -267,6 +267,15 @@ def lint_staged_python_files() -> bool:
         log("REFUSING to commit — ruff F821 gate failed")
     else:
         log("REFUSING to commit — ruff F821 gate failed (same as last cycle, suppressing duplicate notification)")
+    # Unstage the failed files so the next poll cycle starts from a clean
+    # index. Without this, a deletion of the broken file from the worktree
+    # creates a staged-add + worktree-deletion mismatch that wedges the
+    # watcher (porcelain ambiguous, git add -A reconciles to empty staging,
+    # git commit then fails with "nothing to commit" forever).
+    try:
+        git("reset", "HEAD", "--", *files, check=False)
+    except Exception as err:
+        log(f"unstage of failed-lint files failed (continuing): {err}")
     return False
 
 
@@ -425,6 +434,18 @@ def commit_and_push() -> bool:
     if not files:
         log("commit_and_push called but tree is clean; skipping")
         return True
+
+    # Defensive index reset: clear any leftover staging from a prior cycle
+    # whose lint failed (or any other reason commit_and_push exited early).
+    # Without this, a once-blocked file stays staged forever, and a
+    # later worktree deletion creates a staged-add + worktree-deletion
+    # mismatch that wedges the watcher entirely. git reset (no args)
+    # is index-only — it does not touch the working tree, so we don't
+    # lose any unsynced edits. Idempotent and cheap.
+    try:
+        git("reset", check=False)
+    except Exception as err:
+        log(f"defensive git reset failed (continuing): {err}")
 
     leaks = scan_for_secret_leaks(files)
     if leaks:

@@ -4662,14 +4662,14 @@ class GatewayRunner:
                         _notify_mode = str(_raw).strip().lower()
                 except Exception:
                     pass
-            _notify_mode = _notify_mode or "all"
+            _notify_mode = _notify_mode or "important"
             if _notify_mode not in ("all", "important"):
                 logger.warning(
                     "Unknown telegram notifications mode '%s', "
-                    "defaulting to 'all' (valid: all, important)",
+                    "defaulting to 'important' (valid: all, important)",
                     _notify_mode,
                 )
-                _notify_mode = "all"
+                _notify_mode = "important"
             adapter._notifications_mode = _notify_mode
             return adapter
         

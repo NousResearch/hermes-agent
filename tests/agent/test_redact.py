@@ -37,6 +37,18 @@ class TestKnownPrefixes:
         result = redact_sensitive_text("github_pat_abc123def456ghi789jklmno")
         assert "abc123def456" not in result
 
+    def test_notion_integration_token(self):
+        result = redact_sensitive_text("ntn_abc123def456ghi789jklmno012345678901234")
+        assert "abc123def456" not in result
+
+    def test_xai_api_key(self):
+        result = redact_sensitive_text("xai-abc123def456ghi789jklmno012345678901234")
+        assert "abc123def456" not in result
+
+    def test_nvidia_nim_api_key(self):
+        result = redact_sensitive_text("nvapi-abc123def456ghi789jklmno012345678901234")
+        assert "abc123def456" not in result
+
     def test_slack_token(self):
         token = "xoxb-" + "0" * 12 + "-" + "a" * 14
         result = redact_sensitive_text(token)

@@ -635,6 +635,66 @@ def _probe_systemd_service_running(system: bool = False) -> tuple[bool, bool]:
     return selected_system, result.stdout.strip() == "active"
 
 
+def _read_systemd_unit_environment(system: bool = False) -> dict[str, str]:
+    """Parse the gateway unit's ``Environment=`` directives.
+
+    ``systemctl show -p Environment`` returns a single line of
+    space-separated ``KEY=VALUE`` pairs; values are not quoted in the output
+    even when the unit file quoted them. We split on whitespace and ``=``.
+    """
+    selected_system = _select_systemd_scope(system)
+    try:
+        result = _run_systemctl(
+            [
+                "show",
+                get_service_name(),
+                "--no-pager",
+                "--property",
+                "Environment",
+            ],
+            system=selected_system,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (RuntimeError, subprocess.TimeoutExpired, OSError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    parsed: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if not line.startswith("Environment="):
+            continue
+        body = line[len("Environment="):].strip()
+        for token in body.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            parsed[key] = value
+    return parsed
+
+
+def _sync_hermes_home_from_systemd_unit(system: bool) -> None:
+    """When acting on a system-scope unit, adopt its ``HERMES_HOME``.
+
+    Under ``sudo``, ``HERMES_HOME`` is stripped and ``HOME=/root``, so
+    :func:`get_hermes_home` falls back to ``/root/.hermes`` — the wrong
+    profile. The unit file pins ``HERMES_HOME`` for the actual gateway
+    process, so we mirror that into our own environment to make
+    ``read_runtime_status`` / ``get_running_pid`` read the correct files.
+    """
+    if not system:
+        return
+    env = _read_systemd_unit_environment(system=True)
+    unit_home = env.get("HERMES_HOME", "").strip()
+    if not unit_home:
+        return
+    current = os.environ.get("HERMES_HOME", "").strip()
+    if current == unit_home:
+        return
+    os.environ["HERMES_HOME"] = unit_home
+
+
 def _read_systemd_unit_properties(
     system: bool = False,
     properties: tuple[str, ...] = (
@@ -2380,6 +2440,7 @@ def systemd_stop(system: bool = False):
     if system:
         _require_root_for_system_service("stop")
     _require_service_installed("stop", system=system)
+    _sync_hermes_home_from_systemd_unit(system=system)
     try:
         from gateway.status import get_running_pid, write_planned_stop_marker
         pid = get_running_pid(cleanup_stale=False)
@@ -2408,6 +2469,7 @@ def systemd_restart(system: bool = False):
         _preflight_user_systemd()
     _require_service_installed("restart", system=system)
     refresh_systemd_unit_if_needed(system=system)
+    _sync_hermes_home_from_systemd_unit(system=system)
     from gateway.status import get_running_pid
 
     pid = get_running_pid() or _systemd_main_pid(system=system)
@@ -2502,6 +2564,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print("✗ Gateway service is not installed")
         print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
         return
+
+    _sync_hermes_home_from_systemd_unit(system=system)
 
     if has_conflicting_systemd_units():
         print_systemd_scope_conflict_warning()

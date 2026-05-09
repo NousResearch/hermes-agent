@@ -1023,6 +1023,16 @@ class DiscordAdapter(BasePlatformAdapter):
             return True
         return False
 
+    @staticmethod
+    def _is_discord_max_commands_error(exc: BaseException) -> bool:
+        """True when Discord returns error code 30032 (max application commands reached).
+
+        This is a configuration issue, not a transient failure.  The sync
+        should be skipped on subsequent reconnects rather than spamming
+        the logs with a full stack trace every time."""
+        text = str(exc).lower()
+        return "30032" in text or "maximum number of application commands" in text
+
     def _command_sync_mutation_interval_seconds(self) -> float:
         return _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS
 
@@ -1105,7 +1115,15 @@ class DiscordAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             raise
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
+            if self._is_discord_max_commands_error(e):
+                logger.warning(
+                    "[%s] Slash command sync skipped: Discord application has reached "
+                    "the maximum of 100 commands. Remove unused commands from the "
+                    "Discord Developer Portal or consolidate with subcommands.",
+                    self.name,
+                )
+            else:
+                logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
 
     def _get_discord_command_sync_policy(self) -> str:
         raw = str(os.getenv("DISCORD_COMMAND_SYNC_POLICY", "safe") or "").strip().lower()

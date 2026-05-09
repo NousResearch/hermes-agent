@@ -198,6 +198,9 @@ object HermesTaskerImportBridge {
                             .toString(),
                     )
             }
+            in TASKER_HTTP_ACTIONS -> {
+                httpRequestRecordFromTaskerAction(base, code, action) ?: return null
+            }
             TASKER_NOTIFY -> {
                 val title = argText(action, 0).take(MAX_NOTIFICATION_FIELD_CHARS)
                 val text = argText(action, 1).take(MAX_NOTIFICATION_TEXT_CHARS)
@@ -352,6 +355,105 @@ object HermesTaskerImportBridge {
         return base.put("action_type", ACTION_TYPE_SHIZUKU_ACTION)
             .put("use_shizuku", true)
             .put("command", payload.toString())
+    }
+
+    private fun httpRequestRecordFromTaskerAction(base: JSONObject, code: Int, action: Element): JSONObject? {
+        val payload = taskerHttpPayloadFromAction(code, action) ?: return null
+        return base.put("action_type", ACTION_TYPE_HTTP_REQUEST)
+            .put("command", payload.toString())
+    }
+
+    private fun taskerHttpPayloadFromAction(code: Int, action: Element): JSONObject? {
+        val payload = when (code) {
+            TASKER_HTTP_POST -> legacyTaskerHttpPayload(action, "POST")
+            TASKER_HTTP_HEAD -> legacyTaskerHttpPayload(action, "HEAD")
+            TASKER_HTTP_GET -> legacyTaskerHttpPayload(action, "GET")
+            TASKER_HTTP_REQUEST -> modernTaskerHttpPayload(action)
+            else -> null
+        } ?: return null
+        return runCatching { HermesHttpRequestBridge.payloadFromArguments(payload, allowVariableUrl = true) }.getOrNull()
+    }
+
+    private fun legacyTaskerHttpPayload(action: Element, method: String): JSONObject? {
+        val rawServerOrUrl = argText(action, 0).trim()
+        if (rawServerOrUrl.isBlank() || rawServerOrUrl.indexOf('\u0000') >= 0) {
+            return null
+        }
+        val rawPath = argText(action, 1).trim()
+        val attributes = normalizedTaskerHttpAttributes(argText(action, 2))
+        val baseUrl = if (HermesHttpRequestBridge.isHttpUrl(rawServerOrUrl) || looksLikeVariableReference(rawServerOrUrl)) {
+            rawServerOrUrl
+        } else {
+            val path = rawPath.trimStart('/')
+            if (path.isBlank()) {
+                "http://$rawServerOrUrl"
+            } else {
+                "http://$rawServerOrUrl/$path"
+            }
+        }
+        val url = if (method == "GET" || method == "HEAD") appendTaskerQuery(baseUrl, attributes) else baseUrl
+        val payload = JSONObject()
+            .put("method", method)
+            .put("url", url)
+        if (method == "POST" && attributes.isNotBlank()) {
+            payload.put("body", attributes)
+                .put("content_type", "application/x-www-form-urlencoded")
+        }
+        return payload
+    }
+
+    private fun modernTaskerHttpPayload(action: Element): JSONObject? {
+        val first = argText(action, 0).trim()
+        val second = argText(action, 1).trim()
+        val methodFirst = HermesHttpRequestBridge.normalizeMethod(first)
+        val methodSecond = HermesHttpRequestBridge.normalizeMethod(second)
+        val method: String
+        val url: String
+        val bodyIndex: Int
+        when {
+            methodFirst != null -> {
+                method = methodFirst
+                url = second
+                bodyIndex = 2
+            }
+            HermesHttpRequestBridge.isHttpUrl(first) || looksLikeVariableReference(first) -> {
+                url = first
+                method = methodSecond ?: "GET"
+                bodyIndex = 2
+            }
+            else -> return null
+        }
+        if (url.isBlank() || url.indexOf('\u0000') >= 0) {
+            return null
+        }
+        val payload = JSONObject()
+            .put("method", method)
+            .put("url", url)
+        val body = argText(action, bodyIndex)
+        if (body.isNotBlank() && body.indexOf('\u0000') < 0) {
+            payload.put("body", body)
+        }
+        return payload
+    }
+
+    private fun normalizedTaskerHttpAttributes(raw: String): String {
+        if (raw.indexOf('\u0000') >= 0) {
+            return ""
+        }
+        return raw
+            .split('\n', '\r')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .joinToString("&")
+            .take(MAX_HTTP_ATTRIBUTE_CHARS)
+    }
+
+    private fun appendTaskerQuery(url: String, query: String): String {
+        if (query.isBlank()) {
+            return url
+        }
+        val separator = if ('?' in url) "&" else "?"
+        return "$url$separator$query"
     }
 
     private fun customSettingRecordFromTaskerAction(base: JSONObject, action: Element): JSONObject? {
@@ -577,6 +679,10 @@ object HermesTaskerImportBridge {
             lower.startsWith("tel:")
     }
 
+    private fun looksLikeVariableReference(value: String): Boolean {
+        return value.contains('%') || value.contains("{{")
+    }
+
     private fun isSafeSettingName(name: String): Boolean {
         return name.length in 1..MAX_CUSTOM_SETTING_NAME_CHARS &&
             name.indexOf('\u0000') < 0 &&
@@ -591,6 +697,9 @@ object HermesTaskerImportBridge {
     private const val TASKER_BROWSE_URL = 104
     private const val TASKER_SET_CLIPBOARD = 105
     private const val TASKER_WIFI_TETHER = 113
+    private const val TASKER_HTTP_POST = 116
+    private const val TASKER_HTTP_HEAD = 117
+    private const val TASKER_HTTP_GET = 118
     private const val TASKER_RUN_SHELL = 123
     private const val TASKER_POWER_MODE = 175
     private const val TASKER_DEVELOPER_SETTINGS = 197
@@ -645,6 +754,7 @@ object HermesTaskerImportBridge {
     private const val TASKER_SOUND_MODE = 313
     private const val TASKER_AIRPLANE_MODE = 333
     private const val TASKER_NOTIFICATION_SETTINGS = 337
+    private const val TASKER_HTTP_REQUEST = 339
     private const val TASKER_ACCESSIBILITY_VOLUME = 387
     private const val TASKER_DELETE_FILE = 406
     private const val TASKER_WRITE_FILE = 410
@@ -665,6 +775,7 @@ object HermesTaskerImportBridge {
     private const val MAX_VIBRATION_TOTAL_MS = 60_000L
     private const val MAX_VIBRATION_PATTERN_ENTRIES = 32
     private const val MAX_AUDIO_LEVEL = 100
+    private const val MAX_HTTP_ATTRIBUTE_CHARS = 8_000
     private const val MAX_NOTIFICATION_FIELD_CHARS = 120
     private const val MAX_NOTIFICATION_TEXT_CHARS = 2_000
     private const val MAX_CLIPBOARD_TEXT_CHARS = 8_000
@@ -714,6 +825,12 @@ object HermesTaskerImportBridge {
         TASKER_SPEAKERPHONE to "set_speakerphone",
         TASKER_MIC_MUTE to "set_microphone_mute",
     )
+    private val TASKER_HTTP_ACTIONS = setOf(
+        TASKER_HTTP_POST,
+        TASKER_HTTP_HEAD,
+        TASKER_HTTP_GET,
+        TASKER_HTTP_REQUEST,
+    )
     private val TASKER_SETTINGS_ACTIONS = mapOf(
         TASKER_DEVELOPER_SETTINGS to "open_developer_options",
         TASKER_DEVICE_INFO_SETTINGS to "open_device_info_settings",
@@ -759,6 +876,9 @@ object HermesTaskerImportBridge {
         TASKER_BROWSE_URL to "Browse URL",
         TASKER_SET_CLIPBOARD to "Set Clipboard",
         TASKER_WIFI_TETHER to "WiFi Tether",
+        TASKER_HTTP_POST to "HTTP Post",
+        TASKER_HTTP_HEAD to "HTTP Head",
+        TASKER_HTTP_GET to "HTTP Get",
         TASKER_RUN_SHELL to "Run Shell",
         TASKER_POWER_MODE to "Power Mode",
         TASKER_DEVELOPER_SETTINGS to "Developer Settings",
@@ -813,6 +933,7 @@ object HermesTaskerImportBridge {
         TASKER_SOUND_MODE to "Sound Mode",
         TASKER_AIRPLANE_MODE to "Airplane Mode",
         TASKER_NOTIFICATION_SETTINGS to "Notification Settings",
+        TASKER_HTTP_REQUEST to "HTTP Request",
         TASKER_ACCESSIBILITY_VOLUME to "Accessibility Volume",
         TASKER_DELETE_FILE to "Delete File",
         TASKER_WRITE_FILE to "Write File",

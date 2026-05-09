@@ -40,10 +40,12 @@ object HermesAutomationBridge {
             "create_clipboard_task", "create_set_clipboard_task", "set_clipboard_task", "clipboard_task" -> createClipboardTaskJson(context, arguments)
             "create_vibration_task", "create_vibrate_task", "vibrate_task", "vibration_task" -> createVibrationTaskJson(context, arguments)
             "create_audio_action_task", "create_audio_task", "audio_task", "create_volume_task", "volume_task", "create_sound_mode_task" -> createAudioActionTaskJson(context, arguments)
+            "create_http_request_task", "create_http_task", "http_request_task", "http_task", "create_http_get_task", "create_http_post_task" -> createHttpRequestTaskJson(context, arguments)
             "create_overlay_scene_task", "create_scene_task", "overlay_scene_task", "scene_task" -> createOverlaySceneTaskJson(context, arguments)
             "create_toast_task", "create_flash_task", "toast_task", "flash_task" -> createToastTaskJson(context, arguments)
             "show_toast", "toast", "flash_message", "flash" -> showToastJson(context, arguments)
             "perform_audio_action", "audio_action", "set_audio_volume", "set_sound_mode", "set_ringer_mode", "set_microphone_mute", "set_speakerphone" -> performAudioActionJson(context, action, arguments)
+            "perform_http_request", "http_request", "http_get", "http_post", "http_head" -> performHttpRequestJson(action, arguments)
             "overlay_scene_status", "scene_status", "overlay_status", "show_overlay_scene", "show_scene", "overlay_scene", "hide_overlay_scene", "dismiss_overlay_scene", "clear_overlay_scene", "hide_scene" -> HermesOverlaySceneBridge.performSceneJson(context, action, arguments)
             "create_launcher_shortcut", "create_shortcut", "create_home_screen_shortcut", "pin_automation_shortcut" -> HermesLauncherShortcutBridge.createShortcutJson(context, arguments)
             "list_launcher_shortcuts", "list_shortcuts", "launcher_shortcuts" -> HermesLauncherShortcutBridge.listShortcutsJson(context)
@@ -783,6 +785,19 @@ object HermesAutomationBridge {
         )
     }
 
+    fun createHttpRequestTaskJson(context: Context, arguments: JSONObject): String {
+        val payload = runCatching { HermesHttpRequestBridge.payloadFromArguments(arguments, allowVariableUrl = true) }.getOrElse { error ->
+            return errorJson(error.message ?: "create_http_request_task arguments are invalid")
+        }
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_HTTP_REQUEST,
+            payload = payload.toString(),
+            defaultLabel = "Hermes HTTP request automation",
+        )
+    }
+
     fun createOverlaySceneTaskJson(context: Context, arguments: JSONObject): String {
         val payload = runCatching { HermesOverlaySceneBridge.payloadFromArguments(arguments) }.getOrElse { error ->
             return errorJson(error.message ?: "create_overlay_scene_task arguments are invalid")
@@ -830,6 +845,21 @@ object HermesAutomationBridge {
             return errorJson(error.message ?: "audio_action arguments are invalid")
         }
         return HermesAudioActionBridge.performAudioActionJson(context, payload).toString()
+    }
+
+    fun performHttpRequestJson(requestedAction: String, arguments: JSONObject): String {
+        val directArguments = JSONObject(arguments.toString())
+        if (!directArguments.has("method") && !directArguments.has("http_method")) {
+            when (requestedAction.lowercase().replace("-", "_")) {
+                "http_get" -> directArguments.put("method", "GET")
+                "http_post" -> directArguments.put("method", "POST")
+                "http_head" -> directArguments.put("method", "HEAD")
+            }
+        }
+        val payload = runCatching { HermesHttpRequestBridge.payloadFromArguments(directArguments, allowVariableUrl = false) }.getOrElse { error ->
+            return errorJson(error.message ?: "http_request arguments are invalid")
+        }
+        return HermesHttpRequestBridge.performHttpRequestJson(payload).toString()
     }
 
     private fun createRecordJson(
@@ -1465,6 +1495,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_CLIPBOARD_ACTION -> runClipboardActionRecord(context, record, variables)
             ACTION_TYPE_VIBRATION_ACTION -> runVibrationActionRecord(context, record, variables)
             ACTION_TYPE_AUDIO_ACTION -> runAudioActionRecord(context, record, variables)
+            ACTION_TYPE_HTTP_REQUEST -> runHttpRequestRecord(store, record, variables)
             ACTION_TYPE_OVERLAY_SCENE -> runOverlaySceneRecord(context, record, variables)
             ACTION_TYPE_TOAST_ACTION -> runToastActionRecord(context, record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
@@ -1740,6 +1771,36 @@ object HermesAutomationBridge {
             ?: return JSONObject(errorJson("Saved audio_action automation payload is invalid"))
         val expanded = expandAudioPayload(payload, variables)
         return HermesAudioActionBridge.performAudioActionJson(context, expanded)
+    }
+
+    private fun runHttpRequestRecord(
+        store: HermesAutomationStore,
+        record: HermesAutomationRecord,
+        variables: JSONObject,
+    ): JSONObject {
+        val payload = runCatching { JSONObject(record.command) }.getOrNull()
+            ?: return JSONObject(errorJson("Saved http_request automation payload is invalid"))
+        val expanded = runCatching { expandHttpRequestPayload(payload, variables) }.getOrElse { error ->
+            return JSONObject(errorJson(error.message ?: "Saved http_request automation payload is invalid"))
+        }
+        val result = HermesHttpRequestBridge.performHttpRequestJson(expanded)
+        val statusText = if (result.has("status_code")) result.optInt("status_code").toString() else ""
+        val bodyText = result.optString("body")
+        store.setVariable("HTTPR", statusText)
+        store.setVariable("HTTP_STATUS_CODE", statusText)
+        store.setVariable("HTTPD", bodyText)
+        store.setVariable("HTTP_RESPONSE_BODY", bodyText)
+        val statusVariable = HermesAutomationStore.normalizeVariableName(expandVariables(expanded.optString("save_status_variable"), variables))
+        if (statusVariable != null) {
+            store.setVariable(statusVariable, statusText)
+        }
+        val responseVariable = HermesAutomationStore.normalizeVariableName(expandVariables(expanded.optString("save_response_variable"), variables))
+        if (responseVariable != null) {
+            store.setVariable(responseVariable, bodyText)
+        }
+        return result
+            .put("saved_status_variable", statusVariable ?: JSONObject.NULL)
+            .put("saved_response_variable", responseVariable ?: JSONObject.NULL)
     }
 
     fun deleteJson(context: Context, id: String): String {
@@ -2948,6 +3009,27 @@ object HermesAutomationBridge {
         return audioPayloadFromArguments(expanded)
     }
 
+    private fun expandHttpRequestPayload(payload: JSONObject, variables: JSONObject): JSONObject {
+        val expanded = JSONObject()
+        payload.keys().forEach { key ->
+            when (val value = payload.opt(key)) {
+                is String -> expanded.put(key, expandVariables(value, variables))
+                is JSONObject -> {
+                    val child = JSONObject()
+                    value.keys().forEach { childKey ->
+                        when (val childValue = value.opt(childKey)) {
+                            is String -> child.put(childKey, expandVariables(childValue, variables))
+                            else -> child.put(childKey, childValue)
+                        }
+                    }
+                    expanded.put(key, child)
+                }
+                else -> expanded.put(key, value)
+            }
+        }
+        return HermesHttpRequestBridge.payloadFromArguments(expanded, allowVariableUrl = false)
+    }
+
     private fun audioPayloadFromArguments(arguments: JSONObject): JSONObject {
         val rawAction = stringArgument(
             arguments,
@@ -4035,6 +4117,11 @@ object HermesAutomationBridge {
         "set_sound_mode",
         "set_microphone_mute",
         "set_speakerphone",
+        "create_http_request_task",
+        "perform_http_request",
+        "http_get",
+        "http_post",
+        "http_head",
         "create_overlay_scene_task",
         "create_toast_task",
         "show_toast",
@@ -4096,6 +4183,7 @@ object HermesAutomationBridge {
         ACTION_TYPE_CLIPBOARD_ACTION,
         ACTION_TYPE_VIBRATION_ACTION,
         ACTION_TYPE_AUDIO_ACTION,
+        ACTION_TYPE_HTTP_REQUEST,
         ACTION_TYPE_OVERLAY_SCENE,
         ACTION_TYPE_TOAST_ACTION,
     )
@@ -4124,6 +4212,10 @@ object HermesAutomationBridge {
         "audio" to ACTION_TYPE_AUDIO_ACTION,
         "volume" to ACTION_TYPE_AUDIO_ACTION,
         "sound_mode" to ACTION_TYPE_AUDIO_ACTION,
+        "http" to ACTION_TYPE_HTTP_REQUEST,
+        "http_request" to ACTION_TYPE_HTTP_REQUEST,
+        "http_get" to ACTION_TYPE_HTTP_REQUEST,
+        "http_post" to ACTION_TYPE_HTTP_REQUEST,
         "scene" to ACTION_TYPE_OVERLAY_SCENE,
         "overlay" to ACTION_TYPE_OVERLAY_SCENE,
         "overlay_scene" to ACTION_TYPE_OVERLAY_SCENE,

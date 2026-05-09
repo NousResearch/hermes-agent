@@ -3,6 +3,8 @@ package com.nousresearch.hermesagent.device
 import android.content.ClipboardManager
 import android.content.Context
 import android.media.AudioManager
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -192,6 +194,76 @@ class HermesAutomationStoreTest {
         assertTrue(directMode.toString(), directMode.getBoolean("success"))
         assertEquals("set_ringer_mode", directMode.getString("action"))
         assertEquals("normal", directMode.getString("ringer_mode"))
+    }
+
+    @Test
+    fun bridgeCreatesAndRunsHttpRequestRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+        store.setVariable("MESSAGE", "http-ok")
+        val server = MockWebServer()
+        try {
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Content-Type", "text/plain")
+                    .setBody("response-%MESSAGE"),
+            )
+            server.start()
+            val created = org.json.JSONObject(
+                HermesAutomationBridge.performActionJson(
+                    context,
+                    "create_http_request_task",
+                    org.json.JSONObject()
+                        .put("id", "auto-http")
+                        .put("method", "POST")
+                        .put("url", server.url("/tasker").toString())
+                        .put("body", "payload=%MESSAGE")
+                        .put("save_response_variable", "HTTP_CUSTOM_BODY")
+                        .put("save_status_variable", "HTTP_CUSTOM_STATUS")
+                        .put("automation_enabled", false),
+                ),
+            )
+
+            assertTrue(created.toString(), created.getBoolean("success"))
+            val automation = created.getJSONObject("automation")
+            assertEquals(ACTION_TYPE_HTTP_REQUEST, automation.getString("action_type"))
+            val payload = org.json.JSONObject(automation.getString("command"))
+            assertEquals("POST", payload.getString("method"))
+
+            val run = org.json.JSONObject(
+                HermesAutomationBridge.performActionJson(
+                    context,
+                    "run",
+                    org.json.JSONObject().put("id", "auto-http"),
+                ),
+            )
+            assertTrue(run.toString(), run.getBoolean("success"))
+            val request = server.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("payload=http-ok", request.body.readUtf8())
+            val result = run.getJSONObject("result")
+            assertEquals(200, result.getInt("status_code"))
+            assertEquals("response-%MESSAGE", result.getString("body"))
+            assertEquals("200", store.getVariable("HTTPR"))
+            assertEquals("response-%MESSAGE", store.getVariable("HTTPD"))
+            assertEquals("200", store.getVariable("HTTP_CUSTOM_STATUS"))
+            assertEquals("response-%MESSAGE", store.getVariable("HTTP_CUSTOM_BODY"))
+
+            server.enqueue(MockResponse().setResponseCode(204))
+            val direct = org.json.JSONObject(
+                HermesAutomationBridge.performActionJson(
+                    context,
+                    "http_head",
+                    org.json.JSONObject().put("url", server.url("/head").toString()),
+                ),
+            )
+            assertTrue(direct.toString(), direct.getBoolean("success"))
+            assertEquals(204, direct.getInt("status_code"))
+        } finally {
+            server.shutdown()
+        }
     }
 
     @Test
@@ -1966,6 +2038,49 @@ class HermesAutomationStoreTest {
                     it.getString("ringer_mode") == "vibrate"
             },
         )
+    }
+
+    @Test
+    fun bridgeImportsTaskerHttpActionsDisabled() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+
+        val taskerXml = """
+            <TaskerData sr="" dvi="1" tv="6.6.18">
+              <Task sr="task1">
+                <nme>Hermes HTTP Controls</nme>
+                <Action><code>118</code><Str sr="arg0" ve="3">https://example.com/get</Str><Str sr="arg2" ve="3">q=%MESSAGE</Str></Action>
+                <Action><code>117</code><Str sr="arg0" ve="3">https://example.com/head</Str></Action>
+                <Action><code>116</code><Str sr="arg0" ve="3">https://example.com/post</Str><Str sr="arg2" ve="3">body=%MESSAGE</Str></Action>
+                <Action><code>339</code><Str sr="arg0" ve="3">PUT</Str><Str sr="arg1" ve="3">https://example.com/request</Str><Str sr="arg2" ve="3">modern=%MESSAGE</Str></Action>
+              </Task>
+            </TaskerData>
+        """.trimIndent()
+
+        val imported = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "import_tasker_xml",
+                org.json.JSONObject()
+                    .put("tasker_xml", taskerXml)
+                    .put("replace", true),
+            ),
+        )
+        assertTrue(imported.toString(), imported.getBoolean("success"))
+        assertEquals(4, imported.getInt("tasker_imported_action_count"))
+        assertEquals(0, imported.getJSONArray("tasker_skipped_actions").length())
+        assertEquals(4, imported.getInt("imported_automation_count"))
+
+        val records = store.list()
+        assertEquals(4, records.size)
+        assertTrue(records.all { it.actionType == ACTION_TYPE_HTTP_REQUEST })
+        assertTrue(records.none { it.enabled })
+        val payloads = records.map { org.json.JSONObject(it.command) }
+        assertTrue(payloads.any { it.getString("method") == "GET" && it.getString("url").contains("q=%MESSAGE") })
+        assertTrue(payloads.any { it.getString("method") == "HEAD" && it.getString("url") == "https://example.com/head" })
+        assertTrue(payloads.any { it.getString("method") == "POST" && it.getString("body") == "body=%MESSAGE" })
+        assertTrue(payloads.any { it.getString("method") == "PUT" && it.getString("body") == "modern=%MESSAGE" })
     }
 
     @Test

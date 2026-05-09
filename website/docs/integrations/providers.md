@@ -41,6 +41,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Google Gemini (OAuth)** | `hermes model` → "Google Gemini (OAuth)" (provider: `google-gemini-cli`, free tier supported, browser PKCE login) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
+| **LiteLLM Proxy** | `hermes model` → choose "LiteLLM Proxy" (or `provider: litellm` in `config.yaml`) |
 
 For the official API-key path, see the dedicated [Google Gemini guide](/docs/guides/google-gemini).
 
@@ -1029,7 +1030,31 @@ litellm --model anthropic/claude-sonnet-4 --port 4000
 litellm --config litellm_config.yaml --port 4000
 ```
 
-Then configure Hermes with `hermes model` → Custom endpoint → `http://localhost:4000/v1`.
+**Setup with `hermes model`:**
+
+```bash
+hermes model
+# → Select "LiteLLM Proxy"
+# → Enter URL (e.g. http://localhost:4000/v1)
+# → Enter API key (or leave empty if not required)
+# → Pick a model from LiteLLM's model list
+```
+
+Or in `config.yaml`:
+
+```yaml
+model:
+  default: anthropic/claude-sonnet-4
+  provider: litellm
+  base_url: http://localhost:4000/v1
+```
+
+Environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `LITELLM_API_KEY` | API key for the LiteLLM proxy (optional) |
+| `LITELLM_BASE_URL` | Override the base URL (optional; can also use `model.base_url` in config.yaml) |
 
 Example `litellm_config.yaml` with fallback:
 ```yaml

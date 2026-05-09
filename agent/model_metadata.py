@@ -404,12 +404,17 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
-def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
+def detect_local_server_type(base_url: str, api_key: str = "", provider: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
     Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
-    """
+    
+    """""
     import httpx
+
+    # Skip probes for known gateway providers.
+    if provider in ("litellm",):
+        return None
 
     normalized = _normalize_base_url(base_url)
     server_url = normalized
@@ -959,7 +964,7 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     return None
 
 
-def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+def _query_local_context_length(model: str, base_url: str, api_key: str = "", provider: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
 
@@ -975,7 +980,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
     headers = _auth_headers(api_key)
 
     try:
-        server_type = detect_local_server_type(base_url, api_key=api_key)
+        server_type = detect_local_server_type(base_url, api_key=api_key, provider=provider)
     except Exception:
         server_type = None
 
@@ -1341,7 +1346,7 @@ def get_model_context_length(
         if not _is_known_provider_base_url(base_url):
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
-                local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+                local_ctx = _query_local_context_length(model, base_url, api_key=api_key, provider=provider)
                 if local_ctx and local_ctx > 0:
                     if provider != "lmstudio":
                         save_context_length(model, base_url, local_ctx)
@@ -1432,7 +1437,7 @@ def get_model_context_length(
 
     # 9. Query local server as last resort
     if base_url and is_local_endpoint(base_url):
-        local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
+        local_ctx = _query_local_context_length(model, base_url, api_key=api_key, provider=provider)
         if local_ctx and local_ctx > 0:
             if provider != "lmstudio":
                 save_context_length(model, base_url, local_ctx)

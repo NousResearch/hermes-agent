@@ -34,20 +34,28 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
 
-      - name: Cache uv + .venv
+      - name: Cache uv download cache
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4
         with:
-          path: |
-            ~/.cache/uv
-            .venv
-          key: ${{ runner.os }}-py3.11-uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-py3.11-uv-cache-${{ hashFiles('pyproject.toml', 'uv.lock') }}
           restore-keys: |
-            ${{ runner.os }}-py3.11-uv-
+            ${{ runner.os }}-py3.11-uv-cache-
+
+      - name: Cache .venv
+        id: cache-venv
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4
+        with:
+          path: .venv
+          # Strict key only — no restore-keys, since pip/uv installs don't
+          # reliably prune removed deps and a stale venv breaks builds.
+          key: ${{ runner.os }}-py3.11-venv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
 
       - name: Set up Python 3.11
         run: uv python install 3.11
 
       - name: Install dependencies
+        if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
@@ -73,20 +81,28 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
 
-      - name: Cache uv + .venv
+      - name: Cache uv download cache
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4
         with:
-          path: |
-            ~/.cache/uv
-            .venv
-          key: ${{ runner.os }}-py3.11-uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-py3.11-uv-cache-${{ hashFiles('pyproject.toml', 'uv.lock') }}
           restore-keys: |
-            ${{ runner.os }}-py3.11-uv-
+            ${{ runner.os }}-py3.11-uv-cache-
+
+      - name: Cache .venv
+        id: cache-venv
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4
+        with:
+          path: .venv
+          # Strict key only — no restore-keys, since pip/uv installs don't
+          # reliably prune removed deps and a stale venv breaks builds.
+          key: ${{ runner.os }}-py3.11-venv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
 
       - name: Set up Python 3.11
         run: uv python install 3.11
 
       - name: Install dependencies
+        if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate

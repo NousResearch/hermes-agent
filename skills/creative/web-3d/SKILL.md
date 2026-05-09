@@ -42,9 +42,9 @@ It is a workflow layer:
 
 This skill complements existing creative skills instead of replacing them:
 
-- `p5js` -> browser-based generative art, sketches, shaders, and creative coding
-- `blender-mcp` -> 3D content creation and DCC-driven scene authoring
-- `touchdesigner-mcp` -> real-time operator-network workflows and installation-style visuals
+- `p5js` -> browser-native generative art, sketch-style WebGL, shaders, and creative coding
+- `blender-mcp` -> upstream 3D asset and scene authoring before web integration
+- `touchdesigner-mcp` -> alternative real-time media workflow for operator-network and installation-style visuals
 - `claude-design` / `sketch` -> design exploration and non-3D artifact work
 - `popular-web-designs` -> visual vocabulary and design reference material
 
@@ -118,11 +118,15 @@ See `references/decision-rules.md` for full detail.
 - the user needs meshes, cameras, materials, or animation built first
 - the web task is mainly "display an authored 3D asset" instead of "design the 3D system"
 
+Treat `blender-mcp` as an upstream authoring handoff, not as an alternative web implementation path.
+
 ### Choose `touchdesigner-mcp` instead when
 
 - the work is operator-network-based
 - the output is installation/performance-oriented
 - the environment is closer to real-time media systems than product UI
+
+Treat `touchdesigner-mcp` as an adjacent medium, not as the normal owner for product-web 3D.
 
 ## Delivery modes
 

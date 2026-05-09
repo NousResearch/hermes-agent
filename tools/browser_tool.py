@@ -422,7 +422,7 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     if _cloud_provider_resolved:
         return _cached_cloud_provider
 
-    _cloud_provider_resolved = True
+    resolved: Optional[CloudBrowserProvider] = None
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
@@ -434,23 +434,39 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
             )
             if provider_key == "local":
                 _cached_cloud_provider = None
+                _cloud_provider_resolved = True
                 return None
         if provider_key and provider_key in _PROVIDER_REGISTRY:
-            _cached_cloud_provider = _PROVIDER_REGISTRY[provider_key]()
+            try:
+                resolved = _PROVIDER_REGISTRY[provider_key]()
+            except Exception:
+                logger.warning(
+                    "Failed to instantiate explicit cloud_provider %r; will retry on next call",
+                    provider_key,
+                    exc_info=True,
+                )
+                return None
     except Exception as e:
         logger.debug("Could not read cloud_provider from config: %s", e)
+        return None
 
-    if _cached_cloud_provider is None:
+    if resolved is None:
         # Prefer Browser Use (managed Nous gateway or direct API key),
         # fall back to Browserbase (direct credentials only).
         fallback_provider = BrowserUseProvider()
         if fallback_provider.is_configured():
-            _cached_cloud_provider = fallback_provider
+            resolved = fallback_provider
         else:
             fallback_provider = BrowserbaseProvider()
             if fallback_provider.is_configured():
-                _cached_cloud_provider = fallback_provider
+                resolved = fallback_provider
 
+    if resolved is None:
+        # Transient None — credentials may self-heal. Don't poison the cache.
+        return None
+
+    _cached_cloud_provider = resolved
+    _cloud_provider_resolved = True
     return _cached_cloud_provider
 
 

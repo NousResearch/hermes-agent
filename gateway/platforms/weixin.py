@@ -99,12 +99,25 @@ MESSAGE_DEDUP_TTL_SECONDS = 300
 def _is_stale_session_ret(
     ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]",
 ) -> bool:
-    """True when iLink returns ret=-2 / errcode=-2 with 'unknown error',
-    which is a stale-session signal (same as errcode=-14) rather than
-    a genuine rate limit."""
+    """True when iLink returns ret=-2 / errcode=-2 with a stale-session signal
+    (same as errcode=-14) rather than a genuine rate limit.
+
+    iLink uses errcode=-2 for both rate limiting and session expiry.
+    The session-expiry variant typically returns one of:
+      "unknown error", "session expired", "token expired", or an empty string.
+    When the errmsg contains "expire" or is empty/unknown, treat it as a
+    stale session so the caller strips context_token and retries cleanly.
+    """
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
-    return (errmsg or "").lower() == "unknown error"
+    msg = (errmsg or "").lower().strip()
+    if not msg:
+        return True
+    if msg == "unknown error":
+        return True
+    if "expire" in msg:
+        return True
+    return False
 
 
 MEDIA_IMAGE = 1
@@ -1634,6 +1647,23 @@ class WeixinAdapter(BasePlatformAdapter):
                             )
                             if attempt >= self._send_chunk_retries:
                                 break
+                            # If context_token is present, strip it on the first
+                            # rate-limit hit.  Some iLink errcode=-2 responses
+                            # are actually stale-session signals whose errmsg
+                            # didn't match _is_stale_session_ret (e.g. locale-
+                            # dependent messages).  Retrying without the token
+                            # degrades gracefully and avoids infinite retries
+                            # with an expired session.
+                            if not retried_without_token and context_token:
+                                retried_without_token = True
+                                context_token = None
+                                self._token_store._cache.pop(
+                                    self._token_store._key(self._account_id, chat_id), None
+                                )
+                                logger.warning(
+                                    "[%s] rate-limit hit for %s; stripping context_token as stale-session fallback",
+                                    self.name, _safe_id(chat_id),
+                                )
                             wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
                             logger.warning(
                                 "[%s] rate limited for %s; backing off %.1fs before retry",

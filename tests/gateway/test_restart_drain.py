@@ -11,6 +11,7 @@ from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+from agent.i18n import t
 
 
 @pytest.mark.asyncio
@@ -32,7 +33,10 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
 
     result = await runner._handle_message(event)
 
-    assert result == "⏳ Draining 1 active agent(s) before restart..."
+    # Build the expected string the same way gateway/run.py does — through
+    # the i18n catalog — so the test stays correct regardless of the active
+    # locale or whether xdist workers resolve the catalog at all (#22266).
+    assert result == t("gateway.draining", count=1)
     running_agent.interrupt.assert_not_called()
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 

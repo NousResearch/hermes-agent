@@ -1,0 +1,7 @@
+name: ecc-auto-router
+version: 1.0.0
+description: "Runtime task-to-ECC-plugin skill router via pre_llm_call context injection."
+author: "community"
+kind: standalone
+hooks:
+  - pre_llm_call

@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider
+from agent.redact import redact_sensitive_text
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -1010,6 +1011,110 @@ class HonchoMemoryProvider(MemoryProvider):
         if cls._TRIVIAL_PROMPT_RE.match(stripped):
             return True
         return False
+
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """Extract task-state insights before context compression discards turns.
+
+        Two-channel handoff (Dialectic Compression Handoff pattern):
+
+        1. Side effect: persist conclusions to Honcho via create_conclusion().
+           These survive compression and feed future session context through
+           Honcho's dialectic layer. No LLM call — just structured writes.
+
+        2. Return: structured summary string. Activates automatically once
+           upstream fixes the discarded return value (GH #7192). No changes
+           needed elsewhere when that PR lands.
+
+        The return value is injected into the compression LLM prompt's
+        "## Critical Context" section, telling the compressor what to
+        preserve from the turns being replaced.
+
+        Scope: last 12 messages (6 turns) — the current active task cycle.
+        Honcho's per-turn dialectic already captures user-model facts
+        (preferences, style); this targets operational facts (decisions,
+        artifacts, errors, open items) that the compression LLM needs.
+        """
+        if not messages:
+            return ""
+
+        # Guards: skip if inactive or no session to write to
+        if self._cron_skipped:
+            return ""
+        if not self._manager or not self._session_key:
+            return ""
+
+        # Extract the last ~6 turns — current active task cycle.
+        # Everything older has been processed by Honcho's per-turn sync.
+        tail = messages[-12:] if len(messages) > 12 else list(messages)
+
+        # Build structured summary; redact before analysis to avoid
+        # credential leakage in conclusions and return string.
+        summary_parts: List[str] = []
+
+        for msg in tail:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not content or not isinstance(content, str):
+                continue
+            if role not in ("user", "assistant"):
+                continue
+
+            safe = redact_sensitive_text(content)
+            if not safe.strip():
+                continue
+
+            lower = safe.lower()
+            # Decision signals — explicit choices with rationale
+            if any(k in lower for k in (
+                "decided", "decision", "chose ", "choosing", "going with ",
+                "will use", "using ", "going ahead", "confirmed",
+            )):
+                # Truncate to avoid bloated conclusions on verbose exchanges
+                summary_parts.append(f"[decision] {safe[:400]}")
+            # Artifact signals — files, resources created or modified
+            elif any(k in lower for k in (
+                "created ", "creating ", "wrote ", "written ",
+                "modified ", "updated ", "patched ", "added ",
+                "/home/", "/tmp/", ".py", ".md", ".yaml", ".toml",
+                ".json", ".sh", ".txt", "wrote to", "written to",
+            )):
+                summary_parts.append(f"[artifact] {safe[:400]}")
+            # Error/blocker signals
+            elif any(k in lower for k in (
+                "error", "failed", "crash", "traceback", "exception",
+                "blocked", "not working", "does not", "doesn't",
+                "refused to", "unable to", "cannot ",
+            )):
+                summary_parts.append(f"[blocker] {safe[:400]}")
+            # Config/state change signals
+            elif any(k in lower for k in (
+                "set ", "configured", "config changed", "threshold",
+                "changed ", "updated config", "set config",
+            )) and len(safe) < 300:
+                summary_parts.append(f"[config] {safe[:400]}")
+
+        if not summary_parts:
+            return ""
+
+        combined = "\n\n".join(summary_parts)
+
+        # Persist to Honcho via daemon thread — non-blocking, fire-and-forget.
+        # create_conclusion() is synchronous but the thread prevents blocking
+        # the compression pipeline. Errors are logged at debug level only.
+        def _flush():
+            try:
+                self._manager.create_conclusion(self._session_key, combined)
+                logger.debug(
+                    "Honcho pre-compression flush: %d insights from %d messages",
+                    len(summary_parts), len(tail),
+                )
+            except Exception as e:
+                logger.debug("Honcho pre-compression flush failed: %s", e)
+
+        t = threading.Thread(target=_flush, daemon=True, name="honcho-precompress")
+        t.start()
+
+        return combined
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence and injection_frequency logic."""

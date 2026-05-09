@@ -30,6 +30,7 @@ import {
   buildOfficeMapDensityPlan,
   buildOfficeMapJumpTargets,
   buildOfficeMapPolishPlan,
+  buildOfficeResponsiveReadabilityPlan,
   buildOfficeMapFlows,
   buildOfficeMapNodes,
   buildOfficeSceneMotionTrack,
@@ -372,6 +373,7 @@ function OfficeMap({
   densityMode,
   densityPlan,
   jumpTargets,
+  responsivePlan,
   onDensityModeChange,
   onInspect,
   onInspectCharacter,
@@ -386,6 +388,7 @@ function OfficeMap({
   densityMode: OfficeMapDensityMode;
   densityPlan: ReturnType<typeof buildOfficeMapDensityPlan>;
   jumpTargets: ReturnType<typeof buildOfficeMapJumpTargets>;
+  responsivePlan: ReturnType<typeof buildOfficeResponsiveReadabilityPlan>;
   onDensityModeChange: (mode: OfficeMapDensityMode) => void;
   onInspect: (node: OfficeMapNode) => void;
   onInspectCharacter: (character: OfficeCharacter) => void;
@@ -443,10 +446,13 @@ function OfficeMap({
         <div
           id="office-map-canvas"
           tabIndex={-1}
-          className={`relative min-h-[620px] scroll-mt-24 overflow-hidden border border-current/20 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.16),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.055),rgba(0,0,0,0.20))] p-4 pb-28 focus:outline-none focus:ring-2 focus:ring-emerald-200/70 sm:min-h-[560px] ${polishPlan.mapClassName}`}
+          className={`relative min-h-[620px] scroll-mt-24 overflow-hidden border border-current/20 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.16),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.055),rgba(0,0,0,0.20))] p-4 pb-28 focus:outline-none focus:ring-2 focus:ring-emerald-200/70 sm:min-h-[560px] ${polishPlan.mapClassName} ${responsivePlan.mapClassName}`}
           data-office-polish="true"
           data-office-polish-label-mode={polishPlan.characterLabelMode}
           data-office-polish-rail-mode={polishPlan.lowerRailMode}
+          data-office-responsive="true"
+          data-office-responsive-mode={responsivePlan.viewportMode}
+          data-office-responsive-recommended-density={responsivePlan.recommendedDensityMode}
         >
           <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full text-midground/20" role="img" aria-label="읽기 전용 오피스 흐름 연결" viewBox="0 0 100 100" preserveAspectRatio="none">
             <defs>
@@ -535,9 +541,10 @@ function OfficeMap({
               </button>
             );
           })}
-          <div className={polishPlan.legendClassName} data-office-polish-legend="true">
+          <div className={`${polishPlan.legendClassName} ${responsivePlan.railClassName}`} data-office-polish-legend="true" data-office-responsive-rail="true">
             <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] uppercase tracking-[0.16em]">
               <span className="text-emerald-200">{polishPlan.stageLabel}</span>
+              <span className="text-sky-200">{responsivePlan.stageLabel} · {responsivePlan.viewportMode === "narrow" ? "좁은 화면" : "데스크톱"}</span>
               {flows.map((flow) => {
                 const changedFlow = changedFlowById.get(`${flow.from}->${flow.to}`);
                 return (
@@ -549,6 +556,9 @@ function OfficeMap({
             </div>
             <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-semibold tracking-[0.14em] text-midground/75" aria-label="Stage 11-B CSS/SVG 정돈 메모">
               {polishPlan.notes.map((note) => <span key={note}>{note}</span>)}
+            </div>
+            <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-semibold tracking-[0.14em] text-sky-100/80" aria-label="Stage 12-A 반응형 읽기 메모">
+              {responsivePlan.notes.map((note) => <span key={note}>{note}</span>)}
             </div>
             <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-semibold tracking-[0.14em] text-midground/75" aria-label="RPG 역할 범례">
               <span>캐릭터 역할 투영</span>
@@ -811,6 +821,7 @@ export default function OfficePage() {
   const mapFlows = useMemo(() => buildOfficeMapFlows(mapNodes), [mapNodes]);
   const officeCharacters = useMemo(() => (state ? buildOfficeCharacters(state, mapNodes) : []), [state, mapNodes]);
   const densityPlan = useMemo(() => buildOfficeMapDensityPlan(densityMode, officeCharacters), [densityMode, officeCharacters]);
+  const responsivePlan = useMemo(() => buildOfficeResponsiveReadabilityPlan(densityPlan, { viewportWidth }), [densityPlan, viewportWidth]);
   const jumpTargets = useMemo(() => buildOfficeMapJumpTargets(densityPlan), [densityPlan]);
   const fallbackSceneObjects = useMemo(() => (state ? buildOfficeSceneObjects(state, mapNodes) : []), [state, mapNodes]);
   const sceneObjects = useMemo(() => {
@@ -938,6 +949,7 @@ export default function OfficePage() {
           densityMode={densityMode}
           densityPlan={densityPlan}
           jumpTargets={jumpTargets}
+          responsivePlan={responsivePlan}
           onDensityModeChange={setDensityMode}
           onInspect={(node) => inspectRecord("오피스 맵 방", node.label, [
             ["방", node.id],

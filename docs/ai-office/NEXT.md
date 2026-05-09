@@ -133,8 +133,8 @@ Browser smoke: http://127.0.0.1:8765/office
 
 Immediate next action should remain a product/UX decision point, not a control-plane expansion:
 
-1. Pick the next non-renderer slice: responsive/mobile readability evidence, Office empty-source copy polish, or a small handoff/PR summary pass.
-2. Renderer decision: keep CSS/SVG by default; Stage 11-A/B/C did not record a measured performance/functional gap that justifies a renderer spike.
+1. Stage 12-A responsive/mobile readability is now the active non-renderer slice; after verification, prefer Office empty-source copy polish or a small handoff/PR summary pass next.
+2. Renderer decision: keep CSS/SVG by default; Stage 11-A/B/C and Stage 12-A did not record a measured performance/functional gap that justifies a renderer spike.
 3. Test-harness review: consider React DOM coverage for polling cleanup/pause behavior only if adding/standardizing that harness is separately approved.
 4. Renderer research: only after future evidence proves CSS/SVG is insufficient and after separate dependency/licensing/security/accessibility review, decide whether Phaser/PixiJS is worth the bundle/maintenance cost.
 5. Do not add mutation controls, expose dashboard remotely, add Pixi/Phaser/canvas, copy DeskRPG assets/code, create/edit topic registry data, or create/modify Kanban/Cron state without separate approval.

@@ -347,6 +347,43 @@ code { font-size: 0.875rem; }
   max-height: 5.8rem;
   overflow: auto;
 }
+.office-map--responsive {
+  isolation: isolate;
+}
+.office-map--mobile-readable {
+  min-height: 720px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+.office-map--mobile-readable .office-character-inspect {
+  max-width: 3.2rem;
+}
+.office-map--mobile-readable .office-character__nameplate,
+.office-map--mobile-readable .office-character__activity {
+  max-width: 2.35rem;
+  font-size: 0.4rem;
+}
+.office-map--mobile-readable [aria-label$="오피스 맵 방"] {
+  max-width: 8rem;
+}
+.office-map-rail--mobile-stack {
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  max-height: 6.6rem;
+}
+.office-map-rail--desktop {
+  max-width: none;
+}
+@media (max-width: 640px) {
+  .office-map--responsive {
+    min-width: 34rem;
+  }
+  .office-map-rail--mobile-stack {
+    font-size: 0.68rem;
+    line-height: 1.05rem;
+  }
+}
 .office-route-hint {
   position: absolute;
   z-index: 18;

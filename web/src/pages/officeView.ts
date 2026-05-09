@@ -195,6 +195,15 @@ export type OfficeMapPolishPlan = {
   notes: string[];
 };
 
+export type OfficeResponsiveReadabilityPlan = {
+  stageLabel: string;
+  viewportMode: "narrow" | "desktop";
+  recommendedDensityMode: OfficeMapDensityMode;
+  mapClassName: string;
+  railClassName: string;
+  notes: string[];
+};
+
 export function textField(row: Record<string, unknown>, key: string): string {
   const value = row[key];
   return typeof value === "string" && value.length > 0 ? value : "—";
@@ -366,6 +375,23 @@ export function buildOfficeMapPolishPlan(densityPlan: OfficeMapDensityPlan): Off
       characterLabelMode === "full" ? "캐릭터 이름표는 전체 표시" : "캐릭터 이름표는 역할 중심으로 압축",
       lowerRailMode === "detached" ? "하단 rail은 맵 바닥과 분리" : "하단 rail은 맵 안에서 유지",
     ],
+  };
+}
+
+export function buildOfficeResponsiveReadabilityPlan(
+  densityPlan: OfficeMapDensityPlan,
+  options: { viewportWidth?: number } = {},
+): OfficeResponsiveReadabilityPlan {
+  const isNarrow = typeof options.viewportWidth === "number" && options.viewportWidth < 640;
+  return {
+    stageLabel: "Stage 12-A 반응형",
+    viewportMode: isNarrow ? "narrow" : "desktop",
+    recommendedDensityMode: isNarrow ? "summary" : densityPlan.mode,
+    mapClassName: `office-map--responsive${isNarrow ? " office-map--mobile-readable" : ""}`,
+    railClassName: isNarrow ? "office-map-rail--mobile-stack" : "office-map-rail--desktop",
+    notes: isNarrow
+      ? ["좁은 화면에서는 요약 모드 권장", "맵 rail은 세로 흐름으로 읽힘"]
+      : ["데스크톱에서는 현재 밀도 모드 유지", "맵과 rail은 분리된 영역으로 읽힘"],
   };
 }
 

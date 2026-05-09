@@ -1,6 +1,6 @@
 # Hermes AI Office — STATUS
 
-Last updated: 2026-05-09 13:08 KST
+Last updated: 2026-05-09 13:21 KST
 
 ## Current phase
 
@@ -36,12 +36,45 @@ Current Stage 11-B result: `/office` applies a small CSS/SVG layout-density poli
 
 Current Stage 11-C result: the renderer decision gate is closed for now. Fresh browser checkpoint evidence on `/office?stage11c=decision` showed compact standard labels, minimal summary labels, detached rail mode, working jump targets, safe character caps, raw leak regex false, and no console JS errors. The decision remains CSS/SVG primary; no PixiJS, Phaser, canvas, hybrid overlay, sprites, or DeskRPG code/assets should be added without new measured evidence and explicit user approval.
 
-Next phase: move out of renderer-gate work unless new evidence appears. Prefer product/dashboard polish that preserves the current CSS/SVG, Korean-first, read-only, safe DTO projection boundary. Still no individual task identity, generated content-like speech bubbles, sprite assets, Phaser, PixiJS, canvas renderer, backend/API changes, mutation controls, persistent storage, or raw record projection.
+Current Stage 12-A result: `/office` now adds a CSS/SVG responsive readability posture on top of the Stage 11-B polished map. `OfficeResponsiveReadabilityPlan` and `buildOfficeResponsiveReadabilityPlan(densityPlan, { viewportWidth })` derive narrow/desktop posture from browser-local viewport width only, recommend summary mode for narrow screens, and expose map/rail smoke hooks without persistence or backend changes.
+
+Next phase: continue non-renderer product/dashboard polish unless new evidence appears. Prefer Office empty-source copy polish or a small non-mutating handoff/PR summary pass. Still no individual task identity, generated content-like speech bubbles, sprite assets, Phaser, PixiJS, canvas renderer, backend/API changes, mutation controls, persistent storage, or raw record projection.
 
 Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
 
 
 
+
+## Stage 12-A responsive/mobile readability implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeResponsiveReadabilityPlan` and `buildOfficeResponsiveReadabilityPlan(densityPlan, { viewportWidth })`.
+  - The helper derives only from the existing safe density plan and browser-local viewport width.
+- `web/src/pages/OfficePage.tsx`
+  - Applies responsive map/rail hooks and Korean Stage 12-A notes to the existing CSS/SVG office map.
+- `web/src/index.css`
+  - Adds CSS-only mobile-readable map/rail classes.
+- `web/src/pages/OfficePage.test.ts`
+  - Adds RED/GREEN coverage for narrow/desktop responsive readability posture and raw-term exclusion.
+- `docs/ai-office/plans/2026-05-09-stage-12-responsive-readability.md`
+  - Records goal, constraints, implementation, verification target, and next candidates.
+
+Safety notes:
+
+- Stage 12-A does not add renderer dependencies, canvas paths, sprite assets, DeskRPG code/assets, backend/API/schema changes, mutation controls, persistent browser storage, or raw record projection.
+- The responsive helper does not inspect prompts, transcripts, task bodies, cron scripts, logs, auth fields, secrets, model/provider identity strings, or individual task identity.
+
+Verification 2026-05-09 13:21 KST:
+
+- RED verified first: Stage 12-A test failed because `buildOfficeResponsiveReadabilityPlan` did not exist.
+- GREEN focused frontend test passed: `OfficePage.test.ts` 28 passed.
+- ESLint passed for `OfficePage.tsx`, `officeView.ts`, and `OfficePage.test.ts`.
+- `npm run build` passed with the existing Vite large-chunk warning; current build size was JS `1,256.07 kB` / gzip `367.41 kB`, CSS `127.36 kB` / gzip `20.43 kB`.
+- Backend focused office tests passed: `18 passed in 1.12s`.
+- Browser smoke `/office?stage12a=responsive`: desktop mode reported `desktop`/`standard`, narrow simulated viewport reported `narrow`/`summary`, summary still capped character inspect buttons to 6 and folded the recent rail, raw leak regex false, console JS errors none.
+- Visual smoke after scrolling the `main` container found the compressed CSS/SVG map readable enough with no severe overlap or renderer-failure evidence.
 
 ## Stage 11-C renderer decision checkpoint documented
 

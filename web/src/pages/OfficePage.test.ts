@@ -11,6 +11,7 @@ import {
   buildOfficeMapDensityPlan,
   buildOfficeMapJumpTargets,
   buildOfficeMapPolishPlan,
+  buildOfficeResponsiveReadabilityPlan,
   buildOfficeMapFlows,
   buildOfficeMapNodes,
   buildOfficeSceneMotionTrack,
@@ -495,6 +496,36 @@ describe("OfficePage view helpers", () => {
     expect(summaryPolish.characterLabelMode).toBe("minimal");
     expect(summaryPolish.lowerRailMode).toBe("detached");
     expect(`${standardPolish.stageLabel} ${standardPolish.notes.join(" ")} ${standardPolish.mapClassName}`).not.toMatch(/raw|prompt|transcript|body|script|secret/i);
+  });
+
+  it("builds Stage 12-A responsive readability plans from viewport width only", () => {
+    const characters = Array.from({ length: 12 }, (_, index) => ({
+      id: `character-${index}`,
+      role: "model" as const,
+      roomId: "sessions" as const,
+      label: index === 11 ? "raw prompt transcript secret must not matter" : `모델 캐릭터 ${index + 1}`,
+      status: "active" as const,
+      detail: "raw task body script must not matter",
+      redactionNote: "안전 DTO 역할/상태/개수만 반영 · 원문 제외",
+      x: 20,
+      y: 20,
+    }));
+
+    const standardPlan = buildOfficeMapDensityPlan("standard", characters);
+    const narrow = buildOfficeResponsiveReadabilityPlan(standardPlan, { viewportWidth: 430 });
+    const desktop = buildOfficeResponsiveReadabilityPlan(standardPlan, { viewportWidth: 1280 });
+
+    expect(narrow).toMatchObject({
+      stageLabel: "Stage 12-A 반응형",
+      viewportMode: "narrow",
+      recommendedDensityMode: "summary",
+      mapClassName: "office-map--responsive office-map--mobile-readable",
+      railClassName: "office-map-rail--mobile-stack",
+    });
+    expect(narrow.notes).toEqual(expect.arrayContaining(["좁은 화면에서는 요약 모드 권장", "맵 rail은 세로 흐름으로 읽힘"]));
+    expect(desktop.viewportMode).toBe("desktop");
+    expect(desktop.recommendedDensityMode).toBe("standard");
+    expect(`${narrow.stageLabel} ${narrow.notes.join(" ")} ${narrow.mapClassName}`).not.toMatch(/raw|prompt|transcript|body|script|secret/i);
   });
 
   it("builds Stage 10-H keyboard jump targets with density-aware recent rail labels", () => {

@@ -220,18 +220,20 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
 
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = job.get("prompt", "")
+    prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
+    job_id = str(job.get("id") or "unknown")
+    name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
     result = {
-        "job_id": job["id"],
-        "name": job["name"],
+        "job_id": job_id,
+        "name": name,
         "skill": skills[0] if skills else None,
         "skills": skills,
         "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
         "model": job.get("model"),
         "provider": job.get("provider"),
         "base_url": job.get("base_url"),
-        "schedule": job.get("schedule_display"),
+        "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
         "next_run_at": job.get("next_run_at"),

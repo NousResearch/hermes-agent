@@ -6546,6 +6546,22 @@ class GatewayRunner:
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
+            # Feishu CardKit cards already render runtime metadata in their own
+            # footer element (Agent/Model/Provider/Elapsed/status).  Appending
+            # the generic text runtime footer creates a second, inconsistent
+            # footer inside the card body (e.g. "gpt-5.5 · 40% · ~" above
+            # "Agent: main | ...").  Suppress the generic footer whenever the
+            # active Feishu adapter is using CardKit/always_card mode.
+            try:
+                _footer_adapter = self.adapters.get(source.platform)
+                if (
+                    source.platform == Platform.FEISHU
+                    and _footer_adapter is not None
+                    and bool(getattr(_footer_adapter, "_uses_streaming_cards", lambda: False)())
+                ):
+                    _footer_line = ""
+            except Exception:
+                pass
             if _footer_line and response and not agent_result.get("already_sent"):
                 response = f"{response}\n\n{_footer_line}"
 
@@ -12511,10 +12527,13 @@ class GatewayRunner:
             else bool(_plat_streaming)
         )
 
+        _thread_metadata: Optional[Dict[str, Any]] = {
+            "agent": "main",
+            "model": "hermes-agent",
+            "provider": "proxy",
+        }
         if source.thread_id:
-            _thread_metadata: Optional[Dict[str, Any]] = {"thread_id": source.thread_id}
-        else:
-            _thread_metadata = None
+            _thread_metadata["thread_id"] = source.thread_id
 
         if _streaming_enabled:
             try:
@@ -12811,6 +12830,33 @@ class GatewayRunner:
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
 
+        def _human_tool_progress_message(tool_name: str | None) -> str:
+            """Return low-noise, user-facing progress for chat platforms.
+
+            Feishu users should see that work is advancing without seeing raw
+            tool names, terminal commands, or argument payloads.  This mode is
+            deliberately coarser than ``all``/``verbose``: it updates the same
+            CardKit streaming card as a human-readable status panel.
+            """
+            name = (tool_name or "").lower()
+            if name in {"mcp_minimax_web_search", "web_search"} or "search" in name:
+                return ""
+            if name in {"read_file", "search_files"} or "file" in name:
+                return ""
+            if name in {"terminal", "execute_code", "process"}:
+                return ""
+            if name in {"patch", "write_file"}:
+                return "🛠️ 正在应用修复"
+            if name in {"browser_navigate", "browser_snapshot", "browser_console", "browser_cdp"} or "browser" in name:
+                return "🌐 正在验证页面和客户端表现"
+            if name in {"skill_view", "skills_list"} or "skill" in name:
+                return ""
+            if name in {"todo", "cronjob"}:
+                return "🗂️ 正在更新任务状态"
+            if name in {"send_message"}:
+                return ""
+            return "⚙️ 正在推进任务"
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue or not _run_still_current():
@@ -12875,6 +12921,19 @@ class GatewayRunner:
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
             
+            # Low-noise human mode: keep Feishu/CardKit visibly alive without
+            # exposing raw tool names, commands, paths, or argument payloads.
+            if progress_mode in {"human", "summary", "concise"}:
+                msg = _human_tool_progress_message(tool_name)
+                if msg == last_progress_msg[0]:
+                    repeat_count[0] += 1
+                    progress_queue.put(("__dedup__", msg, repeat_count[0]))
+                    return
+                last_progress_msg[0] = msg
+                repeat_count[0] = 0
+                progress_queue.put(msg)
+                return
+
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if args:
@@ -12933,7 +12992,29 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
-        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        # Resolve model/provider for platform metadata outside the worker thread.
+        # The real turn routing is still resolved inside run_sync() after reloading
+        # .env/config, but progress/status/typing metadata is built before the
+        # thread starts.  Do not reference run_sync-local variables here.
+        try:
+            _meta_model, _meta_runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source,
+                session_key=session_key,
+                user_config=user_config,
+            )
+        except Exception:
+            _meta_model, _meta_runtime_kwargs = "", {}
+
+        if source.platform == Platform.FEISHU:
+            _progress_metadata: Optional[Dict[str, Any]] = {
+                "agent": "main",
+                "model": _meta_model,
+                "provider": _meta_runtime_kwargs.get("provider"),
+            }
+            if _progress_thread_id:
+                _progress_metadata["thread_id"] = _progress_thread_id
+        else:
+            _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         async def send_progress_messages():
             if not progress_queue:
@@ -12958,7 +13039,9 @@ class GatewayRunner:
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
+            _last_heartbeat_ts = 0.0 # Periodic CardKit footer refresh while one long tool is running
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            _PROGRESS_HEARTBEAT_INTERVAL = 2.0  # Keep Feishu Elapsed moving during long waits
 
             while True:
                 try:
@@ -13011,6 +13094,14 @@ class GatewayRunner:
                     else:
                         msg = raw
                         progress_lines.append(msg)
+
+                    if hasattr(adapter, "update_tool_progress"):
+                        await adapter.update_tool_progress(
+                            source.chat_id,
+                            progress_lines,
+                            metadata=_progress_metadata,
+                        )
+                        continue
 
                     # Throttle edits: batch rapid tool updates into fewer
                     # API calls to avoid hitting Telegram flood control.
@@ -13067,6 +13158,27 @@ class GatewayRunner:
                         await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
 
                 except queue.Empty:
+                    # Keep the visible Feishu/CardKit progress card alive while
+                    # the agent is blocked inside one long-running tool call.
+                    # Without this heartbeat, the footer can stay at
+                    # "Elapsed: 0s | 生成中" until the whole turn finishes, which
+                    # defeats the purpose of streaming for long waits.
+                    if (
+                        progress_lines
+                        and hasattr(adapter, "update_tool_progress")
+                        and _run_still_current()
+                    ):
+                        _now = time.monotonic()
+                        if _now - _last_heartbeat_ts >= _PROGRESS_HEARTBEAT_INTERVAL:
+                            try:
+                                await adapter.update_tool_progress(
+                                    source.chat_id,
+                                    progress_lines,
+                                    metadata=_progress_metadata,
+                                )
+                                _last_heartbeat_ts = _now
+                            except Exception as _heartbeat_err:
+                                logger.debug("progress heartbeat failed: %s", _heartbeat_err)
                     await asyncio.sleep(0.3)
                 except asyncio.CancelledError:
                     # Drain remaining queued messages
@@ -13155,7 +13267,7 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_thread_metadata = dict(_progress_metadata) if _progress_metadata else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -13299,7 +13411,7 @@ class GatewayRunner:
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            metadata=dict(_progress_metadata) if _progress_metadata else None,
                             on_new_message=(
                                 (lambda: progress_queue.put(("__reset__",)))
                                 if progress_queue is not None
@@ -13749,11 +13861,12 @@ class GatewayRunner:
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
-            # Signal the stream consumer that the agent is done
-            if _stream_consumer is not None:
-                _stream_consumer.finish()
-            
-            # Return final response, or a message if something went wrong
+            # Do not finish the stream consumer here.  The worker thread only
+            # learns the final_response after run_conversation returns; finishing
+            # before the async gateway layer can inspect it causes providers that
+            # do not emit token deltas to fall back to a one-shot final send.
+            # The async layer below either closes an already-streamed response or
+            # animates the final_response into the active platform stream first.
             final_response = result.get("final_response")
 
             # Extract actual token counts from the agent instance used for this run
@@ -13905,6 +14018,8 @@ class GatewayRunner:
         # Start progress message sender if enabled
         progress_task = None
         if tool_progress_enabled:
+            if progress_queue is not None and progress_mode in {"human", "summary", "concise"}:
+                progress_queue.put("🧭 正在分析任务并准备执行")
             progress_task = asyncio.create_task(send_progress_messages())
 
         # Start stream consumer task — polls for consumer creation since it
@@ -14231,6 +14346,52 @@ class GatewayRunner:
                     # Fallback activated on a successful run — evict cached
                     # agent so the next message retries the primary model.
                     self._evict_cached_agent(session_key)
+
+            # Ensure final assistant text uses the same platform stream instead
+            # of arriving as a one-shot message when the provider only returns a
+            # completed final_response.  Real token deltas are still preferred;
+            # this is a visual fallback for final-only providers/transports.
+            _sc = stream_consumer_holder[0]
+            if _sc and isinstance(response, dict) and not response.get("failed"):
+                _final_to_stream = response.get("final_response") or ""
+                _empty_final = not _final_to_stream or _final_to_stream == "(empty)"
+                if not _empty_final and not getattr(_sc, "final_response_sent", False):
+                    try:
+                        _had_live_deltas = bool(
+                            getattr(_sc, "_already_sent", False)
+                            or getattr(_sc, "_accumulated", "")
+                        )
+                        if not _had_live_deltas and source.platform == Platform.FEISHU:
+                            import re as _re
+                            _parts = _re.findall(r"\S+\s*|\n+", _final_to_stream)
+                            _buf = ""
+                            for _part in _parts or [_final_to_stream]:
+                                _buf += _part
+                                if len(_buf) >= 80 or "\n" in _buf:
+                                    _sc.on_delta(_buf)
+                                    _buf = ""
+                                    await asyncio.sleep(0.20)
+                            if _buf:
+                                _sc.on_delta(_buf)
+                                await asyncio.sleep(0.20)
+                        _sc.finish()
+                        if stream_task:
+                            try:
+                                await asyncio.wait_for(stream_task, timeout=5.0)
+                            except (asyncio.TimeoutError, asyncio.CancelledError):
+                                stream_task.cancel()
+                                try:
+                                    await stream_task
+                                except asyncio.CancelledError:
+                                    pass
+                            except Exception as e:
+                                logger.debug("Final stream delivery wait failed: %s", e)
+                    except Exception as e:
+                        logger.debug("Final stream delivery fallback failed: %s", e)
+                        try:
+                            _sc.finish()
+                        except Exception:
+                            pass
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]

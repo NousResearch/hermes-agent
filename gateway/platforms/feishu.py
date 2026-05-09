@@ -102,6 +102,17 @@ try:
         UpdateMessageRequest,
         UpdateMessageRequestBody,
     )
+    from lark_oapi.api.cardkit.v1 import (
+        Card,
+        ContentCardElementRequest,
+        ContentCardElementRequestBody,
+        CreateCardRequest,
+        CreateCardRequestBody,
+        SettingsCardRequest,
+        SettingsCardRequestBody,
+        UpdateCardRequest,
+        UpdateCardRequestBody,
+    )
     from lark_oapi.core import AccessTokenType, HttpMethod
     from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
     from lark_oapi.core.model import BaseRequest
@@ -1351,6 +1362,12 @@ class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
     MAX_MESSAGE_LENGTH = 8000
+    SUPPORTS_MESSAGE_EDITING = True
+    # CardKit streaming needs an explicit final edit to close the in-progress
+    # state and render the final footer (Elapsed + ✅ 已完成).  Without this,
+    # the generic stream consumer may skip the final edit when the body text
+    # already looks visible, leaving real Feishu cards stuck at “生成中”.
+    REQUIRES_EDIT_FINALIZE = True
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
@@ -1407,6 +1424,28 @@ class FeishuAdapter(BasePlatformAdapter):
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        # Preserve plain text/post behaviour by default; enable CardKit-backed
+        # streaming explicitly via env/config for Feishu deployments that have
+        # CardKit permissions.
+        extra_cfg = config.extra or {}
+        self._render_mode = str(os.getenv("HERMES_FEISHU_RENDER_MODE", extra_cfg.get("render_mode", "text"))).strip().lower()
+        if self._render_mode not in {"text", "post", "card"}:
+            self._render_mode = "text"
+        self._always_card = _to_boolean(os.getenv("HERMES_FEISHU_ALWAYS_CARD", extra_cfg.get("always_card", "false")))
+        self._append_mode = _to_boolean(os.getenv("HERMES_FEISHU_APPEND_MODE", extra_cfg.get("append_mode", "false")))
+        self._card_footer_elapsed = _to_boolean(os.getenv("HERMES_FEISHU_CARD_FOOTER_ELAPSED", extra_cfg.get("card_footer_elapsed", "true")))
+        self._card_footer_status = _to_boolean(os.getenv("HERMES_FEISHU_CARD_FOOTER_STATUS", extra_cfg.get("card_footer_status", "true")))
+        self._streaming_card_state: Dict[str, Dict[str, Any]] = {}
+        self._execution_progress_lines: Dict[str, List[str]] = {}
+        self._tool_progress_lines: Dict[str, List[str]] = {}
+        self._latest_card_content: Dict[str, str] = {}
+        self._active_card_for_chat: Dict[str, str] = {}
+        self._tool_progress_last_update: Dict[str, float] = {}
+        self._tool_progress_interval = float(os.getenv(
+            "HERMES_FEISHU_TOOL_PROGRESS_INTERVAL",
+            extra_cfg.get("tool_progress_interval", 1.5),
+        ) or 1.5)
+        self._card_update_sequence = 0
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1702,6 +1741,7 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Feishu message."""
+        self._ensure_card_runtime_state()
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -1710,8 +1750,42 @@ class FeishuAdapter(BasePlatformAdapter):
         last_response = None
 
         try:
+            # If tool-progress already opened a CardKit streaming card for this
+            # chat, make the first assistant content update reuse that same card
+            # instead of creating a second final-looking card.  This is the key
+            # path for tool-heavy turns: progress becomes visible immediately,
+            # then the real answer streams into the same content element.
+            active_card_id = (getattr(self, "_active_card_for_chat", {}) or {}).get(chat_id)
+            stream_preview = self._metadata_requests_stream_preview(metadata)
+            if (
+                self._uses_streaming_cards()
+                and active_card_id
+                and active_card_id in (getattr(self, "_streaming_card_state", {}) or {})
+                and not reply_to
+                and chunks
+            ):
+                finalize_existing_card = not stream_preview
+                first_result = await self.edit_message(
+                    chat_id,
+                    active_card_id,
+                    chunks[0],
+                    finalize=finalize_existing_card and len(chunks) == 1,
+                )
+                if not first_result.success:
+                    return first_result
+                for index, chunk in enumerate(chunks[1:], start=1):
+                    followup = await self.edit_message(
+                        chat_id,
+                        active_card_id,
+                        chunk,
+                        finalize=finalize_existing_card and index == len(chunks) - 1,
+                    )
+                    if not followup.success:
+                        return followup
+                return SendResult(success=True, message_id=active_card_id)
+
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
+                msg_type, payload = self._build_outbound_payload(chunk, metadata=metadata)
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -1745,6 +1819,14 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 last_response = response
+                if msg_type == "interactive" and stream_preview and self._response_succeeded(response):
+                    card_id = getattr(response, "hermes_feishu_card_id", None)
+                    if card_id:
+                        state = self._card_state_from_metadata(metadata)
+                        state["started_at"] = time.monotonic()
+                        self._streaming_card_state[str(card_id)] = state
+                        self._active_card_for_chat[chat_id] = str(card_id)
+                        self._latest_card_content[str(card_id)] = chunk
 
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:
@@ -1760,11 +1842,78 @@ class FeishuAdapter(BasePlatformAdapter):
         finalize: bool = False,
     ) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
+        self._ensure_card_runtime_state()
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
         try:
+            if self._uses_streaming_cards() and message_id in (getattr(self, "_streaming_card_state", {}) or {}):
+                state = self._streaming_card_state.get(message_id, {})
+                self._latest_card_content[message_id] = content
+                if finalize:
+                    payload = self._build_streaming_card_payload(
+                        content,
+                        finalize=True,
+                        chat_id=chat_id,
+                        state=state,
+                    )
+                    body = self._build_card_update_body(data=payload)
+                    request = self._build_card_update_request(message_id, body)
+                    response = await asyncio.to_thread(self._client.cardkit.v1.card.update, request)
+                    result = self._finalize_send_result(response, "card update failed")
+                    if not result.success:
+                        # Some final answers are valid as streaming markdown
+                        # element content but invalid as a whole CardKit card
+                        # update (usually because the card config/summary path
+                        # is stricter than element content).  Do not leave the
+                        # existing streaming card stuck at "生成中" — fall back
+                        # to updating the content/footer elements, then close
+                        # streaming via card settings.
+                        logger.warning("[Feishu] Final card update failed; falling back to element finalize: %s", result.error)
+                        content_result = await self._update_card_content_element(
+                            message_id,
+                            self._compose_card_content(content, chat_id=chat_id, finalize=True),
+                        )
+                        footer_result = await self._update_card_footer_element(
+                            message_id,
+                            state=state,
+                            finalize=True,
+                        )
+                        result = footer_result if footer_result.success else content_result
+                        if not (content_result.success and footer_result.success):
+                            logger.warning(
+                                "[Feishu] Final card element fallback failed: content=%s footer=%s",
+                                content_result.error,
+                                footer_result.error,
+                            )
+                    if result.success:
+                        settings_result = await self._close_streaming_card(message_id, summary=content)
+                        if not settings_result.success:
+                            logger.warning("[Feishu] Card settings close failed: %s", settings_result.error)
+                            result = settings_result
+                else:
+                    body = self._build_card_content_body(
+                        content=self._compose_card_content(content, chat_id=chat_id, finalize=False)
+                    )
+                    request = self._build_card_content_request(message_id, "content", body)
+                    response = await asyncio.to_thread(self._client.cardkit.v1.card_element.content, request)
+                    result = self._finalize_send_result(response, "card content update failed")
+                    if result.success and (getattr(self, "_card_footer_elapsed", True) or getattr(self, "_card_footer_status", True)):
+                        footer_result = await self._update_card_footer_element(message_id, state=state, finalize=False)
+                        if not footer_result.success:
+                            logger.debug("[Feishu] Card footer update failed: %s", footer_result.error)
+                if result.success:
+                    result.message_id = message_id
+                    if finalize:
+                        self._streaming_card_state.pop(message_id, None)
+                        self._execution_progress_lines.pop(chat_id, None)
+                        self._tool_progress_lines.pop(chat_id, None)
+                        self._active_card_for_chat.pop(chat_id, None)
+                        self._latest_card_content.pop(message_id, None)
+                        self._tool_progress_last_update.pop(chat_id, None)
+                return result
+
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
@@ -2096,6 +2245,10 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to get chat info for %s", chat_id, exc_info=True)
             return fallback
+
+    @property
+    def REQUIRES_EDIT_FINALIZE(self) -> bool:  # noqa: N802
+        return self._uses_streaming_cards()
 
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
@@ -4004,7 +4157,335 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
-    def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+    def _ensure_card_runtime_state(self) -> None:
+        if not hasattr(self, "_streaming_card_state"):
+            self._streaming_card_state = {}
+        if not hasattr(self, "_execution_progress_lines"):
+            self._execution_progress_lines = {}
+        if not hasattr(self, "_tool_progress_lines"):
+            self._tool_progress_lines = {}
+        if not hasattr(self, "_latest_card_content"):
+            self._latest_card_content = {}
+        if not hasattr(self, "_active_card_for_chat"):
+            self._active_card_for_chat = {}
+        if not hasattr(self, "_tool_progress_last_update"):
+            self._tool_progress_last_update = {}
+        if not hasattr(self, "_tool_progress_interval"):
+            self._tool_progress_interval = 1.5
+
+    def _uses_streaming_cards(self) -> bool:
+        return str(getattr(self, "_render_mode", "text") or "text").lower() == "card" or bool(
+            getattr(self, "_always_card", False)
+        )
+
+    def _next_card_sequence(self) -> int:
+        current = int(getattr(self, "_card_update_sequence", 0) or 0) + 1
+        self._card_update_sequence = current
+        return current
+
+    @staticmethod
+    def _short_model_name(model: Optional[str]) -> str:
+        return (model or "").rsplit("/", 1)[-1]
+
+    @staticmethod
+    def _format_card_elapsed(seconds: float) -> str:
+        seconds = max(0.0, float(seconds or 0.0))
+        if seconds < 60:
+            return f"{int(round(seconds))}s"
+        minutes = int(seconds // 60)
+        rem = int(round(seconds - minutes * 60))
+        if rem >= 60:
+            minutes += 1
+            rem = 0
+        return f"{minutes}m {rem:02d}s"
+
+    @staticmethod
+    def _card_state_from_metadata(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        state: Dict[str, Any] = {}
+        if not isinstance(metadata, dict):
+            return state
+        for key in ("agent", "model", "provider"):
+            value = metadata.get(key)
+            if value:
+                state[key] = str(value)
+        return state
+
+    @staticmethod
+    def _metadata_requests_stream_preview(metadata: Optional[Dict[str, Any]]) -> bool:
+        return bool(isinstance(metadata, dict) and metadata.get("_hermes_stream_preview"))
+
+    def _build_card_footer(self, *, finalize: bool, state: Optional[Dict[str, Any]] = None) -> str:
+        state = state or {}
+        parts: List[str] = []
+        agent = str(state.get("agent") or "main").strip()
+        if agent:
+            parts.append(f"Agent: {agent}")
+        model = self._short_model_name(str(state.get("model") or ""))
+        if model:
+            parts.append(f"Model: {model}")
+        provider = str(state.get("provider") or "").strip()
+        if provider:
+            parts.append(f"Provider: {provider}")
+        if getattr(self, "_card_footer_elapsed", True):
+            started_at = state.get("started_at")
+            elapsed = 0.0
+            if started_at is not None:
+                elapsed = time.monotonic() - float(started_at or 0.0)
+            parts.append(f"Elapsed: {self._format_card_elapsed(elapsed)}")
+        if getattr(self, "_card_footer_status", True):
+            parts.append("✅ 已完成" if finalize else "生成中")
+        return " | ".join(parts)
+
+    @staticmethod
+    def _card_summary_content(content: Optional[str], *, max_chars: int = 200) -> str:
+        """Return a short, single-line CardKit summary.
+
+        Feishu CardKit accepts the full assistant response in the markdown
+        element, but the card summary/settings field is much stricter.  Passing
+        a long markdown/code-block answer there can make the final whole-card
+        update invalid, which leaves the visible card stuck in streaming mode
+        even though the answer text has finished.
+        """
+        text = re.sub(r"\s+", " ", str(content or "")).strip()
+        if not text:
+            return " "
+        if len(text) > max_chars:
+            return text[: max_chars - 1].rstrip() + "…"
+        return text
+
+    def _compose_card_content(
+        self,
+        content: str,
+        *,
+        chat_id: Optional[str] = None,
+        finalize: bool = False,
+    ) -> str:
+        """Compose the visible CardKit markdown body.
+
+        Human-readable interim assistant messages should look like one growing
+        transcript in the main card body, not like separate finalized cards and
+        not hidden inside a tool-progress panel.  Tool-progress lines remain a
+        separate optional panel; this transcript is only for semantic progress
+        such as “Wiki 验证通过，继续收尾检查”。
+        """
+        raw_content = str(content or "").strip()
+        progress_lines = list(
+            (getattr(self, "_execution_progress_lines", {}) or {}).get(chat_id or "", [])
+        )
+        if not progress_lines:
+            return raw_content or " "
+
+        parts: List[str] = []
+        for idx, line in enumerate(progress_lines):
+            clean = str(line or "").strip()
+            if not clean:
+                continue
+            parts.append(clean)
+            is_last_progress = idx == len(progress_lines) - 1
+            if not finalize or not is_last_progress or raw_content:
+                parts.append("...")
+
+        if raw_content and (not progress_lines or raw_content != str(progress_lines[-1]).strip()):
+            parts.append(raw_content)
+
+        return "\n".join(parts).strip() or " "
+
+    def _build_streaming_card_payload(
+        self,
+        content: str,
+        *,
+        finalize: bool = False,
+        chat_id: Optional[str] = None,
+        state: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        footer_text = self._build_card_footer(finalize=finalize, state=state)
+        display_content = self._compose_card_content(content, chat_id=chat_id, finalize=finalize)
+        elements: List[Dict[str, Any]] = []
+        tool_lines = list((getattr(self, "_tool_progress_lines", {}) or {}).get(chat_id or "", []))
+        if tool_lines:
+            elements.append(
+                {
+                    "tag": "collapsible_panel",
+                    "expanded": True,
+                    "header": {"title": {"tag": "plain_text", "content": "执行进度"}},
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": "\n".join(tool_lines[-20:]),
+                        }
+                    ],
+                }
+            )
+        elements.append({"tag": "markdown", "element_id": "content", "content": display_content})
+        if footer_text:
+            elements.append({"tag": "markdown", "element_id": "footer", "content": footer_text})
+        card = {
+            "schema": "2.0",
+            "config": {
+                "wide_screen_mode": True,
+                "streaming_mode": not finalize,
+                "streaming_config": {
+                    "print_frequency_ms": {"default": 50},
+                    "print_step": {"default": 1},
+                },
+                "summary": {"content": self._card_summary_content(content)},
+            },
+            "body": {"elements": elements},
+        }
+        return json.dumps(card, ensure_ascii=False)
+
+    async def append_execution_progress(
+        self,
+        chat_id: str,
+        line: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Append a semantic execution-progress line to the active CardKit card.
+
+        This is intentionally different from automatic tool progress.  It is
+        fed by the assistant's own interim status messages (for example:
+        "已完成苹果中文翻译，继续处理流式卡片"), so Feishu users see real
+        task milestones instead of command/tool names.
+        """
+        self._ensure_card_runtime_state()
+        text = str(line or "").strip()
+        if not text:
+            active = (getattr(self, "_active_card_for_chat", {}) or {}).get(chat_id)
+            return SendResult(success=True, message_id=active)
+
+        lines = list((getattr(self, "_execution_progress_lines", {}) or {}).get(chat_id, []))
+        if not lines or lines[-1] != text:
+            lines.append(text)
+        self._execution_progress_lines[chat_id] = lines[-20:]
+
+        active_card_id = (getattr(self, "_active_card_for_chat", {}) or {}).get(chat_id)
+        if not self._client or not self._uses_streaming_cards():
+            return SendResult(success=True, message_id=active_card_id)
+
+        if active_card_id and active_card_id in (getattr(self, "_streaming_card_state", {}) or {}):
+            state = self._streaming_card_state.get(active_card_id, {})
+            content = self._latest_card_content.get(active_card_id, " ")
+            payload = self._build_streaming_card_payload(
+                content,
+                chat_id=chat_id,
+                state=state,
+            )
+            body = self._build_card_update_body(data=payload)
+            request = self._build_card_update_request(active_card_id, body)
+            response = await asyncio.to_thread(self._client.cardkit.v1.card.update, request)
+            result = self._finalize_send_result(response, "card execution progress update failed")
+            if result.success:
+                result.message_id = str(active_card_id)
+            return result
+
+        state = self._card_state_from_metadata(metadata)
+        state["started_at"] = time.monotonic()
+        content = " "
+        payload = self._build_streaming_card_payload(
+            content,
+            chat_id=chat_id,
+            state=state,
+        )
+        response = await self._feishu_send_with_retry(
+            chat_id=chat_id,
+            msg_type="interactive",
+            payload=payload,
+            reply_to=None,
+            metadata=metadata,
+        )
+        result = self._finalize_send_result(response, "card execution progress send failed")
+        if not result.success:
+            return result
+        card_id = getattr(response, "hermes_feishu_card_id", None) or result.message_id
+        if card_id:
+            card_id = str(card_id)
+            self._streaming_card_state[card_id] = state
+            self._active_card_for_chat[chat_id] = card_id
+            self._latest_card_content[card_id] = content
+            self._tool_progress_last_update[chat_id] = time.monotonic()
+            result.message_id = card_id
+        return result
+
+    async def update_tool_progress(
+        self,
+        chat_id: str,
+        lines: List[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Render tool progress inside the active Feishu streaming card.
+
+        Tool-heavy turns often spend a long time in tool calls before the model
+        emits any assistant text.  If we only buffer progress until the first
+        text delta, Feishu appears to be final-only.  CardKit mode should open a
+        streaming card on the first progress line, then reuse that card for the
+        eventual assistant response.
+        """
+        self._ensure_card_runtime_state()
+        self._tool_progress_lines[chat_id] = list(lines[-20:])
+        if not self._client or not self._uses_streaming_cards():
+            return
+
+        active_card_id = (getattr(self, "_active_card_for_chat", {}) or {}).get(chat_id)
+        state: Dict[str, Any]
+        if active_card_id and active_card_id in (getattr(self, "_streaming_card_state", {}) or {}):
+            now = time.monotonic()
+            last = (getattr(self, "_tool_progress_last_update", {}) or {}).get(chat_id, 0.0)
+            interval = float(getattr(self, "_tool_progress_interval", 1.5))
+            if interval > 0 and now - float(last or 0.0) < interval:
+                return
+            self._tool_progress_last_update[chat_id] = now
+            state = self._streaming_card_state.get(active_card_id, {})
+            content = self._latest_card_content.get(active_card_id, " ")
+            payload = self._build_streaming_card_payload(
+                content,
+                chat_id=chat_id,
+                state=state,
+            )
+            body = self._build_card_update_body(data=payload)
+            request = self._build_card_update_request(active_card_id, body)
+            response = await asyncio.to_thread(self._client.cardkit.v1.card.update, request)
+            result = self._finalize_send_result(response, "card progress update failed")
+            if not result.success:
+                logger.debug("[Feishu] Card progress update failed: %s", result.error)
+            return
+
+        state = self._card_state_from_metadata(metadata)
+        state["started_at"] = time.monotonic()
+        content = " "
+        payload = self._build_streaming_card_payload(
+            content,
+            chat_id=chat_id,
+            state=state,
+        )
+        response = await self._feishu_send_with_retry(
+            chat_id=chat_id,
+            msg_type="interactive",
+            payload=payload,
+            reply_to=None,
+            metadata=metadata,
+        )
+        result = self._finalize_send_result(response, "card progress send failed")
+        if not result.success:
+            logger.debug("[Feishu] Card progress send failed: %s", result.error)
+            return
+        card_id = getattr(response, "hermes_feishu_card_id", None) or result.message_id
+        if card_id:
+            card_id = str(card_id)
+            self._streaming_card_state[card_id] = state
+            self._active_card_for_chat[chat_id] = card_id
+            self._latest_card_content[card_id] = content
+            self._tool_progress_last_update[chat_id] = time.monotonic()
+
+    def _build_outbound_payload(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> tuple[str, str]:
+        if self._uses_streaming_cards():
+            state = self._card_state_from_metadata(metadata)
+            state.setdefault("started_at", time.monotonic())
+            stream_preview = self._metadata_requests_stream_preview(metadata)
+            return "interactive", self._build_streaming_card_payload(
+                content,
+                state=state,
+                finalize=not stream_preview,
+            )
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.
@@ -4090,6 +4571,11 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         reply_in_thread = bool((metadata or {}).get("thread_id"))
+        if msg_type == "interactive" and self._uses_streaming_cards():
+            card_id = await self._create_card_message(payload)
+            payload = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
+        else:
+            card_id = None
         if reply_to:
             body = self._build_reply_message_body(
                 content=payload,
@@ -4098,7 +4584,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(reply_to, body)
-            return await asyncio.to_thread(self._client.im.v1.message.reply, request)
+            response = await asyncio.to_thread(self._client.im.v1.message.reply, request)
+            if card_id:
+                setattr(response, "hermes_feishu_card_id", card_id)
+            return response
 
         body = self._build_create_message_body(
             receive_id=chat_id,
@@ -4115,7 +4604,10 @@ class FeishuAdapter(BasePlatformAdapter):
         else:
             receive_id_type = "chat_id"
         request = self._build_create_message_request(receive_id_type, body)
-        return await asyncio.to_thread(self._client.im.v1.message.create, request)
+        response = await asyncio.to_thread(self._client.im.v1.message.create, request)
+        if card_id:
+            setattr(response, "hermes_feishu_card_id", card_id)
+        return response
 
     @staticmethod
     def _response_succeeded(response: Any) -> bool:
@@ -4146,7 +4638,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._response_error_result(response, default_message=default_message)
         return SendResult(
             success=True,
-            message_id=self._extract_response_field(response, "message_id"),
+            message_id=getattr(response, "hermes_feishu_card_id", None) or self._extract_response_field(response, "message_id"),
             raw_response=response,
         )
 
@@ -4427,6 +4919,137 @@ class FeishuAdapter(BasePlatformAdapter):
                 .build()
             )
         return SimpleNamespace(receive_id_type=receive_id_type, request_body=request_body)
+
+    async def _create_card_message(self, card_json: str) -> str:
+        body = self._build_card_create_body(data=card_json)
+        request = self._build_card_create_request(body)
+        response = await asyncio.to_thread(self._client.cardkit.v1.card.create, request)
+        if not self._response_succeeded(response):
+            raise RuntimeError(self._response_error_result(response, default_message="card create failed").error)
+        card_id = self._extract_response_field(response, "card_id")
+        if not card_id:
+            raise RuntimeError("Feishu CardKit create response missing card_id")
+        return str(card_id)
+
+    @staticmethod
+    def _build_card_create_body(*, data: str) -> Any:
+        if "CreateCardRequestBody" in globals():
+            return CreateCardRequestBody.builder().type("card_json").data(data).build()
+        return SimpleNamespace(type="card_json", data=data)
+
+    @staticmethod
+    def _build_card_create_request(request_body: Any) -> Any:
+        if "CreateCardRequest" in globals():
+            return CreateCardRequest.builder().request_body(request_body).build()
+        return SimpleNamespace(request_body=request_body)
+
+    def _build_card_content_body(self, *, content: str) -> Any:
+        sequence = self._next_card_sequence()
+        if "ContentCardElementRequestBody" in globals():
+            return (
+                ContentCardElementRequestBody.builder()
+                .content(content)
+                .sequence(sequence)
+                .uuid(str(uuid.uuid4()))
+                .build()
+            )
+        return SimpleNamespace(content=content, sequence=sequence, uuid=str(uuid.uuid4()))
+
+    @staticmethod
+    def _build_card_content_request(card_id: str, element_id: str, request_body: Any) -> Any:
+        if "ContentCardElementRequest" in globals():
+            return (
+                ContentCardElementRequest.builder()
+                .card_id(card_id)
+                .element_id(element_id)
+                .request_body(request_body)
+                .build()
+            )
+        return SimpleNamespace(card_id=card_id, element_id=element_id, request_body=request_body)
+
+    async def _update_card_content_element(
+        self,
+        card_id: str,
+        content: str,
+    ) -> SendResult:
+        body = self._build_card_content_body(content=content)
+        request = self._build_card_content_request(card_id, "content", body)
+        response = await asyncio.to_thread(self._client.cardkit.v1.card_element.content, request)
+        result = self._finalize_send_result(response, "card content update failed")
+        if result.success:
+            result.message_id = card_id
+        return result
+
+    async def _update_card_footer_element(
+        self,
+        card_id: str,
+        *,
+        state: Optional[Dict[str, Any]] = None,
+        finalize: bool = False,
+    ) -> SendResult:
+        footer = self._build_card_footer(finalize=finalize, state=state)
+        if not footer:
+            return SendResult(success=True, message_id=card_id)
+        body = self._build_card_content_body(content=footer)
+        request = self._build_card_content_request(card_id, "footer", body)
+        response = await asyncio.to_thread(self._client.cardkit.v1.card_element.content, request)
+        result = self._finalize_send_result(response, "card footer update failed")
+        if result.success:
+            result.message_id = card_id
+        return result
+
+    def _build_card_settings_body(self, *, streaming_mode: bool, summary: Optional[str] = None) -> Any:
+        sequence = self._next_card_sequence()
+        settings_payload: Dict[str, Any] = {"streaming_mode": streaming_mode}
+        if summary is not None:
+            settings_payload["summary"] = {"content": self._card_summary_content(summary)}
+        settings_data = json.dumps(settings_payload, ensure_ascii=False)
+        if "SettingsCardRequestBody" in globals():
+            return (
+                SettingsCardRequestBody.builder()
+                .settings(settings_data)
+                .sequence(sequence)
+                .uuid(str(uuid.uuid4()))
+                .build()
+            )
+        return SimpleNamespace(settings=settings_data, sequence=sequence, uuid=str(uuid.uuid4()))
+
+    @staticmethod
+    def _build_card_settings_request(card_id: str, request_body: Any) -> Any:
+        if "SettingsCardRequest" in globals():
+            return SettingsCardRequest.builder().card_id(card_id).request_body(request_body).build()
+        return SimpleNamespace(card_id=card_id, request_body=request_body)
+
+    async def _close_streaming_card(self, card_id: str, *, summary: Optional[str] = None) -> SendResult:
+        body = self._build_card_settings_body(streaming_mode=False, summary=summary)
+        request = self._build_card_settings_request(card_id, body)
+        response = await asyncio.to_thread(self._client.cardkit.v1.card.settings, request)
+        result = self._finalize_send_result(response, "card settings close failed")
+        if result.success:
+            result.message_id = card_id
+        return result
+
+    def _build_card_update_body(self, *, data: str) -> Any:
+        sequence = self._next_card_sequence()
+        if "Card" in globals():
+            card = Card.builder().type("card_json").data(data).build()
+        else:
+            card = SimpleNamespace(type="card_json", data=data)
+        if "UpdateCardRequestBody" in globals():
+            return (
+                UpdateCardRequestBody.builder()
+                .card(card)
+                .sequence(sequence)
+                .uuid(str(uuid.uuid4()))
+                .build()
+            )
+        return SimpleNamespace(card=card, sequence=sequence, uuid=str(uuid.uuid4()))
+
+    @staticmethod
+    def _build_card_update_request(card_id: str, request_body: Any) -> Any:
+        if "UpdateCardRequest" in globals():
+            return UpdateCardRequest.builder().card_id(card_id).request_body(request_body).build()
+        return SimpleNamespace(card_id=card_id, request_body=request_body)
 
     @staticmethod
     def _build_image_upload_body(*, image_type: str, image: Any) -> Any:

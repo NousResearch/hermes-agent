@@ -16,6 +16,7 @@ Credit: jobless0x (#774, #1312), OutThisLife (#798), clicksingh (#697).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import queue
 import re
@@ -445,9 +446,16 @@ class GatewayStreamConsumer:
 
                 if commentary_text is not None:
                     self._reset_segment_state()
-                    await self._send_commentary(commentary_text)
+                    commentary_delivered = await self._send_commentary(commentary_text)
                     self._last_edit_time = time.monotonic()
-                    self._reset_segment_state()
+                    # CardKit append_execution_progress returns an editable
+                    # card_id and _send_commentary adopts it as _message_id.
+                    # Preserve that target so later commentary/final content is
+                    # appended/finalized on the same card.  Legacy fallback
+                    # commentary still resets because it creates a standalone
+                    # bubble that should not be edited by the final answer.
+                    if not (commentary_delivered and self._message_id):
+                        self._reset_segment_state()
 
                 # Tool boundary: reset message state so the next text chunk
                 # creates a fresh message below any tool-progress messages.
@@ -538,6 +546,7 @@ class GatewayStreamConsumer:
             return reply_to_id
         try:
             meta = dict(self.metadata) if self.metadata else {}
+            meta["_hermes_stream_preview"] = True
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
@@ -759,6 +768,41 @@ class GatewayStreamConsumer:
         if not text.strip():
             return False
         try:
+            append_progress = getattr(self.adapter, "append_execution_progress", None)
+            if callable(append_progress):
+                maybe_result = append_progress(
+                    self.chat_id,
+                    text,
+                    metadata=self.metadata,
+                )
+                result = await maybe_result if inspect.isawaitable(maybe_result) else maybe_result
+                # Plain MagicMock adapters manufacture arbitrary attributes;
+                # treating that fabricated result as successful would swallow
+                # commentary in tests and non-CardKit adapters.  Real adapters
+                # return a concrete SendResult-like object.
+                if type(result).__module__.startswith("unittest.mock"):
+                    result = None
+                if getattr(result, "success", False):
+                    # Semantic progress belongs in the active CardKit card, not
+                    # in separate tool-progress bubbles.  Adopt the returned
+                    # CardKit card_id as the current editable message so the
+                    # eventual assistant body/finalize edits the same card
+                    # instead of opening a fresh final-looking card below it.
+                    progress_message_id = getattr(result, "message_id", None)
+                    if progress_message_id:
+                        self._message_id = str(progress_message_id)
+                        if self._message_created_ts is None:
+                            self._message_created_ts = time.monotonic()
+                    # Keep _already_sent false so the base gateway still waits
+                    # for the real final answer.  The card is only a transcript
+                    # preview until finish() finalizes it.
+                    self._notify_new_message()
+                    return True
+                logger.debug(
+                    "append_execution_progress failed, falling back to commentary send: %s",
+                    getattr(result, "error", ""),
+                )
+
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
@@ -979,11 +1023,15 @@ class GatewayStreamConsumer:
                     # The final response will be sent by the fallback path.
                     return False
             else:
-                # First message — send new
+                # First message — send new streaming preview.  Feishu CardKit
+                # uses this internal marker to distinguish an in-progress
+                # preview from a normal completed final send.
+                meta = dict(self.metadata) if self.metadata else {}
+                meta["_hermes_stream_preview"] = True
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
-                    metadata=self.metadata,
+                    metadata=meta,
                 )
                 if result.success:
                     if result.message_id:

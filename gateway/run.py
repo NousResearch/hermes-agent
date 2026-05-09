@@ -3353,12 +3353,13 @@ class GatewayRunner:
             return
 
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "claimed")
         # Terminal event kinds trigger automatic unsubscription — the task
         # is done, blocked, or in a retry-needed state that the human
         # shouldn't keep pinging a stale chat for. Previously we only
         # unsubbed when task.status in ('done', 'archived'), which left
         # subscriptions on 'blocked' / 'gave_up' / 'crashed' / 'timed_out'
-        # tasks stranded forever.
+        # tasks stranded forever. Claimed is NOT terminal.
         TERMINAL_EVENT_KINDS = TERMINAL_KINDS
         # Per-subscription send-failure counter. Adapter.send raising
         # means the chat is dead (deleted, bot kicked, etc.) — after N
@@ -3403,7 +3404,7 @@ class GatewayRunner:
                                     platform=sub["platform"],
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
+                                    kinds=NOTIFY_KINDS,
                                 )
                                 if not events:
                                     continue
@@ -3490,6 +3491,14 @@ class GatewayRunner:
                             msg = (
                                 f"⏱ {tag}Kanban {sub['task_id']} timed out "
                                 f"(max_runtime={limit}s); will retry"
+                            )
+                        elif kind == "claimed":
+                            who_claimed = ""
+                            if ev.payload and ev.payload.get("claimer"):
+                                who_claimed = f" by @{ev.payload['claimer']}"
+                            msg = (
+                                f"▶ {tag}Kanban {sub['task_id']} started{who_claimed}"
+                                f" — {title}"
                             )
                         else:
                             continue
@@ -3737,6 +3746,27 @@ class GatewayRunner:
         logger.info(
             "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
         )
+
+        # SIGUSR1 = immediate dispatch wake. Helper scripts send this after
+        # creating a task so the worker spawns in <1s instead of waiting up
+        # to dispatch_interval_seconds for the next tick.
+        _dispatch_wake = asyncio.Event()
+
+        def _handle_sigusr1(*_):
+            """Schedule an event set on the running loop (signal-safe)."""
+            try:
+                loop = asyncio.get_running_loop()
+                loop.call_soon_threadsafe(_dispatch_wake.set)
+            except Exception:
+                pass
+
+        import signal as _signal
+        try:
+            loop = asyncio.get_running_loop()
+            loop.add_signal_handler(_signal.SIGUSR1, _handle_sigusr1)
+        except (NotImplementedError, OSError):
+            pass  # Windows or unsupported platform — degrade gracefully
+
         while self._running:
             try:
                 results = await asyncio.to_thread(_tick_once)
@@ -3780,12 +3810,17 @@ class GatewayRunner:
             except Exception:
                 logger.exception("kanban dispatcher: unexpected watcher error")
 
-            # Sleep in 1s slices so shutdown is snappy — otherwise a stop()
-            # waits up to `interval` seconds for the current sleep to finish.
-            slept = 0.0
-            while slept < interval and self._running:
-                await asyncio.sleep(min(1.0, interval - slept))
-                slept += 1.0
+            # Wait for the interval OR a SIGUSR1 wake — whichever comes first.
+            _dispatch_wake.clear()
+            try:
+                await asyncio.wait_for(
+                    _dispatch_wake.wait(),
+                    timeout=interval,
+                )
+            except asyncio.TimeoutError:
+                pass
+            if not self._running:
+                return
 
     async def _platform_reconnect_watcher(self) -> None:
         """Background task that periodically retries connecting failed platforms.

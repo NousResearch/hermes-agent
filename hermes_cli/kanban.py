@@ -150,6 +150,75 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Notify-routes auto-subscribe helper
+# ---------------------------------------------------------------------------
+
+def _load_notify_routes() -> dict:
+    """Load profile→platform routes from ~/.hermes/kanban/notify-routes.yaml.
+
+    Returns empty dict on any error (missing file, bad YAML, import failure).
+    Schema:
+        routes:
+          <profile>:
+            platform: telegram
+            chat_id: "<id>"
+            thread_id: null   # optional
+    """
+    import os
+    routes_path = Path(os.path.expanduser("~/.hermes/kanban/notify-routes.yaml"))
+    if not routes_path.exists():
+        return {}
+    try:
+        import yaml  # type: ignore[import]
+        data = yaml.safe_load(routes_path.read_text()) or {}
+    except Exception:
+        return {}
+    return data.get("routes", {}) or {}
+
+
+def _auto_subscribe_from_routes(
+    task_id: str,
+    assignee: Optional[str],
+    board: Optional[str] = None,
+) -> None:
+    """Auto-subscribe assignee's notify route (if any) to task_id.
+
+    Silently skips when:
+    - assignee is None
+    - no route for assignee in notify-routes.yaml
+    - route is missing platform or chat_id
+    Logs a warning on subscribe failure but does NOT raise.
+    """
+    if not assignee:
+        return
+    routes = _load_notify_routes()
+    route = routes.get(assignee)
+    if not route:
+        return
+    platform = route.get("platform")
+    chat_id = route.get("chat_id")
+    thread_id = route.get("thread_id") or None
+    if not platform or not chat_id:
+        print(
+            f"kanban: warn: route for '{assignee}' missing platform/chat_id; skipping auto-subscribe",
+            file=sys.stderr,
+        )
+        return
+    try:
+        with kb.connect(board=board) as conn:
+            kb.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=platform,
+                chat_id=str(chat_id),
+                thread_id=str(thread_id) if thread_id else None,
+                user_id=None,
+            )
+    except Exception as exc:
+        print(f"kanban: warn: auto-subscribe failed for {task_id}: {exc}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Argparse builder
 # ---------------------------------------------------------------------------
 
@@ -1000,6 +1069,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             skills=getattr(args, "skills", None) or None,
         )
         task = kb.get_task(conn, task_id)
+    # Auto-subscribe assignee's notify route (if any).
+    _auto_subscribe_from_routes(task_id, args.assignee, board=getattr(args, "board", None))
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:
@@ -1212,6 +1283,8 @@ def _cmd_assign(args: argparse.Namespace) -> int:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
     print(f"Assigned {args.task_id} to {profile or '(unassigned)'}")
+    # Auto-subscribe new assignee's notify route (if any).
+    _auto_subscribe_from_routes(args.task_id, profile, board=getattr(args, "board", None))
     return 0
 
 

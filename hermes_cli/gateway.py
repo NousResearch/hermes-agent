@@ -2456,6 +2456,13 @@ def systemd_restart(system: bool = False):
                 _print_systemd_start_limit_wait(system=system)
                 return
             raise
+        except subprocess.TimeoutExpired:
+            label = _service_scope_label(system)
+            print(
+                f"Gateway {label} service is still restarting after 90s; "
+                "check `hermes gateway status` or logs for final state."
+            )
+            return
         _wait_for_systemd_service_restart(system=system, previous_pid=pid)
         return
 
@@ -2475,6 +2482,13 @@ def systemd_restart(system: bool = False):
             _print_systemd_start_limit_wait(system=system)
             return
         raise
+    except subprocess.TimeoutExpired:
+        label = _service_scope_label(system)
+        print(
+            f"Gateway {label} service is still restarting after 90s; "
+            "check `hermes gateway status` or logs for final state."
+        )
+        return
     _wait_for_systemd_service_restart(system=system, previous_pid=pid)
 
 

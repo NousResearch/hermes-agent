@@ -43,11 +43,22 @@ jobs:
           source .venv/bin/activate
           uv pip install -e ".[all,dev]"
 
+      # Replace pyproject.toml addopts (-n auto) with scripts/run_tests.sh parity: 4 workers.
+      # Larger -n auto counts on ubuntu-latest can surface xdist-only flakes.
       - name: Run tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
+          python -m pytest tests/ \
+            -q \
+            --ignore=tests/integration \
+            --ignore=tests/e2e \
+            --tb=short \
+            --override-ini "addopts=-m 'not integration' -n 4"
         env:
+          TZ: UTC
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+          PYTHONHASHSEED: "0"
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

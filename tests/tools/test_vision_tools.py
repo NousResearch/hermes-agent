@@ -499,6 +499,37 @@ class TestVisionSafetyGuards:
         assert not (tmp_path / "cat.png").exists()
 
 
+class TestVisionTimeoutFallback:
+    @pytest.mark.asyncio
+    async def test_timeout_returns_local_ocr_fallback_when_available(self, tmp_path):
+        img = tmp_path / "dashboard.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        fake_completed = MagicMock()
+        fake_completed.stdout = "AI @HOT\nClaude Opus 正式发布\n"
+        fake_completed.stderr = ""
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=TimeoutError("Request timed out."),
+            ),
+            patch("tools.vision_tools.shutil.which", return_value="/opt/homebrew/bin/tesseract"),
+            patch("tools.vision_tools.subprocess.run", return_value=fake_completed),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe this"))
+
+        assert result["success"] is True
+        assert result["fallback"] == "local_ocr"
+        assert "Vision model timed out" in result["analysis"]
+        assert "AI @HOT" in result["analysis"]
+
+
 # ---------------------------------------------------------------------------
 # check_vision_requirements
 # ---------------------------------------------------------------------------

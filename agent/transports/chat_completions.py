@@ -10,6 +10,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
+import json
 from typing import Any, Dict, List, Optional
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -117,6 +118,11 @@ class ChatCompletionsTransport(ProviderTransport):
         Strips Codex Responses API fields (``codex_reasoning_items`` /
         ``codex_message_items`` on the message, ``call_id``/``response_item_id``
         on tool_calls) that strict chat-completions providers reject with 400/422.
+
+        Also serializes non-string ``tool`` message content (e.g. dicts returned
+        by custom-tools plugin tools) to JSON. The Anthropic and Bedrock adapters
+        already do this; without it, OpenAI-compatible providers reject the
+        request with HTTP 400 ``messages.X.content: Invalid input``.
         """
         needs_sanitize = False
         for msg in messages:
@@ -125,6 +131,11 @@ class ChatCompletionsTransport(ProviderTransport):
             if "codex_reasoning_items" in msg or "codex_message_items" in msg:
                 needs_sanitize = True
                 break
+            if msg.get("role") == "tool":
+                content = msg.get("content")
+                if content is not None and not isinstance(content, str):
+                    needs_sanitize = True
+                    break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
@@ -145,6 +156,13 @@ class ChatCompletionsTransport(ProviderTransport):
                 continue
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
+            if msg.get("role") == "tool":
+                content = msg.get("content")
+                if content is not None and not isinstance(content, str):
+                    try:
+                        msg["content"] = json.dumps(content, ensure_ascii=False, default=str)
+                    except (TypeError, ValueError):
+                        msg["content"] = str(content)
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:

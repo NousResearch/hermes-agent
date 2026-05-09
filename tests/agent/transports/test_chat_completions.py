@@ -30,6 +30,34 @@ class TestChatCompletionsBasic:
         result = transport.convert_messages(msgs)
         assert result is msgs  # no copy needed
 
+    def test_convert_messages_serializes_dict_tool_content(self, transport):
+        """Issue #19814: tool messages whose content is a dict (from custom-tools
+        plugins) must be JSON-serialized — OpenAI-compatible providers reject
+        non-string content with HTTP 400 messages.X.content: Invalid input."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_call_id": "c1", "content": {"messages": ["m1"], "count": 1}},
+        ]
+        result = transport.convert_messages(msgs)
+        assert isinstance(result[1]["content"], str)
+        import json as _json
+        assert _json.loads(result[1]["content"]) == {"messages": ["m1"], "count": 1}
+        # Original list untouched
+        assert isinstance(msgs[1]["content"], dict)
+
+    def test_convert_messages_leaves_string_tool_content_alone(self, transport):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_call_id": "c1", "content": "plain string"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert result is msgs  # no copy needed
+
+    def test_convert_messages_serializes_list_tool_content(self, transport):
+        msgs = [{"role": "tool", "tool_call_id": "c1", "content": [{"a": 1}]}]
+        result = transport.convert_messages(msgs)
+        assert isinstance(result[0]["content"], str)
+
     def test_convert_messages_strips_codex_fields(self, transport):
         msgs = [
             {"role": "assistant", "content": "ok", "codex_reasoning_items": [{"id": "rs_1"}],

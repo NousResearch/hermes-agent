@@ -1633,9 +1633,12 @@ def _run_single_child(
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
                     content = msg.get("content", "")
-                    is_error = bool(content and "error" in content[:80].lower())
+                    # Plugin-supplied custom tools may stash a dict here; coerce
+                    # so slicing/len() don't raise KeyError or TypeError.
+                    content_str = content if isinstance(content, str) else str(content) if content is not None else ""
+                    is_error = bool(content_str and "error" in content_str[:80].lower())
                     result_meta = {
-                        "result_bytes": len(content),
+                        "result_bytes": len(content_str),
                         "status": "error" if is_error else "ok",
                     }
                     # Match by tool_call_id for parallel calls

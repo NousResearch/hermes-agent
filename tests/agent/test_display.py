@@ -10,6 +10,7 @@ from agent.display import (
     extract_edit_diff,
     get_cute_tool_message,
     set_tool_preview_max_len,
+    _detect_tool_failure,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
@@ -255,3 +256,42 @@ class TestEditDiffPreview:
         assert any("a/file2.py" in line for line in rendered)
         assert not any("a/file7.py" in line for line in rendered)
         assert "additional file" in rendered[-1]
+
+
+class TestDetectToolFailure:
+    """Plugin custom tools may return non-string results (e.g. dicts).
+    Issue #19814: dict input must not raise KeyError(slice(None, 500, None))."""
+
+    def test_string_success(self):
+        assert _detect_tool_failure("read_mail", "ok 5 messages") == (False, "")
+
+    def test_string_error_keyword(self):
+        is_failure, suffix = _detect_tool_failure("read_mail", 'Error: not found')
+        assert is_failure is True
+        assert suffix == " [error]"
+
+    def test_dict_result_does_not_crash(self):
+        # Custom-tools plugin tools may hand back dicts. The repr should be
+        # inspected without raising KeyError.
+        is_failure, suffix = _detect_tool_failure(
+            "read_mail", {"messages": ["m1"], "count": 1}
+        )
+        assert is_failure is False
+        assert suffix == ""
+
+    def test_dict_result_with_error_marker_does_not_crash(self):
+        # Non-string results bail out of failure detection (narrow semantics
+        # preserved by main); the only requirement is that they don't crash.
+        is_failure, suffix = _detect_tool_failure(
+            "check_budget", {"error": "over limit", "code": 429}
+        )
+        assert is_failure is False
+        assert suffix == ""
+
+    def test_none_result(self):
+        assert _detect_tool_failure("anything", None) == (False, "")
+
+    def test_list_result_does_not_crash(self):
+        # Some custom tools may return lists; same defensive coercion path.
+        is_failure, _ = _detect_tool_failure("any_tool", [1, 2, 3])
+        assert is_failure is False

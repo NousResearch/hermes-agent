@@ -525,6 +525,40 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertEqual(trace[2]["status"], "ok")
             self.assertIn("result_bytes", trace[2])
 
+    def test_tool_trace_handles_non_string_content(self):
+        """Issue #19814: custom-tools plugin tools may stash a dict in
+        ``message.content``. The tool_trace builder must not crash on it."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "read_mail", "arguments": "{}"}}
+                    ]},
+                    # Dict content from custom-tools plugin — used to crash with
+                    # KeyError(slice(None, 80, None)).
+                    {"role": "tool", "tool_call_id": "tc_1",
+                     "content": {"messages": ["m1", "m2"], "count": 2}},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test dict content", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            self.assertEqual(len(trace), 1)
+            self.assertEqual(trace[0]["tool"], "read_mail")
+            self.assertEqual(trace[0]["status"], "ok")
+            self.assertIn("result_bytes", trace[0])
+
     def test_exit_reason_interrupted(self):
         """Interrupted child should report exit_reason='interrupted'."""
         parent = _make_mock_parent(depth=0)

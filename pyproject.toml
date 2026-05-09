@@ -12,6 +12,7 @@ authors = [{ name = "Nous Research" }]
 license = { text = "MIT" }
 dependencies = [
   # Core — pinned to known-good ranges to limit supply chain attack surface
+  "aiofiles>=24.1.0,<26",
   "openai>=2.21.0,<3",
   "anthropic>=0.39.0,<1",
   "python-dotenv>=1.2.1,<2",

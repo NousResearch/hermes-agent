@@ -15,6 +15,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
+from agent.context_file_io import read_many_sync, read_text_sync
 from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
@@ -1307,7 +1308,7 @@ def load_soul_md() -> Optional[str]:
     if not soul_path.exists():
         return None
     try:
-        content = soul_path.read_text(encoding="utf-8").strip()
+        content = read_text_sync(soul_path, encoding="utf-8").strip()
         if not content:
             return None
         content = _scan_context_content(content, "SOUL.md")
@@ -1324,7 +1325,7 @@ def _load_hermes_md(cwd_path: Path) -> str:
     if not hermes_md_path:
         return ""
     try:
-        content = hermes_md_path.read_text(encoding="utf-8").strip()
+        content = read_text_sync(hermes_md_path, encoding="utf-8").strip()
         if not content:
             return ""
         content = _strip_yaml_frontmatter(content)
@@ -1347,7 +1348,7 @@ def _load_agents_md(cwd_path: Path) -> str:
         candidate = cwd_path / name
         if candidate.exists():
             try:
-                content = candidate.read_text(encoding="utf-8").strip()
+                content = read_text_sync(candidate, encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
@@ -1363,7 +1364,7 @@ def _load_claude_md(cwd_path: Path) -> str:
         candidate = cwd_path / name
         if candidate.exists():
             try:
-                content = candidate.read_text(encoding="utf-8").strip()
+                content = read_text_sync(candidate, encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
@@ -1379,7 +1380,7 @@ def _load_cursorrules(cwd_path: Path) -> str:
     cursorrules_file = cwd_path / ".cursorrules"
     if cursorrules_file.exists():
         try:
-            content = cursorrules_file.read_text(encoding="utf-8").strip()
+            content = read_text_sync(cursorrules_file, encoding="utf-8").strip()
             if content:
                 content = _scan_context_content(content, ".cursorrules")
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
@@ -1389,9 +1390,10 @@ def _load_cursorrules(cwd_path: Path) -> str:
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
     if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
         mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
-        for mdc_file in mdc_files:
+        bodies = read_many_sync(mdc_files, encoding="utf-8")
+        for mdc_file, raw in zip(mdc_files, bodies, strict=True):
             try:
-                content = mdc_file.read_text(encoding="utf-8").strip()
+                content = raw.strip()
                 if content:
                     content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
                     cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"

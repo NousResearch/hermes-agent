@@ -1645,6 +1645,25 @@ class ExtractContentMiddleware(InboundMiddleware):
             return None
         return f"[link: {link} | visit link for full content]"
 
+    @staticmethod
+    def _parse_resource_id(url: str) -> str:
+        """Extract resourceId from Yuanbao resource URL query parameters.
+
+        Args:
+            url: Resource URL (e.g., https://...?resourceId=abc123)
+
+        Returns:
+            Resource ID string, or empty string if not found
+        """
+        if not url:
+            return ""
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            ids = query.get("resourceId") or query.get("resourceid") or []
+            return str(ids[0]).strip() if ids else ""
+        except Exception:
+            return ""
+
     @classmethod
     def _extract_text(cls, msg_body: list) -> str:
         """Extract plain text content from MsgBody.
@@ -1668,14 +1687,35 @@ class ExtractContentMiddleware(InboundMiddleware):
                 if text:
                     parts.append(text)
             elif elem_type == "TIMImageElem":
-                parts.append("[image]")
+                # Extract resourceId from image_info_array URL
+                image_info_array = content.get("image_info_array")
+                if not isinstance(image_info_array, list):
+                    image_info_array = []
+                image_info = None
+                # Prefer medium image (index 1), fallback to index 0
+                if len(image_info_array) > 1 and isinstance(image_info_array[1], dict):
+                    image_info = image_info_array[1]
+                elif len(image_info_array) > 0 and isinstance(image_info_array[0], dict):
+                    image_info = image_info_array[0]
+                image_url = str((image_info or {}).get("url") or "").strip()
+                rid = cls._parse_resource_id(image_url)
+                parts.append(f"[image|ybres:{rid}]" if rid else "[image]")
             elif elem_type == "TIMFileElem":
                 filename = content.get("file_name", content.get("fileName", content.get("filename", "")))
-                parts.append(f"[file: {filename}]" if filename else "[file]")
+                file_url = str(content.get("url") or "").strip()
+                rid = cls._parse_resource_id(file_url)
+                if rid:
+                    parts.append(f"[file:{filename}|ybres:{rid}]" if filename else f"[file|ybres:{rid}]")
+                else:
+                    parts.append(f"[file: {filename}]" if filename else "[file]")
             elif elem_type == "TIMSoundElem":
-                parts.append("[voice]")
+                sound_url = str(content.get("url") or "").strip()
+                rid = cls._parse_resource_id(sound_url)
+                parts.append(f"[voice|ybres:{rid}]" if rid else "[voice]")
             elif elem_type == "TIMVideoFileElem":
-                parts.append("[video]")
+                video_url = str(content.get("url") or "").strip()
+                rid = cls._parse_resource_id(video_url)
+                parts.append(f"[video|ybres:{rid}]" if rid else "[video]")
             elif elem_type == "TIMCustomElem":
                 data_val = content.get("data", "")
                 if data_val:

@@ -203,7 +203,7 @@ function buildNavItems(
     const pluginItem: NavItem = {
       path: manifest.tab.path,
       label: manifest.label,
-      labelKey: manifest.name === "kanban" ? "kanban" : undefined,
+      labelKey: manifest.name === "kanban" ? "kanban" : manifest.name === "hermes-achievements" ? "achievements" : undefined,
       icon: resolveIcon(manifest.icon),
     };
 

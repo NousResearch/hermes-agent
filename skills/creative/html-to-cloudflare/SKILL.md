@@ -92,33 +92,35 @@ Cloudflare Pages auto-deploys on push — typically live within 30 seconds.
 
 Each gets its own entry in the hub index.
 
-## Wiki as HTML pages
+## Wiki as HTML pages (md2html)
 
-Gordon maintains his personal wiki in markdown (`/opt/data/wiki/`) and wants it rendered as HTML on Cloudflare. Workflow:
+Gordon maintains his personal wiki in markdown (`/opt/data/wiki/`). Convert and publish:
 
-1. **Write markdown** — entities, concepts, comparisons in the wiki dir
-2. **Convert to HTML** — use `/opt/data/scripts/md2html.py`:
-   - Reads all `.md` files under the wiki directory
-   - Applies dark GitHub-style theme (matching the landing page aesthetic)
-   - Adds a top navigation bar with links to key wiki pages
-   - Outputs `.html` files mirroring the wiki structure under `/opt/data/hermes-pages-repo/wiki/`
-   - Strips YAML frontmatter before rendering
-   - Converts wikilinks `[[Page Name]]` to `<a href="Page-Name.html">Page Name</a>`
-3. **Push** — commit to `hermes-pages` repo: `cd /opt/data/hermes-pages-repo && git add wiki/ && git commit -m "Update wiki" && GIT_TERMINAL_PROMPT=0 git push origin main`
-4. **Access control** — Cloudflare Zero Trust Access (free for 50 users) secures the wiki:
-   - Go to **dash.cloudflare.com → Zero Trust → Settings → Authentication → Add identity provider → GitHub** (easiest since Gordon uses GitHub)
-   - Create an Access Policy for `hermes-pages.rouse-gordon.workers.dev/wiki/*`
-   - Include Gordon's email or GitHub identity; action: Allow
-   - Note: this locks the entire `workers.dev` subdomain. If landing pages should stay public, need separate subdomains.
-   - If Gordon can't find Settings: try **cloudflare.com/zero-trust** directly, or in Pages: **Workers & Pages → hermes-pages → Settings → Restrictions**
+1. **Run the converter:**
+   ```
+   python3 /opt/data/skills/creative/html-to-cloudflare/scripts/md2html.py /opt/data/wiki --dest /opt/data/hermes-pages-repo/wiki
+   ```
+   Output: `index.html` (login), plus `.html` for each wiki `.md` file, all with auth-check.
 
-## Cloudflare Access setup troubleshooting
+2. **Push to hermes-pages:**
+   ```
+   cd /opt/data/hermes-pages-repo && git add wiki/ && git commit -m "Update wiki" && GIT_TERMINAL_PROMPT=0 git push origin main
+   ```
+   Live in ~30 seconds at `https://hermes-pages.rouse-gordon.workers.dev/wiki/`
 
-Gordon couldn't find Settings at cloudflare.com/zero-trust. Possible paths:
-- **Zero Trust dashboard**: dash.cloudflare.com → Left sidebar → Zero Trust → Settings tab
-- **Pages project**: Workers & Pages → hermes-pages project → Settings → General → Access Policy
-- **Direct URL**: cloudflare.com/zero-trust
-- The key setting is under **Access → Applications** to create a policy targeting `/wiki/*`
+3. **Password:** `GordonWiki2026!` (hardcoded in the script — change in both LOGIN and AUTH_CHECK vars if Gordon ever changes it)
+
+### Client-side auth pattern (vs Cloudflare Access)
+
+When Cloudflare Access isn't available (Workers.dev free tier doesn't have it built in), use client-side cookie auth:
+
+- **login.html** — shows password field, checks input against hardcoded secret, sets `wiki_auth=GW2026` cookie on success, redirects back to intended page via `?dst=` param
+- **Wiki pages** — inline `<script>` checks for `wiki_auth=GW2026` cookie, redirects to login if missing. No server round-trip.
+- **Cookie:** `path=/wiki; max-age=31536000; SameSite=Strict` — scoped to wiki path, lasts 1 year
+- **Pros:** No Cloudflare product needed, works on any static host
+- **Cons:** Anyone who knows the password can extract the cookie value from their own browser and share it; not enterprise-grade
+
+If Gordon later wants enterprise-grade auth, set up **Cloudflare Zero Trust** (cloudflare.com/zero-trust → Settings → Authentication → Add GitHub identity provider → Access Policy for `/wiki/*`).
 
 ## Pitfalls
 

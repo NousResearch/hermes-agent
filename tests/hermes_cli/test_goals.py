@@ -514,3 +514,56 @@ class TestJudgeParseFailureAutoPause:
         reloaded = load_goal("parse-fail-sid-4")
         assert reloaded is not None
         assert reloaded.consecutive_parse_failures == 2
+
+# ──────────────────────────────────────────────────────────────────────
+# Tool iteration cap handling
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_goal_continues_after_tool_iteration_limit_summary(hermes_home):
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager("tool-limit-sid", default_max_turns=20)
+    mgr.set("complete all refactor waves")
+
+    summary = (
+        "PARTIAL — tool-call iteration limit hit. Current wave: Wave 5. "
+        "Resource limits prevent full completion; resume with /goal resume."
+    )
+
+    with patch("hermes_cli.goals.judge_goal") as judge_goal:
+        decision = mgr.evaluate_after_turn(summary, user_initiated=False)
+
+    judge_goal.assert_not_called()
+    assert decision["status"] == "active"
+    assert decision["should_continue"] is True
+    assert decision["verdict"] == "continue"
+    assert "tool-call iteration limit" in decision["message"]
+
+    state = GoalManager("tool-limit-sid").state
+    assert state is not None
+    assert state.status == "active"
+    assert state.turns_used == 1
+    assert state.last_verdict == "continue"
+
+
+def test_goal_pauses_after_tool_iteration_limit_when_turn_budget_exhausted(hermes_home):
+    from hermes_cli.goals import GoalManager, save_goal
+
+    mgr = GoalManager("tool-limit-budget-sid", default_max_turns=1)
+    state = mgr.set("complete all refactor waves", max_turns=1)
+    save_goal("tool-limit-budget-sid", state)
+
+    decision = mgr.evaluate_after_turn(
+        "You've reached the maximum number of tool-calling iterations allowed.",
+        user_initiated=False,
+    )
+
+    assert decision["status"] == "paused"
+    assert decision["should_continue"] is False
+    assert "turns used" in decision["message"]
+
+    state = GoalManager("tool-limit-budget-sid").state
+    assert state is not None
+    assert state.status == "paused"
+    assert state.paused_reason == "turn budget exhausted (1/1)"

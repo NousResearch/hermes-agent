@@ -12,11 +12,12 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -73,6 +74,8 @@ def _make_runner_with_adapter(session_id: str = None):
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._queued_events = {}
+    runner._background_tasks = set()
+    runner._goal_background_missions = {}
 
     src = _make_source()
     # Default to a unique session_id so xdist parallel runs on the same worker
@@ -219,3 +222,144 @@ async def test_goal_verdict_survives_adapter_without_send(hermes_home):
             final_response="whatever",
         )
         await asyncio.sleep(0.05)
+
+
+def _make_goal_event(text: str = "/goal ship the feature") -> MessageEvent:
+    return MessageEvent(text=text, source=_make_source(), message_id="m1")
+
+
+@pytest.mark.asyncio
+async def test_goal_set_starts_background_mission_without_replaying_goal_as_plain_text(hermes_home):
+    """/goal <text> should not enqueue <text> as a normal foreground turn."""
+    runner, _adapter, _session_entry, _src = _make_runner_with_adapter()
+    runner._enqueue_fifo = MagicMock()
+    runner._run_goal_background_mission = AsyncMock()
+
+    response = await runner._handle_goal_command(_make_goal_event("/goal ship the feature"))
+    await asyncio.sleep(0)
+
+    assert "Goal set" in response
+    runner._enqueue_fifo.assert_not_called()
+    runner._run_goal_background_mission.assert_awaited_once()
+    await_args = runner._run_goal_background_mission.await_args
+    assert await_args is not None
+    state_arg, source_arg = await_args.args
+    assert state_arg.goal == "ship the feature"
+    assert source_arg.chat_id == "c1"
+
+
+@pytest.mark.asyncio
+async def test_goal_resume_restarts_background_mission(hermes_home):
+    """/goal resume must actually restart the autonomous background mission."""
+    runner, _adapter, session_entry, _src = _make_runner_with_adapter()
+    runner._run_goal_background_mission = AsyncMock()
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_entry.session_id)
+    state = mgr.set("ship the feature")
+    mgr.pause(reason="test pause")
+
+    response = await runner._handle_goal_command(_make_goal_event("/goal resume"))
+    await asyncio.sleep(0)
+
+    assert "Goal resumed" in response
+    assert "background mission" in response
+    runner._run_goal_background_mission.assert_awaited_once()
+    await_args = runner._run_goal_background_mission.await_args
+    assert await_args is not None
+    state_arg, source_arg = await_args.args
+    assert state_arg.goal == state.goal
+    assert source_arg.chat_id == "c1"
+
+
+@pytest.mark.asyncio
+async def test_goal_background_mission_judges_response_and_marks_goal_done(hermes_home):
+    """The dedicated /goal mission must still feed output into GoalManager."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    state = GoalManager(session_entry.session_id).set("ship the feature")
+    runner._run_background_task = AsyncMock(return_value="I shipped the feature.")
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "the feature shipped", False)):
+        await runner._run_goal_background_mission(state, src)
+
+    runner._run_background_task.assert_awaited_once()
+    assert any("Goal achieved" in send["content"] for send in adapter.sends)
+    assert not GoalManager(session_entry.session_id).is_active()
+
+
+@pytest.mark.asyncio
+async def test_goal_background_mission_does_not_resurrect_cleared_goal(hermes_home):
+    """A stale background mission must not overwrite /goal clear."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_entry.session_id)
+    state = mgr.set("ship the feature")
+
+    async def _clear_during_background(_prompt, _source, _task_id):
+        GoalManager(session_entry.session_id).clear()
+        return "I shipped the old feature."
+
+    runner._run_background_task = AsyncMock(side_effect=_clear_during_background)
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "old goal done", False)):
+        await runner._run_goal_background_mission(state, src)
+
+    current = GoalManager(session_entry.session_id)._state
+    assert current is not None
+    assert current.status == "cleared"
+    assert adapter.sends == []
+
+
+@pytest.mark.asyncio
+async def test_goal_background_mission_does_not_overwrite_replaced_goal(hermes_home):
+    """A stale mission for one goal must not mutate a newer replacement goal."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_entry.session_id)
+    state = mgr.set("old goal")
+
+    async def _replace_during_background(_prompt, _source, _task_id):
+        GoalManager(session_entry.session_id).set("new goal")
+        return "I completed the old goal."
+
+    runner._run_background_task = AsyncMock(side_effect=_replace_during_background)
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "old goal done", False)):
+        await runner._run_goal_background_mission(state, src)
+
+    current = GoalManager(session_entry.session_id)._state
+    assert current is not None
+    assert current.goal == "new goal"
+    assert current.status == "active"
+    assert adapter.sends == []
+
+
+@pytest.mark.asyncio
+async def test_post_turn_goal_continuation_skips_when_background_mission_owns_goal(hermes_home):
+    """Foreground turns must not enqueue goal continuations during background /goal work."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    state = GoalManager(session_entry.session_id).set("ship the feature")
+    runner._goal_background_missions[session_entry.session_id] = (state.goal, state.created_at)
+    runner._enqueue_fifo = MagicMock()
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("continue", "keep going", False)) as judge:
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="foreground chat reply",
+        )
+
+    judge.assert_not_called()
+    runner._enqueue_fifo.assert_not_called()
+    assert adapter.sends == []

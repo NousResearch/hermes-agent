@@ -8598,9 +8598,8 @@ class GatewayRunner:
         ``/goal resume`` / ``/goal clear``. Any other text becomes the
         new goal.
 
-        Setting a new goal queues the goal text as the next turn so the
-        agent starts working on it immediately — the post-turn
-        continuation hook then takes over from there.
+        Setting a new goal starts a dedicated background mission. The raw
+        goal text must not be replayed as a normal foreground chat turn.
         """
         args = (event.get_command_args() or "").strip()
         lower = args.lower()
@@ -8629,9 +8628,27 @@ class GatewayRunner:
             state = mgr.resume()
             if state is None:
                 return "No goal to resume."
+            if event.source is not None:
+                try:
+                    session_id = getattr(session_entry, "session_id", None)
+                    if session_id:
+                        goal_missions = getattr(self, "_goal_background_missions", None)
+                        if goal_missions is None:
+                            goal_missions = {}
+                            self._goal_background_missions = goal_missions
+                        goal_missions[session_id] = (state.goal, state.created_at)
+                    goal_task = asyncio.create_task(
+                        self._run_goal_background_mission(state, event.source)
+                    )
+                    background_tasks = getattr(self, "_background_tasks", None)
+                    if background_tasks is not None:
+                        background_tasks.add(goal_task)
+                        goal_task.add_done_callback(background_tasks.discard)
+                except Exception as exc:
+                    logger.debug("goal background mission resume failed: %s", exc)
             return (
                 f"▶ Goal resumed: {state.goal}\n"
-                "Send any message to continue, or wait — I'll take the next step on the next turn."
+                "I'll continue it in a dedicated background mission."
             )
 
         if lower in ("clear", "stop", "done"):
@@ -8652,28 +8669,103 @@ class GatewayRunner:
         except ValueError as exc:
             return f"Invalid goal: {exc}"
 
-        # Queue the goal text as an immediate first turn so the agent
-        # starts making progress. The post-turn hook takes over after.
-        adapter = self.adapters.get(event.source.platform) if event.source else None
-        _quick_key = self._session_key_for_source(event.source) if event.source else None
-        if adapter and _quick_key:
+        # Start goal work out-of-band. Do NOT replay the raw goal text as a
+        # normal pending chat message: the slash command already received its
+        # acknowledgement, and injecting the stripped payload back into the
+        # foreground FIFO makes the assistant treat it as an ordinary prompt.
+        if event.source is not None:
             try:
-                kickoff_event = MessageEvent(
-                    text=state.goal,
-                    message_type=MessageType.TEXT,
-                    source=event.source,
-                    message_id=event.message_id,
-                    channel_prompt=event.channel_prompt,
+                session_id = getattr(session_entry, "session_id", None)
+                if session_id:
+                    goal_missions = getattr(self, "_goal_background_missions", None)
+                    if goal_missions is None:
+                        goal_missions = {}
+                        self._goal_background_missions = goal_missions
+                    goal_missions[session_id] = (state.goal, state.created_at)
+                goal_task = asyncio.create_task(
+                    self._run_goal_background_mission(state, event.source)
                 )
-                self._enqueue_fifo(_quick_key, kickoff_event, adapter)
+                background_tasks = getattr(self, "_background_tasks", None)
+                if background_tasks is not None:
+                    background_tasks.add(goal_task)
+                    goal_task.add_done_callback(background_tasks.discard)
             except Exception as exc:
-                logger.debug("goal kickoff enqueue failed: %s", exc)
+                logger.debug("goal background mission start failed: %s", exc)
 
         return (
             f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
-            "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
+            "I'll work on it in a dedicated background mission until it completes, you pause/clear it, or the budget is exhausted.\n"
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )
+
+    async def _run_goal_background_mission(self, state: Any, source: Any) -> None:
+        """Execute /goal work in a separate background session with judge loop."""
+        task_id = f"goal_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        prompt = str(getattr(state, "goal", "") or "").strip()
+        if not prompt:
+            return
+
+        try:
+            session_entry = self.session_store.get_or_create_session(source)
+        except Exception:
+            session_entry = None
+        session_id = getattr(session_entry, "session_id", None)
+        if not session_id:
+            return
+
+        try:
+            from hermes_cli.goals import GoalManager
+        except Exception as exc:
+            logger.debug("goal background mission: goals module unavailable: %s", exc)
+            return
+
+        max_turns = self._goal_max_turns_from_config()
+        launched_goal = str(getattr(state, "goal", "") or "")
+        launched_created_at = getattr(state, "created_at", None)
+        mission_token = (launched_goal, launched_created_at)
+        goal_missions = getattr(self, "_goal_background_missions", None)
+        if goal_missions is None:
+            goal_missions = {}
+            self._goal_background_missions = goal_missions
+        goal_missions[session_id] = mission_token
+
+        def _still_current_goal(manager: Any) -> bool:
+            current = getattr(manager, "_state", None)
+            if current is None or not manager.is_active():
+                return False
+            if str(getattr(current, "goal", "") or "") != launched_goal:
+                return False
+            return getattr(current, "created_at", None) == launched_created_at
+
+        try:
+            while True:
+                mgr = GoalManager(session_id=session_id, default_max_turns=max_turns)
+                if not _still_current_goal(mgr):
+                    return
+
+                response = await self._run_background_task(prompt, source, task_id)
+                # The user may pause/clear the goal or replace it while the
+                # background task is running. Reload immediately before mutating so
+                # a stale mission cannot resurrect or overwrite newer goal state.
+                mgr = GoalManager(session_id=session_id, default_max_turns=max_turns)
+                if not _still_current_goal(mgr):
+                    return
+                if not response:
+                    return
+                decision = mgr.evaluate_after_turn(response, user_initiated=False)
+                msg = decision.get("message") or ""
+                if msg and source is not None:
+                    await self._send_goal_status_notice(source, msg)
+
+                if not decision.get("should_continue"):
+                    return
+                prompt = decision.get("continuation_prompt") or ""
+                if not prompt:
+                    return
+        finally:
+            current_token = getattr(self, "_goal_background_missions", {}).get(session_id)
+            if current_token == mission_token:
+                self._goal_background_missions.pop(session_id, None)
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
@@ -8762,6 +8854,9 @@ class GatewayRunner:
 
         sid = getattr(session_entry, "session_id", None) or ""
         if not sid:
+            return
+        if getattr(self, "_goal_background_missions", {}).get(sid):
+            logger.debug("goal continuation: skipped; background mission owns session %s", sid)
             return
 
         max_turns = self._goal_max_turns_from_config()
@@ -9469,14 +9564,14 @@ class GatewayRunner:
 
     async def _run_background_task(
         self, prompt: str, source: "SessionSource", task_id: str
-    ) -> None:
+    ) -> str:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
 
         adapter = self.adapters.get(source.platform)
         if not adapter:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
-            return
+            return ""
 
         _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
 
@@ -9492,7 +9587,7 @@ class GatewayRunner:
                     f"❌ Background task {task_id} failed: no provider credentials configured.",
                     metadata=_thread_metadata,
                 )
-                return
+                return ""
 
             platform_key = _platform_config_key(source.platform)
 
@@ -9601,6 +9696,7 @@ class GatewayRunner:
                     content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
                     metadata=_thread_metadata,
                 )
+            return response or ""
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
@@ -9612,6 +9708,7 @@ class GatewayRunner:
                 )
             except Exception:
                 pass
+            return ""
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> str:
         """Handle /reasoning command — manage reasoning effort and display toggle.

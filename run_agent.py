@@ -5073,6 +5073,14 @@ class AIAgent:
             self._memory_manager.on_session_end(messages or [])
         except Exception:
             pass
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            try:
+                self.context_compressor.on_session_end(
+                    self.session_id or "",
+                    messages or [],
+                )
+            except Exception:
+                pass
 
     def _sync_external_memory_for_turn(
         self,

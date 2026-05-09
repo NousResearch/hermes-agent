@@ -240,6 +240,39 @@ class TestDispatch:
         out = handle_computer_use({"action": "set_value"})
         parsed = json.loads(out)
         assert "error" in parsed
+    def test_capture_after_skipped_when_action_failed(self, noop_backend):
+        """capture_after must not fire when res.ok=False (regression guard).
+
+        A follow-up screenshot after a failed action shows the screen in a
+        normal state, misleading the model into thinking the action succeeded.
+        """
+        from unittest.mock import patch
+        from tools.computer_use.backend import ActionResult
+        from tools.computer_use.tool import handle_computer_use
+
+        # Make click() return a failure.
+        with patch.object(noop_backend, "click",
+                          return_value=ActionResult(ok=False, action="click",
+                                                    message="element not found")):
+            out = handle_computer_use({"action": "click", "element": 99,
+                                       "capture_after": True})
+
+        parsed = json.loads(out)
+        # Should return the error, not a multimodal capture.
+        assert parsed.get("ok") is False
+        assert parsed.get("action") == "click"
+        # No follow-up capture should have been issued.
+        capture_calls = [c for c in noop_backend.calls if c[0] == "capture"]
+        assert len(capture_calls) == 0, "capture must not be called after a failed action"
+
+    def test_capture_after_fires_when_action_succeeds(self, noop_backend):
+        """capture_after must trigger for successful actions."""
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "click", "element": 1,
+                                   "capture_after": True})
+        # Noop backend returns ok=True, so capture should have been called.
+        capture_calls = [c for c in noop_backend.calls if c[0] == "capture"]
+        assert len(capture_calls) == 1
 
 
 # ---------------------------------------------------------------------------

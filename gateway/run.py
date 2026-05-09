@@ -15169,6 +15169,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # allow concurrent instances without tripping this guard.
     from gateway.status import (
         acquire_gateway_runtime_lock,
+        force_recover_stale_gateway_lock,
         get_running_pid,
         get_process_start_time,
         release_gateway_runtime_lock,
@@ -15409,10 +15410,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         )
         return False
     if not acquire_gateway_runtime_lock():
-        logger.error(
-            "Gateway runtime lock is already held by another instance. Exiting."
-        )
-        return False
+        recovered, reason = force_recover_stale_gateway_lock()
+        if recovered:
+            logger.warning(
+                "Stale gateway lock recovered (%s). Retrying lock acquisition.",
+                reason or "lock cleaned up",
+            )
+            # Retry once after recovery
+            if not acquire_gateway_runtime_lock():
+                logger.error(
+                    "Gateway runtime lock is already held by another instance. Exiting."
+                )
+                return False
+        else:
+            logger.error(
+                "Gateway runtime lock is already held by another instance: %s",
+                reason or "use --replace to override",
+            )
+            return False
     try:
         write_pid_file()
     except FileExistsError:
@@ -15457,16 +15472,34 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="cron-ticker",
     )
     cron_thread.start()
-    
+
+    # Start a periodic heartbeat that updates the runtime status timestamp.
+    # This lets force_recover_stale_gateway_lock() (status.py) distinguish a
+    # frozen/zombie gateway from a healthy one — critical for sleep/wake
+    # recovery on Windows where the OS may keep the process alive but the
+    # connections are long-dead.
+    _heartbeat_stop = threading.Event()
+
+    def _run_heartbeat():
+        while not _heartbeat_stop.wait(timeout=120):
+            try:
+                from gateway.status import write_runtime_status
+                write_runtime_status()
+            except Exception:
+                pass
+
+    _heartbeat_thread = threading.Thread(
+        target=_run_heartbeat,
+        daemon=True,
+        name="gateway-heartbeat",
+    )
+    _heartbeat_thread.start()
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
-    if runner.should_exit_with_failure:
-        if runner.exit_reason:
-            logger.error("Gateway exiting with failure: %s", runner.exit_reason)
-        return False
-    
-    # Stop cron ticker cleanly
+    # Stop heartbeat and cron ticker cleanly
+    _heartbeat_stop.set()
     cron_stop.set()
     cron_thread.join(timeout=5)
 

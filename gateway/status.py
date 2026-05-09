@@ -13,6 +13,7 @@ concurrently under distinct configurations).
 
 import hashlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -24,9 +25,13 @@ from typing import Any, Optional
 from utils import atomic_json_write
 
 if sys.platform == "win32":
+    import ctypes
+    import ctypes.wintypes
     import msvcrt
 else:
     import fcntl
+
+_logger = logging.getLogger(__name__)
 
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
@@ -138,6 +143,13 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
 
 def _looks_like_gateway_process(pid: int) -> bool:
     """Return True when the live PID still looks like the Hermes gateway."""
+    if _IS_WINDOWS:
+        return _looks_like_gateway_process_windows(pid)
+    return _looks_like_gateway_process_posix(pid)
+
+
+def _looks_like_gateway_process_posix(pid: int) -> bool:
+    """POSIX: read /proc/<pid>/cmdline to identify gateway."""
     cmdline = _read_process_cmdline(pid)
     if not cmdline:
         return False
@@ -150,6 +162,49 @@ def _looks_like_gateway_process(pid: int) -> bool:
         "gateway/run.py",
     )
     return any(pattern in cmdline for pattern in patterns)
+
+
+def _looks_like_gateway_process_windows(pid: int) -> bool:
+    """Windows: use kernel32 to query process image path.
+
+    Falls back to a wmic subprocess call when the lightweight OpenProcess
+    route fails (e.g. insufficient permissions or the process has already
+    exited).
+    """
+    try:
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            try:
+                size = ctypes.wintypes.DWORD(260)
+                buf = ctypes.create_unicode_buffer(260)
+                if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                    exe_path = buf.value.lower()
+                    return any(
+                        kw in exe_path for kw in ("python", "hermes")
+                    )
+            finally:
+                kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+
+    # Fallback: use wmic for command line inspection
+    try:
+        result = subprocess.run(
+            ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            cmdline = result.stdout.lower()
+            return any(
+                kw in cmdline for kw in ("hermes", "gateway")
+            )
+    except Exception:
+        pass
+
+    return False
 
 
 def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
@@ -329,6 +384,167 @@ def acquire_gateway_runtime_lock() -> bool:
     _write_gateway_lock_record(handle)
     _gateway_lock_handle = handle
     return True
+
+
+def force_recover_stale_gateway_lock(
+    lock_path: Optional[Path] = None,
+) -> tuple[bool, Optional[str]]:
+    """Attempt to recover a gateway runtime lock held by a dead or invalid process.
+
+    This is called when ``acquire_gateway_runtime_lock()`` fails at startup.
+    It heuristically determines whether the lock holder is still a viable
+    gateway process.  Common cases:
+
+    * **Sleep/wake on Windows**: the OS suspended the process, connections
+      timed out, and the process is in a broken state.  The runtime status
+      file will show the last heartbeat was long ago.
+    * **PID reuse**: the recorded PID belongs to an unrelated process that
+      happened to get the same PID.
+    * **Crash without lock release**: rare, but possible on edge-case kernel
+      bugs or when the process was killed via ``taskkill /F`` from another
+      session that bypassed normal cleanup.
+
+    Returns ``(True, None)`` when the lock was successfully recovered.
+    Returns ``(False, reason)`` when the lock holder appears valid.
+    """
+    resolved_lock_path = lock_path or _get_gateway_lock_path()
+    record = _read_gateway_lock_record(resolved_lock_path)
+    if record is None:
+        _logger.debug("force_recover: no lock record found")
+        return False, "no lock record to inspect"
+
+    pid = _pid_from_record(record)
+    if pid is None:
+        _logger.debug("force_recover: no valid PID in lock record")
+        return False, "no PID in lock record"
+
+    # ── Check 1: Is the PID still alive? ───────────────────────────
+    pid_alive = _pid_is_alive(pid)
+    if not pid_alive:
+        _logger.info(
+            "force_recover: PID %d is dead — removing stale lock file", pid
+        )
+        _hard_remove_lock_file(resolved_lock_path)
+        return True, None
+
+    # ── Check 2: If alive, does it still look like a gateway? ─────
+    if not (_looks_like_gateway_process(pid) or _record_looks_like_gateway(record)):
+        _logger.warning(
+            "force_recover: PID %d is alive but does not look like a gateway "
+            "— killing it and removing lock file",
+            pid,
+        )
+        _force_kill_pid(pid)
+        _hard_remove_lock_file(resolved_lock_path)
+        return True, None
+
+    # ── Check 3: Check runtime status for staleness ────────────────
+    _STALE_HEARTBEAT_SECONDS = 600  # 10 min without update = stale
+    status = read_runtime_status()
+    if status is not None:
+        status_pid = status.get("pid")
+        if status_pid == pid:
+            updated_at = status.get("updated_at") or ""
+            gateway_state = status.get("gateway_state") or ""
+            exit_reason = status.get("exit_reason")
+
+            # The state file says it's exiting/has exited
+            if gateway_state in ("stopping", "exited") or exit_reason:
+                _logger.info(
+                    "force_recover: PID %d state=%s exit_reason=%s — treating as stale",
+                    pid, gateway_state, exit_reason,
+                )
+                _force_kill_pid(pid)
+                _hard_remove_lock_file(resolved_lock_path)
+                return True, None
+
+            # Check for stale heartbeat (sleep/wake detection)
+            try:
+                last_update = datetime.fromisoformat(updated_at)
+                age = (datetime.now(timezone.utc) - last_update).total_seconds()
+                if age > _STALE_HEARTBEAT_SECONDS:
+                    _logger.warning(
+                        "force_recover: PID %d last heartbeat was %.0fs ago "
+                        "(> %ds) — likely sleep/wake or frozen process",
+                        pid, age, _STALE_HEARTBEAT_SECONDS,
+                    )
+                    _force_kill_pid(pid)
+                    _hard_remove_lock_file(resolved_lock_path)
+                    return True, None
+            except (TypeError, ValueError):
+                pass
+
+    # ── The lock holder looks legitimate ───────────────────────────
+    reason = (
+        f"PID {pid} is alive and appears to be a healthy Hermes gateway. "
+        f"To replace it, run: hermes gateway stop, or hermes gateway run --replace"
+    )
+    return False, reason
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Check whether a process with the given PID exists."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+    if not _IS_WINDOWS:
+        return False
+
+    # On Windows, os.kill(SIGTERM-like) can give permission errors even
+    # when the process exists.  Try a lightweight handle.
+    try:
+        kernel32 = ctypes.windll.kernel32
+        SYNCHRONIZE = 0x00100000
+        handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _hard_remove_lock_file(lock_path: Optional[Path] = None) -> None:
+    """Best-effort removal of the gateway lock file after recovery.
+
+    On Windows, byte-range locks are mandatory — the kernel must have
+    already released the lock before we can unlink the file.  If the
+    owning process is dead, the OS has already done this.
+    """
+    resolved = lock_path or _get_gateway_lock_path()
+    try:
+        resolved.unlink(missing_ok=True)
+    except OSError as exc:
+        _logger.debug("_hard_remove_lock_file: %s", exc)
+
+
+def _force_kill_pid(pid: int) -> None:
+    """Best-effort termination of a process by PID.
+
+    On Windows, attempts graceful taskkill first, then force-kill the
+    process tree.  On POSIX, sends SIGTERM then SIGKILL.
+    """
+    try:
+        if _IS_WINDOWS:
+            # Graceful first
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid)], capture_output=True, timeout=10,
+                )
+                # Force-kill if still alive
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/F", "/T"],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except Exception as exc:
+        _logger.debug("_force_kill_pid: %s", exc)
 
 
 def release_gateway_runtime_lock() -> None:
@@ -835,9 +1051,10 @@ def get_running_pid(
             if _record_looks_like_gateway(record):
                 return pid
             continue
-        except OSError:
+        except (OSError, SystemError):
             # Windows raises OSError with WinError 87 for an invalid pid
             # (process is definitely gone). Treat as "process doesn't exist".
+            # Some Windows Python builds also raise SystemError wrapping OSError.
             continue
 
         recorded_start = record.get("start_time")

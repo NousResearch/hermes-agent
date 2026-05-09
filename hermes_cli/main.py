@@ -8886,6 +8886,7 @@ def _build_provider_choices() -> list[str]:
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "checkpoints", "claw", "completion",
+        "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "mcp", "memory", "model",
@@ -10506,6 +10507,54 @@ Examples:
             tools_command(args)
 
     tools_parser.set_defaults(func=cmd_tools)
+
+    # =========================================================================
+    # computer-use command — manage Computer Use (cua-driver) on macOS
+    # =========================================================================
+    computer_use_parser = subparsers.add_parser(
+        "computer-use",
+        help="Manage the Computer Use (cua-driver) backend (macOS)",
+        description=(
+            "Install or check the cua-driver binary used by the\n"
+            "`computer_use` toolset. macOS-only.\n\n"
+            "Use `hermes computer-use install` to fetch and run the\n"
+            "upstream cua-driver installer. This is equivalent to the\n"
+            "post-setup hook that `hermes tools` runs when you first\n"
+            "enable the Computer Use toolset, and is a stable target\n"
+            "for re-running the install if it didn't fire (e.g. when\n"
+            "toggling the toolset on a returning-user setup)."
+        ),
+    )
+    computer_use_sub = computer_use_parser.add_subparsers(dest="computer_use_action")
+
+    computer_use_sub.add_parser(
+        "install",
+        help="Install or repair the cua-driver binary (macOS)",
+    )
+    computer_use_sub.add_parser(
+        "status",
+        help="Print whether cua-driver is installed and on PATH",
+    )
+
+    def cmd_computer_use(args):
+        action = getattr(args, "computer_use_action", None)
+        if action == "install":
+            from hermes_cli.tools_config import _run_post_setup
+            _run_post_setup("cua_driver")
+            return
+        if action == "status":
+            import shutil
+            path = shutil.which("cua-driver")
+            if path:
+                print(f"cua-driver: installed at {path}")
+                return
+            print("cua-driver: not installed")
+            print("  Run: hermes computer-use install")
+            return
+        # No subcommand → show help
+        computer_use_parser.print_help()
+
+    computer_use_parser.set_defaults(func=cmd_computer_use)
     # =========================================================================
     # mcp command — manage MCP server connections
     # =========================================================================

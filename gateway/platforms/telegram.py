@@ -2325,8 +2325,88 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("[%s] Failed to remove active Quick Action %s", self.name, token, exc_info=True)
 
+    @staticmethod
+    def _quick_action_title(content: str, *, default: str) -> str:
+        """Derive a compact human-readable title for Quick Action routing."""
+        text = re.sub(r"\s+", " ", str(content or "")).strip()
+        if not text:
+            return default
+        # Prefer the first markdown heading or the first meaningful sentence-like line.
+        for line in str(content or "").splitlines():
+            compact = re.sub(r"^[#>*\-\s`]+", "", line).strip()
+            compact = re.sub(r"[*_`]+", "", compact).strip()
+            if len(compact) >= 8:
+                return compact[:96]
+        return text[:96]
+
+    @staticmethod
+    def _quick_action_routing_candidate(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Return a conservative routing candidate for Save/Todo actions.
+
+        This intentionally does not mutate Cortex, Kanban, or brain-sync directly.
+        Quick Actions are low-friction capture surfaces; v1 turns clicks into
+        structured, inspectable routing candidates so later workers can promote
+        only high-signal items and avoid memory/todo pollution.
+        """
+        action = str(record.get("action") or "").strip().lower()
+        if action not in {"save", "todo"}:
+            return None
+
+        content = str(record.get("content") or "")
+        lowered = content.lower()
+        source = record.get("source") if isinstance(record.get("source"), dict) else {}
+        base = {
+            "token": record.get("token"),
+            "action": action,
+            "status": "candidate",
+            "title": TelegramAdapter._quick_action_title(
+                content,
+                default="Saved Telegram response" if action == "save" else "Telegram todo candidate",
+            ),
+            "content": content,
+            "source": source,
+            "chat_id": record.get("chat_id"),
+            "thread_id": record.get("thread_id"),
+            "message_id": record.get("message_id"),
+            "captured_by": {"user_id": record.get("user_id"), "user_name": record.get("user_name")},
+            "captured_at": record.get("recorded_at"),
+        }
+
+        if action == "todo":
+            priority = "P1" if any(mark in lowered for mark in ("p0", "urgent", "바로", "즉시", "critical")) else "P2"
+            base.update({
+                "recommended_targets": ["cortex_todo", "kanban_candidate"],
+                "todo": {
+                    "project": "hermes",
+                    "category": "dev",
+                    "priority": priority,
+                    "source_type": "manual",
+                    "source_ref": f"telegram:{base.get('chat_id') or ''}:{base.get('thread_id') or ''}:{base.get('message_id') or ''}",
+                },
+                "next_gate": "review_or_execute",
+            })
+            return base
+
+        memory_type = "context"
+        if any(mark in lowered for mark in ("decision", "결정", "정하기", "recommendation", "추천")):
+            memory_type = "decision"
+        elif any(mark in lowered for mark in ("discovery", "발견", "verified", "검증", "evidence")):
+            memory_type = "discovery"
+        recommended_targets = ["cortex_memory"]
+        if len(content) > 800 or any(mark in lowered for mark in ("brain-sync", "wiki", "canonical", "synthesis", "종합")):
+            recommended_targets.append("brain_sync_wiki_candidate")
+        base.update({
+            "recommended_targets": recommended_targets,
+            "memory": {
+                "project": "hermes",
+                "type": memory_type,
+            },
+            "next_gate": "promote_or_discard",
+        })
+        return base
+
     def _record_quick_action(self, *, token: str, action: str, payload: Dict[str, Any], user_id: str, user_name: str) -> None:
-        """Append a Quick Action event to the local JSONL ledger."""
+        """Append a Quick Action event to local ledgers and routing candidates."""
         from hermes_constants import get_hermes_home
         from datetime import datetime, timezone
 
@@ -2352,6 +2432,11 @@ class TelegramAdapter(BasePlatformAdapter):
         elif action == "save":
             with (out_dir / "saved_responses.jsonl").open("a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        candidate = self._quick_action_routing_candidate(record)
+        if candidate:
+            with (out_dir / "routing_candidates.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(candidate, ensure_ascii=False) + "\n")
 
     @staticmethod
     def _quick_action_keyboard(token: str):

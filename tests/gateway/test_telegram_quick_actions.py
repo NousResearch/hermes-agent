@@ -210,6 +210,13 @@ class TestTelegramQuickActionsCallback:
 
         saved_path = tmp_path / "telegram_quick_actions" / "saved_responses.jsonl"
         assert saved_path.exists()
+        routing_path = tmp_path / "telegram_quick_actions" / "routing_candidates.jsonl"
+        routing = [json.loads(line) for line in routing_path.read_text().splitlines()]
+        assert len(routing) == 1
+        assert routing[0]["action"] == "save"
+        assert routing[0]["status"] == "candidate"
+        assert routing[0]["recommended_targets"] == ["cortex_memory"]
+        assert routing[0]["memory"]["project"] == "hermes"
 
     @pytest.mark.asyncio
     async def test_callback_loads_persisted_payload_after_restart(self, tmp_path):
@@ -248,6 +255,16 @@ class TestTelegramQuickActionsCallback:
         active = json.loads(active_path.read_text())
         assert "abc123def4" not in active
         assert (tmp_path / "telegram_quick_actions" / "todos.jsonl").exists()
+        routing = [
+            json.loads(line)
+            for line in (tmp_path / "telegram_quick_actions" / "routing_candidates.jsonl").read_text().splitlines()
+        ]
+        assert len(routing) == 1
+        assert routing[0]["action"] == "todo"
+        assert routing[0]["recommended_targets"] == ["cortex_todo", "kanban_candidate"]
+        assert routing[0]["todo"]["project"] == "hermes"
+        assert routing[0]["todo"]["category"] == "dev"
+        assert routing[0]["todo"]["source_type"] == "manual"
 
     @pytest.mark.asyncio
     async def test_callback_rejects_unauthorized_user(self, tmp_path):

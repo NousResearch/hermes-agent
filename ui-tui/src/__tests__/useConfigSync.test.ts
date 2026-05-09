@@ -9,7 +9,11 @@ import {
   normalizeMouseTracking,
   normalizeStatusBar
 } from '../app/useConfigSync.js'
-import type { ParsedVoiceRecordKey } from '../lib/platform.js'
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+  vi.resetModules()
+})
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -184,14 +188,37 @@ describe('normalizeStatusBar', () => {
 
 describe('normalizeMouseTracking', () => {
   it('defaults on and prefers canonical mouse_tracking over legacy tui_mouse', () => {
-    expect(normalizeMouseTracking({})).toBe(true)
+    expect(normalizeMouseTracking({}, true)).toBe(true)
     expect(normalizeMouseTracking({ mouse_tracking: false })).toBe(false)
     expect(normalizeMouseTracking({ mouse_tracking: 0 })).toBe(false)
     expect(normalizeMouseTracking({ mouse_tracking: 'off' })).toBe(false)
     expect(normalizeMouseTracking({ mouse_tracking: 'false' })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false })).toBe(true)
+    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false }, true)).toBe(true)
     expect(normalizeMouseTracking({ mouse_tracking: true, tui_mouse: false })).toBe(true)
     expect(normalizeMouseTracking({ tui_mouse: false })).toBe(false)
+  })
+
+  it('honors the runtime default when dashboard disables terminal mouse tracking', () => {
+    expect(normalizeMouseTracking({}, false)).toBe(false)
+    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false }, false)).toBe(false)
+    expect(normalizeMouseTracking({ mouse_tracking: true }, false)).toBe(true)
+  })
+
+  it('keeps HERMES_TUI_DISABLE_MOUSE through config hydration when display omits mouse keys', async () => {
+    vi.stubEnv('HERMES_TUI_DISABLE_MOUSE', '1')
+    vi.resetModules()
+
+    const [{ $uiState, resetUiState }, { applyDisplay }] = await Promise.all([
+      import('../app/uiStore.js'),
+      import('../app/useConfigSync.js')
+    ])
+
+    const setBell = vi.fn()
+
+    resetUiState()
+    applyDisplay({ config: { display: { show_cost: true } } }, setBell)
+
+    expect($uiState.get().mouseTracking).toBe(false)
   })
 })
 

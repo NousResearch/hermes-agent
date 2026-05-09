@@ -13885,11 +13885,15 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
+        if source.platform == Platform.FEISHU and event_message_id:
             # Feishu topics only keep messages inside the topic when they are
             # sent via the reply API with reply_in_thread=true. Status/interim,
             # approval, and stream-consumer paths usually only receive metadata,
             # so carry the triggering message id as a Feishu-specific fallback.
+            # Done unconditionally for Feishu (not gated on source.thread_id) so
+            # the FeishuAdapter's group-chat auto-thread logic can also anchor
+            # interim sends in fresh group conversations that haven't started
+            # a topic yet.
             _status_thread_metadata: Optional[Dict[str, Any]] = {
                 "thread_id": _progress_thread_id,
                 "reply_to_message_id": event_message_id,

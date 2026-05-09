@@ -239,6 +239,7 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # drain on completion; the cap is a safeguard against unbounded growth from
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
+_FEISHU_LAST_USER_MESSAGE_CACHE_SIZE = 2048
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1396,6 +1397,12 @@ class FeishuAdapter(BasePlatformAdapter):
         # auto-thread routing. Populated lazily via chats.get; separate from
         # _chat_info_cache because that one stores the wrong field as "type".
         self._chat_mode_cache: Dict[str, str] = {}
+        # Per-chat record of the most recent inbound user message id. Used as
+        # an implicit reply anchor by the group-chat auto-thread logic so
+        # interim sends (status callbacks, tool-progress, approval cards) that
+        # don't carry an explicit reply_to still get pulled into the topic
+        # rooted at the user's triggering message.
+        self._last_user_message_id: "OrderedDict[str, str]" = OrderedDict()
         self._message_text_cache: Dict[str, Optional[str]] = {}
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
@@ -2962,6 +2969,18 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
         chat_id = getattr(message, "chat_id", "") or ""
+        # Remember the most recent inbound user message id per chat. Used as
+        # an implicit reply anchor for group-chat auto-thread routing so
+        # interim sends without an explicit reply_to (status callbacks,
+        # tool-progress, approval cards) still land in the same topic as the
+        # user's triggering message. Skip bot-originated messages so the bot
+        # never anchors topics to its own posts.
+        if chat_id and message_id and not is_bot:
+            cache = self._last_user_message_id
+            cache[chat_id] = message_id
+            cache.move_to_end(chat_id)
+            while len(cache) > _FEISHU_LAST_USER_MESSAGE_CACHE_SIZE:
+                cache.popitem(last=False)
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
         source = self.build_source(
@@ -4288,7 +4307,13 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         effective_reply_to = reply_to
-        if not effective_reply_to and metadata and metadata.get("thread_id"):
+        if not effective_reply_to and metadata and metadata.get("reply_to_message_id"):
+            # Carry the anchoring message id from metadata when no explicit
+            # reply_to was passed. Originally only fired when thread_id was
+            # also set (preserving thread membership for status callbacks);
+            # broadened so the group-chat auto-thread branch below can also
+            # anchor interim/status sends that don't go through the main
+            # reply path.
             effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
         # In group chats, default to threaded replies so the bot's response
@@ -4298,7 +4323,6 @@ class FeishuAdapter(BasePlatformAdapter):
         # topic from a top-level send. DMs (chat_type=dm) are unaffected.
         if (
             not reply_in_thread
-            and effective_reply_to
             and bool(self.config.extra.get("reply_in_thread", True))
         ):
             chat_mode = await self._get_chat_mode(chat_id)
@@ -4307,7 +4331,16 @@ class FeishuAdapter(BasePlatformAdapter):
             # group). Auto-threading only makes sense for "group" — DMs don't
             # need it and topic groups already enforce a topic structure.
             if chat_mode == "group":
-                reply_in_thread = True
+                # Implicit anchor: when the gateway didn't pass an explicit
+                # reply_to (e.g. tool-progress / status / approval paths in
+                # fresh group chats where source.thread_id is empty), fall
+                # back to the most recent inbound user message in this chat.
+                # Without this, those sends bypass the auto-thread branch and
+                # flood the main feed alongside the threaded final reply.
+                if not effective_reply_to:
+                    effective_reply_to = self._last_user_message_id.get(chat_id)
+                if effective_reply_to:
+                    reply_in_thread = True
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,

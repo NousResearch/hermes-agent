@@ -579,6 +579,31 @@ class HermesACPAgent(acp.Agent):
                     ),
                 )
 
+            # [PATCH] Include model_aliases from config (supports --model-config overrides)
+            try:
+                from hermes_cli.config import load_config
+                cfg = load_config()
+                aliases = cfg.get("model_aliases", {})
+                if isinstance(aliases, dict):
+                    for alias_name, alias_def in aliases.items():
+                        if not isinstance(alias_def, dict):
+                            continue
+                        alias_model = alias_def.get("model", "")
+                        alias_provider = alias_def.get("provider", "")
+                        if not alias_model or not alias_provider:
+                            continue
+                        choice_id = self._encode_model_choice(alias_provider, alias_model)
+                        if choice_id in seen_ids:
+                            continue
+                        available_models.append(ModelInfo(
+                            model_id=choice_id,
+                            name=alias_model,
+                            description=f"Provider: {alias_provider} • /{alias_name}",
+                        ))
+                        seen_ids.add(choice_id)
+            except Exception:
+                pass
+
             if available_models:
                 return SessionModelState(
                     available_models=available_models,

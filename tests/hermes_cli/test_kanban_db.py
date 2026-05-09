@@ -18,7 +18,11 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     return home
 
@@ -36,6 +40,107 @@ def test_init_db_is_idempotent(kanban_home):
         tasks = kb.list_tasks(conn)
     assert len(tasks) == 1
     assert tasks[0].title == "persisted"
+
+
+def test_init_db_migration_survives_existing_max_retries_column(tmp_path, monkeypatch):
+    """Legacy DBs may already contain later optional columns.
+
+    The migration must not blindly add max_retries or create indexes before
+    additive columns exist; otherwise gateway init can fail with SQLite
+    "duplicate column name" or missing-column errors on global/profile DB
+    drift.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    db_path = home / "kanban.db"
+    kb._INITIALIZED_PATHS.clear()
+
+    conn = kb.sqlite3.connect(str(db_path))
+    conn.row_factory = kb.sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            spawn_failures INTEGER NOT NULL DEFAULT 0,
+            last_spawn_error TEXT,
+            max_retries INTEGER
+        );
+        CREATE TABLE task_links (
+            parent_id TEXT NOT NULL,
+            child_id TEXT NOT NULL,
+            PRIMARY KEY (parent_id, child_id)
+        );
+        CREATE TABLE task_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            author TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE task_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            profile TEXT,
+            step_key TEXT,
+            status TEXT NOT NULL,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            worker_pid INTEGER,
+            max_runtime_seconds INTEGER,
+            last_heartbeat_at INTEGER,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            outcome TEXT,
+            summary TEXT,
+            metadata TEXT,
+            error TEXT
+        );
+        INSERT INTO tasks (
+            id, title, status, created_at, spawn_failures,
+            last_spawn_error, max_retries
+        ) VALUES ('t_legacy', 'legacy', 'ready', 1, 2, 'boom', 7);
+        """
+    )
+    conn.close()
+    kb._INITIALIZED_PATHS.clear()
+
+    # Re-running init twice exercises both fresh migration and repeat init.
+    kb.init_db(db_path)
+    kb.init_db(db_path)
+
+    with kb.connect(db_path) as migrated:
+        cols = {row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")}
+        task = kb.get_task(migrated, "t_legacy")
+    assert {"consecutive_failures", "last_failure_error", "max_retries"} <= cols
+    assert task is not None
+    assert task.consecutive_failures == 2
+    assert task.last_failure_error == "boom"
+    assert task.max_retries == 7
 
 
 def test_init_creates_expected_tables(kanban_home):

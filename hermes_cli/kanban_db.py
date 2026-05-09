@@ -83,6 +83,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli import kanban_policy as kp
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -91,11 +93,12 @@ from typing import Any, Iterable, Optional
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
-# A running task's claim is valid for 15 minutes; after that the next
-# dispatcher tick reclaims it.  Workers that outlive this window should call
-# ``heartbeat_claim(task_id)`` periodically.  In practice most kanban
-# workloads either finish within 15m or set a longer claim explicitly.
-DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
+# A running task's claim is valid for 2 hours by default; after that the next
+# dispatcher tick reclaims it. Workers that outlive this window should call
+# ``heartbeat_claim(task_id)`` periodically. The longer default is intentional:
+# visual QA, browser probes, CI watches, and live-server checks regularly exceed
+# short leases, and a too-short lease causes the dispatcher to kill real progress.
+DEFAULT_CLAIM_TTL_SECONDS = 2 * 60 * 60
 
 
 # Worker-context caps so build_worker_context() stays bounded on
@@ -1250,20 +1253,24 @@ def create_task(
             cleaned.append(name)
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
-    if idempotency_key:
+    def _existing_idempotent_task_id() -> Optional[str]:
+        if not idempotency_key:
+            return None
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
             "ORDER BY created_at DESC LIMIT 1",
             (idempotency_key,),
         ).fetchone()
-        if row:
-            return row["id"]
+        return row["id"] if row else None
+
+    # Idempotency check — return the existing task instead of creating a
+    # duplicate. Keep the fast path outside the write transaction, then
+    # repeat it after BEGIN IMMEDIATE below so concurrent creators with the
+    # same key serialize to one row instead of racing two inserts.
+    existing_id = _existing_idempotent_task_id()
+    if existing_id:
+        return existing_id
 
     now = int(time.time())
 
@@ -1272,6 +1279,10 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                existing_id = _existing_idempotent_task_id()
+                if existing_id:
+                    return existing_id
+
                 # Determine initial status from parent status, unless the
                 # caller is parking this task in triage for a specifier.
                 if triage:
@@ -1875,7 +1886,7 @@ def heartbeat_claim(
 ) -> bool:
     """Extend a running claim.  Returns True if we still own it.
 
-    Workers that know they'll exceed 15 minutes should call this every
+    Workers that know they'll exceed the default lease should call this every
     few minutes to keep ownership.
     """
     expires = int(time.time()) + int(ttl_seconds)
@@ -2666,6 +2677,9 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         return p
     if kind == "worktree":
         if not task.workspace_path:
+            policy = kp.load_policy(_normalize_board_slug(board) or get_current_board())
+            if policy.worktree_root:
+                return policy.worktree_root / task.id
             # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
             return Path.cwd() / ".worktrees" / task.id
         p = Path(task.workspace_path).expanduser()
@@ -2943,15 +2957,15 @@ def heartbeat_worker(
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
+                "UPDATE tasks SET last_heartbeat_at = ?, claim_expires = ? "
                 "WHERE id = ? AND status = 'running'",
-                (now, task_id),
+                (now, now + DEFAULT_CLAIM_TTL_SECONDS, task_id),
             )
         else:
             cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
+                "UPDATE tasks SET last_heartbeat_at = ?, claim_expires = ? "
                 "WHERE id = ? AND status = 'running' AND current_run_id = ?",
-                (now, task_id, int(expected_run_id)),
+                (now, now + DEFAULT_CLAIM_TTL_SECONDS, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -2962,8 +2976,8 @@ def heartbeat_worker(
         )
         if run_id is not None:
             conn.execute(
-                "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
-                (now, run_id),
+                "UPDATE task_runs SET last_heartbeat_at = ?, claim_expires = ? WHERE id = ?",
+                (now, now + DEFAULT_CLAIM_TTL_SECONDS, run_id),
             )
         _append_event(
             conn, task_id, "heartbeat",
@@ -3538,6 +3552,7 @@ def dispatch_once(
             pass
 
     result = DispatchResult()
+    policy = kp.load_policy(_normalize_board_slug(board) or get_current_board())
     result.reclaimed = release_stale_claims(conn)
     result.crashed = detect_crashed_workers(conn)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
@@ -3557,12 +3572,30 @@ def dispatch_once(
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     spawned = 0
+    active_issue_pipeline_profiles = {
+        "backend-eng", "frontend-eng", "fullstack-eng", "data-eng", "devops-eng",
+        "reviewer", "qa-eng", "security-eng", "release-manager",
+    }
+    active_count = 0
+    if policy.max_active_issue_pipelines is not None:
+        active_count = int(conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks WHERE status = 'running' AND assignee IN ("
+            "'backend-eng','frontend-eng','fullstack-eng','data-eng','devops-eng',"
+            "'reviewer','qa-eng','security-eng','release-manager')"
+        ).fetchone()["n"])
     for row in ready_rows:
         if max_spawn is not None and spawned >= max_spawn:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
+        if row["assignee"] in active_issue_pipeline_profiles:
+            if (
+                policy.max_active_issue_pipelines is not None
+                and active_count >= policy.max_active_issue_pipelines
+            ):
+                result.skipped_nonspawnable.append(row["id"])
+                continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
@@ -3587,7 +3620,17 @@ def dispatch_once(
             result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
-            result.spawned.append((row["id"], row["assignee"], ""))
+            workspace_preview = ""
+            try:
+                task_preview = get_task(conn, row["id"])
+                if task_preview is not None:
+                    workspace_preview = str(resolve_workspace(task_preview, board=board))
+            except Exception:
+                workspace_preview = ""
+            result.spawned.append((row["id"], row["assignee"], workspace_preview))
+            if row["assignee"] in active_issue_pipeline_profiles:
+                active_count += 1
+            spawned += 1
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -3629,6 +3672,8 @@ def dispatch_once(
             # complete_task).
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
+            if claimed.assignee in active_issue_pipeline_profiles:
+                active_count += 1
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
@@ -3887,6 +3932,10 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    guidance = kp.format_policy_guidance(kp.load_policy(get_current_board()))
+    if guidance:
+        lines.append("")
+        lines.append(guidance.rstrip())
     lines.append("")
 
     if task.body and task.body.strip():

@@ -28,8 +28,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
+from hermes_cli import kanban_policy as kp
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -249,6 +251,27 @@ def _handle_complete(args: dict, **kw) -> str:
         kb, conn = _connect()
         try:
             try:
+                # Non-blocking completion lint: surface weak handoffs before
+                # persisting them. The board-level `hermes kanban validate`
+                # command is the hard non-zero gate for operators/CI.
+                validation_warnings = []
+                try:
+                    from hermes_cli import kanban_validation as kv
+                    task = kb.get_task(conn, tid)
+                    if task is not None:
+                        class _PendingRun:
+                            def __init__(self, summary, metadata):
+                                self.summary = summary
+                                self.metadata = metadata
+                        pending = _PendingRun(summary if summary is not None else result, metadata)
+                        validation_warnings = [
+                            f.to_dict()
+                            for f in kv.validate_tasks([task], {tid: [pending]}, policy=kp.load_policy(kb.get_current_board()))
+                            if f.severity == "error"
+                        ]
+                except Exception:
+                    validation_warnings = []
+
                 ok = kb.complete_task(
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
@@ -271,7 +294,10 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            payload = {"task_id": tid, "run_id": run.id if run else None}
+            if validation_warnings:
+                payload["validation_warnings"] = validation_warnings
+            return _ok(**payload)
         finally:
             conn.close()
     except Exception as e:
@@ -386,6 +412,51 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _gate_dedupe_key_from_create_args(args: dict) -> Optional[str]:
+    """Infer a conservative gate-card idempotency key.
+
+    Multi-agent Kanban workers can accidentally create overlapping QA and
+    release gates for the same implementation branch/issue. Keep this guard
+    narrow: only final gate roles (`qa-eng` and `release-manager`), and only
+    when the body/title exposes a PR number, branch, or issue. Review/security
+    cards are intentionally excluded because multiple specialist reviews may
+    be valid for one branch.
+    """
+    assignee = str(args.get("assignee") or "").strip()
+    role_prefix = {
+        "release-manager": "release",
+        "qa-eng": "qa",
+    }.get(assignee)
+    if not role_prefix:
+        return None
+    text = "\n".join(str(args.get(k) or "") for k in ("title", "body"))
+    # Prefer PR number when the gate is explicitly PR-scoped.
+    m = re.search(r"(?:PR|pull request)\s*#?(\d+)", text, re.IGNORECASE)
+    if m:
+        return f"auto:{role_prefix}-pr-{m.group(1)}"
+    # Git branches are the next-best unique release/QA artifact.
+    m = re.search(r"(?:Branch|Implementation branch/worktree|branch/worktree)\s*:?\s*([^\s`]+)", text, re.IGNORECASE)
+    if m:
+        branch = m.group(1).strip().strip("`.,;)")
+        if branch:
+            return f"auto:{role_prefix}-branch-{branch}"
+    if role_prefix == "release":
+        # Fall back to issue number only for cards that are clearly release cards.
+        if re.search(r"release|merge|squash|close keyword", text, re.IGNORECASE):
+            m = re.search(r"(?:issue|fix(?:e[sd])?|close[sd]?)\s*#(\d+)", text, re.IGNORECASE)
+            if m:
+                return f"auto:{role_prefix}-issue-{m.group(1)}"
+    else:
+        # QA is the user-visible validation owner; one QA gate should aggregate
+        # all assertions/evidence for a branch/issue instead of spawning parallel
+        # browser/E2E runs. Require clear QA-ish language before issue fallback.
+        if re.search(r"\bQA\b|quality|verify|validation|manual|E2E|regression", text, re.IGNORECASE):
+            m = re.search(r"(?:issue|fix(?:e[sd])?)\s*#(\d+)", text, re.IGNORECASE)
+            if m:
+                return f"auto:{role_prefix}-issue-{m.group(1)}"
+    return None
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
@@ -409,6 +480,8 @@ def _handle_create(args: dict, **kw) -> str:
     workspace_path = args.get("workspace_path")
     triage = bool(args.get("triage"))
     idempotency_key = args.get("idempotency_key")
+    if not idempotency_key:
+        idempotency_key = _gate_dedupe_key_from_create_args(args)
     max_runtime_seconds = args.get("max_runtime_seconds")
     skills = args.get("skills")
     if isinstance(skills, str):
@@ -450,6 +523,7 @@ def _handle_create(args: dict, **kw) -> str:
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                idempotency_key=idempotency_key,
             )
         finally:
             conn.close()

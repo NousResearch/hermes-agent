@@ -332,6 +332,107 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+
+def test_create_release_manager_auto_dedupes_by_branch(worker_env):
+    """Duplicate release cards for the same implementation branch collapse."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    args = {
+        "title": "Release issue #68 admin course content persistence fix",
+        "assignee": "release-manager",
+        "body": "Source issue: #68\nImplementation branch/worktree: agent/issue-68-course-content-save at /tmp/wt\nMerge when gates pass.",
+    }
+    first = json.loads(kt._handle_create(args))
+    second = json.loads(kt._handle_create({
+        "title": "Release PR for issue #68 admin course edit-save-reload persistence",
+        "assignee": "release-manager",
+        "body": "QA passed. Branch: agent/issue-68-course-content-save\nCommit: abc123",
+    }))
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first["task_id"] == second["task_id"]
+    assert first["idempotency_key"] == "auto:release-branch-agent/issue-68-course-content-save"
+    assert second["idempotency_key"] == first["idempotency_key"]
+
+    with kb.connect() as conn:
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ?",
+            ("auto:release-branch-agent/issue-68-course-content-save",),
+        ).fetchall()
+    assert len(rows) == 1
+
+
+def test_create_qa_cards_auto_dedupe_by_branch(worker_env):
+    """Duplicate QA gates for the same implementation branch collapse."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    first = json.loads(kt._handle_create({
+        "title": "QA issue #75 admin course video title display",
+        "assignee": "qa-eng",
+        "body": "Branch: agent/issue-75-video-title\nVerify VC-75 assertions with manual/E2E evidence.",
+    }))
+    second = json.loads(kt._handle_create({
+        "title": "QA issue #75 admin video title row fix",
+        "assignee": "qa-eng",
+        "body": "Manually/E2E verify branch agent/issue-75-video-title after review passes.",
+    }))
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first["task_id"] == second["task_id"]
+    assert first["idempotency_key"] == "auto:qa-branch-agent/issue-75-video-title"
+    assert second["idempotency_key"] == first["idempotency_key"]
+
+    with kb.connect() as conn:
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ?",
+            ("auto:qa-branch-agent/issue-75-video-title",),
+        ).fetchall()
+    assert len(rows) == 1
+
+
+def test_create_qa_cards_auto_dedupe_by_issue_when_no_branch(worker_env):
+    """One QA owner should aggregate validation for a single issue."""
+    from tools import kanban_tools as kt
+
+    first = json.loads(kt._handle_create({
+        "title": "QA issue #75 admin course video title display",
+        "assignee": "qa-eng",
+        "body": "Source issue: https://github.com/org/repo/issues/75\nValidation assertions to verify: VC-75-1.",
+    }))
+    second = json.loads(kt._handle_create({
+        "title": "QA issue #75 admin video title row fix",
+        "assignee": "qa-eng",
+        "body": "Manual regression for issue #75 after reviewer approval.",
+    }))
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first["task_id"] == second["task_id"]
+    assert first["idempotency_key"] == "auto:qa-issue-75"
+    assert second["idempotency_key"] == first["idempotency_key"]
+
+
+def test_create_non_gate_cards_do_not_auto_dedupe(worker_env):
+    from tools import kanban_tools as kt
+
+    args = {
+        "title": "Review issue #68 admin course edit-save-reload persistence",
+        "assignee": "reviewer",
+        "body": "Branch: agent/issue-68-course-content-save",
+    }
+    first = json.loads(kt._handle_create(args))
+    second = json.loads(kt._handle_create(args))
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first["task_id"] != second["task_id"]
+    assert first["idempotency_key"] is None
+    assert second["idempotency_key"] is None
+
 def test_create_rejects_no_title(worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_create({"assignee": "x"})).get("error")

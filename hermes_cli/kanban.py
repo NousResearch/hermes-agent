@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_policy as kp
+from hermes_cli import kanban_cleanup as kc
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +189,30 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         ),
     )
     sub = kanban_parser.add_subparsers(dest="kanban_action")
+
+    # --- policy ---
+    p_policy = sub.add_parser(
+        "policy",
+        help="Inspect or validate the active board's project/workspace policy",
+    )
+    policy_sub = p_policy.add_subparsers(dest="policy_action")
+    p_policy_show = policy_sub.add_parser("show", help="Show the effective board policy")
+    p_policy_show.add_argument("--json", action="store_true")
+    p_policy_validate = policy_sub.add_parser("validate", help="Validate the configured board policy")
+    p_policy_validate.add_argument("--json", action="store_true")
+
+    p_inventory = sub.add_parser("inventory", help="Show board worktrees, workspaces, processes, and policy")
+    p_inventory.add_argument("--json", action="store_true")
+
+    p_cleanup = sub.add_parser("cleanup", help="Conservatively remove safe inactive board artifacts")
+    p_cleanup.add_argument("--dry-run", action="store_true", default=False)
+    p_cleanup.add_argument("--json", action="store_true")
+
+    p_teardown = sub.add_parser("teardown", help="Explicit destructive board teardown")
+    p_teardown.add_argument("--remove-all-worktrees", action="store_true")
+    p_teardown.add_argument("--delete-board", action="store_true")
+    p_teardown.add_argument("--yes", action="store_true")
+    p_teardown.add_argument("--json", action="store_true")
 
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
@@ -369,6 +395,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit JSON (structured) instead of the default human table",
     )
 
+    # --- validate / lint ---
+    p_validate = sub.add_parser(
+        "validate",
+        aliases=["lint"],
+        help="Lint validation contracts, handoffs, QA evidence, and known-failure tracking",
+    )
+    p_validate.add_argument("--task", default=None, help="Only validate one task id")
+    p_validate.add_argument("--status", default=None, choices=sorted(kb.VALID_STATUSES))
+    p_validate.add_argument("--assignee", default=None)
+    p_validate.add_argument("--tenant", default=None)
+    p_validate.add_argument("--archived", action="store_true", help="Include archived tasks")
+    p_validate.add_argument("--json", action="store_true", help="Emit JSON")
+    p_validate.add_argument(
+        "--fail-on-warning",
+        action="store_true",
+        help="Return non-zero when warnings exist even if there are no errors",
+    )
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -384,7 +428,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_claim.add_argument("task_id")
     p_claim.add_argument("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS,
-                         help="Claim TTL in seconds (default: 900)")
+                         help=f"Claim TTL in seconds (default: {kb.DEFAULT_CLAIM_TTL_SECONDS})")
 
     # --- comment / complete / block / unblock / archive ---
     p_comment = sub.add_parser("comment", help="Append a comment")
@@ -673,6 +717,8 @@ def kanban_command(args: argparse.Namespace) -> int:
     # `hermes kanban boards create …`.
     if action == "boards":
         return _dispatch_boards(args)
+    if action == "policy":
+        return _cmd_policy(args)
 
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
@@ -698,6 +744,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         "reassign": _cmd_reassign,
         "diagnostics": _cmd_diagnostics,
         "diag":     _cmd_diagnostics,
+        "validate": _cmd_validate,
+        "lint":     _cmd_validate,
         "link":     _cmd_link,
         "unlink":   _cmd_unlink,
         "claim":    _cmd_claim,
@@ -722,6 +770,9 @@ def kanban_command(args: argparse.Namespace) -> int:
         "context":  _cmd_context,
         "specify":  _cmd_specify,
         "gc":       _cmd_gc,
+        "inventory": _cmd_inventory,
+        "cleanup": _cmd_cleanup,
+        "teardown": _cmd_teardown,
     }
     handler = handlers.get(action)
     if not handler:
@@ -749,6 +800,73 @@ def _profile_author() -> str:
         return get_active_profile_name() or "user"
     except Exception:
         return "user"
+
+
+# ---------------------------------------------------------------------------
+# Board policy (hermes kanban policy …)
+# ---------------------------------------------------------------------------
+
+def _cmd_policy(args: argparse.Namespace) -> int:
+    action = getattr(args, "policy_action", None) or "show"
+    board = kb.get_current_board()
+    report = kp.policy_report(board)
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(f"Board:      {report['board']}")
+        print(f"Configured: {str(report['configured']).lower()}")
+        print(f"Path:       {report['path']}")
+        errors = report.get("errors") or []
+        if errors:
+            print("Errors:")
+            for error in errors:
+                print(f"  - {error}")
+        else:
+            print("Errors:     none")
+        print("Policy:")
+        for key, value in report["policy"].items():
+            print(f"  {key}: {value}")
+    if action == "validate" and report.get("errors"):
+        return 1
+    if action not in {"show", "validate"}:
+        print(f"kanban policy: unknown action {action!r}", file=sys.stderr)
+        return 2
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Board inventory / cleanup / teardown
+# ---------------------------------------------------------------------------
+
+def _print_json_or_summary(data: dict[str, Any], *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return
+    for key, value in data.items():
+        print(f"{key}: {value}")
+
+
+def _cmd_inventory(args: argparse.Namespace) -> int:
+    data = kc.inventory_board(kb.get_current_board())
+    _print_json_or_summary(data, as_json=getattr(args, "json", False))
+    return 0
+
+
+def _cmd_cleanup(args: argparse.Namespace) -> int:
+    data = kc.cleanup_board(kb.get_current_board(), dry_run=getattr(args, "dry_run", False))
+    _print_json_or_summary(data, as_json=getattr(args, "json", False))
+    return 0 if data.get("verified") else 1
+
+
+def _cmd_teardown(args: argparse.Namespace) -> int:
+    data = kc.teardown_board(
+        kb.get_current_board(),
+        remove_all_worktrees=getattr(args, "remove_all_worktrees", False),
+        delete_board=getattr(args, "delete_board", False),
+        yes=getattr(args, "yes", False),
+    )
+    _print_json_or_summary(data, as_json=getattr(args, "json", False))
+    return 0 if data.get("verified") or data.get("refused") else 1
 
 
 # ---------------------------------------------------------------------------
@@ -1277,6 +1395,57 @@ def _cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_validate(args: argparse.Namespace) -> int:
+    """Lint mission validation contracts and completion handoffs."""
+    from hermes_cli import kanban_validation as kv
+
+    with kb.connect() as conn:
+        if getattr(args, "task", None):
+            task = kb.get_task(conn, args.task)
+            if task is None:
+                print(f"no such task: {args.task}", file=sys.stderr)
+                return 1
+            tasks = [task]
+        else:
+            tasks = kb.list_tasks(
+                conn,
+                assignee=getattr(args, "assignee", None),
+                status=getattr(args, "status", None),
+                tenant=getattr(args, "tenant", None),
+                include_archived=bool(getattr(args, "archived", False)),
+            )
+        runs_by_task = {t.id: runs for t in tasks if (runs := kb.list_runs(conn, t.id))}
+
+    policy = kp.load_policy(kb.get_current_board())
+    findings = kv.validate_tasks(tasks, runs_by_task, policy=policy)
+    summary = kv.summarize_findings(findings)
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "summary": summary,
+            "findings": [f.to_dict() for f in findings],
+        }, indent=2, ensure_ascii=False))
+    else:
+        if not findings:
+            print("Kanban validation: ok")
+        else:
+            print(
+                "Kanban validation: "
+                f"{summary.get('error', 0)} error(s), "
+                f"{summary.get('warning', 0)} warning(s)"
+            )
+            for f in findings:
+                marker = "ERROR" if f.severity == "error" else "WARN "
+                print(f"{marker} {f.task_id} {f.code}: {f.title}")
+                print(f"      {f.detail}")
+
+    if summary.get("error", 0):
+        return 1
+    if getattr(args, "fail_on_warning", False) and summary.get("warning", 0):
+        return 1
+    return 0
+
+
+
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in ("none", "-", "null") else args.profile
     with kb.connect() as conn:
@@ -1537,6 +1706,35 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
+    # Completion-time linting: warn loudly before writing weak handoffs.
+    # This is non-blocking for backwards compatibility with manual repair/bulk
+    # operations, but the dedicated `kanban validate` command exits non-zero on
+    # hard errors.
+    if len(ids) == 1:
+        try:
+            from hermes_cli import kanban_validation as kv
+            with kb.connect() as conn:
+                task = kb.get_task(conn, ids[0])
+                if task is not None:
+                    class _PendingRun:
+                        def __init__(self, summary, metadata):
+                            self.summary = summary
+                            self.metadata = metadata
+                    pending = _PendingRun(summary if summary is not None else args.result, metadata)
+                    findings = kv.validate_tasks([task], {ids[0]: [pending]}, policy=kp.load_policy(kb.get_current_board()))
+                    completion_findings = [f for f in findings if f.severity == "error"]
+                    if completion_findings:
+                        print(
+                            f"kanban: completion validation warning for {ids[0]} "
+                            f"({len(completion_findings)} error-level issue(s)); "
+                            "completion will proceed, but downstream gates may block:",
+                            file=sys.stderr,
+                        )
+                        for f in completion_findings[:5]:
+                            print(f"  - {f.code}: {f.title}", file=sys.stderr)
+        except Exception as exc:
+            print(f"kanban: completion validation skipped: {exc}", file=sys.stderr)
+
     failed: list[str] = []
     with kb.connect() as conn:
         for tid in ids:

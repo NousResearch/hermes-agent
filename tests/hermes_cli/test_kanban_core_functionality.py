@@ -57,6 +57,45 @@ def test_idempotency_key_returns_existing_task(kanban_home):
         conn.close()
 
 
+def test_dispatch_policy_throttle_counts_spawns_in_same_tick(kanban_home, all_assignees_spawnable):
+    policies = kanban_home / "kanban" / "policies"
+    policies.mkdir(parents=True)
+    (policies / "default.json").write_text(json.dumps({"max_active_issue_pipelines": 1}))
+    conn = kb.connect()
+    try:
+        first = kb.create_task(conn, title="first", assignee="backend-eng")
+        second = kb.create_task(conn, title="second", assignee="frontend-eng")
+
+        res = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+
+        assert len(res.spawned) == 1
+        assert res.spawned[0][0] == first
+        assert second in res.skipped_nonspawnable
+        assert kb.get_task(conn, first).status == "running"
+        assert kb.get_task(conn, second).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_dispatch_policy_throttle_counts_dry_run_spawns_in_same_tick(kanban_home, all_assignees_spawnable):
+    policies = kanban_home / "kanban" / "policies"
+    policies.mkdir(parents=True)
+    (policies / "default.json").write_text(json.dumps({"max_active_issue_pipelines": 1}))
+    conn = kb.connect()
+    try:
+        first = kb.create_task(conn, title="first", assignee="backend-eng")
+        second = kb.create_task(conn, title="second", assignee="frontend-eng")
+
+        res = kb.dispatch_once(conn, dry_run=True, spawn_fn=lambda task, ws: None)
+
+        assert len(res.spawned) == 1
+        assert res.spawned[0][0] == first
+        assert res.spawned[0][2]
+        assert second in res.skipped_nonspawnable
+    finally:
+        conn.close()
+
+
 def test_idempotency_key_ignored_for_archived(kanban_home):
     conn = kb.connect()
     try:
@@ -1011,6 +1050,8 @@ def test_heartbeat_on_running_task(kanban_home):
         assert ok is True
         task = kb.get_task(conn, tid)
         assert task.last_heartbeat_at is not None
+        assert task.claim_expires is not None
+        assert task.claim_expires - int(time.time()) >= kb.DEFAULT_CLAIM_TTL_SECONDS - 5
         events = kb.list_events(conn, tid)
         hb = [e for e in events if e.kind == "heartbeat"]
         assert len(hb) == 1
@@ -1297,6 +1338,24 @@ def test_run_created_on_claim(kanban_home):
         assert r.outcome is None
         assert r.ended_at is None
         assert r.claim_lock is not None and r.claim_expires is not None
+    finally:
+        conn.close()
+
+
+def test_default_claim_ttl_is_long_enough_for_visual_qa(kanban_home):
+    """Default claim lease should not reclaim long Visual QA/browser work quickly."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="visual qa", assignee="qa-eng")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        task = kb.get_task(conn, tid)
+        now = int(time.time())
+        assert kb.DEFAULT_CLAIM_TTL_SECONDS == 2 * 60 * 60
+        assert task.claim_expires is not None
+        assert task.claim_expires - now >= (2 * 60 * 60) - 5
+        run = kb.latest_run(conn, tid)
+        assert run.claim_expires == task.claim_expires
     finally:
         conn.close()
 
@@ -2460,6 +2519,43 @@ def test_resolve_workspace_rejects_relative_worktree_path(kanban_home):
         )
         with pytest.raises(ValueError, match=r"non-absolute"):
             kb.resolve_workspace(kb.get_task(conn, tid))
+    finally:
+        conn.close()
+
+
+def test_resolve_workspace_uses_policy_worktree_root(kanban_home, tmp_path):
+    policies = kanban_home / "kanban" / "policies"
+    policies.mkdir(parents=True)
+    project = tmp_path / "Project"
+    (policies / "default.json").write_text(json.dumps({
+        "project_root": str(project),
+        "worktree_root": str(project / ".worktrees"),
+    }))
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="wt", assignee="worker", workspace_kind="worktree")
+        resolved = kb.resolve_workspace(kb.get_task(conn, tid))
+        assert resolved == (project / ".worktrees" / tid).resolve(strict=False)
+    finally:
+        conn.close()
+
+
+def test_build_worker_context_includes_board_policy_guidance(kanban_home, tmp_path):
+    policies = kanban_home / "kanban" / "policies"
+    policies.mkdir(parents=True)
+    project = tmp_path / "Project"
+    (policies / "default.json").write_text(json.dumps({
+        "project_root": str(project),
+        "worktree_root": str(project / ".worktrees"),
+        "max_active_issue_pipelines": 1,
+    }))
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="wt", assignee="worker", workspace_kind="worktree")
+        ctx = kb.build_worker_context(conn, tid)
+        assert "## Board policy" in ctx
+        assert str(project.resolve(strict=False)) in ctx
+        assert "Max active issue pipelines: 1" in ctx
     finally:
         conn.close()
 

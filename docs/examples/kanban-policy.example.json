@@ -1,0 +1,15 @@
+{
+  "project_root": "/path/to/projects/example-app",
+  "base_branch": "main",
+  "worktree_root": "/path/to/projects/example-app/.worktrees",
+  "denied_workspace_roots": [
+    "~/.hermes/kanban",
+    "~/.hermes/scripts",
+    "/tmp"
+  ],
+  "shared_project_root_writable": false,
+  "scratch_repo_operations_allowed": false,
+  "max_active_issue_pipelines": 1,
+  "cleanup_after_merge": true,
+  "forbid_dirty_completion": true
+}

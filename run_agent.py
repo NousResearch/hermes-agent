@@ -5911,7 +5911,35 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "") -> Any:
+    def _load_mtls_ssl_context() -> ssl.SSLContext | None:
+        """Build an SSL context with mTLS client cert from config, or None."""
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            _cfg = _load_cfg()
+            _mtls = _cfg.get("agent", {}).get("mtls", {}) or {}
+            _cert_file = (_mtls.get("cert_file") or "").strip()
+            _key_file = (_mtls.get("key_file") or "").strip()
+            if not _cert_file or not _key_file:
+                return None
+            import os as _os
+            _cert = _os.path.expanduser(_cert_file)
+            _key = _os.path.expanduser(_key_file)
+            if not _os.path.isfile(_cert) or not _os.path.isfile(_key):
+                logger.warning("mTLS config present but cert/key file not found: %s / %s", _cert, _key)
+                return None
+            _ca_cert = (_mtls.get("ca_cert") or "").strip()
+            _ctx = ssl.create_default_context(
+                cafile=_os.path.expanduser(_ca_cert) if _ca_cert else None,
+            )
+            _ctx.load_cert_chain(_cert, _key)
+            logger.info("mTLS client certificate configured: %s", _cert)
+            return _ctx
+        except Exception as _exc:
+            logger.warning("Failed to load mTLS config: %s", _exc)
+            return None
+
+    @staticmethod
+    def _build_keepalive_http_client(base_url: str = "", ssl_context: ssl.SSLContext | None = None) -> Any:
         try:
             import httpx as _httpx
             import socket as _socket
@@ -5928,8 +5956,12 @@ class AIAgent:
             # Explicitly read proxy settings while still honoring NO_PROXY for
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
+            _transport = _httpx.HTTPTransport(
+                socket_options=_sock_opts,
+                verify=ssl_context,
+            )
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                transport=_transport,
                 proxy=_proxy,
             )
         except Exception:
@@ -5985,7 +6017,8 @@ class AIAgent:
                     if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
                 }
                 if "http_client" not in safe_kwargs:
-                    keepalive_http = self._build_keepalive_http_client(base_url)
+                    _mtls_ctx = self._load_mtls_ssl_context()
+                    keepalive_http = self._build_keepalive_http_client(base_url, ssl_context=_mtls_ctx)
                     if keepalive_http is not None:
                         safe_kwargs["http_client"] = keepalive_http
                 client = GeminiNativeClient(**safe_kwargs)
@@ -6014,7 +6047,8 @@ class AIAgent:
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
         if "http_client" not in client_kwargs:
-            keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
+            _mtls_ctx = self._load_mtls_ssl_context()
+            keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""), ssl_context=_mtls_ctx)
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http
         # Uses the module-level `OpenAI` name, resolved lazily on first

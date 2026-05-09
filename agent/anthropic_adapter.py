@@ -16,6 +16,7 @@ import logging
 import os
 import platform
 import subprocess
+import ssl
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -517,6 +518,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    ssl_context: ssl.SSLContext | None = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -609,6 +611,35 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    if ssl_context is not None:
+        try:
+            import httpx as _httpx
+            kwargs["http_client"] = _httpx.Client(verify=ssl_context)
+        except Exception:
+            pass
+    else:
+        # Auto-load mTLS from user config when no explicit context was
+        # passed — saves every caller from threading it through.
+        try:
+            from hermes_cli.config import load_config as _lc
+            _mtls = _lc().get("agent", {}).get("mtls", {}) or {}
+            _cert = (_mtls.get("cert_file") or "").strip()
+            _key = (_mtls.get("key_file") or "").strip()
+            if _cert and _key:
+                import os as _os, ssl as _ssl
+                _cert_path = _os.path.expanduser(_cert)
+                _key_path = _os.path.expanduser(_key)
+                if _os.path.isfile(_cert_path) and _os.path.isfile(_key_path):
+                    _ca = (_mtls.get("ca_cert") or "").strip()
+                    _ctx = _ssl.create_default_context(
+                        cafile=_os.path.expanduser(_ca) if _ca else None
+                    )
+                    _ctx.load_cert_chain(_cert_path, _key_path)
+                    import httpx as _httpx
+                    kwargs["http_client"] = _httpx.Client(verify=_ctx)
+        except Exception:
+            pass
 
     return _anthropic_sdk.Anthropic(**kwargs)
 

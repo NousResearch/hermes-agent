@@ -472,6 +472,18 @@ DEFAULT_CONFIG = {
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
+        # Mutual TLS (mTLS) — client certificate authentication for LLM API
+        # calls.  Set ``cert_file`` and ``key_file`` to PEM-encoded paths to
+        # present a client certificate to the provider endpoint.  ``ca_cert``
+        # is optional — use it when the server uses a private CA (internal
+        # PKI / self-signed).  When empty, the system trust store is used.
+        # All paths support ``~`` expansion and relative paths from the
+        # Hermes home directory.
+        "mtls": {
+            "cert_file": "",
+            "key_file": "",
+            "ca_cert": "",
+        },
     },
     
     "terminal": {

@@ -334,3 +334,60 @@ async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatc
     assert "API_KEY=super-secret" not in result.message
     assert "PRIVATE-KEY" not in result.message
     assert any("sensitive credential" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_default_url_fetcher_handles_null_data():
+    """web_extract_tool may return {"data": null} on extract failure;
+    _default_url_fetcher must not crash with AttributeError."""
+    import json as _json
+    import sys
+    import types
+    from agent.context_references import _default_url_fetcher
+
+    fake_module = types.ModuleType("tools.web_tools")
+
+    async def _fake_extract(*_args, **_kwargs):
+        return _json.dumps({"data": None})
+
+    fake_module.web_extract_tool = _fake_extract
+
+    saved = sys.modules.get("tools.web_tools")
+    sys.modules["tools.web_tools"] = fake_module
+    try:
+        result = await _default_url_fetcher("https://example.com/x")
+    finally:
+        if saved is not None:
+            sys.modules["tools.web_tools"] = saved
+        else:
+            sys.modules.pop("tools.web_tools", None)
+
+    assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_default_url_fetcher_handles_null_documents():
+    """`{"data": {"documents": null}}` should also not crash."""
+    import json as _json
+    import sys
+    import types
+    from agent.context_references import _default_url_fetcher
+
+    fake_module = types.ModuleType("tools.web_tools")
+
+    async def _fake_extract(*_args, **_kwargs):
+        return _json.dumps({"data": {"documents": None}})
+
+    fake_module.web_extract_tool = _fake_extract
+
+    saved = sys.modules.get("tools.web_tools")
+    sys.modules["tools.web_tools"] = fake_module
+    try:
+        result = await _default_url_fetcher("https://example.com/x")
+    finally:
+        if saved is not None:
+            sys.modules["tools.web_tools"] = saved
+        else:
+            sys.modules.pop("tools.web_tools", None)
+
+    assert result == ""

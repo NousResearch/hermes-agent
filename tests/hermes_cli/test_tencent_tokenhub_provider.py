@@ -309,7 +309,10 @@ class TestTencentTokenhubContextLength:
     def test_hy3_preview_context_length(self):
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length("hy3-preview")
-        assert ctx == 256000
+        # OpenRouter metadata currently reports Hy3 as an exact 256Ki token
+        # window. This assertion follows the authoritative metadata path used
+        # by get_model_context_length before hardcoded fallbacks.
+        assert ctx == 262144
 
 
 # =============================================================================

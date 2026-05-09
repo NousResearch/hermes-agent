@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import agent.i18n as i18n
 import gateway.run as gateway_run
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
@@ -30,6 +31,10 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     running_agent = MagicMock()
     runner._running_agents[session_key] = running_agent
 
+    # Some i18n tests intentionally monkeypatch the locale catalog path. The
+    # global catalog cache must be reset here so this test stays deterministic
+    # when xdist schedules both files in the same worker.
+    i18n.reset_language_cache()
     result = await runner._handle_message(event)
 
     assert result == "⏳ Draining 1 active agent(s) before restart..."

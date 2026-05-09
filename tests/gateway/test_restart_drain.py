@@ -210,6 +210,27 @@ async def test_shutdown_notification_says_restarting_when_restart_requested():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notification_uses_maintenance_notice(tmp_path, monkeypatch):
+    """Safe-update restarts use calm maintenance wording instead of interruption wording."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / ".maintenance_restart.json").write_text(
+        '{"kind":"safe-update","created_at":9999999999,"commits_pending":3,"head":"abc1234","target":"def5678"}',
+        encoding="utf-8",
+    )
+    runner, adapter = make_restart_runner()
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent) == 1
+    assert "Hermes maintenance restart" in adapter.sent[0]
+    assert "gateway will be back shortly" in adapter.sent[0]
+    assert "3 commits pending" in adapter.sent[0]
+    assert "abc1234 → def5678" in adapter.sent[0]
+    assert "interrupted" not in adapter.sent[0]
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notification_deduplicates_per_chat():
     """Multiple sessions in the same chat only get one notification."""
     runner, adapter = make_restart_runner()

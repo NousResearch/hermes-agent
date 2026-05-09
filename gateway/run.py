@@ -293,6 +293,74 @@ def _restart_notification_pending() -> bool:
     return (_hermes_home / ".restart_notify.json").exists()
 
 
+def _maintenance_restart_notice_path() -> Path:
+    return _hermes_home / ".maintenance_restart.json"
+
+
+def _load_maintenance_restart_notice() -> dict[str, Any] | None:
+    # Best-effort marker written by safe-update for calmer maintenance wording.
+    path = _maintenance_restart_notice_path()
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        created_at = float(data.get("created_at", 0) or 0)
+        if created_at and time.time() - created_at > 60 * 60:
+            try:
+                path.unlink()
+            except Exception:
+                pass
+            return None
+        if data.get("kind") != "safe-update":
+            return None
+        return data
+    except Exception as exc:
+        logger.debug("Failed to load maintenance restart notice: %s", exc)
+        return None
+
+
+def _clear_maintenance_restart_notice() -> None:
+    try:
+        _maintenance_restart_notice_path().unlink(missing_ok=True)
+    except Exception as exc:
+        logger.debug("Failed to clear maintenance restart notice: %s", exc)
+
+
+def _format_maintenance_restart_message(notice: dict[str, Any], *, complete: bool) -> str:
+    raw_commits = notice.get("commits_pending")
+    try:
+        commits = int(raw_commits) if raw_commits is not None else None
+    except (TypeError, ValueError):
+        commits = None
+
+    if complete:
+        lines = [
+            "✅ Hermes maintenance complete — gateway is back.",
+            "",
+            "Result: update applied; gateway restarted",
+        ]
+    else:
+        lines = [
+            "🛠 Hermes maintenance restart — gateway will be back shortly.",
+            "",
+            "Status: updating",
+        ]
+
+    if commits is not None:
+        noun = "commit" if commits == 1 else "commits"
+        status = "applied" if complete else "pending"
+        lines.append(f"Change: {commits} {noun} {status}")
+
+    head = notice.get("head")
+    target = notice.get("target")
+    if head and target and head != target:
+        lines.append(f"Version: {head} → {target}")
+
+    return "\n".join(lines)
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -2589,14 +2657,18 @@ class GatewayRunner:
         """
         active = self._snapshot_running_agents()
 
-        action = "restarting" if self._restart_requested else "shutting down"
-        hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
-            if self._restart_requested
-            else "Your current task will be interrupted."
-        )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        maintenance_notice = _load_maintenance_restart_notice()
+        if maintenance_notice:
+            msg = _format_maintenance_restart_message(maintenance_notice, complete=False)
+        else:
+            action = "restarting" if self._restart_requested else "shutting down"
+            hint = (
+                "Your current task will be interrupted. "
+                "Send any message after restart and I'll try to resume where you left off."
+                if self._restart_requested
+                else "Your current task will be interrupted."
+            )
+            msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -12010,7 +12082,12 @@ class GatewayRunner:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        maintenance_notice = _load_maintenance_restart_notice()
+        message = (
+            _format_maintenance_restart_message(maintenance_notice, complete=True)
+            if maintenance_notice
+            else "♻️ Gateway online — Hermes is back and ready."
+        )
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)
@@ -12050,6 +12127,8 @@ class GatewayRunner:
                     platform.value,
                     home.chat_id,
                 )
+                if maintenance_notice:
+                    _clear_maintenance_restart_notice()
             except Exception as exc:
                 logger.warning(
                     "Home-channel startup notification failed for %s:%s: %s",

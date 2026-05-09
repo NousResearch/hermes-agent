@@ -274,6 +274,36 @@ async def test_send_home_channel_startup_notification_preserves_thread_metadata(
 
 
 @pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_uses_and_clears_maintenance_notice(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notice_path = tmp_path / ".maintenance_restart.json"
+    notice_path.write_text(
+        '{"kind":"safe-update","created_at":9999999999,"commits_pending":5,"head":"1111111","target":"2222222"}',
+        encoding="utf-8",
+    )
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "home-42", None)}
+    adapter.send.assert_called_once_with(
+        "home-42",
+        "✅ Hermes maintenance complete — gateway is back.\n\n"
+        "Result: update applied; gateway restarted\n"
+        "Change: 5 commits applied\n"
+        "Version: 1111111 → 2222222",
+    )
+    assert not notice_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_send_home_channel_startup_notification_skips_restart_target(
     tmp_path, monkeypatch
 ):

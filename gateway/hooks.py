@@ -21,6 +21,7 @@ Errors in hooks are caught and logged but never block the main pipeline.
 
 import asyncio
 import importlib.util
+import sys
 from typing import Any, Callable, Dict, List, Optional
 
 import yaml
@@ -52,19 +53,13 @@ class HookRegistry:
         return list(self._loaded_hooks)
 
     def _register_builtin_hooks(self) -> None:
-        """Register built-in hooks that are always active."""
-        try:
-            from gateway.builtin_hooks.boot_md import handle as boot_md_handle
+        """Register built-in hooks that are always active.
 
-            self._handlers.setdefault("gateway:startup", []).append(boot_md_handle)
-            self._loaded_hooks.append({
-                "name": "boot-md",
-                "description": "Run ~/.hermes/BOOT.md on gateway startup",
-                "events": ["gateway:startup"],
-                "path": "(builtin)",
-            })
-        except Exception as e:
-            print(f"[hooks] Could not load built-in boot-md hook: {e}", flush=True)
+        Currently empty — no shipped built-in hooks. Kept as the extension
+        point for future always-on gateway hooks so they drop in without
+        re-plumbing discover_and_load().
+        """
+        return
 
     def discover_and_load(self) -> None:
         """
@@ -103,16 +98,28 @@ class HookRegistry:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)
                     continue
 
-                # Dynamically load the handler module
+                # Dynamically load the handler module.
+                # Register in sys.modules BEFORE exec_module so Pydantic /
+                # dataclasses / typing introspection can resolve forward
+                # references (triggered by `from __future__ import annotations`
+                # in the handler). Without this, a handler that declares a
+                # Pydantic BaseModel for webhook/event payloads fails at first
+                # dispatch with "TypeAdapter ... is not fully defined".
+                module_name = f"hermes_hook_{hook_name}"
                 spec = importlib.util.spec_from_file_location(
-                    f"hermes_hook_{hook_name}", handler_path
+                    module_name, handler_path
                 )
                 if spec is None or spec.loader is None:
                     print(f"[hooks] Skipping {hook_name}: could not load handler.py", flush=True)
                     continue
 
                 module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
+                sys.modules[module_name] = module
+                try:
+                    spec.loader.exec_module(module)
+                except Exception:
+                    sys.modules.pop(module_name, None)
+                    raise
 
                 handle_fn = getattr(module, "handle", None)
                 if handle_fn is None:
@@ -135,9 +142,22 @@ class HookRegistry:
             except Exception as e:
                 print(f"[hooks] Error loading hook {hook_dir.name}: {e}", flush=True)
 
+    def _resolve_handlers(self, event_type: str) -> List[Callable]:
+        """Return all handlers that should fire for ``event_type``.
+
+        Exact matches fire first, followed by wildcard matches (e.g.
+        ``command:*`` matches ``command:reset``).
+        """
+        handlers = list(self._handlers.get(event_type, []))
+        if ":" in event_type:
+            base = event_type.split(":")[0]
+            wildcard_key = f"{base}:*"
+            handlers.extend(self._handlers.get(wildcard_key, []))
+        return handlers
+
     async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
         """
-        Fire all handlers registered for an event.
+        Fire all handlers registered for an event, discarding return values.
 
         Supports wildcard matching: handlers registered for "command:*" will
         fire for any "command:..." event. Handlers registered for a base type
@@ -151,16 +171,7 @@ class HookRegistry:
         if context is None:
             context = {}
 
-        # Collect handlers: exact match + wildcard match
-        handlers = list(self._handlers.get(event_type, []))
-
-        # Check for wildcard patterns (e.g., "command:*" matches "command:reset")
-        if ":" in event_type:
-            base = event_type.split(":")[0]
-            wildcard_key = f"{base}:*"
-            handlers.extend(self._handlers.get(wildcard_key, []))
-
-        for fn in handlers:
+        for fn in self._resolve_handlers(event_type):
             try:
                 result = fn(event_type, context)
                 # Support both sync and async handlers
@@ -168,3 +179,32 @@ class HookRegistry:
                     await result
             except Exception as e:
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
+
+    async def emit_collect(
+        self,
+        event_type: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """Fire handlers and return their non-None return values in order.
+
+        Like :meth:`emit` but captures each handler's return value. Used for
+        decision-style hooks (e.g. ``command:<name>`` policies that want to
+        allow/deny/rewrite the command before normal dispatch).
+
+        Exceptions from individual handlers are logged but do not abort the
+        remaining handlers.
+        """
+        if context is None:
+            context = {}
+
+        results: List[Any] = []
+        for fn in self._resolve_handlers(event_type):
+            try:
+                result = fn(event_type, context)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                if result is not None:
+                    results.append(result)
+            except Exception as e:
+                print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
+        return results

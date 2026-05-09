@@ -27,6 +27,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +135,7 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
         if yaml_file.exists():
             try:
                 import yaml
-                with open(yaml_file) as f:
+                with open(yaml_file, encoding="utf-8-sig") as f:
                     meta = yaml.safe_load(f) or {}
                 desc = meta.get("description", "")
             except Exception:
@@ -314,7 +315,7 @@ def _get_active_memory_provider() -> Optional[str]:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("memory", {}).get("provider") or None
+        return cfg_get(config, "memory", "provider") or None
     except Exception:
         return None
 
@@ -380,7 +381,7 @@ def discover_plugin_cli_commands() -> List[dict]:
         if yaml_file.exists():
             try:
                 import yaml
-                with open(yaml_file) as f:
+                with open(yaml_file, encoding="utf-8-sig") as f:
                     meta = yaml.safe_load(f) or {}
                 desc = meta.get("description", "")
                 if desc:

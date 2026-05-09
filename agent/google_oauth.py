@@ -49,14 +49,13 @@ import json
 import logging
 import os
 import secrets
-import socket
 import stat
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -98,6 +97,7 @@ _DEFAULT_CLIENT_SECRET = f"GOCSPX-{_PUBLIC_CLIENT_SECRET_SUFFIX}"
 
 # Regex patterns for fallback scraping from an installed gemini-cli.
 import re as _re
+from utils import atomic_replace
 _CLIENT_ID_PATTERN = _re.compile(
     r"OAUTH_CLIENT_ID\s*=\s*['\"]([0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com)['\"]"
 )
@@ -489,17 +489,30 @@ def save_credentials(creds: GoogleCredentials) -> Path:
     """Atomically write creds to disk with 0o600 permissions."""
     path = _credentials_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Tighten parent dir to 0o700 so siblings can't traverse to the creds file.
+    # On Windows this is a no-op (POSIX mode bits aren't enforced); ignore failures.
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     payload = json.dumps(creds.to_dict(), indent=2, sort_keys=True) + "\n"
 
     with _credentials_lock():
         tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
         try:
-            with open(tmp_path, "w", encoding="utf-8") as fh:
+            # Create with 0o600 atomically to close the TOCTOU window where the
+            # default umask (often 0o644) would briefly expose tokens to other
+            # local users between open() and chmod().
+            fd = os.open(
+                str(tmp_path),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(payload)
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
-            os.replace(tmp_path, path)
+            atomic_replace(tmp_path, path)
         finally:
             try:
                 if tmp_path.exists():

@@ -83,6 +83,25 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
 }
 ```
 
+**Inline image input:** user messages may send `content` as an array of `text` and `image_url` parts. Both remote `http(s)` URLs and `data:image/...` URLs are supported:
+
+```json
+{
+  "model": "hermes-agent",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}}
+      ]
+    }
+  ]
+}
+```
+
+Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
+
 **Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event for tool-start UX. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
 
 **Tool progress in streams**:
@@ -118,6 +137,25 @@ OpenAI Responses API format. Supports server-side conversation state via `previo
   "usage": {"input_tokens": 50, "output_tokens": 200, "total_tokens": 250}
 }
 ```
+
+**Inline image input:** `input[].content` can contain `input_text` and `input_image` parts. Both remote URLs and `data:image/...` URLs are supported:
+
+```json
+{
+  "model": "hermes-agent",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "input_text", "text": "Describe this screenshot."},
+        {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0K..."}
+      ]
+    }
+  ]
+}
+```
+
+Uploaded files (`input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
 
 #### Multi-turn with previous_response_id
 
@@ -156,6 +194,29 @@ Delete a stored response.
 
 Lists the agent as an available model. The advertised model name defaults to the [profile](/docs/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
 
+### GET /v1/capabilities
+
+Returns a machine-readable description of the API server's stable surface for external UIs, orchestrators, and plugin bridges.
+
+```json
+{
+  "object": "hermes.api_server.capabilities",
+  "platform": "hermes-agent",
+  "model": "hermes-agent",
+  "auth": {"type": "bearer", "required": true},
+  "features": {
+    "chat_completions": true,
+    "responses_api": true,
+    "run_submission": true,
+    "run_status": true,
+    "run_events_sse": true,
+    "run_stop": true
+  }
+}
+```
+
+Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
+
 ### GET /health
 
 Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.
@@ -172,9 +233,40 @@ In addition to `/v1/chat/completions` and `/v1/responses`, the server exposes a 
 
 Create a new agent run. Returns a `run_id` that can be used to subscribe to progress events.
 
+```json
+{
+  "run_id": "run_abc123",
+  "status": "started"
+}
+```
+
+Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+
+### GET /v1/runs/\{run_id\}
+
+Poll the current run state. This is useful for dashboards that need status without holding an SSE connection open, or for UIs that reconnect after navigation.
+
+```json
+{
+  "object": "hermes.run",
+  "run_id": "run_abc123",
+  "status": "completed",
+  "session_id": "space-session",
+  "model": "hermes-agent",
+  "output": "Done.",
+  "usage": {"input_tokens": 50, "output_tokens": 200, "total_tokens": 250}
+}
+```
+
+Statuses are retained briefly after terminal states (`completed`, `failed`, or `cancelled`) for polling and UI reconciliation.
+
 ### GET /v1/runs/\{run_id\}/events
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
+
+### POST /v1/runs/\{run_id\}/stop
+
+Interrupt a running agent turn. The endpoint returns immediately with `{"status": "stopping"}` while Hermes asks the active agent to stop at the next safe interruption point.
 
 ## Jobs API (background scheduled work)
 
@@ -330,7 +422,7 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 ## Limitations
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
-- **No file upload** — vision/document analysis via uploaded files is not yet supported through the API.
+- **No file upload** — inline images are supported on both `/v1/chat/completions` and `/v1/responses`, but uploaded files (`file`, `input_file`, `file_id`) and non-image document inputs are not supported through the API.
 - **Model field is cosmetic** — the `model` field in requests is accepted but the actual LLM model used is configured server-side in config.yaml.
 
 ## Proxy Mode

@@ -26,7 +26,6 @@ CATEGORY_LABELS = {
     "dogfood": "Dogfood",
     "domain": "Domain",
     "email": "Email",
-    "feeds": "Feeds",
     "gaming": "Gaming",
     "gifs": "GIFs",
     "github": "GitHub",
@@ -70,7 +69,7 @@ def extract_local_skills():
                 continue
 
             skill_path = os.path.join(root, "SKILL.md")
-            with open(skill_path) as f:
+            with open(skill_path, encoding="utf-8") as f:
                 content = f.read()
 
             if not content.startswith("---"):
@@ -129,7 +128,7 @@ def extract_cached_index_skills():
 
         filepath = os.path.join(INDEX_CACHE_DIR, filename)
         try:
-            with open(filepath) as f:
+            with open(filepath, encoding="utf-8") as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError):
             continue
@@ -255,7 +254,7 @@ def main():
     ))
 
     os.makedirs(os.path.dirname(OUTPUT), exist_ok=True)
-    with open(OUTPUT, "w") as f:
+    with open(OUTPUT, "w", encoding="utf-8") as f:
         json.dump(all_skills, f, indent=2)
 
     print(f"Extracted {len(all_skills)} skills to {OUTPUT}")

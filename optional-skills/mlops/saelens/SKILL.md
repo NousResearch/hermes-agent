@@ -5,6 +5,7 @@ version: 1.0.0
 author: Orchestra Research
 license: MIT
 dependencies: [sae-lens>=6.0.0, transformer-lens>=2.0.0, torch>=2.0.0]
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Sparse Autoencoders, SAE, Mechanistic Interpretability, Feature Discovery, Superposition]

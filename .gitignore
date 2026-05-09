@@ -1,3 +1,4 @@
+.DS_Store
 /venv/
 /_pycache/
 *.pyc*
@@ -54,6 +55,11 @@ environments/benchmarks/evals/
 # Web UI build output
 hermes_cli/web_dist/
 
+# Web UI assets — synced from @nous-research/ui at build time via
+# `npm run sync-assets` (see web/package.json).
+web/public/fonts/
+web/public/ds-assets/
+
 # Release script temp files
 .release_notes.md
 mini-swe-agent/
@@ -63,3 +69,4 @@ mini-swe-agent/
 .nix-stamps/
 result
 website/static/api/skills-index.json
+models-dev-upstream/

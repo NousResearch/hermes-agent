@@ -422,7 +422,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         os.makedirs(log_dir, exist_ok=True)
         run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self._streaming_path = os.path.join(log_dir, f"samples_{run_ts}.jsonl")
-        self._streaming_file = open(self._streaming_path, "w")
+        self._streaming_file = open(self._streaming_path, "w", encoding="utf-8")
         self._streaming_lock = threading.Lock()
 
         print(f"\nYC-Bench eval matrix: {len(self.all_eval_items)} runs")

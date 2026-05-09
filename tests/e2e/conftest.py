@@ -12,7 +12,7 @@ No LLM, no real platform connections.
 import asyncio
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,6 +22,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
+E2E_MESSAGE_SETTLE_DELAY = 0.3
 
 # Platform library mocks
 
@@ -113,8 +114,9 @@ _ensure_telegram_mock()
 _ensure_discord_mock()
 _ensure_slack_mock()
 
-from gateway.platforms.discord import DiscordAdapter   # noqa: E402
+import discord  # noqa: E402 — mocked above
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 
 import gateway.platforms.slack as _slack_mod  # noqa: E402
 _slack_mod.SLACK_AVAILABLE = True
@@ -123,13 +125,13 @@ from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
 # Platform-generic factories
 
-def make_source(platform: Platform, chat_id: str = "e2e-chat-1", user_id: str = "e2e-user-1") -> SessionSource:
+def make_source(platform: Platform, chat_id: str = "e2e-chat-1", user_id: str = "e2e-user-1", chat_type: str = "dm") -> SessionSource:
     return SessionSource(
         platform=platform,
         chat_id=chat_id,
         user_id=user_id,
         user_name="e2e_tester",
-        chat_type="dm",
+        chat_type=chat_type,
     )
 
 
@@ -145,10 +147,16 @@ def make_session_entry(platform: Platform, source: SessionSource = None) -> Sess
     )
 
 
-def make_event(platform: Platform, text: str = "/help", chat_id: str = "e2e-chat-1", user_id: str = "e2e-user-1") -> MessageEvent:
+def make_event(
+    platform: Platform,
+    text: str = "/help",
+    chat_id: str = "e2e-chat-1",
+    user_id: str = "e2e-user-1",
+    chat_type: str = "dm",
+) -> MessageEvent:
     return MessageEvent(
         text=text,
-        source=make_source(platform, chat_id, user_id),
+        source=make_source(platform, chat_id, user_id, chat_type),
         message_id=f"msg-{uuid.uuid4().hex[:8]}",
     )
 
@@ -183,6 +191,23 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._shutdown_event = asyncio.Event()
+    runner._exit_reason = None
+    runner._exit_code = None
+    runner._background_tasks = set()
+    runner._draining = False
+    runner._restart_requested = False
+    runner._restart_task_started = False
+    runner._restart_detached = False
+    runner._restart_via_service = False
+    from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    runner._stop_task = None
+    runner._busy_input_mode = "interrupt"
+    runner._running_agents_ts = {}
+    runner._pending_model_notes = {}
+    runner._update_prompt_pending = {}
+    runner._voice_mode = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -191,6 +216,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
 
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
+    runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")
     runner._should_send_voice_reply = lambda *_a, **_kw: False
     runner._send_voice_reply = AsyncMock()
     runner._capture_gateway_honcho_if_configured = lambda *a, **kw: None
@@ -264,3 +290,141 @@ def runner(platform, session_entry):
 @pytest.fixture()
 def adapter(platform, runner):
     return make_adapter(platform, runner)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Discord helpers and fixtures
+# ═══════════════════════════════════════════════════════════════════════════
+
+BOT_USER_ID = 99999
+BOT_USER_NAME = "HermesBot"
+CHANNEL_ID = 22222
+GUILD_ID = 44444
+THREAD_ID = 33333
+MESSAGE_ID_COUNTER = 0
+
+
+def _next_message_id() -> int:
+    global MESSAGE_ID_COUNTER
+    MESSAGE_ID_COUNTER += 1
+    return 70000 + MESSAGE_ID_COUNTER
+
+
+def make_fake_bot_user():
+    return SimpleNamespace(
+        id=BOT_USER_ID, name=BOT_USER_NAME,
+        display_name=BOT_USER_NAME, bot=True,
+    )
+
+
+def make_fake_guild(guild_id: int = GUILD_ID, name: str = "Test Server"):
+    return SimpleNamespace(id=guild_id, name=name)
+
+
+def make_fake_text_channel(channel_id: int = CHANNEL_ID, name: str = "general", guild=None):
+    return SimpleNamespace(
+        id=channel_id, name=name,
+        guild=guild or make_fake_guild(),
+        topic=None, type=0,
+    )
+
+
+def make_fake_dm_channel(channel_id: int = 55555):
+    ch = MagicMock(spec=[])
+    ch.id = channel_id
+    ch.name = "DM"
+    ch.topic = None
+    ch.__class__ = discord.DMChannel
+    return ch
+
+
+def make_fake_thread(thread_id: int = THREAD_ID, name: str = "test-thread", parent=None):
+    th = MagicMock(spec=[])
+    th.id = thread_id
+    th.name = name
+    th.parent = parent or make_fake_text_channel()
+    th.parent_id = th.parent.id
+    th.guild = th.parent.guild
+    th.topic = None
+    th.type = 11
+    th.__class__ = discord.Thread
+    return th
+
+
+def make_discord_message(
+    *, content: str = "hello", author=None, channel=None, mentions=None,
+    attachments=None, message_id: int = None,
+):
+    if message_id is None:
+        message_id = _next_message_id()
+    if author is None:
+        author = SimpleNamespace(
+            id=11111, name="testuser", display_name="testuser", bot=False,
+        )
+    if channel is None:
+        channel = make_fake_text_channel()
+    if mentions is None:
+        mentions = []
+    if attachments is None:
+        attachments = []
+
+    return SimpleNamespace(
+        id=message_id, content=content, author=author, channel=channel,
+        guild=getattr(channel, "guild", None),
+        mentions=mentions, attachments=attachments,
+        type=getattr(discord, "MessageType", SimpleNamespace()).default,
+        reference=None, created_at=datetime.now(timezone.utc),
+        create_thread=AsyncMock(),
+    )
+
+
+def get_response_text(adapter) -> str | None:
+    """Extract the response text from adapter.send() call args, or None if not called."""
+    if not adapter.send.called:
+        return None
+    return adapter.send.call_args[1].get("content") or adapter.send.call_args[0][1]
+
+
+def _make_discord_adapter_wired(runner=None):
+    """Create a DiscordAdapter wired to a GatewayRunner for e2e tests."""
+    if runner is None:
+        runner = make_runner(Platform.DISCORD)
+
+    config = PlatformConfig(enabled=True, token="e2e-test-token")
+    from gateway.platforms.helpers import ThreadParticipationTracker
+    with patch.object(ThreadParticipationTracker, "_load", return_value=set()):
+        adapter = DiscordAdapter(config)
+
+    bot_user = make_fake_bot_user()
+    adapter._client = SimpleNamespace(
+        user=bot_user,
+        get_channel=lambda _id: None,
+        fetch_channel=AsyncMock(),
+    )
+
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="e2e-resp-1"))
+    adapter.send_typing = AsyncMock()
+    adapter.set_message_handler(runner._handle_message)
+    runner.adapters[Platform.DISCORD] = adapter
+
+    return adapter, runner
+
+
+@pytest.fixture()
+def discord_setup():
+    return _make_discord_adapter_wired()
+
+
+@pytest.fixture()
+def discord_adapter(discord_setup):
+    return discord_setup[0]
+
+
+@pytest.fixture()
+def discord_runner(discord_setup):
+    return discord_setup[1]
+
+
+@pytest.fixture()
+def bot_user():
+    return make_fake_bot_user()

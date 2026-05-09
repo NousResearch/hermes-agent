@@ -4,18 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
-    paths:
-      - 'flake.nix'
-      - 'flake.lock'
-      - 'nix/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'hermes_cli/**'
-      - 'run_agent.py'
-      - 'acp_adapter/**'
 
 permissions:
   contents: read
+  pull-requests: write
 
 concurrency:
   group: nix-${{ github.ref }}
@@ -29,15 +21,97 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25  # v22
-      - uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39  # v13
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: ./.github/actions/nix-setup
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Resolve head SHA
+        if: github.event_name == 'pull_request'
+        id: sha
+        shell: bash
+        run: |
+          FULL="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "full=$FULL" >> "$GITHUB_OUTPUT"
+          echo "short=${FULL:0:7}" >> "$GITHUB_OUTPUT"
+
       - name: Check flake
+        id: flake
         if: runner.os == 'Linux'
+        continue-on-error: true
         run: nix flake check --print-build-logs
+
       - name: Build package
+        id: build
         if: runner.os == 'Linux'
+        continue-on-error: true
         run: nix build --print-build-logs
+
+      # When the real Nix build fails, run a targeted diagnostic to see if
+      # the failure is specifically a stale npm lockfile hash in one of the
+      # known npm subpackages (tui / web).  This avoids surfacing a generic
+      # "build failed" message when the fix is a single known command.
+      - name: Diagnose npm lockfile hashes
+        id: hash_check
+        if: (steps.flake.outcome == 'failure' || steps.build.outcome == 'failure') && runner.os == 'Linux'
+        continue-on-error: true
+        env:
+          LINK_SHA: ${{ steps.sha.outputs.full }}
+        run: nix run .#fix-lockfiles -- --check
+
+      # If fix-lockfiles itself crashes (infrastructure blip, cache throttle,
+      # etc.) it won't set stale=true/false.  Treat that as a distinct failure
+      # mode rather than silently ignoring it.
+      - name: Fail if hash check crashed without reporting
+        if: steps.hash_check.outcome == 'failure' && steps.hash_check.outputs.stale != 'true' && steps.hash_check.outputs.stale != 'false'
+        run: |
+          echo "::error::fix-lockfiles exited without reporting stale status — likely an infrastructure or script failure"
+          exit 1
+
+      - name: Post sticky PR comment (stale hashes)
+        if: steps.hash_check.outputs.stale == 'true' && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        with:
+          header: nix-lockfile-check
+          message: |
+            ### ⚠️ npm lockfile hash out of date
+
+            Checked against commit [`${{ steps.sha.outputs.short }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.sha.outputs.full }}) (PR head at check time).
+
+            The `hash = "sha256-..."` line in these nix files no longer matches the committed `package-lock.json`:
+
+            ${{ steps.hash_check.outputs.report }}
+
+            #### Apply the fix
+
+            - [ ] **Apply lockfile fix** — tick to push a commit with the correct hashes to this PR branch
+            - Or [run the Nix Lockfile Fix workflow](${{ github.server_url }}/${{ github.repository }}/actions/workflows/nix-lockfile-fix.yml) manually (pass PR `#${{ github.event.pull_request.number }}`)
+            - Or locally: `nix run .#fix-lockfiles` and commit the diff
+
+      # Clear the sticky comment when either the build passed outright (no
+      # hash check needed) or the hash check explicitly returned stale=false
+      # (build failed for a non-hash reason).
+      - name: Clear sticky PR comment (resolved)
+        if: |
+          github.event_name == 'pull_request' &&
+          runner.os == 'Linux' &&
+          (steps.hash_check.outputs.stale == 'false' ||
+           (steps.flake.outcome == 'success' && steps.build.outcome == 'success'))
+        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        with:
+          header: nix-lockfile-check
+          delete: true
+
+      - name: Final fail if build or flake failed
+        if: steps.flake.outcome == 'failure' || steps.build.outcome == 'failure'
+        run: |
+          if [ "${{ steps.hash_check.outputs.stale }}" == "true" ]; then
+            echo "::error::Nix build failed due to stale npm lockfile hash. Run: nix run .#fix-lockfiles"
+          else
+            echo "::error::Nix build/flake check failed. See logs above."
+          fi
+          exit 1
+
       - name: Evaluate flake (macOS)
         if: runner.os == 'macOS'
         run: nix flake show --json > /dev/null

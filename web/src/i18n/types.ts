@@ -1,4 +1,4 @@
-export type Locale = "en" | "zh";
+export type Locale = "en" | "zh" | "pt-BR";
 
 export interface Translations {
   // ── Common ──

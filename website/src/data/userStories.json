@@ -1087,5 +1087,16 @@
     "headline": "Private Telegram topics, each with its own skill bindings",
     "quote": "Hermes extracts what worked from completed workflows, writes it as a reusable skill, and loads it for similar future problems. Private Telegram chat topics for isolated workflows with their own skill bindings.",
     "size": "sm"
+  },
+  {
+    "id": "awesome-hermes-usecases",
+    "source": "repository",
+    "author": "Ali",
+    "url": "https://github.com/aliaihub/awesome-hermes-usecases",
+    "date": "2026-05",
+    "category": "integration",
+    "headline": "Real-world use cases for Hermes Agent",
+    "quote": "Curated real-world use cases for Hermes Agent — the self-improving AI agent from Nous Research. Backed by primary sources.",
+    "size": "md"
   }
 ]

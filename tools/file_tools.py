@@ -297,7 +297,7 @@ def _is_internal_file_status_text(content: str) -> bool:
     if stripped == _READ_DEDUP_STATUS_MESSAGE:
         return True
     if _READ_DEDUP_STATUS_MESSAGE in stripped and \
-            len(stripped) <= 2 * len(_READ_DEDUP_STATUS_MESSAGE):
+            len(stripped) <= 1.2 * len(_READ_DEDUP_STATUS_MESSAGE):
         return True
     return False
 

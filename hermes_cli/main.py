@@ -7302,6 +7302,112 @@ def _is_android_python() -> bool:
     return sys.platform == "android"
 
 
+def _termux_snapshot_prompt_marker_path() -> Path:
+    return get_hermes_home() / ".termux_snapshot_cleanup_prompt"
+
+
+def _termux_state_snapshots_dir() -> Path:
+    return get_hermes_home() / "state-snapshots"
+
+
+def _list_termux_state_snapshots() -> list[Path]:
+    root = _termux_state_snapshots_dir()
+    if not root.exists() or not root.is_dir():
+        return []
+    return sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name)
+
+
+def _prompt_termux_snapshot_cleanup_on_launch() -> None:
+    """Termux-only one-shot prompt to prune update snapshots.
+
+    Triggered on the next interactive launch after a successful ``hermes update``.
+    """
+    if not _is_termux_env() or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+
+    marker = _termux_snapshot_prompt_marker_path()
+    if not marker.exists():
+        return
+
+    snapshots = _list_termux_state_snapshots()
+    if len(snapshots) <= 1:
+        try:
+            marker.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return
+
+    newest = snapshots[-1]
+    older = snapshots[:-1]
+
+    print()
+    print("→ Termux snapshot cleanup")
+    print("  Select snapshots to delete:")
+    print("  0 = delete every snapshot before the most recent one")
+    print("  all = delete ALL snapshots (including the most recent)")
+    print("  Enter comma-separated numbers to delete specific entries")
+    print()
+
+    indexed: list[Path] = []
+    for idx, p in enumerate(reversed(snapshots), start=1):
+        tag = " (most recent)" if p == newest else ""
+        print(f"  {idx}. {p.name}{tag}")
+        indexed.append(p)
+
+    try:
+        raw = input("Delete selection [Enter to skip]: ").strip().lower()
+    except EOFError:
+        raw = ""
+
+    to_delete: list[Path] = []
+    if raw == "":
+        print("  Skipped snapshot cleanup.")
+    elif raw == "0":
+        to_delete = older
+    elif raw == "all":
+        to_delete = list(snapshots)
+    else:
+        picks: list[int] = []
+        for token in raw.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if not token.isdigit():
+                print(f"  Invalid token '{token}' — skipping cleanup.")
+                to_delete = []
+                picks = []
+                break
+            picks.append(int(token))
+
+        if picks:
+            max_idx = len(indexed)
+            bad = [n for n in picks if n < 1 or n > max_idx]
+            if bad:
+                print(f"  Invalid selection(s): {bad} — skipping cleanup.")
+            else:
+                chosen = {indexed[n - 1] for n in picks}
+                to_delete = sorted(chosen, key=lambda p: p.name)
+
+    removed = 0
+    for p in to_delete:
+        # Safety guard: never delete outside the snapshots directory.
+        try:
+            if p.parent != _termux_state_snapshots_dir():
+                continue
+            shutil.rmtree(p)
+            removed += 1
+        except Exception as exc:
+            print(f"  Could not remove {p.name}: {exc}")
+
+    if to_delete:
+        print(f"  Removed {removed}/{len(to_delete)} snapshot directories.")
+
+    try:
+        marker.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _install_psutil_android_compat(
     install_cmd_prefix: list[str],
     *,
@@ -8374,6 +8480,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print()
         print("✓ Update complete!")
+
+        # On Termux, prompt at next interactive launch to prune state snapshots.
+        # This keeps update non-blocking while still giving users granular cleanup.
+        if _is_termux_env():
+            try:
+                _termux_snapshot_prompt_marker_path().write_text("1", encoding="utf-8")
+            except Exception:
+                pass
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
@@ -9981,6 +10095,12 @@ def main():
     # there's nothing to clean. See ``_quarantine_running_hermes_exe``.
     try:
         _cleanup_quarantined_exes()
+    except Exception:
+        pass
+
+    # Termux-only one-shot cleanup prompt shown after successful updates.
+    try:
+        _prompt_termux_snapshot_cleanup_on_launch()
     except Exception:
         pass
 

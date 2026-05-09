@@ -288,6 +288,55 @@ def test_is_termux_env_false_for_non_termux_prefix():
     assert hm._is_termux_env({"PREFIX": "/usr/local"}) is False
 
 
+def test_termux_snapshot_cleanup_prompt_zero_deletes_older_only(tmp_path, monkeypatch):
+    from hermes_cli import main as hm
+
+    snaps = tmp_path / "state-snapshots"
+    snaps.mkdir()
+    (snaps / "20250101-pre-update").mkdir()
+    (snaps / "20250201-pre-update").mkdir()
+    (snaps / "20250301-pre-update").mkdir()
+    marker = tmp_path / ".termux_snapshot_cleanup_prompt"
+    marker.write_text("1", encoding="utf-8")
+
+    monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
+    monkeypatch.setattr(hm, "_termux_state_snapshots_dir", lambda: snaps)
+    monkeypatch.setattr(hm, "_termux_snapshot_prompt_marker_path", lambda: marker)
+    monkeypatch.setattr(hm.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(hm.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *_: "0")
+
+    hm._prompt_termux_snapshot_cleanup_on_launch()
+
+    remaining = sorted(p.name for p in snaps.iterdir() if p.is_dir())
+    assert remaining == ["20250301-pre-update"]
+    assert not marker.exists()
+
+
+def test_termux_snapshot_cleanup_prompt_all_deletes_everything(tmp_path, monkeypatch):
+    from hermes_cli import main as hm
+
+    snaps = tmp_path / "state-snapshots"
+    snaps.mkdir()
+    (snaps / "20250101-pre-update").mkdir()
+    (snaps / "20250201-pre-update").mkdir()
+    marker = tmp_path / ".termux_snapshot_cleanup_prompt"
+    marker.write_text("1", encoding="utf-8")
+
+    monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
+    monkeypatch.setattr(hm, "_termux_state_snapshots_dir", lambda: snaps)
+    monkeypatch.setattr(hm, "_termux_snapshot_prompt_marker_path", lambda: marker)
+    monkeypatch.setattr(hm.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(hm.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *_: "all")
+
+    hm._prompt_termux_snapshot_cleanup_on_launch()
+
+    remaining = [p for p in snaps.iterdir() if p.is_dir()]
+    assert remaining == []
+    assert not marker.exists()
+
+
 def test_load_installable_optional_extras_supports_termux_group(tmp_path, monkeypatch):
     from hermes_cli import main as hm
 

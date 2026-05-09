@@ -5,7 +5,7 @@ import json
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 
 class TestFeishuMarkdownTablePayload(unittest.TestCase):
@@ -31,7 +31,9 @@ class TestFeishuMarkdownTablePayload(unittest.TestCase):
             "| Mem | 偏高 | 82% |"
         )
 
-        self.assertEqual(card["config"], {"wide_screen_mode": True})
+        self.assertTrue(card["config"]["wide_screen_mode"])
+        self.assertTrue(card["config"]["update_multi"])
+        self.assertEqual(card["config"]["locales"], ["zh_cn", "en_us"])
         table = card["elements"][1]
         self.assertEqual(table["tag"], "table")
         self.assertEqual(table["page_size"], 10)
@@ -97,6 +99,47 @@ class TestFeishuMarkdownTablePayload(unittest.TestCase):
         self.assertEqual(aligns, ["left", "center", "right"])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_heading_prose_is_rendered_as_sized_card_text(self):
+        card = self._interactive_card(
+            "# Main Title\n"
+            "### Section Title\n\n"
+            "| A | B |\n"
+            "| --- | --- |\n"
+            "| 1 | 2 |"
+        )
+
+        self.assertEqual([element["tag"] for element in card["elements"]], ["div", "div", "table"])
+        self.assertEqual(card["elements"][0]["text"]["content"], "**Main Title**")
+        self.assertEqual(card["elements"][0]["text"]["text_size"], "heading-1")
+        self.assertEqual(card["elements"][1]["text"]["content"], "**Section Title**")
+        self.assertEqual(card["elements"][1]["text"]["text_size"], "heading-3")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_h5_heading_prose_gets_heading_size_in_card(self):
+        card = self._interactive_card(
+            "Intro\n\n"
+            "##### 1. TODE80 / TODE90 的共同规则\n"
+            "| 项 | 规则 |\n"
+            "| --- | --- |\n"
+            "| 容器名 | `teap_${new_branch}` |"
+        )
+
+        self.assertEqual([element["tag"] for element in card["elements"]], ["markdown", "div", "table"])
+        self.assertEqual(card["elements"][1]["text"]["content"], "**1. TODE80 / TODE90 的共同规则**")
+        self.assertEqual(card["elements"][1]["text"]["text_size"], "heading")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_code_block_headings_are_not_normalized_in_card_markdown(self):
+        card = self._interactive_card(
+            "```markdown\n# Keep Literal\n```\n\n"
+            "| A | B |\n"
+            "| --- | --- |\n"
+            "| 1 | 2 |"
+        )
+
+        self.assertIn("# Keep Literal", card["elements"][0]["content"])
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_content_without_table_preserves_existing_post_and_text_behavior(self):
         adapter = self._adapter()
 
@@ -109,14 +152,51 @@ class TestFeishuMarkdownTablePayload(unittest.TestCase):
         self.assertEqual(json.loads(text_payload), {"text": "Hello plain"})
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_allows_five_tables_in_one_card(self):
+        content = "\n\n".join(
+            f"Table {index}\n\n| A | B |\n| --- | --- |\n| {index} | ok |"
+            for index in range(1, 6)
+        )
+
+        card = self._interactive_card(content)
+
+        self.assertEqual(sum(1 for element in card["elements"] if element["tag"] == "table"), 5)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_over_limit_table_count_falls_back_to_text(self):
+        adapter = self._adapter()
+        content = "\n\n".join(
+            f"Table {index}\n\n| A | B |\n| --- | --- |\n| {index} | ok |"
+            for index in range(1, 7)
+        )
+
+        msg_type, payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "text")
+        self.assertIn("Table 6", payload)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_allows_fifteen_column_table(self):
+        headers = [f"H{i}" for i in range(15)]
+        content = (
+            "| " + " | ".join(headers) + " |\n"
+            + "| " + " | ".join(["---"] * 15) + " |\n"
+            + "| " + " | ".join(["v"] * 15) + " |"
+        )
+
+        card = self._interactive_card(content)
+
+        self.assertEqual(len(card["elements"][0]["columns"]), 15)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_over_limit_table_falls_back_to_text_not_post(self):
         adapter = self._adapter()
-        headers = [f"H{i}" for i in range(13)]
+        headers = [f"H{i}" for i in range(16)]
         content = (
             "**Intro**\n"
             + "| " + " | ".join(headers) + " |\n"
-            + "| " + " | ".join(["---"] * 13) + " |\n"
-            + "| " + " | ".join(["v"] * 13) + " |"
+            + "| " + " | ".join(["---"] * 16) + " |\n"
+            + "| " + " | ".join(["v"] * 16) + " |"
         )
 
         msg_type, payload = adapter._build_outbound_payload(content)
@@ -124,7 +204,7 @@ class TestFeishuMarkdownTablePayload(unittest.TestCase):
 
         self.assertEqual(msg_type, "text")
         self.assertEqual(edit_type, "text")
-        self.assertIn("H12", payload)
+        self.assertIn("H15", payload)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_tilde_fenced_code_block_table_is_not_converted(self):
@@ -232,6 +312,115 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
             [call.kwargs["msg_type"] for call in adapter._feishu_send_with_retry.call_args_list],
             ["interactive", "text"],
         )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_splits_more_than_five_tables_into_multiple_interactive_cards(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace()
+        responses = [
+            SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_card_1")),
+            SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_card_2")),
+        ]
+        adapter._feishu_send_with_retry = AsyncMock(side_effect=responses)
+        content = "\n\n".join(
+            f"Table {index}\n\n| A | B |\n| --- | --- |\n| {index} | ok |"
+            for index in range(1, 7)
+        )
+
+        result = asyncio.run(adapter.send(chat_id="oc_chat", content=content, reply_to="om_user_message"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card_2")
+        self.assertEqual(
+            [(call.kwargs["msg_type"], call.kwargs["reply_to"]) for call in adapter._feishu_send_with_retry.call_args_list],
+            [("interactive", "om_user_message"), ("interactive", None)],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_interactive_reply_rejection_retries_as_top_level_card_before_text(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace()
+        interactive_rejected = SimpleNamespace(success=lambda: False, code=230001, msg="unsupported reply card")
+        top_level_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="om_top_level_card"),
+        )
+        adapter._feishu_send_with_retry = AsyncMock(side_effect=[interactive_rejected, top_level_response])
+
+        result = asyncio.run(
+            adapter.send(
+                chat_id="oc_chat",
+                content="| A | B |\n| --- | --- |\n| 1 | 2 |",
+                reply_to="om_user_message",
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_top_level_card")
+        self.assertEqual(
+            [(call.kwargs["msg_type"], call.kwargs["reply_to"]) for call in adapter._feishu_send_with_retry.call_args_list],
+            [("interactive", "om_user_message"), ("interactive", None)],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_interactive_reply_exception_retries_as_top_level_card_before_text(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace()
+        top_level_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="om_top_level_after_exception"),
+        )
+        adapter._feishu_send_with_retry = AsyncMock(side_effect=[RuntimeError("reply rejected"), top_level_response])
+
+        result = asyncio.run(
+            adapter.send(
+                chat_id="oc_chat",
+                content="| A | B |\n| --- | --- |\n| 1 | 2 |",
+                reply_to="om_user_message",
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_top_level_after_exception")
+        self.assertEqual(
+            [(call.kwargs["msg_type"], call.kwargs["reply_to"]) for call in adapter._feishu_send_with_retry.call_args_list],
+            [("interactive", "om_user_message"), ("interactive", None)],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_reply_in_thread_false_ignores_thread_metadata_fallback(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"reply_in_thread": False}))
+        message_api = SimpleNamespace(
+            create=Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_top"))),
+            reply=Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_reply"))),
+        )
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=message_api)))
+
+        response = asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload=json.dumps({"text": "ok"}),
+                reply_to=None,
+                metadata={"thread_id": "omt_thread", "reply_to_message_id": "om_parent"},
+            )
+        )
+
+        self.assertTrue(response.success())
+        message_api.create.assert_called_once()
+        message_api.reply.assert_not_called()
 
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_does_not_attempt_interactive_update_for_table_content(self):

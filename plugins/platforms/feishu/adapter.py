@@ -162,6 +162,16 @@ _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 _MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+_FEISHU_CARD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$")
+_FEISHU_CARD_HEADING_TEXT_SIZE = {
+    1: "heading-1",
+    2: "heading-2",
+    3: "heading-3",
+    4: "heading-4",
+    5: "heading",
+    6: "heading",
+}
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -173,7 +183,7 @@ _DOCUMENT_MIME_TO_EXT = {mime: ext for ext, mime in SUPPORTED_DOCUMENT_TYPES.ite
 _FEISHU_IMAGE_UPLOAD_TYPE = "message"
 _FEISHU_FILE_UPLOAD_TYPE = "stream"
 _FEISHU_CARD_TABLE_MAX_TABLES = 5
-_FEISHU_CARD_TABLE_MAX_COLUMNS = 12
+_FEISHU_CARD_TABLE_MAX_COLUMNS = 15
 _FEISHU_CARD_TABLE_PAGE_SIZE = 10
 _FEISHU_CARD_TABLE_MAX_PAYLOAD_BYTES = 30000
 _FEISHU_OPUS_UPLOAD_EXTENSIONS = {".ogg", ".opus"}
@@ -706,6 +716,90 @@ def _is_indented_markdown_code_line(line: str) -> bool:
     return line.startswith("    ") or line.startswith("\t")
 
 
+def _optimize_feishu_card_markdown_style(text: str, *, card_version: int = 2) -> str:
+    """Normalize Markdown for Feishu card markdown elements.
+
+    Mirrors lark-cli/openclaw-lark's card markdown style rules: Feishu cards render
+    large headings poorly, so H1-H3 are downgraded and spacing around card content
+    is normalized while fenced code blocks are preserved.
+    """
+    try:
+        marker = "___HERMES_FEISHU_CB_"
+        code_blocks: List[str] = []
+
+        def _stash_code_block(match: re.Match[str]) -> str:
+            prefix = match.group(1) or ""
+            block = match.group(0)[len(prefix) :]
+            code_blocks.append(block)
+            return f"{prefix}{marker}{len(code_blocks) - 1}___"
+
+        result = re.sub(r"(^|\n)(`{3,})([^\n`]*)\n[\s\S]*?\n\2(?=\n|$)", _stash_code_block, text)
+        if re.search(r"^#{1,3} ", text, re.MULTILINE):
+            result = re.sub(r"^#{2,6} (.+)$", r"##### \1", result, flags=re.MULTILINE)
+            result = re.sub(r"^# (.+)$", r"#### \1", result, flags=re.MULTILINE)
+        if card_version >= 2:
+            result = re.sub(r"^(#{4,5} .+)\n{1,2}(#{4,5} )", r"\1\n<br>\n\2", result, flags=re.MULTILINE)
+            for index, block in enumerate(code_blocks):
+                result = result.replace(f"{marker}{index}___", f"\n<br>\n{block}\n<br>\n")
+        else:
+            for index, block in enumerate(code_blocks):
+                result = result.replace(f"{marker}{index}___", block)
+        result = re.sub(r"\n{3,}", "\n\n", result)
+        return _MARKDOWN_IMAGE_RE.sub(lambda m: m.group(0) if m.group(2).startswith("img_") else "", result).strip()
+    except Exception:
+        return text
+
+
+def _build_feishu_card_heading_element(level: int, text: str) -> Dict[str, Any]:
+    return {
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": f"**{text.strip()}**",
+            "text_size": _FEISHU_CARD_HEADING_TEXT_SIZE.get(level, "heading"),
+        },
+    }
+
+
+def _build_feishu_card_prose_elements(text: str) -> List[Dict[str, Any]]:
+    """Split prose into Feishu card elements, rendering Markdown headings as sized divs.
+
+    Feishu card Markdown does not support ATX heading syntax (``# Heading``).
+    Keeping the hashes in a ``markdown`` element renders literal ``#####`` text, so
+    headings must be expressed with the card text component's ``text_size`` field.
+    """
+    lines = text.splitlines()
+    elements: List[Dict[str, Any]] = []
+    prose: List[str] = []
+    code_fence = ""
+
+    def _flush_prose() -> None:
+        nonlocal prose
+        segment = "\n".join(prose).strip()
+        if segment:
+            elements.append({"tag": "markdown", "content": _optimize_feishu_card_markdown_style(segment)})
+        prose = []
+
+    for line in lines:
+        next_fence = _is_markdown_table_code_fence(line, code_fence)
+        if code_fence or next_fence:
+            code_fence = next_fence
+            prose.append(line)
+            continue
+
+        match = _FEISHU_CARD_HEADING_RE.match(line.strip())
+        if match:
+            _flush_prose()
+            level = len(match.group(1))
+            elements.append(_build_feishu_card_heading_element(level, match.group(2)))
+            continue
+
+        prose.append(line)
+
+    _flush_prose()
+    return elements
+
+
 def _parse_markdown_table_separator(line: str) -> Optional[List[str]]:
     cells = _split_markdown_table_row(line)
     if not cells or not all(_MARKDOWN_TABLE_SEPARATOR_RE.match(cell.replace(" ", "")) for cell in cells):
@@ -779,7 +873,7 @@ def _build_markdown_table_card(content: str) -> Optional[Dict[str, Any]]:
         nonlocal prose
         segment = "\n".join(prose).strip()
         if segment:
-            elements.append({"tag": "markdown", "content": segment})
+            elements.extend(_build_feishu_card_prose_elements(segment))
         prose = []
 
     while index < len(lines):
@@ -833,7 +927,11 @@ def _build_markdown_table_card(content: str) -> Optional[Dict[str, Any]]:
         return None
 
     _flush_prose()
-    card = {"config": {"wide_screen_mode": True}, "elements": elements}
+    summary_text = _strip_markdown_to_plain_text(content).strip()
+    summary = {"content": summary_text[:120]} if summary_text else None
+    card: Dict[str, Any] = {"config": {"wide_screen_mode": True, "update_multi": True, "locales": ["zh_cn", "en_us"]}, "elements": elements}
+    if summary:
+        card["config"]["summary"] = summary
     payload = json.dumps(card, ensure_ascii=False)
     if len(payload.encode("utf-8")) > _FEISHU_CARD_TABLE_MAX_PAYLOAD_BYTES:
         return None
@@ -845,6 +943,76 @@ def _build_markdown_table_card_payload(content: str) -> Optional[str]:
     if card is None:
         return None
     return json.dumps(card, ensure_ascii=False)
+
+
+def _split_markdown_table_card_chunks(content: str) -> List[str]:
+    """Split Markdown into chunks that fit Feishu's per-card table-count limit."""
+    lines = content.splitlines()
+    chunks: List[str] = []
+    current: List[str] = []
+    table_count = 0
+    code_fence = ""
+    index = 0
+
+    def _flush() -> None:
+        nonlocal current, table_count
+        segment = "\n".join(current).strip()
+        if segment:
+            chunks.append(segment)
+        current = []
+        table_count = 0
+
+    while index < len(lines):
+        line = lines[index]
+        next_fence = _is_markdown_table_code_fence(line, code_fence)
+        if code_fence or next_fence:
+            code_fence = next_fence
+            current.append(line)
+            index += 1
+            continue
+
+        if _is_indented_markdown_code_line(line):
+            current.append(line)
+            index += 1
+            continue
+
+        if index + 1 < len(lines):
+            alignments = _parse_markdown_table_separator(lines[index + 1])
+            header_cells = _split_markdown_table_row(line)
+            if alignments and _has_markdown_table_delimiter(line) and len(header_cells) == len(alignments):
+                if table_count >= _FEISHU_CARD_TABLE_MAX_TABLES:
+                    _flush()
+                table_count += 1
+                current.append(line)
+                current.append(lines[index + 1])
+                index += 2
+                while index < len(lines):
+                    row_line = lines[index]
+                    if not row_line.strip() or not _has_markdown_table_delimiter(row_line):
+                        break
+                    current.append(row_line)
+                    index += 1
+                continue
+
+        current.append(line)
+        index += 1
+
+    _flush()
+    return chunks
+
+
+def _build_markdown_table_card_payloads(content: str) -> List[str]:
+    payload = _build_markdown_table_card_payload(content)
+    if payload is not None:
+        return [payload]
+
+    payloads: List[str] = []
+    for chunk in _split_markdown_table_card_chunks(content):
+        chunk_payload = _build_markdown_table_card_payload(chunk)
+        if chunk_payload is None:
+            return []
+        payloads.append(chunk_payload)
+    return payloads
 
 
 def _contains_markdown_table(content: str) -> bool:
@@ -2138,6 +2306,81 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
+        table_card_payloads = _build_markdown_table_card_payloads(formatted) if _contains_markdown_table(formatted) else []
+        if table_card_payloads:
+            last_response = None
+            active_reply_to = reply_to
+            try:
+                for payload in table_card_payloads:
+                    msg_type = "interactive"
+                    try:
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=msg_type,
+                            payload=payload,
+                            reply_to=active_reply_to,
+                            metadata=metadata,
+                        )
+                    except Exception as exc:
+                        if active_reply_to and not (metadata or {}).get("thread_id"):
+                            logger.warning(
+                                "[Feishu] Interactive card reply failed; retrying as a top-level card before plain text fallback: %s",
+                                exc,
+                            )
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type=msg_type,
+                                payload=payload,
+                                reply_to=None,
+                                metadata=metadata,
+                            )
+                        else:
+                            raise
+                    if not self._response_succeeded(response) and active_reply_to and not (metadata or {}).get("thread_id"):
+                        code = getattr(response, "code", "unknown")
+                        msg = getattr(response, "msg", "")
+                        logger.warning(
+                            "[Feishu] Interactive card reply was rejected (code=%s msg=%s); retrying as a top-level card before plain text fallback",
+                            code,
+                            msg,
+                        )
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=msg_type,
+                            payload=payload,
+                            reply_to=None,
+                            metadata=metadata,
+                        )
+                    if not self._response_succeeded(response):
+                        code = getattr(response, "code", "unknown")
+                        msg = getattr(response, "msg", "")
+                        logger.warning(
+                            "[Feishu] Interactive card send was rejected (code=%s msg=%s); falling back to plain text",
+                            code,
+                            msg,
+                        )
+                        text_response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(formatted)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                        return self._finalize_send_result(text_response, "send failed")
+                    last_response = response
+                    active_reply_to = None
+                return self._finalize_send_result(last_response, "send failed")
+            except Exception as exc:
+                logger.warning("[Feishu] Interactive card send failed; falling back to plain text: %s", exc)
+                text_response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type="text",
+                    payload=json.dumps({"text": _strip_markdown_to_plain_text(formatted)}, ensure_ascii=False),
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                return self._finalize_send_result(text_response, "send failed")
+
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
@@ -2154,15 +2397,28 @@ class FeishuAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     if msg_type == "interactive":
-                        logger.warning("[Feishu] Interactive card send failed; falling back to plain text: %s", exc)
-                        msg_type = "text"
-                        response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type=msg_type,
-                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                            reply_to=reply_to,
-                            metadata=metadata,
-                        )
+                        if reply_to and not (metadata or {}).get("thread_id"):
+                            logger.warning(
+                                "[Feishu] Interactive card reply failed; retrying as a top-level card before plain text fallback: %s",
+                                exc,
+                            )
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type=msg_type,
+                                payload=payload,
+                                reply_to=None,
+                                metadata=metadata,
+                            )
+                        else:
+                            logger.warning("[Feishu] Interactive card send failed; falling back to plain text: %s", exc)
+                            msg_type = "text"
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type=msg_type,
+                                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                                reply_to=reply_to,
+                                metadata=metadata,
+                            )
                     elif msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
                     else:
@@ -2176,15 +2432,37 @@ class FeishuAdapter(BasePlatformAdapter):
                             metadata=metadata,
                         )
                 if msg_type == "interactive" and not self._response_succeeded(response):
-                    logger.warning("[Feishu] Interactive card send was rejected; falling back to plain text")
-                    msg_type = "text"
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type=msg_type,
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
+                    code = getattr(response, "code", "unknown")
+                    msg = getattr(response, "msg", "")
+                    if reply_to and not (metadata or {}).get("thread_id"):
+                        logger.warning(
+                            "[Feishu] Interactive card reply was rejected (code=%s msg=%s); retrying as a top-level card before plain text fallback",
+                            code,
+                            msg,
+                        )
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=msg_type,
+                            payload=payload,
+                            reply_to=None,
+                            metadata=metadata,
+                        )
+                    if msg_type == "interactive" and not self._response_succeeded(response):
+                        code = getattr(response, "code", "unknown")
+                        msg = getattr(response, "msg", "")
+                        logger.warning(
+                            "[Feishu] Interactive card send was rejected (code=%s msg=%s); falling back to plain text",
+                            code,
+                            msg,
+                        )
+                        msg_type = "text"
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=msg_type,
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
@@ -4870,10 +5148,12 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        reply_threads_enabled = bool(self.config.extra.get("reply_in_thread", True))
+        thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to
-        if not effective_reply_to and metadata and metadata.get("thread_id"):
+        if not effective_reply_to and thread_id and reply_threads_enabled:
             effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        reply_in_thread = bool(thread_id and reply_threads_enabled)
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,

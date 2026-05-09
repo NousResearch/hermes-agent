@@ -128,7 +128,7 @@ export default function CronPage() {
 
   const handlePauseResume = async (job: CronJob) => {
     try {
-      const isPaused = job.state === "paused";
+      const isPaused = getJobState(job) === "paused";
       if (isPaused) {
         await api.resumeCronJob(job.id);
         showToast(

@@ -966,3 +966,37 @@ def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
     tasks = kb.list_tasks(conn)
     assert any(row.id == t for row in tasks)
     conn.close()
+
+
+def test_unlink_tasks_triggers_recompute_ready(kanban_home):
+    """Regression test for issue #22459.
+
+    Removing a dependency via unlink_tasks must immediately promote the child
+    to ready when all remaining parents are done — same contract as
+    complete_task and unblock_task.
+
+    Before the fix, child stayed 'todo' indefinitely after unlink; only the
+    next dispatcher tick or a manual 'hermes kanban recompute' would promote it.
+    """
+    with kb.connect() as conn:
+        # A is done.
+        a = kb.create_task(conn, title="parent-done")
+        kb.complete_task(conn, a)
+
+        # C is running (not done) — blocks child B.
+        c = kb.create_task(conn, title="parent-running")
+        kb.claim_task(conn, c, claimer="worker:1")
+
+        # B depends on both A (done) and C (running) → stays todo.
+        b = kb.create_task(conn, title="child", parents=[a, c])
+        assert kb.get_task(conn, b).status == "todo"
+
+        # Remove the blocking dependency C → B.
+        removed = kb.unlink_tasks(conn, c, b)
+        assert removed is True
+
+        # B's only remaining parent is A (done) → must be ready immediately.
+        assert kb.get_task(conn, b).status == "ready", (
+            "child should promote to ready immediately after unlink_tasks "
+            "removes its last blocking dependency"
+        )

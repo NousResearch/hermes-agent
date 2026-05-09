@@ -760,6 +760,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if "auto_thread" in platform_cfg:
+                    bridged["auto_thread"] = platform_cfg["auto_thread"]
+                if "no_thread_users" in platform_cfg:
+                    bridged["no_thread_users"] = platform_cfg["no_thread_users"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "dm_policy" in platform_cfg:
@@ -850,6 +854,12 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ntc, list):
                         ntc = ",".join(str(v) for v in ntc)
                     os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+                # no_thread_users: users whose @mentions skip thread creation
+                ntu = discord_cfg.get("no_thread_users")
+                if ntu is not None and not os.getenv("DISCORD_NO_THREAD_USERS"):
+                    if isinstance(ntu, list):
+                        ntu = ",".join(str(v) for v in ntu)
+                    os.environ["DISCORD_NO_THREAD_USERS"] = str(ntu)
                 # allow_mentions: granular control over what the bot can ping.
                 # Safe defaults (no @everyone/roles) are applied in the adapter;
                 # these YAML keys only override when set and let users opt back

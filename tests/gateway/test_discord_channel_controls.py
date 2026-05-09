@@ -342,3 +342,138 @@ def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     import os
     # Env var should NOT be overwritten
     assert os.getenv("DISCORD_IGNORED_CHANNELS") == "999"
+
+
+# ── no_thread_users ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_no_thread_user_skips_auto_thread(adapter, monkeypatch):
+    """Users in no_thread_users should not get auto-threaded."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_USERS", "42")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    message = make_message(channel=FakeTextChannel(channel_id=800), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_non_no_thread_user_still_auto_threads(adapter, monkeypatch):
+    """Users NOT in no_thread_users still get auto-threading."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_USERS", "99")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    # Author id is 42 (from make_message) — not in no_thread_users (99)
+    message = make_message(channel=FakeTextChannel(channel_id=900), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_no_thread_users_csv_parsing(adapter, monkeypatch):
+    """Multiple no_thread user IDs parsed from CSV."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_USERS", "42, 99, 100")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock()
+
+    for user_id in (42, 99, 100):
+        adapter._auto_create_thread.reset_mock()
+        adapter.handle_message.reset_mock()
+
+        author = SimpleNamespace(id=user_id, display_name="NoThreadUser", name="NoThreadUser")
+        message = SimpleNamespace(
+            id=123,
+            content="hello",
+            mentions=[],
+            attachments=[],
+            reference=None,
+            created_at=datetime.now(timezone.utc),
+            channel=FakeTextChannel(channel_id=800),
+            author=author,
+        )
+        await adapter._handle_message(message)
+
+        adapter._auto_create_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_thread_user_still_takes_channel_precedence(adapter, monkeypatch):
+    """no_thread_channels + no_thread_users both skip — channel wins."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "800")
+    monkeypatch.setenv("DISCORD_NO_THREAD_USERS", "99")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock()
+
+    # User 42 is not in no_thread_users, but channel 800 IS in no_thread_channels
+    message = make_message(channel=FakeTextChannel(channel_id=800), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+
+
+def test_config_bridges_no_thread_users(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.no_thread_users."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "no_thread_users": ["42", "99"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_NO_THREAD_USERS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_NO_THREAD_USERS") == "42,99"
+
+
+def test_config_bridges_auto_thread(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.auto_thread."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "auto_thread": False,
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    from gateway.platforms.discord import DiscordAdapter
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = DiscordAdapter(config)
+    assert adapter._discord_auto_thread_enabled() is False

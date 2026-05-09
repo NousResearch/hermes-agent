@@ -751,11 +751,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 # This replaces the older DISCORD_IGNORE_NO_MENTION logic
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
-                if not isinstance(message.channel, discord.DMChannel) and message.mentions:
+                if not isinstance(message.channel, discord.DMChannel) and (
+                    message.mentions or adapter_self._is_self_role_mentioned(message)
+                ):
                     _self_mentioned = (
                         self._client.user is not None
                         and self._client.user in message.mentions
-                    )
+                    ) or adapter_self._is_self_role_mentioned(message)
                     _other_bots_mentioned = any(
                         m.bot and m != self._client.user
                         for m in message.mentions
@@ -3519,6 +3521,24 @@ class DiscordAdapter(BasePlatformAdapter):
         from gateway.platforms.base import resolve_channel_prompt
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
 
+    def _is_self_role_mentioned(self, message) -> bool:
+        # Discord shows the bot user and its auto-created managed role as
+        # two indistinguishable "@BotName" entries in the @-autocomplete.
+        # Picking the role lands `<@&role_id>` in role_mentions instead of
+        # message.mentions, so the require_mention gate would silently drop
+        # the message. Treat a mention of the bot's managed role as a self
+        # mention. Manually-granted roles (e.g. "Admin") lack tags.bot_id
+        # and won't satisfy this check.
+        if not self._client or not self._client.user:
+            return False
+        role_mentions = getattr(message, "role_mentions", None) or []
+        bot_id = self._client.user.id
+        for role in role_mentions:
+            tags = getattr(role, "tags", None)
+            if tags is not None and getattr(tags, "bot_id", None) == bot_id:
+                return True
+        return False
+
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""
         configured = self.config.extra.get("require_mention")
@@ -3546,6 +3566,38 @@ class DiscordAdapter(BasePlatformAdapter):
         # previously falling through the isinstance(str) branch and silently
         # returning an empty set.  str() here accepts whatever scalar the YAML
         # loader hands us without changing existing string/CSV semantics.
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _discord_auto_thread_enabled(self) -> bool:
+        """Return whether auto-thread creation is enabled.
+
+        Checks ``config.extra.auto_thread`` first (from config.yaml
+        ``platforms.discord.extra.auto_thread``), falls back to the
+        ``DISCORD_AUTO_THREAD`` env var, defaulting to ``True``.
+        """
+        configured = self.config.extra.get("auto_thread")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in ("false", "0", "no", "off")
+            return bool(configured)
+        return os.getenv("DISCORD_AUTO_THREAD", "true").lower() not in ("false", "0", "no", "off")
+
+    def _discord_no_thread_users(self) -> set:
+        """Return Discord user IDs whose @mentions should NOT create threads.
+
+        These users always get a direct channel reply even when auto-threading
+        is enabled globally.  Reads from ``config.extra.no_thread_users``
+        (config.yaml) or the ``DISCORD_NO_THREAD_USERS`` env var
+        (comma-separated user IDs).
+        """
+        raw = self.config.extra.get("no_thread_users")
+        if raw is None:
+            raw = os.getenv("DISCORD_NO_THREAD_USERS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
         s = str(raw).strip() if raw is not None else ""
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
@@ -4109,20 +4161,29 @@ class DiscordAdapter(BasePlatformAdapter):
             in_bot_thread = is_thread and thread_id in self._threads
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if (
+                    self._client.user not in message.mentions
+                    and not mention_prefix
+                    and not self._is_self_role_mentioned(message)
+                ):
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
+        # no_thread_users: user IDs whose @mentions skip thread creation.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
             skip_thread = bool(channel_ids & no_thread_channels)
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            auto_thread = self._discord_auto_thread_enabled()
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            # Per-user exclusion: some users prefer direct replies over threads
+            user_id = str(message.author.id)
+            no_thread_users = self._discord_no_thread_users()
+            skip_thread_for_user = user_id in no_thread_users
+            if auto_thread and not skip_thread and not skip_thread_for_user and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)

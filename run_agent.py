@@ -3529,6 +3529,19 @@ class AIAgent:
         # instead of returning structured reasoning fields.  Only fall back
         # to inline extraction when no structured reasoning was found.
         content = getattr(assistant_message, "content", None)
+        if not reasoning_parts and isinstance(content, list):
+            # DeepSeek V4 Pro (and compatible providers) return content as a
+            # list of typed blocks, e.g.:
+            #   [{"type": "thinking", "thinking": "..."}, {"type": "output", ...}]
+            # Without this branch the thinking text is silently dropped and the
+            # next turn fails with HTTP 400 ("thinking must be passed back").
+            # Refs #21944.
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "thinking":
+                    thinking_text = block.get("thinking") or block.get("text") or ""
+                    thinking_text = thinking_text.strip()
+                    if thinking_text and thinking_text not in reasoning_parts:
+                        reasoning_parts.append(thinking_text)
         if not reasoning_parts and isinstance(content, str) and content:
             inline_patterns = (
                 r"<think>(.*?)</think>",
@@ -8067,6 +8080,26 @@ class AIAgent:
             # Determine api_mode from provider / base URL / model
             fb_api_mode = "chat_completions"
             fb_base_url = str(fb_client.base_url)
+
+            # Self-selection guard: skip this fallback entry when its resolved
+            # base_url + model are identical to the currently active provider.
+            # Prevents custom-provider timeout loops where the fallback chain
+            # re-selects the same local shim endpoint that just failed (#22548).
+            _current_base_url = str(getattr(self, "base_url", "") or "").rstrip("/")
+            _fb_base_url_norm = fb_base_url.rstrip("/")
+            if (
+                _fb_base_url_norm
+                and _current_base_url
+                and _fb_base_url_norm == _current_base_url
+                and fb_model == (getattr(self, "model", "") or "")
+            ):
+                logging.warning(
+                    "Skipping fallback to %s/%s — same endpoint/model as current "
+                    "provider; would loop. Trying next in chain.",
+                    fb_provider, fb_model,
+                )
+                return self._try_activate_fallback(reason=reason)
+
             _fb_is_azure = self._is_azure_openai_url(fb_base_url)
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"

@@ -254,6 +254,20 @@ _THINKING_SIG_PATTERNS = [
     "signature",  # Combined with "thinking" check
 ]
 
+# Message-string patterns that indicate a provider-side timeout even when
+# the exception type is generic (e.g. RuntimeError from a local shim that
+# wraps a subprocess timeout).  Checked before the type-based transport
+# heuristics so custom-provider "timed out" errors don't fall through to
+# the unknown bucket and get misreported as empty responses.
+_TIMEOUT_MESSAGE_PATTERNS = [
+    "timed out",
+    "turn timed out",
+    "request timed out",
+    "deadline exceeded",
+    "operation timed out",
+    "upstream timed out",
+]
+
 # Transport error type names
 _TRANSPORT_ERROR_TYPES = frozenset({
     "ReadTimeout", "ConnectTimeout", "PoolTimeout",
@@ -962,6 +976,14 @@ def _classify_by_message(
             retryable=False,
             should_fallback=True,
         )
+
+    # Timeout message patterns — generic exception types (e.g. RuntimeError)
+    # raised by local shims or custom providers that internally wrap a
+    # subprocess/HTTP timeout.  Classified as transport timeout so the retry
+    # loop rebuilds the client instead of treating the turn as an empty
+    # model response.
+    if any(p in error_msg for p in _TIMEOUT_MESSAGE_PATTERNS):
+        return result_fn(FailoverReason.timeout, retryable=True)
 
     return None
 

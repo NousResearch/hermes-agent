@@ -2,27 +2,33 @@
 
 This module is intentionally small and fail-closed. It only builds the
 server-side shape needed to receive Discord interaction callbacks safely:
-read raw bytes, verify signature headers first, then build a dry-run ACK
-preview. It does not register a Discord endpoint, send network messages, or
-apply approval decisions.
+read raw bytes, verify timestamp/signature headers first, reject replayed
+requests, then build a dry-run ACK preview. It does not register a Discord
+endpoint, send network messages, or apply approval decisions.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
 import re
-from dataclasses import dataclass
-from typing import Any, Callable
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, cast
 
 
 def _aiohttp_web() -> Any:
     return importlib.import_module("aiohttp.web")
 
+
 DISCORD_INTERACTION_ROUTE = "/discord/interactions/soma"
 DISCORD_SIGNATURE_HEADER = "X-Signature-Ed25519"
 DISCORD_TIMESTAMP_HEADER = "X-Signature-Timestamp"
+DISCORD_TIMESTAMP_MAX_AGE_SECONDS = 300
+DISCORD_TIMESTAMP_MAX_FUTURE_SKEW_SECONDS = 5
+DISCORD_REPLAY_CACHE_TTL_SECONDS = DISCORD_TIMESTAMP_MAX_AGE_SECONDS + DISCORD_TIMESTAMP_MAX_FUTURE_SKEW_SECONDS
 
 _ALLOWED_PUBLIC_KEY_ENV_NAMES = {"DISCORD_APPLICATION_PUBLIC_KEY"}
 _BLOCKED_PUBLIC_KEY_ENV_MARKERS = (
@@ -34,6 +40,7 @@ _BLOCKED_PUBLIC_KEY_ENV_MARKERS = (
     "BEARER",
 )
 _CUSTOM_ID_RE = re.compile(r"^mim:soma-review:v1:(approve|reject|defer):([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$")
+_ASCII_DECIMAL_RE = re.compile(r"^[0-9]{1,20}$")
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,52 @@ class DiscordInteractionConfig:
     enabled: bool = False
     public_key: str = ""
     route_path: str = DISCORD_INTERACTION_ROUTE
+
+
+@dataclass
+class DiscordInteractionReplayCache:
+    """Bounded in-memory replay guard for local Discord interaction callbacks.
+
+    The first live-ready safety layer should not write to runtime SQLite or any
+    external store. This cache only remembers request fingerprints in the API
+    server process, prunes by TTL, and fails closed when full.
+    """
+
+    max_entries: int = 4096
+    ttl_seconds: int = DISCORD_REPLAY_CACHE_TTL_SECONDS
+    _entries: dict[str, float] = field(default_factory=dict)
+
+    def _fingerprint(self, *, timestamp: str, signature: str, body: bytes) -> str:
+        h = hashlib.sha256()
+        h.update(timestamp.encode("ascii", errors="ignore"))
+        h.update(b":")
+        h.update(signature.encode("ascii", errors="ignore"))
+        h.update(b":")
+        h.update(body)
+        return h.hexdigest()
+
+    def _prune(self, now: float) -> None:
+        expired = [key for key, expires_at in self._entries.items() if expires_at <= now]
+        for key in expired:
+            self._entries.pop(key, None)
+
+    def check_and_remember(self, *, timestamp: str, signature: str, body: bytes, now: float | None = None) -> tuple[bool, str]:
+        """Remember a verified request fingerprint or reject a duplicate.
+
+        Returns `(True, "ok")` for the first sighting. Duplicate requests inside
+        the TTL are rejected. If the cache is full after pruning, fail closed
+        rather than evicting a still-valid fingerprint.
+        """
+
+        current = time.time() if now is None else float(now)
+        self._prune(current)
+        key = self._fingerprint(timestamp=timestamp, signature=signature, body=body)
+        if key in self._entries:
+            return False, "replay_detected"
+        if len(self._entries) >= max(1, int(self.max_entries)):
+            return False, "replay_cache_full"
+        self._entries[key] = current + max(1, int(self.ttl_seconds))
+        return True, "ok"
 
 
 def _looks_like_secret_env(name: str) -> bool:
@@ -88,17 +141,74 @@ def resolve_discord_interaction_config(extra: dict[str, Any] | None) -> DiscordI
     return DiscordInteractionConfig(enabled=True, public_key=public_key, route_path=route_path)
 
 
-def default_discord_signature_verifier(*, public_key: str, timestamp: str, signature: str, body: bytes) -> bool:
-    """Fail-closed verifier placeholder.
+def validate_discord_interaction_timestamp(
+    timestamp: str,
+    *,
+    now: float | None = None,
+    max_age_seconds: int = DISCORD_TIMESTAMP_MAX_AGE_SECONDS,
+    max_future_skew_seconds: int = DISCORD_TIMESTAMP_MAX_FUTURE_SKEW_SECONDS,
+) -> tuple[bool, str]:
+    """Validate Discord's timestamp before signature and JSON handling.
 
-    Real Ed25519 verification may be wired later if the active Hermes checkout
-    already has a supported dependency or the user approves adding one. Until
-    then, production defaults to disabled/fail-closed; tests may inject a
-    verifier callable to exercise the route contract without live credentials.
+    Discord signs `timestamp + raw_body`. A good signature can still be replayed
+    shortly after capture, so stale and far-future timestamps fail before any
+    dry-run handler can run. The parser accepts ASCII decimal epoch seconds only
+    to avoid Unicode digit or formatting surprises.
     """
 
-    _ = (public_key, timestamp, signature, body)
-    return False
+    if not isinstance(timestamp, str) or not _ASCII_DECIMAL_RE.fullmatch(timestamp):
+        return False, "invalid_timestamp"
+    request_time = int(timestamp)
+    current = time.time() if now is None else float(now)
+    if request_time > current + max_future_skew_seconds:
+        return False, "future_timestamp"
+    if current - request_time > max_age_seconds:
+        return False, "stale_timestamp"
+    return True, "ok"
+
+
+def default_discord_signature_verifier(*, public_key: str, timestamp: str, signature: str, body: bytes) -> bool:
+    """Verify Discord's Ed25519 signature over `timestamp + raw_body`.
+
+    PyNaCl is already present in Hermes' locked dependency graph for Discord
+    voice support. If it is unavailable in a minimal runtime, the verifier fails
+    closed instead of accepting unsigned interaction callbacks.
+    """
+
+    try:
+        signing = importlib.import_module("nacl.signing")
+        exceptions = importlib.import_module("nacl.exceptions")
+        verify_key = signing.VerifyKey(bytes.fromhex(public_key))
+        verify_key.verify(timestamp.encode("ascii") + body, bytes.fromhex(signature))
+        return True
+    except Exception:
+        return False
+
+
+def validate_discord_dry_run_result(result: Any) -> tuple[bool, str]:
+    """Reject handler results that claim live or runtime side effects.
+
+    The interaction route is still a preview path. Even an injected handler must
+    not smuggle an "applied", "runtime_write", or "live_send" success claim into
+    the ACK response during the local safety gate.
+    """
+
+    if not isinstance(result, dict):
+        return True, "ok"
+    for field_name in ("live_send", "runtime_write", "db_write", "applied", "apply"):
+        if result.get(field_name) is True:
+            return False, "unsafe_dry_run_result"
+    return True, "ok"
+
+
+def _current_time_from(now: Callable[[], float] | float | None) -> float | None:
+    """Resolve an injected clock while keeping static type checkers happy."""
+
+    if now is None:
+        return None
+    if isinstance(now, (int, float)):
+        return float(now)
+    return float(cast(Callable[[], float], now)())
 
 
 def _error_response(code: str, status: int):
@@ -123,9 +233,11 @@ def build_discord_ack_preview(payload: dict[str, Any], dry_run_result: Any = Non
 
     Type 1 is Discord PING and must return PONG (`{"type": 1}`). Type 3 is a
     component interaction; this helper returns an ephemeral dry-run message. It
-    never applies approval decisions or writes runtime state.
+    never applies approval decisions, writes runtime state, or echoes handler
+    output back to Discord.
     """
 
+    _ = dry_run_result
     if payload.get("type") == 1:
         return {"type": 1}
 
@@ -136,14 +248,11 @@ def build_discord_ack_preview(payload: dict[str, Any], dry_run_result: Any = Non
     if parsed is None:
         return None
     action, review_id = parsed
-    result_suffix = ""
-    if isinstance(dry_run_result, dict) and dry_run_result.get("status"):
-        result_suffix = f" ({dry_run_result['status']})"
     return {
         "type": 4,
         "data": {
             "flags": 64,
-            "content": f"MIM dry-run{result_suffix}: {action} / {review_id}",
+            "content": f"MIM dry-run: {action} / {review_id}",
         },
     }
 
@@ -154,13 +263,17 @@ async def handle_discord_interaction_request(
     config: DiscordInteractionConfig,
     verifier: Callable[..., bool] | None = None,
     dry_run_handler: Callable[[dict[str, Any]], Any] | None = None,
+    replay_cache: DiscordInteractionReplayCache | None = None,
+    now: Callable[[], float] | float | None = None,
 ):
     """Handle a Discord interaction callback in local/dry-run mode.
 
     Safety order:
     1. Read raw bytes.
-    2. Verify timestamp/signature headers against the raw body.
-    3. Only then parse JSON and build ACK previews.
+    2. Validate timestamp freshness.
+    3. Verify signature headers against the raw body.
+    4. Reject replays.
+    5. Only then parse JSON and build ACK previews.
     """
 
     if not config.enabled or not config.public_key:
@@ -172,9 +285,27 @@ async def handle_discord_interaction_request(
     if not timestamp or not signature:
         return _error_response("missing_signature", 401)
 
+    current_time = _current_time_from(now)
+    timestamp_ok, timestamp_code = validate_discord_interaction_timestamp(timestamp, now=current_time)
+    if not timestamp_ok:
+        return _error_response(timestamp_code, 401)
+
     verify = verifier or default_discord_signature_verifier
     if not verify(public_key=config.public_key, timestamp=timestamp, signature=signature, body=body):
         return _error_response("invalid_signature", 401)
+
+    if replay_cache is None:
+        return _error_response("replay_cache_required", 500)
+
+    if replay_cache is not None:
+        replay_ok, replay_code = replay_cache.check_and_remember(
+            timestamp=timestamp,
+            signature=signature,
+            body=body,
+            now=current_time,
+        )
+        if not replay_ok:
+            return _error_response(replay_code, 409)
 
     try:
         payload = json.loads(body.decode("utf-8"))
@@ -186,9 +317,12 @@ async def handle_discord_interaction_request(
     if payload.get("type") == 3 and _parse_component(payload) is None:
         return _error_response("invalid_component", 400)
 
+    # Keep this route preview-only. It deliberately does not invoke arbitrary
+    # dry-run/apply handlers; even "dry-run" callables can have side effects
+    # before returning. A later live apply gate must introduce a side-effect-safe
+    # executor contract under separate review.
+    _ = dry_run_handler
     dry_run_result = None
-    if payload.get("type") == 3 and dry_run_handler is not None:
-        dry_run_result = dry_run_handler(payload)
 
     ack = build_discord_ack_preview(payload, dry_run_result)
     if ack is None:

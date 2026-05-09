@@ -710,7 +710,27 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         media_files = media_files or []
         thread_kwargs = {}
         if thread_id is not None:
-            thread_kwargs["message_thread_id"] = int(thread_id)
+            # Reuse the gateway adapter's General-topic mapping: in Telegram
+            # forum supergroups, the General topic is addressed as
+            # message_thread_id="1" on incoming updates, but Bot API
+            # sendMessage rejects message_thread_id=1 with "Message thread
+            # not found". The adapter's helper maps "1" to None for that
+            # reason; the send_message tool needs the same mapping or a
+            # send to a forum group's General topic always errors out
+            # (see issue #22267).
+            try:
+                from gateway.platforms.telegram import TelegramAdapter
+                effective_thread_id = TelegramAdapter._message_thread_id_for_send(
+                    str(thread_id)
+                )
+            except Exception:
+                # Fallback: explicit mapping in case the adapter import
+                # fails (e.g. python-telegram-bot missing in this venv).
+                effective_thread_id = (
+                    None if str(thread_id) == "1" else int(thread_id)
+                )
+            if effective_thread_id is not None:
+                thread_kwargs["message_thread_id"] = effective_thread_id
         if disable_link_previews:
             thread_kwargs["disable_web_page_preview"] = True
 

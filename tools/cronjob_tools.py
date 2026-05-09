@@ -73,7 +73,7 @@ def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
     github_auth_header = re.search(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
-        r'\s+https://api\.github\.com(?:/|\b)',
+        r'\s+["\']?https://api\.github\.com(?:/|\b)',
         prompt,
         re.IGNORECASE,
     )

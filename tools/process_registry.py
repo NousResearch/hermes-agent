@@ -51,6 +51,52 @@ from hermes_cli.config import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
+def _stdin_guard_error(approval: dict) -> dict | None:
+    """Return a process-tool error response when stdin data is not approved.
+
+    Background processes can be interactive shells or interpreters.  Data sent
+    later through process.write/process.submit is therefore another command
+    execution channel and must not bypass the terminal approval hardline floor
+    or gateway/CLI dangerous-command approval flow.
+    """
+    if approval.get("approved"):
+        return None
+
+    status = approval.get("status") or "blocked"
+    return {
+        "status": status,
+        "error": approval.get("message") or "Process stdin rejected by approval policy",
+        "command": approval.get("command"),
+        "description": approval.get("description"),
+        "pattern_key": approval.get("pattern_key"),
+    }
+
+
+def _check_process_stdin_guards(data: str | bytes) -> dict | None:
+    """Apply command approval checks to process stdin payloads.
+
+    The terminal tool checks only the initial process command.  For running
+    shells/interpreters, stdin can carry follow-on commands, so the same local
+    command guard needs to run before bytes reach the process.
+    """
+    if not data:
+        return None
+    if isinstance(data, bytes):
+        try:
+            command_text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return {
+                "status": "blocked",
+                "error": "Process stdin rejected: non-UTF-8 bytes cannot be safety-scanned",
+            }
+    else:
+        command_text = data
+    from tools.terminal_tool import _check_all_guards
+
+    approval = _check_all_guards(command_text, "local")
+    return _stdin_guard_error(approval)
+
+
 # Checkpoint file for crash recovery (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 
@@ -1522,6 +1568,12 @@ class ProcessRegistry:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
+
+        # Apply the same approval policy used by terminal() to second-stage
+        # stdin data before it reaches a shell/interpreter process.
+        guard_error = _check_process_stdin_guards(data)
+        if guard_error is not None:
+            return guard_error
 
         # PTY mode -- write through pty handle.
         if hasattr(session, '_pty') and session._pty:

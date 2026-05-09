@@ -254,6 +254,103 @@ def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch
 
 
 # =========================================================================
+# Stdin approval guard
+# =========================================================================
+
+class TestStdinApprovalGuard:
+    def test_write_stdin_blocks_hardline_payload_before_pipe_write(self, registry):
+        """Second-stage stdin must not bypass the terminal hardline floor."""
+        stdin = MagicMock()
+        proc = MagicMock()
+        proc.stdin = stdin
+        session = _make_session(sid="proc_stdin_guard", command="bash")
+        session.process = proc
+        registry._running[session.id] = session
+
+        result = registry.write_stdin(session.id, "rm -rf $HOME\n")
+
+        assert result["status"] == "blocked"
+        assert "hardline" in result["error"]
+        stdin.write.assert_not_called()
+        stdin.flush.assert_not_called()
+
+    def test_submit_stdin_blocks_hardline_payload_before_pipe_write(self, registry):
+        stdin = MagicMock()
+        proc = MagicMock()
+        proc.stdin = stdin
+        session = _make_session(sid="proc_submit_guard", command="bash")
+        session.process = proc
+        registry._running[session.id] = session
+
+        result = registry.submit_stdin(session.id, "rm -rf $HOME")
+
+        assert result["status"] == "blocked"
+        assert "hardline" in result["error"]
+        stdin.write.assert_not_called()
+        stdin.flush.assert_not_called()
+
+    def test_write_stdin_blocks_hardline_payload_before_pty_write(self, registry):
+        """The PTY-backed interactive path must be guarded too."""
+        pty = MagicMock()
+        session = _make_session(sid="proc_pty_guard", command="bash")
+        session._pty = pty
+        registry._running[session.id] = session
+
+        result = registry.write_stdin(session.id, "rm -rf $HOME\n")
+
+        assert result["status"] == "blocked"
+        assert "hardline" in result["error"]
+        pty.write.assert_not_called()
+
+    def test_write_stdin_uses_terminal_approval_callback_for_dangerous_payload(
+        self, registry, monkeypatch
+    ):
+        """Recoverable dangerous stdin should route through terminal approval UI."""
+        from tools import terminal_tool
+
+        calls = []
+
+        def approve(command, description, *, allow_permanent=True):
+            calls.append((command, description, allow_permanent))
+            return "once"
+
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        terminal_tool.set_approval_callback(approve)
+        stdin = MagicMock()
+        proc = MagicMock()
+        proc.stdin = stdin
+        session = _make_session(sid="proc_stdin_callback", command="bash")
+        session.process = proc
+        registry._running[session.id] = session
+
+        try:
+            payload = "chmod -R 777 /tmp/hermes-stdin-approval-test\n"
+            result = registry.write_stdin(session.id, payload)
+        finally:
+            terminal_tool.set_approval_callback(None)
+
+        assert result == {"status": "ok", "bytes_written": len(payload)}
+        assert calls
+        assert "chmod -R 777" in calls[0][0]
+        stdin.write.assert_called_once_with(payload)
+        stdin.flush.assert_called_once()
+
+    def test_write_stdin_allows_safe_payload(self, registry):
+        stdin = MagicMock()
+        proc = MagicMock()
+        proc.stdin = stdin
+        session = _make_session(sid="proc_stdin_safe", command="python")
+        session.process = proc
+        registry._running[session.id] = session
+
+        result = registry.write_stdin(session.id, "print('hello')\n")
+
+        assert result == {"status": "ok", "bytes_written": len("print('hello')\n")}
+        stdin.write.assert_called_once_with("print('hello')\n")
+        stdin.flush.assert_called_once()
+
+
+# =========================================================================
 # Orphaned-pipe reconciliation (issue #17327)
 # =========================================================================
 

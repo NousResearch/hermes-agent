@@ -467,6 +467,25 @@ class ProcessRegistry:
                 logger.debug("Could not resolve environment temp dir: %s", exc)
         return "/tmp"
 
+    def register_host_process(self, pid: int, command: str, task_id: str = ""):
+        """Register an externally-spawned host process for central management.
+
+        This allows the registry to track and kill processes that weren't
+        spawned directly via the registry's spawn methods (Issue #21370).
+        """
+        session = ProcessSession(
+            id=f"ext_{uuid.uuid4().hex[:12]}",
+            command=command,
+            pid=pid,
+            task_id=task_id,
+            started_at=time.time(),
+            pid_scope="host",
+            detached=True,
+        )
+        with self._lock:
+            self._running[session.id] = session
+        return session.id
+
     def spawn_local(
         self,
         command: str,

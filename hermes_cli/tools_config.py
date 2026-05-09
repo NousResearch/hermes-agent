@@ -482,6 +482,11 @@ TOOLSET_ENV_REQUIREMENTS = {
 # ─── Post-Setup Hooks ─────────────────────────────────────────────────────────
 
 
+def _cua_driver_cmd() -> str:
+    """Return the cua-driver executable name/path, honoring non-empty overrides."""
+    return os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip() or "cua-driver"
+
+
 def _pip_install(
     args: List[str],
     *,
@@ -628,7 +633,8 @@ def install_cua_driver(upgrade: bool = False) -> bool:
         _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
         return False
 
-    binary = shutil.which("cua-driver")
+    driver_cmd = _cua_driver_cmd()
+    binary = shutil.which(driver_cmd)
 
     # Not installed → fresh install path (only when caller asked for it).
     if not binary and not upgrade:
@@ -644,12 +650,12 @@ def install_cua_driver(upgrade: bool = False) -> bool:
     if binary and not upgrade:
         try:
             version = subprocess.run(
-                ["cua-driver", "--version"],
+                [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
-            _print_success(f"    cua-driver already installed: {version or 'unknown version'}")
+            _print_success(f"    {driver_cmd} already installed: {version or 'unknown version'}")
         except Exception:
-            _print_success("    cua-driver already installed.")
+            _print_success(f"    {driver_cmd} already installed.")
         _print_info("    Grant macOS permissions if not done yet:")
         _print_info("      System Settings > Privacy & Security > Accessibility")
         _print_info("      System Settings > Privacy & Security > Screen Recording")
@@ -667,7 +673,7 @@ def install_cua_driver(upgrade: bool = False) -> bool:
         # Show before/after version when we have a baseline. Best-effort.
         try:
             before = subprocess.run(
-                ["cua-driver", "--version"],
+                [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
         except Exception:
@@ -679,13 +685,13 @@ def install_cua_driver(upgrade: bool = False) -> bool:
     if ok and before:
         try:
             after = subprocess.run(
-                ["cua-driver", "--version"],
+                [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
             if after and after != before:
-                _print_success(f"    cua-driver upgraded: {before} → {after}")
+                _print_success(f"    {driver_cmd} upgraded: {before} → {after}")
             elif after:
-                _print_info(f"    cua-driver up to date: {after}")
+                _print_info(f"    {driver_cmd} up to date: {after}")
         except Exception:
             pass
     return ok
@@ -709,11 +715,12 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         _print_info(f"    {label} cua-driver (macOS background computer-use)...")
     else:
         _print_info(f"    {label} cua-driver...")
+    driver_cmd = _cua_driver_cmd()
     try:
         result = subprocess.run(install_cmd, shell=True, timeout=300)
-        if result.returncode == 0 and shutil.which("cua-driver"):
+        if result.returncode == 0 and shutil.which(driver_cmd):
             if verbose:
-                _print_success("    cua-driver installed.")
+                _print_success(f"    {driver_cmd} installed.")
                 _print_info("    IMPORTANT — grant macOS permissions now:")
                 _print_info("      System Settings > Privacy & Security > Accessibility")
                 _print_info("      System Settings > Privacy & Security > Screen Recording")
@@ -1805,7 +1812,7 @@ _POST_SETUP_INSTALLED: dict = {
     # entry when (a) the post_setup is the ONLY install side-effect for
     # a no-key provider, and (b) an installed-state check is cheap and
     # doesn't trigger a heavy import.
-    "cua_driver": lambda: bool(shutil.which("cua-driver")),
+    "cua_driver": lambda: bool(shutil.which(_cua_driver_cmd())),
 }
 
 

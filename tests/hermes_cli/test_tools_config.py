@@ -12,8 +12,10 @@ from hermes_cli.tools_config import (
     _get_platform_tools,
     _platform_toolset_summary,
     _reconfigure_tool,
+    _run_post_setup,
     _save_platform_tools,
     _toolset_has_keys,
+    _toolset_needs_configuration_prompt,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
     _visible_providers,
@@ -751,6 +753,91 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
 
 # ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
+
+def test_toolset_has_keys_treats_no_key_providers_as_configured():
+    config = {}
+
+    assert _toolset_has_keys("computer_use", config) is True
+
+
+def test_computer_use_needs_configuration_when_cua_driver_post_setup_pending():
+    """No-key providers can still need setup when their post_setup is unsatisfied.
+
+    Returning users enabling Computer Use through `hermes tools` must reach the
+    cua-driver post-setup installer even though the provider has no API keys.
+    """
+    with patch("shutil.which", return_value=None):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is True
+
+
+def test_computer_use_skips_configuration_when_cua_driver_already_installed():
+    """Installed post_setup dependencies should keep returning-user toggles no-op."""
+    def fake_which(name: str):
+        return "/usr/local/bin/cua-driver" if name == "cua-driver" else None
+
+    with patch("shutil.which", side_effect=fake_which):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is False
+
+
+def test_computer_use_respects_custom_cua_driver_command():
+    """The setup gate should match runtime's HERMES_CUA_DRIVER_CMD override."""
+    def fake_which(name: str):
+        return "/opt/bin/custom-cua" if name == "custom-cua" else None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "custom-cua"}), \
+         patch("shutil.which", side_effect=fake_which):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is False
+
+
+def test_computer_use_blank_custom_driver_command_falls_back_to_default():
+    """Blank overrides should not make the setup gate look for an empty command."""
+    def fake_which(name: str):
+        return "/usr/local/bin/cua-driver" if name == "cua-driver" else None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "   "}), \
+         patch("shutil.which", side_effect=fake_which):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is False
+
+
+def test_computer_use_post_setup_respects_custom_driver_command_when_installed():
+    """post_setup already-installed checks should version-probe the override."""
+    def fake_which(name: str):
+        return "/opt/bin/custom-cua" if name == "custom-cua" else None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "custom-cua"}), \
+         patch("platform.system", return_value="Darwin"), \
+         patch("shutil.which", side_effect=fake_which), \
+         patch("subprocess.run") as run:
+        run.return_value.stdout = "custom 1.2.3\n"
+
+        _run_post_setup("cua_driver")
+
+    run.assert_called_once()
+    assert run.call_args.args[0] == ["custom-cua", "--version"]
+
+
+def test_computer_use_post_setup_missing_override_does_not_accept_default_binary():
+    """A default cua-driver binary must not satisfy a missing runtime override."""
+    seen = []
+
+    def fake_which(name: str):
+        seen.append(name)
+        if name == "cua-driver":
+            return "/usr/local/bin/cua-driver"
+        if name == "curl":
+            return None
+        return None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "custom-cua"}), \
+         patch("platform.system", return_value="Darwin"), \
+         patch("shutil.which", side_effect=fake_which), \
+         patch("subprocess.run") as run:
+        _run_post_setup("cua_driver")
+
+    run.assert_not_called()
+    assert "custom-cua" in seen
+    assert "curl" in seen
+
 
 class TestImagegenBackendRegistry:
     """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""

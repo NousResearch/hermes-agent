@@ -261,6 +261,72 @@ _LEGACY_TOOLSET_MAP = {
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 
 
+def _gateway_identity_fingerprint() -> tuple:
+    """Return the active gateway identity for access-control/cache scoping."""
+    try:
+        from gateway.session_context import get_session_env
+
+        platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+        chat_id = (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip()
+        user_id = (get_session_env("HERMES_SESSION_USER_ID", "") or "").strip()
+        chat_name = (get_session_env("HERMES_SESSION_CHAT_NAME", "") or "").strip()
+        user_name = (get_session_env("HERMES_SESSION_USER_NAME", "") or "").strip()
+    except Exception:
+        return ("", "", "", "", "")
+    return (platform, chat_id, user_id, chat_name, user_name)
+
+
+def _identity_allowed(values: Any, platform: str, identities: tuple[str, ...]) -> bool:
+    if not platform or not isinstance(values, dict):
+        return False
+    allowed = {str(v).strip() for v in values.get(platform, []) if str(v).strip()}
+    return any(identity in allowed for identity in identities if identity)
+
+
+def _load_access_control_config() -> Dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+
+        return (load_config().get("skills", {}).get("access_control", {}) or {})
+    except Exception:
+        return {}
+
+
+def _is_toolset_allowed_for_identity(toolset_name: str) -> bool:
+    """Return whether the current gateway identity may use a restricted toolset."""
+    platform, chat_id, user_id, chat_name, user_name = _gateway_identity_fingerprint()
+    if not platform:
+        return True
+    identities = tuple(x for x in (user_id, chat_id, user_name, chat_name) if x)
+    ac = _load_access_control_config()
+
+    by_name = ac.get("toolset_allowed_identities_by_name", {}) or {}
+    if _identity_allowed(by_name.get(toolset_name), platform, identities):
+        allowed = True
+    elif _identity_allowed(ac.get("toolset_allowed_identities"), platform, identities):
+        allowed = True
+    elif _identity_allowed(ac.get("allowed_identities"), platform, identities):
+        allowed = True
+    else:
+        allowed = False
+
+    blocked_by_name = ac.get("toolset_blocked_identities_by_name", {}) or {}
+    if _identity_allowed(blocked_by_name.get(toolset_name), platform, identities):
+        return False
+    return allowed
+
+
+def _filter_restricted_toolsets_for_identity(tools_to_include: set) -> set:
+    ac = _load_access_control_config()
+    restricted = set(ac.get("restricted_toolsets") or [])
+    if not restricted:
+        return tools_to_include
+    for toolset_name in restricted:
+        if not _is_toolset_allowed_for_identity(str(toolset_name)):
+            tools_to_include.difference_update(resolve_toolset(str(toolset_name)))
+    return tools_to_include
+
+
 def _clear_tool_defs_cache() -> None:
     """Drop memoized get_tool_definitions() results. Called when dynamic
     schema dependencies change (e.g. discord capability cache reset,
@@ -307,6 +373,7 @@ def get_tool_definitions(
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
+            _gateway_identity_fingerprint(),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -381,6 +448,11 @@ def _compute_tool_definitions(
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
+
+    # Apply local gateway access-control after the requested toolsets are
+    # resolved. Restricted toolsets stay available in local CLI/cron-internal
+    # contexts, but are stripped for unauthorized gateway identities.
+    tools_to_include = _filter_restricted_toolsets_for_identity(tools_to_include)
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()

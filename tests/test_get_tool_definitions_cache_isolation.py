@@ -88,7 +88,67 @@ class TestQuietModeCacheIsolation:
         )
 
     def test_non_quiet_mode_does_not_use_cache(self):
-        """Sanity: quiet_mode=False (TUI path) skips the cache entirely \u2014
+        """Sanity: quiet_mode=False (TUI path) skips the cache entirely —
         explains why the bug only hit Gateway."""
         model_tools.get_tool_definitions(quiet_mode=False)
         assert len(model_tools._tool_defs_cache) == 0
+
+
+class TestGatewayAccessControlCacheIsolation:
+    def _patch_access_config(self, monkeypatch):
+        import hermes_cli.config as config_mod
+
+        cfg = {
+            "skills": {
+                "access_control": {
+                    "restricted_toolsets": ["terminal"],
+                    "allowed_identities": {"whatsapp": ["owner@lid"]},
+                }
+            }
+        }
+        monkeypatch.setattr(config_mod, "load_config", lambda *a, **k: cfg)
+
+    def _tool_names(self):
+        tools = model_tools.get_tool_definitions(
+            enabled_toolsets=["terminal"],
+            quiet_mode=True,
+        )
+        return {t["function"]["name"] for t in tools}
+
+    def test_restricted_toolset_hidden_for_unauthorized_gateway_identity(self, monkeypatch):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        self._patch_access_config(monkeypatch)
+        tokens = set_session_vars(platform="whatsapp", chat_id="stranger@lid", user_id="stranger@lid")
+        try:
+            names = self._tool_names()
+            assert "terminal" not in names
+        finally:
+            clear_session_vars(tokens)
+
+    def test_restricted_toolset_visible_for_authorized_gateway_identity(self, monkeypatch):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        self._patch_access_config(monkeypatch)
+        tokens = set_session_vars(platform="whatsapp", chat_id="owner@lid", user_id="owner@lid")
+        try:
+            names = self._tool_names()
+            assert "terminal" in names
+        finally:
+            clear_session_vars(tokens)
+
+    def test_quiet_mode_cache_is_scoped_by_gateway_identity(self, monkeypatch):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        self._patch_access_config(monkeypatch)
+        first = set_session_vars(platform="whatsapp", chat_id="owner@lid", user_id="owner@lid")
+        try:
+            assert "terminal" in self._tool_names()
+        finally:
+            clear_session_vars(first)
+
+        second = set_session_vars(platform="whatsapp", chat_id="stranger@lid", user_id="stranger@lid")
+        try:
+            assert "terminal" not in self._tool_names()
+        finally:
+            clear_session_vars(second)

@@ -10,6 +10,7 @@ import {
   buildOfficeCharacters,
   buildOfficeMapDensityPlan,
   buildOfficeMapJumpTargets,
+  buildOfficeMapPolishPlan,
   buildOfficeMapFlows,
   buildOfficeMapNodes,
   buildOfficeSceneMotionTrack,
@@ -463,6 +464,37 @@ describe("OfficePage view helpers", () => {
     expect(standard.showRecentRail).toBe(true);
     expect(detail.showRecentRail).toBe(true);
     expect(`${summary.label} ${summary.detail} ${summary.visibleCharacters.map((character) => character.label).join(" ")}`).not.toMatch(/raw|prompt|transcript|body|script|secret/i);
+  });
+
+  it("builds Stage 11-B CSS/SVG polish plans for crowded labels and lower rails", () => {
+    const characters = Array.from({ length: 14 }, (_, index) => ({
+      id: `character-${index}`,
+      role: "automation_keeper" as const,
+      roomId: index < 8 ? ("automation" as const) : ("sessions" as const),
+      label: index === 13 ? "raw prompt transcript secret must not matter" : `자동화 관리인 ${index + 1}`,
+      status: index % 3 === 0 ? ("scheduled" as const) : ("active" as const),
+      detail: "raw task body script must not matter",
+      redactionNote: "안전 DTO 역할/상태/개수만 반영 · 원문 제외",
+      x: 20,
+      y: 20,
+    }));
+
+    const standardPlan = buildOfficeMapDensityPlan("standard", characters);
+    const summaryPlan = buildOfficeMapDensityPlan("summary", characters);
+    const standardPolish = buildOfficeMapPolishPlan(standardPlan);
+    const summaryPolish = buildOfficeMapPolishPlan(summaryPlan);
+
+    expect(standardPolish).toMatchObject({
+      stageLabel: "Stage 11-B 정돈",
+      characterLabelMode: "compact",
+      lowerRailMode: "detached",
+      mapClassName: "office-map--polished office-map--labels-compact office-map--rail-detached",
+      legendClassName: "office-map-legend office-map-legend--detached",
+    });
+    expect(standardPolish.notes).toEqual(expect.arrayContaining(["캐릭터 이름표는 역할 중심으로 압축", "하단 rail은 맵 바닥과 분리"]));
+    expect(summaryPolish.characterLabelMode).toBe("minimal");
+    expect(summaryPolish.lowerRailMode).toBe("detached");
+    expect(`${standardPolish.stageLabel} ${standardPolish.notes.join(" ")} ${standardPolish.mapClassName}`).not.toMatch(/raw|prompt|transcript|body|script|secret/i);
   });
 
   it("builds Stage 10-H keyboard jump targets with density-aware recent rail labels", () => {

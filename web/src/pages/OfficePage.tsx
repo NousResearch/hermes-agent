@@ -29,6 +29,7 @@ import {
   buildOfficeEmptyStateHints,
   buildOfficeMapDensityPlan,
   buildOfficeMapJumpTargets,
+  buildOfficeMapPolishPlan,
   buildOfficeMapFlows,
   buildOfficeMapNodes,
   buildOfficeSceneMotionTrack,
@@ -392,6 +393,7 @@ function OfficeMap({
   const changedFlowById = new Map(latestDelta.changedFlows.map((flow) => [`${flow.from}->${flow.to}`, flow]));
   const characterRoutes = buildOfficeCharacterRoutes(latestDelta);
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const polishPlan = buildOfficeMapPolishPlan(densityPlan);
 
   return (
     <Card>
@@ -441,7 +443,10 @@ function OfficeMap({
         <div
           id="office-map-canvas"
           tabIndex={-1}
-          className="relative min-h-[560px] scroll-mt-24 overflow-hidden border border-current/20 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.16),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.055),rgba(0,0,0,0.20))] p-4 focus:outline-none focus:ring-2 focus:ring-emerald-200/70 sm:min-h-[510px]"
+          className={`relative min-h-[620px] scroll-mt-24 overflow-hidden border border-current/20 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.16),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.055),rgba(0,0,0,0.20))] p-4 pb-28 focus:outline-none focus:ring-2 focus:ring-emerald-200/70 sm:min-h-[560px] ${polishPlan.mapClassName}`}
+          data-office-polish="true"
+          data-office-polish-label-mode={polishPlan.characterLabelMode}
+          data-office-polish-rail-mode={polishPlan.lowerRailMode}
         >
           <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full text-midground/20" role="img" aria-label="읽기 전용 오피스 흐름 연결" viewBox="0 0 100 100" preserveAspectRatio="none">
             <defs>
@@ -530,8 +535,9 @@ function OfficeMap({
               </button>
             );
           })}
-          <div className="absolute bottom-4 left-4 right-4 z-40 border border-current/15 bg-black/50 p-3 text-xs leading-5 text-midground/80 shadow-lg backdrop-blur-sm">
-            <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] uppercase tracking-[0.16em]">
+          <div className={polishPlan.legendClassName} data-office-polish-legend="true">
+            <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] uppercase tracking-[0.16em]">
+              <span className="text-emerald-200">{polishPlan.stageLabel}</span>
               {flows.map((flow) => {
                 const changedFlow = changedFlowById.get(`${flow.from}->${flow.to}`);
                 return (
@@ -540,6 +546,9 @@ function OfficeMap({
                   </span>
                 );
               })}
+            </div>
+            <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-semibold tracking-[0.14em] text-midground/75" aria-label="Stage 11-B CSS/SVG 정돈 메모">
+              {polishPlan.notes.map((note) => <span key={note}>{note}</span>)}
             </div>
             <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-semibold tracking-[0.14em] text-midground/75" aria-label="RPG 역할 범례">
               <span>캐릭터 역할 투영</span>

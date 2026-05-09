@@ -309,6 +309,44 @@ code { font-size: 0.875rem; }
 .office-character__activity--warning { color: #fde68a; }
 .office-character__activity--danger { color: #fecaca; }
 .office-character__activity--muted { color: rgba(226,232,240,0.72); }
+.office-map--polished .office-character-inspect {
+  max-width: 4.2rem;
+}
+.office-map--labels-compact .office-character__nameplate {
+  max-width: 2.85rem;
+  padding-inline: 0.18rem;
+  font-size: 0.43rem;
+  letter-spacing: -0.02em;
+}
+.office-map--labels-compact .office-character__status-text {
+  display: none;
+}
+.office-map--labels-minimal .office-character__nameplate,
+.office-map--labels-minimal .office-character__activity {
+  max-width: 2.45rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.office-map-legend {
+  position: absolute;
+  bottom: 4rem;
+  left: 1rem;
+  right: 1rem;
+  z-index: 40;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(0,0,0,0.55);
+  padding: 0.75rem;
+  color: color-mix(in srgb, var(--midground-base) 82%, white 8%);
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.28);
+  backdrop-filter: blur(8px);
+}
+.office-map-legend--detached {
+  bottom: 1rem;
+  max-height: 5.8rem;
+  overflow: auto;
+}
 .office-route-hint {
   position: absolute;
   z-index: 18;

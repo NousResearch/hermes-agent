@@ -186,6 +186,15 @@ export type OfficeMapJumpTarget = {
   enabled: boolean;
 };
 
+export type OfficeMapPolishPlan = {
+  stageLabel: string;
+  characterLabelMode: "minimal" | "compact" | "full";
+  lowerRailMode: "inline" | "detached";
+  mapClassName: string;
+  legendClassName: string;
+  notes: string[];
+};
+
 export function textField(row: Record<string, unknown>, key: string): string {
   const value = row[key];
   return typeof value === "string" && value.length > 0 ? value : "—";
@@ -336,6 +345,28 @@ export function buildOfficeMapJumpTargets(densityPlan: OfficeMapDensityPlan): Of
     },
     { id: "inspector", label: "안전 정보", detail: "선택한 방 또는 캐릭터의 안전 정보 패널로 이동", targetId: "office-safe-inspector", enabled: true },
   ];
+}
+
+export function buildOfficeMapPolishPlan(densityPlan: OfficeMapDensityPlan): OfficeMapPolishPlan {
+  const visibleCount = densityPlan.visibleCharacters.length;
+  const characterLabelMode: OfficeMapPolishPlan["characterLabelMode"] =
+    densityPlan.mode === "summary" ? "minimal" : visibleCount >= 10 || densityPlan.hiddenCharacterCount > 0 ? "compact" : "full";
+  const lowerRailMode: OfficeMapPolishPlan["lowerRailMode"] = visibleCount >= 6 || densityPlan.showRecentRail ? "detached" : "inline";
+  const mapClasses = ["office-map--polished"];
+  if (characterLabelMode === "minimal") mapClasses.push("office-map--labels-minimal");
+  if (characterLabelMode === "compact") mapClasses.push("office-map--labels-compact");
+  if (lowerRailMode === "detached") mapClasses.push("office-map--rail-detached");
+  return {
+    stageLabel: "Stage 11-B 정돈",
+    characterLabelMode,
+    lowerRailMode,
+    mapClassName: mapClasses.join(" "),
+    legendClassName: `office-map-legend${lowerRailMode === "detached" ? " office-map-legend--detached" : ""}`,
+    notes: [
+      characterLabelMode === "full" ? "캐릭터 이름표는 전체 표시" : "캐릭터 이름표는 역할 중심으로 압축",
+      lowerRailMode === "detached" ? "하단 rail은 맵 바닥과 분리" : "하단 rail은 맵 안에서 유지",
+    ],
+  };
 }
 
 export function buildOfficeMapNodes(state: OfficeState): OfficeMapNode[] {

@@ -1,6 +1,6 @@
 # Hermes AI Office — STATUS
 
-Last updated: 2026-05-09 12:42 KST
+Last updated: 2026-05-09 13:03 KST
 
 ## Current phase
 
@@ -32,10 +32,43 @@ Current Stage 10-H result: `/office` now exposes safe keyboard jump targets for 
 
 Current Stage 11-A result: renderer decision gate planning and evidence collection are documented in `docs/ai-office/plans/2026-05-09-stage-11-renderer-decision-gate.md`. The current recommendation is not to add a renderer; keep CSS/SVG as the default and treat the observed crowding as a layout/density polish issue unless later evidence shows DOM/CSS cannot solve it cleanly.
 
-Next phase: Stage 11-B should be a CSS/SVG layout/density polish plan or decision review, not dependency adoption. Still no individual task identity, generated content-like speech bubbles, sprite assets, Phaser, PixiJS, canvas renderer, backend/API changes, mutation controls, persistent storage, or raw record projection. Stage 11 remains the separate renderer decision gate.
+Current Stage 11-B result: `/office` applies a small CSS/SVG layout-density polish without adding a renderer. `OfficeMapPolishPlan` and `buildOfficeMapPolishPlan(densityPlan)` derive safe label/rail presentation from the existing density plan, compact crowded character nameplates in standard/detail conditions, use minimal labels in summary mode, and detach the bottom legend/rail from the map floor. The UI exposes `data-office-polish` and legend hooks for browser smoke.
+
+Next phase: Stage 11 can either stop at the CSS/SVG renderer decision gate or continue with another small CSS/SVG readability polish if browser evidence finds remaining crowding. Still no individual task identity, generated content-like speech bubbles, sprite assets, Phaser, PixiJS, canvas renderer, backend/API changes, mutation controls, persistent storage, or raw record projection. Stage 11 remains the separate renderer decision gate.
 
 Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
 
+
+
+## Stage 11-B CSS/SVG layout-density polish implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeMapPolishPlan` and `buildOfficeMapPolishPlan(densityPlan)`.
+  - The helper derives only from the existing safe density plan and emits label mode, rail mode, CSS class names, and Korean polish notes.
+- `web/src/pages/OfficePage.tsx`
+  - Applies `data-office-polish`, label-mode, and rail-mode hooks to the map.
+  - Increases map breathing room, detaches the lower legend/rail from the room floor, and shows a Korean Stage 11-B polish note.
+- `web/src/index.css`
+  - Adds compact/minimal nameplate styles and a scroll-bounded detached map legend.
+- `web/src/pages/OfficePage.test.ts`
+  - Adds RED/GREEN coverage for crowded-label/lower-rail polish behavior and raw-term exclusion.
+
+Safety notes:
+
+- Stage 11-B does not add renderer dependencies, canvas paths, sprite assets, DeskRPG code/assets, backend/API/schema changes, mutation controls, persistent browser storage, or raw record projection.
+- The polish helper does not inspect prompts, transcripts, task bodies, cron scripts, logs, auth fields, secrets, model/provider identity strings, or individual task identity.
+
+Verification 2026-05-09 13:03 KST:
+
+- RED verified first: Stage 11-B test failed because `buildOfficeMapPolishPlan` did not exist.
+- GREEN focused frontend test passed: `OfficePage.test.ts` 27 passed.
+- ESLint passed for `OfficePage.tsx`, `officeView.ts`, and `OfficePage.test.ts`.
+- `npm run build` passed with the existing Vite large-chunk warning; current build size was JS `1,254.85 kB` / gzip `367.11 kB`, CSS `126.50 kB` / gzip `20.19 kB`.
+- Backend focused office tests passed: `18 passed in 0.99s`.
+- Browser smoke `/office?stage11b=polish`: standard/detail label mode `compact`, summary label mode `minimal`, rail mode `detached`, polish legend present, recent target adapts to collapsed summary rail, raw leak regex false, console JS errors none.
+- Visual smoke after scrolling the `main` container found compact labels readable and no severe lower-legend overlap.
 
 ## Stage 11-A renderer decision evidence pass documented
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Hermes web dashboard, React/TypeScript, Vitest, CSS/SVG. Current web dependencies already include React, Tailwind, GSAP, Three/react-three stack for other web needs; Stage 11 does not add PixiJS, Phaser, canvas, sprites, or DeskRPG assets without explicit later approval.
 
-**Last updated:** 2026-05-09 12:42 KST
+**Last updated:** 2026-05-09 13:03 KST
 
 ---
 
@@ -283,6 +283,51 @@ Stage 11-A conclusion:
 - No measured performance or functional blocker currently requires PixiJS, Phaser, custom canvas, sprites, or a hybrid renderer overlay.
 - Default decision remains: keep CSS/SVG and continue layout/density polish before any renderer spike.
 
+## 4-B. Stage 11-B CSS/SVG layout-density polish — 2026-05-09 13:03 KST
+
+Scope: implementation stayed inside the existing React/CSS/SVG map. No PixiJS, Phaser, canvas renderer, sprite asset, DeskRPG code/asset copy, backend/API/schema change, mutation control, persistent browser storage, cron/Kanban/topic/gateway/NAS/Obsidian write, or raw record projection was added.
+
+Problem addressed from Stage 11-A evidence:
+
+- Character nameplates/status chips were borderline dense around clustered room areas.
+- The lower map legend/rail visually competed with the bottom of the map.
+- This remained a CSS/SVG polish problem, not a renderer-adoption trigger.
+
+Implementation:
+
+- `OfficeMapPolishPlan` and `buildOfficeMapPolishPlan(densityPlan)` now derive a polish policy from the existing safe `OfficeMapDensityPlan`.
+- Standard/detail dense conditions use compact role-centered nameplates; summary mode uses minimal label posture.
+- The lower legend uses a detached, scroll-bounded `office-map-legend` block and the map gets extra bottom breathing room.
+- Browser smoke hooks were added: `data-office-polish`, `data-office-polish-label-mode`, `data-office-polish-rail-mode`, and `data-office-polish-legend`.
+
+TDD evidence:
+
+```text
+npm test -- --run OfficePage.test.ts
+# RED: Stage 11-B test failed because buildOfficeMapPolishPlan was not a function
+# GREEN: OfficePage.test.ts 27 passed
+```
+
+Verification 2026-05-09 13:03 KST:
+
+- ESLint passed for `OfficePage.tsx`, `officeView.ts`, and `OfficePage.test.ts`.
+- `npm run build` passed with the existing Vite large-chunk warning; current build size was JS `1,254.85 kB` / gzip `367.11 kB`, CSS `126.50 kB` / gzip `20.19 kB`.
+- Backend focused office tests passed: `18 passed in 0.99s`.
+- Browser smoke `/office?stage11b=polish`: standard/detail label mode `compact`, summary label mode `minimal`, rail mode `detached`, polish legend present, recent target adapts to collapsed summary rail, raw leak regex false, console JS errors none.
+- Visual smoke after scrolling the `main` container found compact labels readable and no severe lower-legend overlap.
+
+Safety posture:
+
+- The helper consumes only the safe density plan and generated characters already produced by prior stages.
+- It emits class names and Korean notes, not raw task/session/automation content.
+- Raw-term exclusion is covered in the Stage 11-B test.
+
+Current Stage 11-B conclusion:
+
+- Keep CSS/SVG as the default renderer path.
+- The first observed crowding issue was addressable through DOM/CSS polish.
+- Re-open renderer research only if a later smoke test records a measured problem that compact/minimal labels, grouping, rail detachment, and density modes cannot solve cleanly.
+
 ## 5. Stage 11 decision rubric
 
 Score each option 1-5:
@@ -316,7 +361,7 @@ Do not install or import a renderer unless all are true:
 Stage 11 should continue as a **decision and evidence pass**, not as dependency adoption:
 
 1. Keep CSS/SVG as the primary implementation.
-2. Plan a small layout/density polish pass for crowded character nameplates and lower-rail competition.
+2. Treat Stage 11-C as a decision checkpoint unless new browser evidence finds remaining crowding.
 3. Re-open renderer research only if future evidence shows CSS/SVG cannot solve a measured readability, performance, or navigation problem cleanly.
 
-Current recommendation after Stage 11-A evidence: **do not add a renderer yet. Keep CSS/SVG as the primary implementation, and treat the observed crowding as a layout/density polish problem unless later evidence shows DOM/CSS cannot solve it cleanly.**
+Current recommendation after Stage 11-B evidence: **do not add a renderer yet. Keep CSS/SVG as the primary implementation; the measured crowding concern was addressable with compact/minimal labels and a detached legend.**

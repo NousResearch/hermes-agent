@@ -483,6 +483,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[list] = None,
     force_document: bool = False,
+    thumbnail_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Acquire a Bot Framework bearer token and POST a single message activity.
 
@@ -501,7 +502,7 @@ async def _standalone_send(
     env var.  ``chat_id`` is validated to match the documented Bot
     Framework ID character set so it cannot escape the URL path.
 
-    ``media_files`` and ``force_document`` are accepted for signature
+    ``media_files``, ``force_document``, and ``thumbnail_path`` are accepted for signature
     parity but not implemented for the standalone path; messages with
     attachments will send as text-only.  The live adapter handles
     attachments via the SDK.

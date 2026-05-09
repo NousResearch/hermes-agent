@@ -2195,17 +2195,18 @@ class TestSendViaAdapterStandaloneFallback:
 
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_kwargs_forwarded(self, monkeypatch):
-        """thread_id, media_files, and force_document all reach the hook."""
+        """thread_id, media_files, force_document, and thumbnail_path all reach the hook."""
         from tools.send_message_tool import _send_via_adapter
         from gateway.platform_registry import platform_registry
 
         recorded = {}
 
         async def fake_send(pconfig, chat_id, message, *, thread_id=None,
-                            media_files=None, force_document=False):
+                            media_files=None, force_document=False, thumbnail_path=None):
             recorded["thread_id"] = thread_id
             recorded["media_files"] = media_files
             recorded["force_document"] = force_document
+            recorded["thumbnail_path"] = thumbnail_path
             return {"success": True, "message_id": "x"}
 
         platform_registry.register(self._make_entry(fake_send))
@@ -2220,6 +2221,7 @@ class TestSendViaAdapterStandaloneFallback:
                 thread_id="thread-7",
                 media_files=["/tmp/a.png"],
                 force_document=True,
+                thumbnail_path="/tmp/thumb.jpg",
             )
         finally:
             platform_registry.unregister("fakeplatform")
@@ -2227,6 +2229,7 @@ class TestSendViaAdapterStandaloneFallback:
         assert recorded["thread_id"] == "thread-7"
         assert recorded["media_files"] == ["/tmp/a.png"]
         assert recorded["force_document"] is True
+        assert recorded["thumbnail_path"] == "/tmp/thumb.jpg"
 
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_absent_returns_helpful_error(self, monkeypatch):

@@ -3051,6 +3051,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[List[str]] = None,
     force_document: bool = False,
+    thumbnail_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """POST a single Google Chat message via the REST API without the SDK.
 
@@ -3069,7 +3070,7 @@ async def _standalone_send(
     resource-name character set before substitution into the REST URL so
     a tampered value cannot path-traverse or query-inject.
 
-    ``media_files`` and ``force_document`` are accepted for signature
+    ``media_files``, ``force_document``, and ``thumbnail_path`` are accepted for signature
     parity but are not implemented for the standalone path; messages with
     attachments send as text-only.  The live adapter handles attachments.
     """

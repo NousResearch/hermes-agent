@@ -1504,6 +1504,7 @@ class SlackAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        thumbnail_path: Optional[str] = None,
     ) -> SendResult:
         """Send a document/file attachment to Slack."""
         if not self._app:

@@ -722,6 +722,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[List[str]] = None,
     force_document: bool = False,
+    thumbnail_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Open an ephemeral IRC connection, send a PRIVMSG, and quit.
 
@@ -737,9 +738,9 @@ async def _standalone_send(
     networks with the default ``+n`` (no external messages) channel mode
     accept the delivery.
 
-    ``thread_id`` and ``media_files`` are accepted for signature parity but
-    are not meaningful on IRC: IRC has no native thread or attachment
-    primitive.
+    ``thread_id``, ``media_files``, ``force_document``, and
+    ``thumbnail_path`` are accepted for signature parity but are not
+    meaningful on IRC: IRC has no native thread or attachment primitive.
     """
     extra = getattr(pconfig, "extra", {}) or {}
     server = os.getenv("IRC_SERVER") or extra.get("server", "")

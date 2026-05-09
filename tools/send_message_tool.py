@@ -519,6 +519,7 @@ async def _send_via_adapter(
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                thumbnail_path=thumbnail_path,
             )
         except asyncio.CancelledError:
             raise
@@ -777,6 +778,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                thumbnail_path=thumbnail_path,
             )
 
         if isinstance(result, dict) and result.get("error"):

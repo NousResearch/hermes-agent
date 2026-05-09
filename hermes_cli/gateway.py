@@ -394,42 +394,68 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             pass
                     current_cmd = ""
         else:
-            result = subprocess.run(
-                ["ps", "-A", "eww", "-o", "pid=,command="],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                return []
-            for line in result.stdout.split("\n"):
-                stripped = line.strip()
-                if not stripped or "grep" in stripped:
-                    continue
+            # Try /proc first (works in Docker without procps installed),
+            # fall back to ps -A eww.
+            _found_via_proc = False
+            if os.path.isdir("/proc"):
+                try:
+                    my_pid = os.getpid()
+                    for entry in os.listdir("/proc"):
+                        if not entry.isdigit():
+                            continue
+                        pid = int(entry)
+                        if pid == my_pid or pid in exclude_pids:
+                            continue
+                        try:
+                            cmdline = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", errors="replace")
+                            cmdline = cmdline.replace("\x00", " ")
+                            if any(p in cmdline for p in patterns) and (
+                                all_profiles or _matches_current_profile(cmdline)
+                            ):
+                                _append_unique_pid(pids, pid, exclude_pids)
+                        except (OSError, PermissionError):
+                            continue
+                    _found_via_proc = True
+                except Exception:
+                    pass
 
-                pid = None
-                command = ""
+            if not _found_via_proc:
+                result = subprocess.run(
+                    ["ps", "-A", "eww", "-o", "pid=,command="],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode != 0:
+                    return []
+                for line in result.stdout.split("\n"):
+                    stripped = line.strip()
+                    if not stripped or "grep" in stripped:
+                        continue
 
-                parts = stripped.split(None, 1)
-                if len(parts) == 2:
-                    try:
-                        pid = int(parts[0])
-                        command = parts[1]
-                    except ValueError:
-                        pid = None
+                    pid = None
+                    command = ""
 
-                if pid is None:
-                    aux_parts = stripped.split()
-                    if len(aux_parts) > 10 and aux_parts[1].isdigit():
-                        pid = int(aux_parts[1])
-                        command = " ".join(aux_parts[10:])
+                    parts = stripped.split(None, 1)
+                    if len(parts) == 2:
+                        try:
+                            pid = int(parts[0])
+                            command = parts[1]
+                        except ValueError:
+                            pid = None
 
-                if pid is None:
-                    continue
-                if any(pattern in command for pattern in patterns) and (
-                    all_profiles or _matches_current_profile(command)
-                ):
-                    _append_unique_pid(pids, pid, exclude_pids)
+                    if pid is None:
+                        aux_parts = stripped.split()
+                        if len(aux_parts) > 10 and aux_parts[1].isdigit():
+                            pid = int(aux_parts[1])
+                            command = " ".join(aux_parts[10:])
+
+                    if pid is None:
+                        continue
+                    if any(pattern in command for pattern in patterns) and (
+                        all_profiles or _matches_current_profile(command)
+                    ):
+                        _append_unique_pid(pids, pid, exclude_pids)
     except (OSError, subprocess.TimeoutExpired):
         return []
 

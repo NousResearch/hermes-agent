@@ -103,6 +103,7 @@ from gateway.platforms.qqbot.constants import (
     RATE_LIMIT_DELAY,
     QUICK_DISCONNECT_THRESHOLD,
     MAX_QUICK_DISCONNECT_COUNT,
+    MAX_RESUME_ATTEMPTS,
     MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS,
     DEDUP_MAX_SIZE,
@@ -205,6 +206,12 @@ class QQAdapter(BasePlatformAdapter):
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
+        # Consecutive Resume attempts that have not yet been confirmed by a
+        # READY/RESUMED dispatch.  Used to break the "stale session resume
+        # loop" where the server accepts Resume but immediately closes the
+        # WebSocket — without this counter the adapter retries Resume with
+        # the same expired session_id forever (see hermes-agent#22179).
+        self._resume_attempts: int = 0
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
         # Request/response correlation
@@ -771,9 +778,29 @@ class QQAdapter(BasePlatformAdapter):
             )
             # Authenticate: send Resume if we have a session, else Identify.
             # Use _create_task which is safe when no event loop is running (tests).
-            if self._session_id and self._last_seq is not None:
+            #
+            # Resume loop guard (hermes-agent#22179): if the previous Resume
+            # attempts never produced a RESUMED/READY dispatch (server accepted
+            # Resume then immediately closed the WebSocket), discard the stale
+            # session_id and fall back to a fresh Identify — otherwise the
+            # adapter would loop forever sending the same expired session_id.
+            if (
+                self._session_id
+                and self._last_seq is not None
+                and self._resume_attempts < MAX_RESUME_ATTEMPTS
+            ):
+                self._resume_attempts += 1
                 self._create_task(self._send_resume())
             else:
+                if self._resume_attempts >= MAX_RESUME_ATTEMPTS:
+                    logger.warning(
+                        "[%s] Resume failed %d times — discarding stale session_id and re-identifying",
+                        self._log_tag,
+                        self._resume_attempts,
+                    )
+                    self._session_id = None
+                    self._last_seq = None
+                    self._resume_attempts = 0
                 self._create_task(self._send_identify())
             return
 
@@ -783,6 +810,7 @@ class QQAdapter(BasePlatformAdapter):
                 self._handle_ready(d)
             elif t == "RESUMED":
                 logger.info("[%s] Session resumed", self._log_tag)
+                self._resume_attempts = 0
             elif t in (
                     "C2C_MESSAGE_CREATE",
                     "GROUP_AT_MESSAGE_CREATE",
@@ -808,6 +836,8 @@ class QQAdapter(BasePlatformAdapter):
         if isinstance(d, dict):
             self._session_id = d.get("session_id")
             logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
+        # Fresh Identify succeeded — clear the resume failure counter.
+        self._resume_attempts = 0
 
     # ------------------------------------------------------------------
     # JSON helpers

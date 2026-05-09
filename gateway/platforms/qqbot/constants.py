@@ -44,6 +44,13 @@ RATE_LIMIT_DELAY = 60  # seconds
 QUICK_DISCONNECT_THRESHOLD = 5.0  # seconds
 MAX_QUICK_DISCONNECT_COUNT = 3
 
+# After this many consecutive Resume attempts that never produced a
+# RESUMED/READY dispatch, the adapter discards its stale session_id and
+# falls back to a fresh Identify handshake.  Without the cap, an expired
+# session causes an infinite Resume loop because the QQ server accepts
+# Resume then immediately closes the WebSocket (hermes-agent#22179).
+MAX_RESUME_ATTEMPTS = 3
+
 ONBOARD_POLL_INTERVAL = 2.0  # seconds between poll_bind_result calls
 ONBOARD_API_TIMEOUT = 10.0
 

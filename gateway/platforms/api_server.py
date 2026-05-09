@@ -798,6 +798,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         gateway_session_key: Optional[str] = None,
     ) -> Any:
         """
@@ -846,6 +847,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            reasoning_callback=reasoning_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
@@ -1143,6 +1145,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                 }))
 
+            def _on_reasoning(text):
+                """Queue A-class reasoning deltas (structured ``reasoning_content``
+                from DeepSeek / OpenRouter / Bedrock etc.) onto a dedicated
+                custom SSE event so they don't pollute ``delta.content`` or
+                conversation history.  B-class ``<think>`` tags are scrubbed
+                upstream by ``StreamingThinkScrubber`` and never reach here.
+                """
+                if text:
+                    _stream_q.put(("__reasoning__", text))
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             #
@@ -1160,6 +1172,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
@@ -1292,6 +1305,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning__":
+                    event_data = json.dumps({"text": item[1]}, ensure_ascii=False)
+                    await response.write(
+                        f"event: hermes.reasoning.delta\ndata: {event_data}\n\n".encode()
                     )
                 else:
                     content_chunk = {
@@ -2631,6 +2649,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
     ) -> tuple:
@@ -2655,6 +2674,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                reasoning_callback=reasoning_callback,
                 gateway_session_key=gateway_session_key,
             )
             if agent_ref is not None:

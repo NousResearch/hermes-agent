@@ -4,11 +4,14 @@ from pathlib import Path
 import tomllib
 
 
-def _load_optional_dependencies():
+def _load_project_metadata():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
-        project = tomllib.load(handle)["project"]
-    return project["optional-dependencies"]
+        return tomllib.load(handle)["project"]
+
+
+def _load_optional_dependencies():
+    return _load_project_metadata()["optional-dependencies"]
 
 
 def test_matrix_extra_linux_only_in_all():
@@ -52,3 +55,12 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
 
     feishu_extra = optional_dependencies["feishu"]
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
+
+
+def test_psutil_dependency_excluded_on_android():
+    """Termux/Android cannot build psutil from source, so the base dependency
+    must be gated off for sys_platform=='android'."""
+    dependencies = _load_project_metadata()["dependencies"]
+    psutil_entries = [dep for dep in dependencies if dep.startswith("psutil")]
+    assert psutil_entries, "expected a psutil dependency entry"
+    assert any("sys_platform != 'android'" in dep for dep in psutil_entries)

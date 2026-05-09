@@ -47,7 +47,9 @@ dependencies = [
   # macOS and Windows.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
-  "psutil>=5.9.0,<8",
+  # Android/Termux: psutil currently errors at build time ("platform android is not supported").
+  # Keep it for all other platforms; runtime code paths already include no-psutil fallbacks.
+  "psutil>=5.9.0,<8; sys_platform != 'android'",
 ]
 
 [project.optional-dependencies]

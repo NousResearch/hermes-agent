@@ -108,22 +108,11 @@ def _get_service_pids() -> set:
     # --- launchd (macOS) ---
     if is_macos():
         try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True, text=True, timeout=5,
-            )
+            result = _launchd_print_service(timeout=5)
             if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[2] == label:
-                        try:
-                            pid = int(parts[0])
-                            if pid > 0:
-                                pids.add(pid)
-                        except ValueError:
-                            pass
+                pid = _launchd_pid_from_print(result.stdout)
+                if pid is not None:
+                    pids.add(pid)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -870,15 +859,10 @@ def _probe_launchd_service_running() -> bool:
     if not get_launchd_plist_path().exists():
         return False
     try:
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = _launchd_print_service(timeout=10)
     except subprocess.TimeoutExpired:
         return False
-    return result.returncode == 0
+    return result.returncode == 0 and _launchd_print_indicates_running(result.stdout)
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -2606,6 +2590,50 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
+def _launchd_service_target() -> str:
+    return f"{_launchd_domain()}/{get_launchd_label()}"
+
+
+def _launchd_print_service(timeout: float = 10) -> subprocess.CompletedProcess[str]:
+    """Return launchd's domain-scoped view of the gateway LaunchAgent.
+
+    `launchctl list <label>` queries the caller's bootstrap domain, which may
+    not be the GUI domain where LaunchAgents are bootstrapped. Use the explicit
+    target that install/start/restart already use.
+    """
+    return subprocess.run(
+        ["launchctl", "print", _launchd_service_target()],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _launchd_pid_from_print(output: str) -> int | None:
+    raw_pid = _launchd_field_from_print(output, "pid")
+    if raw_pid is None:
+        return None
+    try:
+        pid = int(raw_pid)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _launchd_field_from_print(output: str, field: str) -> str | None:
+    for line in output.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep and key.strip() == field:
+            return value.strip()
+    return None
+
+
+def _launchd_print_indicates_running(output: str) -> bool:
+    if _launchd_pid_from_print(output) is not None:
+        return True
+    return any(line.strip() == "state = running" for line in output.splitlines())
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -2888,14 +2916,8 @@ def launchd_restart():
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
     try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = _launchd_print_service(timeout=10)
         loaded = result.returncode == 0
         loaded_output = result.stdout
     except subprocess.TimeoutExpired:
@@ -2911,7 +2933,16 @@ def launchd_status(deep: bool = False):
 
     if loaded:
         print("✓ Gateway service is loaded")
-        print(loaded_output)
+        pid = _launchd_pid_from_print(loaded_output)
+        state = _launchd_field_from_print(loaded_output, "state")
+        if _launchd_print_indicates_running(loaded_output):
+            print("✓ Gateway service is running")
+        else:
+            print("⚠ Gateway service is loaded but not running")
+        if state:
+            print(f"  State: {state}")
+        if pid is not None:
+            print(f"  PID: {pid}")
     else:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
@@ -4024,14 +4055,7 @@ def _is_service_running() -> bool:
 
         return False
     elif is_macos() and get_launchd_plist_path().exists():
-        try:
-            result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True, text=True, timeout=10,
-            )
-            return result.returncode == 0
-        except subprocess.TimeoutExpired:
-            return False
+        return _probe_launchd_service_running()
     elif is_windows():
         from hermes_cli import gateway_windows
         if gateway_windows.is_installed():

@@ -102,10 +102,15 @@ def _make_run_side_effect(
                 return subprocess.CompletedProcess(cmd, system_restart_rc, stdout="", stderr=stderr)
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        # launchctl list ai.hermes.gateway
-        if "launchctl" in joined and "list" in joined:
+        # launchctl print gui/<uid>/ai.hermes.gateway
+        if "launchctl" in joined and "print" in joined:
             if launchctl_loaded:
-                return subprocess.CompletedProcess(cmd, 0, stdout="PID\tStatus\tLabel\n123\t0\tai.hermes.gateway\n", stderr="")
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout="gui/501/ai.hermes.gateway = {\n\tstate = running\n\tpid = 123\n}\n",
+                    stderr="",
+                )
             return subprocess.CompletedProcess(cmd, 113, stdout="", stderr="Could not find service")
 
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -1016,12 +1021,15 @@ class TestGetServicePids:
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
         monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
 
+        calls = []
+
         def fake_run(cmd, **kwargs):
+            calls.append(cmd)
             joined = " ".join(str(c) for c in cmd)
-            if "launchctl" in joined and "list" in joined:
+            if "launchctl" in joined and "print" in joined:
                 return subprocess.CompletedProcess(
                     cmd, 0,
-                    stdout="PID\tStatus\tLabel\n67890\t0\tai.hermes.gateway\n",
+                    stdout="gui/501/ai.hermes.gateway = {\n\tstate = running\n\tpid = 67890\n}\n",
                     stderr="",
                 )
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -1030,6 +1038,7 @@ class TestGetServicePids:
 
         pids = gateway_cli._get_service_pids()
         assert 67890 in pids
+        assert calls == [["launchctl", "print", gateway_cli._launchd_service_target()]]
 
     def test_returns_empty_when_no_services(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)

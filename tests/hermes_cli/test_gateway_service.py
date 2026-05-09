@@ -610,11 +610,13 @@ class TestLaunchdServiceRecovery:
         plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-        monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "run",
-            lambda *args, **kwargs: SimpleNamespace(returncode=113, stdout="", stderr="Could not find service"),
-        )
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.launchd_status()
 
@@ -622,6 +624,57 @@ class TestLaunchdServiceRecovery:
         assert str(plist_path) in output
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
+        assert calls == [["launchctl", "print", gateway_cli._launchd_service_target()]]
+
+    def test_launchd_status_uses_gui_domain_print_when_loaded(self, tmp_path, monkeypatch, capsys):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        launchd_output = "\n".join(
+            [
+                "gui/502/ai.hermes.gateway = {",
+                "\tstate = running",
+                "\tpid = 67890",
+                "}",
+            ]
+        )
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout=launchd_output, stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_status()
+
+        output = capsys.readouterr().out
+        assert "Gateway service is loaded" in output
+        assert "Gateway service is running" in output
+        assert "State: running" in output
+        assert "PID: 67890" in output
+        assert calls[-1] == ["launchctl", "print", gateway_cli._launchd_service_target()]
+
+    def test_probe_launchd_service_running_requires_running_print_state(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(
+                returncode=0,
+                stdout="gui/502/ai.hermes.gateway = {\n\tstate = waiting\n}",
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._probe_launchd_service_running() is False
+        assert calls == [["launchctl", "print", gateway_cli._launchd_service_target()]]
 
 
 class TestGatewayServiceDetection:

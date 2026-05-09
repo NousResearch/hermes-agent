@@ -80,13 +80,78 @@ def _mock_proc(stdout="", returncode=0):
 def test_not_in_git_repo_prints_message():
     cli = _make_cli()
     printed = []
+    not_a_repo = subprocess.CalledProcessError(128, ["git", "rev-parse"])
     with (
-        patch("subprocess.run", side_effect=_fake_run([Exception("not a repo")])),
+        patch("subprocess.run", side_effect=_fake_run([not_a_repo])),
         patch("cli._cprint", side_effect=lambda t: printed.append(t)),
     ):
         cli._handle_diff_command("/diff")
 
     assert any("not a git" in p.lower() for p in printed)
+
+
+def test_git_not_installed_prints_message():
+    cli = _make_cli()
+    printed = []
+    with (
+        patch("subprocess.run", side_effect=_fake_run([FileNotFoundError("git")])),
+        patch("cli._cprint", side_effect=lambda t: printed.append(t)),
+    ):
+        cli._handle_diff_command("/diff")
+
+    assert any("not installed" in p.lower() for p in printed)
+
+
+def test_both_staged_and_unstaged_full_diffs_shown():
+    cli = _make_cli()
+    printed = []
+    run_calls = []
+
+    inside_wt = _mock_proc()
+    diff_stat = _mock_proc(stdout=" foo.py | 2 ++\n 1 file changed")
+    staged_stat = _mock_proc(stdout=" bar.py | 1 +\n 1 file changed")
+    staged_full = _mock_proc(stdout="diff --git a/bar.py b/bar.py\n+staged-line")
+    unstaged_full = _mock_proc(stdout="diff --git a/foo.py b/foo.py\n+unstaged-line")
+
+    def _tracking_run(cmd, **kwargs):
+        run_calls.append(list(cmd))
+        if "rev-parse" in cmd:
+            return inside_wt
+        if "--stat" in cmd and "--cached" not in cmd:
+            return diff_stat
+        if "--stat" in cmd and "--cached" in cmd:
+            return staged_stat
+        if cmd[:3] == ["git", "diff", "--cached"]:
+            return staged_full
+        if cmd[:2] == ["git", "diff"]:
+            return unstaged_full
+        return _mock_proc()
+
+    with (
+        patch("subprocess.run", side_effect=_tracking_run),
+        patch("cli._cprint", side_effect=lambda t: printed.append(t)),
+        patch("cli._rich_text_from_ansi", side_effect=lambda t: t),
+        patch.object(cli, "_console_print", create=True) as console_print,
+    ):
+        cli._handle_diff_command("/diff")
+
+    cached_full_calls = [
+        c for c in run_calls
+        if c[:3] == ["git", "diff", "--cached"] and "--stat" not in c
+    ]
+    unstaged_full_calls = [
+        c for c in run_calls
+        if c[:2] == ["git", "diff"] and "--cached" not in c and "--stat" not in c
+    ]
+    assert cached_full_calls, "expected `git diff --cached` for staged full diff"
+    assert unstaged_full_calls, "expected `git diff` for unstaged full diff"
+
+    headers = " ".join(printed).lower()
+    assert "staged" in headers and "unstaged" in headers
+
+    rendered = [str(call.args[0]) for call in console_print.call_args_list]
+    assert any("staged-line" in r for r in rendered)
+    assert any("unstaged-line" in r for r in rendered)
 
 
 def test_no_changes_prints_no_changes():

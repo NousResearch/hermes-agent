@@ -5705,13 +5705,24 @@ class HermesCLI:
         parts = cmd.split()[1:]
         stat_only = "--stat" in parts
 
+        # Validate cwd before invoking git, so we can give a precise error.
+        if not os.path.isdir(cwd):
+            _cprint(f"  {_DIM}Working directory does not exist: {cwd}{_RST}")
+            return
+
         # Check if we're in a git repo
         try:
             _sp.run(
                 ["git", "rev-parse", "--is-inside-work-tree"],
                 cwd=cwd, capture_output=True, check=True, timeout=5,
             )
-        except Exception:
+        except FileNotFoundError:
+            _cprint(f"  {_DIM}git is not installed or not in PATH.{_RST}")
+            return
+        except _sp.TimeoutExpired:
+            _cprint(f"  {_DIM}git timed out checking repository state.{_RST}")
+            return
+        except _sp.CalledProcessError:
             _cprint(f"  {_DIM}Not a git repository.{_RST}")
             return
 
@@ -5743,18 +5754,30 @@ class HermesCLI:
             if stat_only:
                 return
 
-            # Show full diff
-            diff_result = _sp.run(
-                ["git", "diff", "--cached"] if staged_out and not stat_out else ["git", "diff"],
-                cwd=cwd, capture_output=True, text=True, timeout=30,
-            )
-            diff_out = diff_result.stdout.strip()
-            if diff_out:
-                _cprint("")
-                self._console_print(_rich_text_from_ansi(diff_out))
+            # Show full diffs — staged and unstaged each in their own section.
+            if staged_out:
+                staged_full = _sp.run(
+                    ["git", "diff", "--cached"],
+                    cwd=cwd, capture_output=True, text=True, timeout=30,
+                )
+                staged_full_out = staged_full.stdout.strip()
+                if staged_full_out:
+                    _cprint(f"\n  {_BOLD}Staged diff:{_RST}")
+                    self._console_print(_rich_text_from_ansi(staged_full_out))
+            if stat_out:
+                unstaged_full = _sp.run(
+                    ["git", "diff"],
+                    cwd=cwd, capture_output=True, text=True, timeout=30,
+                )
+                unstaged_full_out = unstaged_full.stdout.strip()
+                if unstaged_full_out:
+                    _cprint(f"\n  {_BOLD}Unstaged diff:{_RST}")
+                    self._console_print(_rich_text_from_ansi(unstaged_full_out))
 
         except _sp.TimeoutExpired:
             _cprint(f"  {_DIM}Git diff timed out.{_RST}")
+        except FileNotFoundError:
+            _cprint(f"  {_DIM}git is not installed or not in PATH.{_RST}")
         except Exception as e:
             _cprint(f"  {_DIM}Git diff error: {e}{_RST}")
 

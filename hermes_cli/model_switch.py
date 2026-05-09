@@ -1596,10 +1596,11 @@ def list_authenticated_providers(
                 # If this endpoint matches the currently active one, use
                 # ``current_provider`` as the slug so picker-driven switches
                 # route through the live credential pipeline.
-                if (
+                endpoint_is_current = bool(
                     current_base_url
                     and api_url == current_base_url.strip().rstrip("/")
-                ):
+                )
+                if endpoint_is_current:
                     # Guard against bare "custom" slug left by a prior
                     # failed switch — always resolve to the canonical
                     # custom:<name> form.  (GH #17478)
@@ -1615,6 +1616,13 @@ def list_authenticated_providers(
                     "name": display_name,
                     "api_url": api_url,
                     "models": [],
+                    # Track whether this group matched the active endpoint.
+                    # When current_provider is bare "custom" the resolved
+                    # slug becomes "custom:<name>"; a plain equality check
+                    # at emit time ("custom:foo" == "custom") then misses
+                    # the row and the picker shows no current marker on
+                    # the actual active provider. (#20810)
+                    "endpoint_is_current": endpoint_is_current,
                 }
 
             # The singular ``model:`` field only holds the currently
@@ -1691,7 +1699,10 @@ def list_authenticated_providers(
             results.append({
                 "slug": slug,
                 "name": grp["name"],
-                "is_current": slug == current_provider,
+                "is_current": (
+                    slug == current_provider
+                    or bool(grp.get("endpoint_is_current"))
+                ),
                 "is_user_defined": True,
                 "models": grp["models"],
                 "total_models": len(grp["models"]),

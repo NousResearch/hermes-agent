@@ -118,6 +118,25 @@ class TestMem0FiltersV2:
         provider._agent_id = "hermes"
         assert provider._write_filters() == {"user_id": "u123", "agent_id": "hermes"}
 
+    def test_strict_read_filters_include_agent_and_project(self):
+        """Self-host strict search narrows noisy shared memory by agent/project."""
+        provider = Mem0MemoryProvider()
+        provider._user_id = "u123"
+        provider._agent_id = "cortex-shadow"
+        provider._project = "mina-operating-system"
+        provider._strict_search = True
+
+        assert provider._read_filters() == {
+            "user_id": "u123",
+            "agent_id": "cortex-shadow",
+            "project": "mina-operating-system",
+        }
+        assert provider._read_filters(project="agentb") == {
+            "user_id": "u123",
+            "agent_id": "cortex-shadow",
+            "project": "agentb",
+        }
+
 
 # ---------------------------------------------------------------------------
 # Dict response unwrapping (API v2 wraps in {"results": [...]})
@@ -174,6 +193,18 @@ class TestMem0ResponseUnwrapping:
             "mem0_search", {"query": "test"}
         ))
         assert result["count"] == 1
+
+    def test_search_preserves_metadata_in_tool_result(self, monkeypatch):
+        client = FakeClientV2(search_results={
+            "results": [{"memory": "foo", "score": 0.9, "metadata": {"source_id": 17403}}]
+        })
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call(
+            "mem0_search", {"query": "test", "top_k": 5}
+        ))
+
+        assert result["results"][0]["metadata"] == {"source_id": 17403}
 
     def test_unwrap_results_edge_cases(self):
         """_unwrap_results handles all shapes gracefully."""
@@ -274,6 +305,49 @@ class TestMem0RestClient:
         assert captured["headers"].get("X-api-key") == "m0sk_test"
         assert "Authorization" not in captured["headers"]
         assert captured["body"] == {"query": "token", "filters": {"user_id": "u1"}, "top_k": 50, "rerank": False}
+
+    def test_admin_key_uses_x_api_key_not_bearer(self, monkeypatch):
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["headers"] = dict(request.header_items())
+            return self._FakeResponse({"results": []})
+
+        monkeypatch.setattr("plugins.memory.mem0.urllib.request.urlopen", fake_urlopen)
+        client = _Mem0RestClient(base_url="http://127.0.0.1:8888/", api_key="m0adm_test")
+
+        client.search(query="token", filters={"user_id": "u1"}, top_k=3)
+
+        assert captured["headers"].get("X-api-key") == "m0adm_test"
+        assert "Authorization" not in captured["headers"]
+
+    def test_search_uses_configured_candidate_k(self, monkeypatch):
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return self._FakeResponse({"results": []})
+
+        monkeypatch.setattr("plugins.memory.mem0.urllib.request.urlopen", fake_urlopen)
+        client = _Mem0RestClient(base_url="http://127.0.0.1:8888/", api_key="m0sk_test", candidate_k=80)
+
+        client.search(query="token", filters={"user_id": "u1"}, top_k=3)
+
+        assert captured["body"]["top_k"] == 80
+
+    def test_local_rerank_promotes_lexical_header_match(self, monkeypatch):
+        def fake_urlopen(request, timeout):
+            return self._FakeResponse({"results": [
+                {"memory": "MEMORY_RECORD\ntitle: unrelated\ncontent: no useful terms", "score": 0.1},
+                {"memory": "MEMORY_RECORD\ntitle: mem0 strict adapter source_id\ncontent: exact target", "score": 0.9},
+            ]})
+
+        monkeypatch.setattr("plugins.memory.mem0.urllib.request.urlopen", fake_urlopen)
+        client = _Mem0RestClient(base_url="http://127.0.0.1:8888/", api_key="m0sk_test", local_rerank=True)
+
+        result = client.search(query="mem0 strict adapter source_id", filters={"user_id": "u1"}, top_k=1)
+
+        assert result["results"][0]["memory"].endswith("exact target")
 
     def test_search_sorts_self_host_distance_scores_ascending(self, monkeypatch):
         captured = {}

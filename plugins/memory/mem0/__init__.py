@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -55,6 +56,10 @@ def _load_config() -> dict:
         "base_url": os.environ.get("MEM0_BASE_URL", ""),
         "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
+        "project": os.environ.get("MEM0_PROJECT", ""),
+        "strict_search": os.environ.get("MEM0_STRICT_SEARCH", "false"),
+        "candidate_k": os.environ.get("MEM0_CANDIDATE_K", "50"),
+        "local_rerank": os.environ.get("MEM0_LOCAL_RERANK", "true"),
         "rerank": True,
         "keyword_search": False,
     }
@@ -96,6 +101,7 @@ SEARCH_SCHEMA = {
             "query": {"type": "string", "description": "What to search for."},
             "rerank": {"type": "boolean", "description": "Enable reranking for precision (default: false)."},
             "top_k": {"type": "integer", "description": "Max results (default: 10, max: 50)."},
+            "project": {"type": "string", "description": "Optional project metadata filter for self-hosted shadow memory."},
         },
         "required": ["query"],
     },
@@ -121,6 +127,39 @@ CONCLUDE_SCHEMA = {
 # Self-hosted REST client
 # ---------------------------------------------------------------------------
 
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_int(value: Any, *, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+_STOPWORDS = {
+    "the", "and", "or", "not", "as", "is", "are", "with", "for", "to", "of", "in", "a", "an",
+    "uses", "use", "main", "then", "that", "this", "from", "into", "only", "should", "be", "by", "on", "at", "it",
+}
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        token.lower()
+        for token in re.findall(r"[A-Za-z0-9_가-힣]+", text or "")
+        if len(token) > 1 and token.lower() not in _STOPWORDS
+    }
+
+
+def _memory_text(item: Dict[str, Any]) -> str:
+    return str(item.get("memory") or item.get("text") or "")
+
+
 class _Mem0RestClient:
     """Small Mem0 self-hosted REST adapter with the MemoryClient-like methods we use.
 
@@ -129,9 +168,11 @@ class _Mem0RestClient:
     the provider dependency-light and lets Hermes talk to a local/Mac mini server.
     """
 
-    def __init__(self, *, base_url: str, api_key: str):
+    def __init__(self, *, base_url: str, api_key: str, candidate_k: int = 50, local_rerank: bool = True):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.candidate_k = max(1, candidate_k)
+        self.local_rerank = local_rerank
 
     def _request(self, method: str, path: str, payload: Dict[str, Any] | None = None,
                  query: Dict[str, Any] | None = None) -> Any:
@@ -143,7 +184,7 @@ class _Mem0RestClient:
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"}
         if self.api_key:
-            if self.api_key.startswith("m0sk_"):
+            if self.api_key.startswith(("m0sk_", "m0adm")):
                 headers["X-API-Key"] = self.api_key
             else:
                 headers["Authorization"] = f"Bearer {self.api_key}"
@@ -169,7 +210,8 @@ class _Mem0RestClient:
         return entity, metadata
 
     @staticmethod
-    def _sort_distance_results(response: Any, *, limit: int | None = None) -> Any:
+    @staticmethod
+    def _sort_distance_results(response: Any, *, limit: int | None = None, query: str = "", local_rerank: bool = False) -> Any:
         """Self-hosted Mem0 currently returns distance-like scores.
 
         The REST server response contains lower-is-better scores but may return
@@ -180,15 +222,37 @@ class _Mem0RestClient:
             results = response["results"]
             if all(isinstance(item, dict) and isinstance(item.get("score"), (int, float)) for item in results):
                 response = dict(response)
-                response["results"] = sorted(results, key=lambda item: item["score"])
+                response["results"] = _Mem0RestClient._rank_results(results, query=query, local_rerank=local_rerank)
                 if limit is not None:
                     response["results"] = response["results"][:limit]
         elif isinstance(response, list):
             if all(isinstance(item, dict) and isinstance(item.get("score"), (int, float)) for item in response):
-                response = sorted(response, key=lambda item: item["score"])
+                response = _Mem0RestClient._rank_results(response, query=query, local_rerank=local_rerank)
                 if limit is not None:
                     response = response[:limit]
         return response
+
+    @staticmethod
+    def _rank_results(results: list[Dict[str, Any]], *, query: str, local_rerank: bool) -> list[Dict[str, Any]]:
+        distance_sorted = sorted(results, key=lambda item: item["score"])
+        if not local_rerank:
+            return distance_sorted
+        query_tokens = _tokens(query)
+        if not query_tokens:
+            return distance_sorted
+
+        def score(item_with_rank: tuple[int, Dict[str, Any]]) -> tuple[float, float]:
+            rank, item = item_with_rank
+            text = _memory_text(item)
+            header = "\n".join(text.splitlines()[:8])
+            overlap = len(query_tokens & _tokens(text))
+            header_overlap = len(query_tokens & _tokens(header))
+            distance = float(item.get("score") or 0)
+            # Higher lexical score is better; lower distance/rank break ties.
+            lexical = 12 * header_overlap + 4 * overlap - 0.01 * rank
+            return (-lexical, distance)
+
+        return [item for _rank, item in sorted(enumerate(distance_sorted, 1), key=score)]
 
     def search(self, **kwargs) -> Any:
         filters = kwargs.pop("filters", None) or {}
@@ -197,10 +261,7 @@ class _Mem0RestClient:
             requested_limit = int(requested_top_k) if requested_top_k is not None else None
         except (TypeError, ValueError):
             requested_limit = None
-        try:
-            candidate_k = int(os.environ.get("MEM0_SELF_HOST_CANDIDATE_K", "50"))
-        except ValueError:
-            candidate_k = 50
+
         # The current self-host REST server advertises top-level user_id/agent_id
         # in OpenAPI, but the observed implementation returns 502 for that path
         # and scopes correctly through the flat filters object.
@@ -209,8 +270,13 @@ class _Mem0RestClient:
             if key in kwargs and kwargs[key] is not None:
                 payload[key] = kwargs[key]
         if requested_limit is not None:
-            payload["top_k"] = max(requested_limit, candidate_k)
-        return self._sort_distance_results(self._request("POST", "/search", payload), limit=requested_limit)
+            payload["top_k"] = max(requested_limit, self.candidate_k)
+        return self._sort_distance_results(
+            self._request("POST", "/search", payload),
+            limit=requested_limit,
+            query=payload["query"],
+            local_rerank=self.local_rerank,
+        )
 
     def get_all(self, **kwargs) -> Any:
         entity, _metadata = self._split_filters(kwargs.get("filters"))
@@ -246,6 +312,10 @@ class Mem0MemoryProvider(MemoryProvider):
         self._base_url = ""
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
+        self._project = ""
+        self._strict_search = False
+        self._candidate_k = 50
+        self._local_rerank = True
         self._rerank = True
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -283,6 +353,10 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "base_url", "description": "Optional self-hosted Mem0 REST base URL", "default": "", "env_var": "MEM0_BASE_URL"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
+            {"key": "project", "description": "Optional project metadata filter for strict self-host search", "default": "", "env_var": "MEM0_PROJECT"},
+            {"key": "strict_search", "description": "For self-host: include agent/project filters and candidate expansion", "default": "false", "choices": ["true", "false"], "env_var": "MEM0_STRICT_SEARCH"},
+            {"key": "candidate_k", "description": "For self-host strict recall: search candidate count before trimming", "default": "50", "env_var": "MEM0_CANDIDATE_K"},
+            {"key": "local_rerank", "description": "For self-host: local lexical rerank over expanded candidates", "default": "true", "choices": ["true", "false"], "env_var": "MEM0_LOCAL_RERANK"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
         ]
 
@@ -292,7 +366,12 @@ class Mem0MemoryProvider(MemoryProvider):
             if self._client is not None:
                 return self._client
             if self._base_url:
-                self._client = _Mem0RestClient(base_url=self._base_url, api_key=self._api_key)
+                self._client = _Mem0RestClient(
+                    base_url=self._base_url,
+                    api_key=self._api_key,
+                    candidate_k=self._candidate_k,
+                    local_rerank=self._local_rerank,
+                )
                 return self._client
             try:
                 from mem0 import MemoryClient
@@ -332,11 +411,27 @@ class Mem0MemoryProvider(MemoryProvider):
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
         self._agent_id = self._config.get("agent_id", "hermes")
+        self._project = str(self._config.get("project", "") or "")
+        self._strict_search = _as_bool(self._config.get("strict_search"), default=False)
+        self._candidate_k = max(1, _as_int(self._config.get("candidate_k"), default=50))
+        self._local_rerank = _as_bool(self._config.get("local_rerank"), default=True)
         self._rerank = self._config.get("rerank", True)
 
-    def _read_filters(self) -> Dict[str, Any]:
-        """Filters for search/get_all — scoped to user only for cross-session recall."""
-        return {"user_id": self._user_id}
+    def _read_filters(self, *, project: str = "") -> Dict[str, Any]:
+        """Filters for search/get_all.
+
+        Hosted/default behavior remains user-scoped for cross-session recall.
+        Self-host strict mode narrows to agent/project metadata because Joohyun's
+        shadow gates showed native broad search is too noisy without namespace and
+        project constraints.
+        """
+        filters: Dict[str, Any] = {"user_id": self._user_id}
+        if self._strict_search:
+            filters["agent_id"] = self._agent_id
+            selected_project = project or self._project
+            if selected_project:
+                filters["project"] = selected_project
+        return filters
 
     def _write_filters(self) -> Dict[str, Any]:
         """Filters for add — scoped to user + agent for attribution."""
@@ -451,17 +546,25 @@ class Mem0MemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: query")
             rerank = args.get("rerank", False)
             top_k = min(int(args.get("top_k", 10)), 50)
+            project = str(args.get("project", "") or "")
             try:
                 results = self._unwrap_results(client.search(
                     query=query,
-                    filters=self._read_filters(),
+                    filters=self._read_filters(project=project),
                     rerank=rerank,
                     top_k=top_k,
                 ))
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
-                items = [{"memory": r.get("memory", ""), "score": r.get("score", 0)} for r in results]
+                items = [
+                    {
+                        "memory": r.get("memory", ""),
+                        "score": r.get("score", 0),
+                        "metadata": r.get("metadata", {}),
+                    }
+                    for r in results
+                ]
                 return json.dumps({"results": items, "count": len(items)})
             except Exception as e:
                 self._record_failure()

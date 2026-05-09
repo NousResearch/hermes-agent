@@ -448,6 +448,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 qwen_session_metadata=params.get("qwen_session_metadata"),
                 model=model,
                 ollama_num_ctx=params.get("ollama_num_ctx"),
+                session_id=params.get("session_id"),
             )
         )
         api_kwargs.update(top_level_from_profile)

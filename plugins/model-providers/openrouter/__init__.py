@@ -53,16 +53,28 @@ class OpenRouterProfile(ProviderProfile):
         *,
         reasoning_config: dict | None = None,
         supports_reasoning: bool = False,
+        model: str | None = None,
+        session_id: str | None = None,
         **context: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """OpenRouter passes the full reasoning_config dict as extra_body.reasoning."""
+        """OpenRouter passes the full reasoning_config dict as extra_body.reasoning.
+
+        For xAI Grok models routed through OpenRouter, attach the
+        ``x-grok-conv-id`` header so that xAI's prompt cache stays pinned to
+        the same backend server across turns.
+        """
         extra_body: dict[str, Any] = {}
         if supports_reasoning:
             if reasoning_config is not None:
                 extra_body["reasoning"] = dict(reasoning_config)
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
-        return extra_body, {}
+
+        extra_headers: dict[str, Any] = {}
+        if session_id and model and model.startswith(("x-ai/grok-", "xai/grok-")):
+            extra_headers["x-grok-conv-id"] = session_id
+
+        return extra_body, {"extra_headers": extra_headers} if extra_headers else {}
 
 
 openrouter = OpenRouterProfile(

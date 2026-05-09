@@ -738,3 +738,79 @@ def test_build_message_event_dm_from_user_present_uses_user():
     # Normal case — from_user is used directly
     assert event.source.user_id == "99999"
     assert event.source.user_name == "Bob"
+
+
+# ── _build_message_event: native Telegram quote (partial reply) ──
+
+
+def _make_mock_message_with_reply(chat_id=111, chat_type="private", text="reply text",
+                                   user_id=42, user_name="Test User",
+                                   reply_to_id=500, reply_to_text="original full message",
+                                   quote_text=None):
+    """Create a mock Telegram Message with a reply-to message, optionally with a native quote."""
+    chat = SimpleNamespace(id=chat_id, type=chat_type, title=None)
+    chat.full_name = user_name
+    user = SimpleNamespace(id=user_id, full_name=user_name)
+    reply_to_msg = SimpleNamespace(
+        message_id=reply_to_id,
+        text=reply_to_text,
+        caption=None,
+    )
+    msg = SimpleNamespace(
+        chat=chat,
+        from_user=user,
+        text=text,
+        message_thread_id=None,
+        message_id=1001,
+        reply_to_message=reply_to_msg,
+        date=None,
+        forum_topic_created=None,
+    )
+    if quote_text is not None:
+        msg.quote = SimpleNamespace(text=quote_text)
+    return msg
+
+
+def test_build_message_event_uses_native_quote_text_when_available():
+    """When message.quote exists (Telegram partial quote), reply_to_text should use quote.text."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message_with_reply(
+        reply_to_text="original full message with multiple sections",
+        quote_text="only the selected quoted part",
+    )
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_message_id == "500"
+    assert event.reply_to_text == "only the selected quoted part"
+
+
+def test_build_message_event_falls_back_to_full_text_without_quote():
+    """When no native quote exists, reply_to_text should fall back to reply_to_message.text."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message_with_reply(
+        reply_to_text="original full message",
+        quote_text=None,
+    )
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_message_id == "500"
+    assert event.reply_to_text == "original full message"
+
+
+def test_build_message_event_no_reply_context():
+    """Messages without reply_to_message should have None reply_to fields."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(chat_id=111, text="standalone message")
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_message_id is None
+    assert event.reply_to_text is None

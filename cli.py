@@ -2206,26 +2206,10 @@ def save_config_value(key_path: str, value: any) -> bool:
         # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Load existing config
-        if config_path.exists():
-            with open(config_path, 'r', encoding="utf-8") as f:
-                config = yaml.safe_load(f) or {}
-        else:
-            config = {}
-        
-        # Navigate to the key and set value
-        keys = key_path.split('.')
-        current = config
-        for key in keys[:-1]:
-            if key not in current or not isinstance(current[key], dict):
-                current[key] = {}
-            current = current[key]
-        current[keys[-1]] = value
-        
-        # Save back atomically — write to temp file + fsync + os.replace
-        # so an interrupt never leaves config.yaml truncated or empty.
-        from utils import atomic_yaml_write
-        atomic_yaml_write(config_path, config)
+        # Save back atomically while preserving comments, ordering, quotes, and
+        # readable Unicode in user-edited config.yaml.
+        from utils import atomic_roundtrip_yaml_update
+        atomic_roundtrip_yaml_update(config_path, key_path, value)
         
         # Enforce owner-only permissions on config files (contain API keys)
         try:

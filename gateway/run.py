@@ -2426,6 +2426,45 @@ class GatewayRunner:
         if not adapter:
             return False  # let default path handle it
 
+        # Approval aliases must bypass the busy interrupt path. Non-slash
+        # replies like "1" arrive here while the agent thread is blocked in
+        # tools.approval waiting for the user. If we let the normal busy logic
+        # handle them, they are treated as ordinary follow-up text and trigger
+        # "Interrupting current task" instead of resolving the approval.
+        _approval_alias = self._match_gateway_approval_alias(event.text)
+        if _approval_alias:
+            try:
+                from tools.approval import has_blocking_approval as _has_blocking_approval_for_alias
+                _approval_live_for_alias = _has_blocking_approval_for_alias(session_key)
+            except Exception:
+                _approval_live_for_alias = False
+            _approval_pending_for_alias = session_key in getattr(self, "_pending_approvals", {})
+            if _approval_live_for_alias or _approval_pending_for_alias:
+                _alias_command, _alias_args = _approval_alias
+                _rewritten_text = f"/{_alias_command} {_alias_args}".strip()
+                logger.info(
+                    "Gateway approval alias matched in busy session %s: %r -> %r (approval_live=%s pending=%s)",
+                    session_key,
+                    (event.text or "").strip(),
+                    _rewritten_text,
+                    _approval_live_for_alias,
+                    _approval_pending_for_alias,
+                )
+                rewritten_event = dataclasses.replace(event, text=_rewritten_text, message_type=MessageType.COMMAND)
+                if _alias_command == "approve":
+                    response = await self._handle_approve_command(rewritten_event)
+                else:
+                    response = await self._handle_deny_command(rewritten_event)
+                if response:
+                    thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    await adapter._send_with_retry(
+                        chat_id=event.source.chat_id,
+                        content=response,
+                        reply_to=event.message_id,
+                        metadata=thread_meta,
+                    )
+                return True
+
         running_agent = self._running_agents.get(session_key)
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
@@ -5196,6 +5235,28 @@ class GatewayRunner:
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+
+        _approval_alias = self._match_gateway_approval_alias(event.text)
+        if _approval_alias:
+            try:
+                from tools.approval import has_blocking_approval as _has_blocking_approval_for_alias
+                _approval_live_for_alias = _has_blocking_approval_for_alias(_quick_key)
+            except Exception:
+                _approval_live_for_alias = False
+            _approval_pending_for_alias = _quick_key in getattr(self, "_pending_approvals", {})
+            if _approval_live_for_alias or _approval_pending_for_alias:
+                _alias_command, _alias_args = _approval_alias
+                _rewritten_text = f"/{_alias_command} {_alias_args}".strip()
+                logger.info(
+                    "Gateway approval alias matched for session %s: %r -> %r (approval_live=%s pending=%s)",
+                    _quick_key,
+                    (event.text or "").strip(),
+                    _rewritten_text,
+                    _approval_live_for_alias,
+                    _approval_pending_for_alias,
+                )
+                event = dataclasses.replace(event, text=_rewritten_text, message_type=MessageType.COMMAND)
+
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -11347,6 +11408,65 @@ class GatewayRunner:
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
+    _APPROVAL_ALIAS_ACTIONS = {
+        "approve": ("approve", ""),
+        "approve_once": ("approve", ""),
+        "once": ("approve", ""),
+        "approve_session": ("approve", "session"),
+        "session": ("approve", "session"),
+        "approve_always": ("approve", "always"),
+        "always": ("approve", "always"),
+        "permanent": ("approve", "always"),
+        "approve_all": ("approve", "all"),
+        "approve_all_once": ("approve", "all"),
+        "approve_all_session": ("approve", "all session"),
+        "approve_all_always": ("approve", "all always"),
+        "deny": ("deny", ""),
+        "reject": ("deny", ""),
+        "deny_all": ("deny", "all"),
+    }
+
+    def _match_gateway_approval_alias(self, text: Optional[str]) -> Optional[tuple[str, str]]:
+        """Return the approval command mapped from a configured gateway alias.
+
+        Aliases are intentionally only checked while a dangerous-command
+        approval is live. That lets users configure plain text shortcuts such
+        as ``-1`` without stealing normal chat messages.
+        """
+        raw = (text or "").strip()
+        if not raw:
+            return None
+
+        cfg = getattr(self, "config", None)
+        if isinstance(cfg, dict):
+            approvals_cfg = cfg.get("approvals", {}) if isinstance(cfg.get("approvals"), dict) else {}
+            aliases = cfg.get("approval_aliases") or approvals_cfg.get("gateway_aliases", {})
+        else:
+            aliases = getattr(cfg, "approval_aliases", {}) or {}
+        if not isinstance(aliases, dict):
+            return None
+
+        raw_lower = raw.lower()
+        raw_lines = [line.strip().lower() for line in raw.splitlines() if line.strip()]
+        raw_candidates = {raw_lower}
+        if raw_lines:
+            raw_candidates.add(raw_lines[-1])
+        for action, values in aliases.items():
+            mapped = self._APPROVAL_ALIAS_ACTIONS.get(str(action).strip().lower())
+            if not mapped:
+                continue
+            if isinstance(values, str):
+                candidates = [values]
+            elif isinstance(values, (list, tuple, set)):
+                candidates = values
+            else:
+                continue
+            for candidate in candidates:
+                alias = str(candidate).strip()
+                if alias and alias.lower() in raw_candidates:
+                    return mapped
+        return None
+
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).
 
@@ -11398,6 +11518,8 @@ class GatewayRunner:
         count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
         if not count:
             return "No pending command to approve."
+        if resolve_all or not has_blocking_approval(session_key):
+            self._pending_approvals.pop(session_key, None)
 
         # Resume typing indicator — agent is about to continue processing.
         _adapter = self.adapters.get(source.platform)
@@ -11435,6 +11557,8 @@ class GatewayRunner:
         count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
         if not count:
             return "No pending command to deny."
+        if resolve_all or not has_blocking_approval(session_key):
+            self._pending_approvals.pop(session_key, None)
 
         # Resume typing indicator — agent continues (with BLOCKED result).
         _adapter = self.adapters.get(source.platform)
@@ -14255,6 +14379,10 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                try:
+                    self._pending_approvals[_approval_session_key] = dict(approval_data)
+                except Exception:
+                    logger.debug("Failed to record pending approval marker", exc_info=True)
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids

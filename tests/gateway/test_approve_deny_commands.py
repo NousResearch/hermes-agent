@@ -49,11 +49,13 @@ def _make_runner():
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
+    adapter._send_with_retry = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner._running_agents = {}
+    runner._running_agents_ts = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._background_tasks = set()
@@ -62,6 +64,9 @@ def _make_runner():
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._show_reasoning = False
+    runner._draining = False
+    runner._busy_input_mode = "interrupt"
+    runner._busy_ack_ts = {}
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     return runner
@@ -274,6 +279,120 @@ class TestApproveCommand:
         assert session_key not in runner._pending_approvals
 
 
+class TestApprovalAliases:
+
+    def setup_method(self):
+        _clear_approval_state()
+
+    def test_match_gateway_approval_alias_from_config(self):
+        runner = _make_runner()
+        runner.config.approval_aliases = {
+            "approve_once": ["-1"],
+            "approve_session": ["-2"],
+            "approve_always": "-3",
+            "deny": ["-0"],
+        }
+
+        assert runner._match_gateway_approval_alias("-1") == ("approve", "")
+        assert runner._match_gateway_approval_alias(" -2 ") == ("approve", "session")
+        assert runner._match_gateway_approval_alias("-3") == ("approve", "always")
+        assert runner._match_gateway_approval_alias("-0") == ("deny", "")
+        assert runner._match_gateway_approval_alias("hello") is None
+
+    @pytest.mark.asyncio
+    async def test_plaintext_alias_resolves_pending_approval(self):
+        """Configured non-slash aliases like -1 approve a live gateway prompt."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        runner.config.approval_aliases = {"approve_once": ["-1"]}
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_message(_make_event("-1"))
+
+        assert "approved" in result.lower()
+        assert entry.event.is_set()
+        assert entry.result == "once"
+
+    @pytest.mark.asyncio
+    async def test_plaintext_alias_can_approve_for_session(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        runner.config.approval_aliases = {"approve_session": ["-2"]}
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_message(_make_event("-2"))
+
+        assert "session" in result.lower()
+        assert entry.event.is_set()
+        assert entry.result == "session"
+
+    @pytest.mark.asyncio
+    async def test_plaintext_alias_matches_last_line_for_quoted_replies(self):
+        """Weixin quoted replies may prepend quoted text before the alias."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        runner.config.approval_aliases = {"approve_once": ["1"]}
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_message(_make_event("[quoted approval prompt]\n1"))
+
+        assert "approved" in result.lower()
+        assert entry.event.is_set()
+        assert entry.result == "once"
+
+    @pytest.mark.asyncio
+    async def test_busy_session_alias_resolves_without_interrupting(self):
+        """Non-slash aliases must bypass the active-session busy interrupt path."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        runner.config.approval_aliases = {"approve_once": ["1"]}
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+        runner._pending_approvals[session_key] = {"command": "test"}
+        running_agent = MagicMock()
+        running_agent.interrupt = MagicMock()
+        runner._running_agents[session_key] = running_agent
+
+        handled = await runner._handle_active_session_busy_message(_make_event("1"), session_key)
+
+        assert handled is True
+        assert entry.event.is_set()
+        assert entry.result == "once"
+        running_agent.interrupt.assert_not_called()
+        runner.adapters[Platform.TELEGRAM]._send_with_retry.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_alias_ignored_without_pending_approval(self):
+        """Configured aliases are ordinary text unless an approval is pending."""
+        runner = _make_runner()
+        runner.config.approval_aliases = {"approve_once": ["1"]}
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        running_agent = MagicMock()
+        runner._running_agents[session_key] = running_agent
+
+        handled = await runner._handle_active_session_busy_message(_make_event("1"), session_key)
+
+        assert handled is True
+        running_agent.interrupt.assert_called_once_with("1")
+        runner.adapters[Platform.TELEGRAM]._send_with_retry.assert_awaited()
+
+
 # ------------------------------------------------------------------
 # /deny command
 # ------------------------------------------------------------------
@@ -390,9 +509,11 @@ class TestBlockingApprovalE2E:
             os.environ["HERMES_EXEC_ASK"] = "1"
             os.environ["HERMES_SESSION_KEY"] = session_key
             try:
-                result_holder[0] = check_all_command_guards(
-                    "rm -rf /important", "local"
-                )
+                with patch("tools.tirith_security.check_command_security",
+                           return_value={"action": "allow", "findings": [], "summary": ""}):
+                    result_holder[0] = check_all_command_guards(
+                        "rm -rf /important", "local"
+                    )
             finally:
                 os.environ.pop("HERMES_GATEWAY_SESSION", None)
                 os.environ.pop("HERMES_EXEC_ASK", None)
@@ -438,9 +559,11 @@ class TestBlockingApprovalE2E:
             os.environ["HERMES_EXEC_ASK"] = "1"
             os.environ["HERMES_SESSION_KEY"] = session_key
             try:
-                result_holder[0] = check_all_command_guards(
-                    "rm -rf /important", "local"
-                )
+                with patch("tools.tirith_security.check_command_security",
+                           return_value={"action": "allow", "findings": [], "summary": ""}):
+                    result_holder[0] = check_all_command_guards(
+                        "rm -rf /important", "local"
+                    )
             finally:
                 os.environ.pop("HERMES_GATEWAY_SESSION", None)
                 os.environ.pop("HERMES_EXEC_ASK", None)

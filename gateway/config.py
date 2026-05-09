@@ -419,6 +419,9 @@ class GatewayConfig:
 
     # User-defined quick commands (slash commands that bypass the agent loop)
     quick_commands: Dict[str, Any] = field(default_factory=dict)
+
+    # User-defined shortcuts for pending dangerous-command approvals.
+    approval_aliases: Dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -531,6 +534,7 @@ class GatewayConfig:
             },
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
+            "approval_aliases": self.approval_aliases,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
             "stt_enabled": self.stt_enabled,
@@ -575,6 +579,10 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        approval_aliases = data.get("approval_aliases", {})
+        if not isinstance(approval_aliases, dict):
+            approval_aliases = {}
+
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
@@ -600,6 +608,7 @@ class GatewayConfig:
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
+            approval_aliases=approval_aliases,
             sessions_dir=sessions_dir,
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
             stt_enabled=_coerce_bool(stt_enabled, True),
@@ -683,6 +692,18 @@ def load_gateway_config() -> GatewayConfig:
                         "Ignoring invalid quick_commands in config.yaml "
                         "(expected mapping, got %s)",
                         type(qc).__name__,
+                    )
+
+            approvals_cfg = yaml_cfg.get("approvals")
+            if isinstance(approvals_cfg, dict) and "gateway_aliases" in approvals_cfg:
+                aliases = approvals_cfg.get("gateway_aliases")
+                if isinstance(aliases, dict):
+                    gw_data["approval_aliases"] = aliases
+                else:
+                    logger.warning(
+                        "Ignoring invalid approvals.gateway_aliases in config.yaml "
+                        "(expected mapping, got %s)",
+                        type(aliases).__name__,
                     )
 
             stt_cfg = yaml_cfg.get("stt")

@@ -1196,6 +1196,17 @@ DEFAULT_CONFIG = {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        # Optional gateway-only shortcuts for pending dangerous-command
+        # approvals. Values may be a string or list of strings. Aliases are
+        # matched exactly after trimming whitespace and only while the session
+        # has a live approval prompt, so non-slash aliases like "-1" are safe.
+        # Example:
+        #   gateway_aliases:
+        #     approve_once: ["-1"]
+        #     approve_session: ["-2"]
+        #     approve_always: ["-3"]
+        #     deny: ["-0"]
+        "gateway_aliases": {},
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

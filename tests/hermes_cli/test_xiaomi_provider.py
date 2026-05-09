@@ -360,6 +360,17 @@ class TestXiaomiDoctor:
         from hermes_cli.doctor import _PROVIDER_ENV_HINTS
         assert "XIAOMI_API_KEY" in _PROVIDER_ENV_HINTS
 
+    def test_apikey_provider_list_uses_xiaomi_base_url_env(self):
+        """Doctor must probe XIAOMI_BASE_URL when set, not only the default endpoint."""
+        from hermes_cli import doctor
+
+        doctor._APIKEY_PROVIDERS_CACHE = None
+        entries = doctor._build_apikey_providers_list()
+        xiaomi_entries = [entry for entry in entries if entry[0] == "xiaomi"]
+
+        assert xiaomi_entries
+        assert xiaomi_entries[0][3] == "XIAOMI_BASE_URL"
+
 
 class TestXiaomiAgentInit:
     """Verify the agent can be constructed with xiaomi provider without errors."""

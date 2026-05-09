@@ -125,6 +125,16 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
+_DOCTOR_WARN_ONLY_MISSING_API_TOOLSETS = {"discord", "discord_admin", "rl", "homeassistant", "image_gen"}
+
+
+def _is_warn_only_missing_api_toolset(item: dict) -> bool:
+    """Return True for optional toolsets that should warn without failing doctor."""
+    toolset = (item.get("toolset") or "").strip().lower()
+    name = (item.get("name") or "").strip().lower()
+    return toolset in _DOCTOR_WARN_ONLY_MISSING_API_TOOLSETS or name in _DOCTOR_WARN_ONLY_MISSING_API_TOOLSETS
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     updated_available = list(available)
@@ -256,6 +266,27 @@ def _build_apikey_providers_list() -> list:
                 (v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")),
                 None,
             )
+            if _base_var is None:
+                # ProviderProfile.env_vars is primarily for API keys.  Some
+                # bundled profiles (for example Xiaomi) keep the base-URL
+                # override in the auth/overlay registries instead.  Reuse that
+                # metadata so doctor validates the same endpoint Hermes will
+                # actually call at runtime, rather than incorrectly probing the
+                # provider's default URL and reporting a good regional key as
+                # invalid.
+                try:
+                    from hermes_cli.auth import PROVIDER_REGISTRY as _AUTH_PROVIDER_REGISTRY
+                    _auth_cfg = _AUTH_PROVIDER_REGISTRY.get(_pp.name)
+                    _base_var = getattr(_auth_cfg, "base_url_env_var", "") or None
+                except Exception:
+                    _base_var = None
+            if _base_var is None:
+                try:
+                    from hermes_cli.providers import get_provider as _get_provider_def
+                    _pdef = _get_provider_def(_pp.name)
+                    _base_var = getattr(_pdef, "base_url_env_var", "") or None
+                except Exception:
+                    _base_var = None
             if not _key_vars:
                 continue
             _models_url = (
@@ -1311,7 +1342,15 @@ def run_doctor(args):
         # Count disabled tools with API key requirements
         api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
         if api_disabled:
-            issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+            # Only escalate to a top-level issue when core/default tools are blocked.
+            # Optional platform/integration tools (discord, rl, etc.) should warn in-place
+            # but not fail the overall doctor summary for users who don't use them.
+            _core_disabled = [
+                u for u in api_disabled
+                if not _is_warn_only_missing_api_toolset(u)
+            ]
+            if _core_disabled:
+                issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
     

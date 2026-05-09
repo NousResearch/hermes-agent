@@ -167,6 +167,16 @@ class TestDoctorToolAvailabilityOverrides:
 
         assert doctor._doctor_tool_availability_detail("kanban") == "(runtime-gated; loaded only for dispatcher-spawned workers)"
 
+    def test_discord_admin_is_warn_only_missing_api_toolset(self):
+        entry = {"name": "discord_admin", "env_vars": ["DISCORD_BOT_TOKEN"]}
+
+        assert doctor._is_warn_only_missing_api_toolset(entry)
+
+    def test_non_optional_missing_api_toolset_is_not_warn_only(self):
+        entry = {"name": "web", "env_vars": ["EXA_API_KEY"]}
+
+        assert not doctor._is_warn_only_missing_api_toolset(entry)
+
 
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):

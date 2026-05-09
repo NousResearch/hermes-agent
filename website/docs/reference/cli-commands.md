@@ -66,6 +66,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes mcp` | Manage MCP server configurations and run Hermes as an MCP server. |
 | `hermes plugins` | Manage Hermes Agent plugins (install, enable, disable, remove). |
 | `hermes tools` | Configure enabled tools per platform. |
+| `hermes computer-use` | Install or check the cua-driver backend (macOS Computer Use). |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes fallback` | Interactive manager for the fallback provider chain. |
@@ -957,6 +958,26 @@ hermes tools [--summary]
 | `--summary` | Print the current enabled-tools summary and exit. |
 
 Without `--summary`, this launches the interactive per-platform tool configuration UI.
+
+## `hermes computer-use`
+
+```bash
+hermes computer-use <subcommand>
+```
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `install` | Run the upstream cua-driver installer (macOS only). |
+| `status` | Print whether `cua-driver` is on `$PATH`. |
+
+`hermes computer-use install` is the stable entry point for installing the
+[cua-driver](https://github.com/trycua/cua) binary used by the
+`computer_use` toolset. It runs the same upstream installer that
+`hermes tools` invokes when you first enable Computer Use, so it's safe
+to use for re-running the install if the toolset toggle didn't trigger
+it (for example, on returning-user setups).
 
 ## `hermes sessions`
 

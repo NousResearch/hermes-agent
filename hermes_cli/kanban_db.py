@@ -4072,7 +4072,14 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             )
         for c in shown_c:
             ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(c.created_at))
-            lines.append(f"**{c.author}** ({ts}):")
+            # Render author with explicit "comment from worker" framing so
+            # operator-controlled HERMES_PROFILE values like "hermes-system"
+            # or "operator" can't be misread by the next worker as a system
+            # directive above the (attacker-influenceable) comment body.
+            # Defense-in-depth — the LLM-controlled author-forgery surface
+            # was already closed in #22435. See #22452.
+            safe_author = (c.author or "").replace("`", "")
+            lines.append(f"comment from worker `{safe_author}` at {ts}:")
             lines.append(_cap(c.body, _CTX_MAX_COMMENT_BYTES))
             lines.append("")
 

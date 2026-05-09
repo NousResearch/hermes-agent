@@ -2706,8 +2706,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Discord's TYPING_START gateway event is unreliable in DMs for bots.
         Instead, start a background loop that hits the typing endpoint every
-        8 seconds (typing indicator lasts ~10s).  The loop is cancelled when
+        12 seconds (typing indicator lasts ~10s).  The loop is cancelled when
         stop_typing() is called (after the response is sent).
+
+        Rate-limit handling: if a 429 is encountered, the loop logs a
+        warning, sleeps for the ``retry_after`` duration (or a sensible
+        default), and continues — it does NOT die on a single rate-limit
+        hit.  Only CancelledError (from stop_typing) stops the loop.
         """
         if not self._client:
             return
@@ -2727,9 +2732,22 @@ class DiscordAdapter(BasePlatformAdapter):
                     except asyncio.CancelledError:
                         return
                     except Exception as e:
-                        logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
-                        return
-                    await asyncio.sleep(8)
+                        # Don't die on 429 — backoff and continue
+                        retry_after = self._extract_discord_retry_after(e)
+                        if retry_after is not None:
+                            logger.warning(
+                                "Typing indicator rate-limited for %s; retrying in %.1fs",
+                                chat_id, retry_after,
+                            )
+                        else:
+                            logger.debug(
+                                "Discord typing indicator failed for %s: %s",
+                                chat_id, e,
+                            )
+                            return
+                        await asyncio.sleep(retry_after)
+                        continue
+                    await asyncio.sleep(12)
             except asyncio.CancelledError:
                 pass
             finally:

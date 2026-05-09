@@ -69,6 +69,11 @@ def test_component_check_user_in_user_allowlist_passes():
     assert _component_check_auth(interaction, {"11111"}, set()) is True
 
 
+def test_component_check_user_wildcard_passes():
+    interaction = _interaction(99999)
+    assert _component_check_auth(interaction, {"*"}, set()) is True
+
+
 def test_component_check_user_not_in_user_allowlist_rejected():
     interaction = _interaction(99999)
     assert _component_check_auth(interaction, {"11111"}, set()) is False

@@ -207,6 +207,14 @@ async def test_allowed_user_passes(adapter):
 
 
 @pytest.mark.asyncio
+async def test_allowed_user_wildcard_passes(adapter):
+    adapter._allowed_user_ids = {"*"}
+    interaction = _make_interaction("999999999")
+    assert await adapter._check_slash_authorization(interaction, "/background hi") is True
+    interaction.response.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_disallowed_user_rejected_with_ephemeral(adapter, caplog):
     adapter._allowed_user_ids = {"100200300"}
     interaction = _make_interaction("999999999")

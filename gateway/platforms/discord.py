@@ -2189,8 +2189,9 @@ class DiscordAdapter(BasePlatformAdapter):
         has_roles = bool(allowed_roles)
         if not has_users and not has_roles:
             return True
-        # Check user ID allowlist (works for both DMs and guild messages)
-        if has_users and user_id in allowed_users:
+        # Check user ID allowlist (works for both DMs and guild messages).
+        # ``*`` means "allow any user" for parity with channel allowlist semantics.
+        if has_users and ("*" in allowed_users or user_id in allowed_users):
             return True
         # Role allowlist is only consulted when configured.
         if not has_roles:
@@ -4455,6 +4456,8 @@ def _component_check_auth(
         return False
 
     if has_users:
+        if "*" in user_set:
+            return True
         try:
             uid = str(user.id)
         except AttributeError:

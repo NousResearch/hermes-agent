@@ -497,6 +497,7 @@ class GatewayStreamConsumer:
                     if not self._preserve_target_across_segments:
                         self._reset_segment_state(preserve_no_edit=True)
                     else:
+                        await self._record_segment_progress_for_preserved_target()
                         self._accumulated = ""
                         self._last_sent_text = ""
                         self._fallback_final_send = False
@@ -774,6 +775,24 @@ class GatewayStreamConsumer:
             self._last_sent_text = prefix
         except Exception:
             pass  # best-effort — don't let this block the fallback path
+
+    async def _record_segment_progress_for_preserved_target(self) -> None:
+        """Persist visible pre-tool text as transcript history for one-card adapters."""
+        text = self._clean_for_display(self._accumulated)
+        if not text.strip():
+            return
+        record_progress = getattr(self.adapter, "record_execution_progress", None)
+        if callable(record_progress):
+            maybe_result = record_progress(self.chat_id, text, metadata=self.metadata)
+            if inspect.isawaitable(maybe_result):
+                await maybe_result
+            return
+
+        append_progress = getattr(self.adapter, "append_execution_progress", None)
+        if callable(append_progress):
+            maybe_result = append_progress(self.chat_id, text, metadata=self.metadata)
+            if inspect.isawaitable(maybe_result):
+                await maybe_result
 
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""

@@ -26,6 +26,7 @@ class FakeFeishuAdapter:
     def __init__(self):
         self.sent = []
         self.edits = []
+        self.recorded_progress = []
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.sent.append(
@@ -49,8 +50,22 @@ class FakeFeishuAdapter:
         )
         return SendResult(success=True, message_id=message_id)
 
+    async def record_execution_progress(self, chat_id, line, metadata=None):
+        self.recorded_progress.append(
+            {
+                "chat_id": chat_id,
+                "line": line,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="msg_1")
+
     def truncate_message(self, content, max_length):
         return [content]
+
+
+class FakePreservedFeishuAdapter(FakeFeishuAdapter):
+    PRESERVE_STREAM_TARGET_ACROSS_SEGMENTS = True
 
 
 class FakeRunner:
@@ -60,6 +75,78 @@ class FakeRunner:
 
     async def _deliver_media_from_response(self, response, event, adapter):
         self.media_deliveries.append((response, event, adapter))
+
+
+@pytest.mark.asyncio
+async def test_preserved_card_stream_records_segment_progress_before_reset():
+    adapter = FakePreservedFeishuAdapter()
+    consumer = GatewayStreamConsumer(
+        adapter=adapter,
+        chat_id="chat_id",
+        config=StreamConsumerConfig(edit_interval=999, buffer_threshold=999, cursor=""),
+        metadata={"model": "provider/model-x"},
+    )
+
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta("第一段进度")
+    consumer.on_segment_break()
+    consumer.on_delta("第二段进度")
+    consumer.finish()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert adapter.sent == [
+        {
+            "chat_id": "chat_id",
+            "content": "第一段进度",
+            "reply_to": None,
+            "metadata": {"model": "provider/model-x", "_hermes_stream_preview": True},
+        }
+    ]
+    assert adapter.recorded_progress == [
+        {
+            "chat_id": "chat_id",
+            "line": "第一段进度",
+            "metadata": {"model": "provider/model-x"},
+        }
+    ]
+    assert adapter.edits[-1] == {
+        "chat_id": "chat_id",
+        "message_id": "msg_1",
+        "content": "第二段进度",
+        "finalize": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_feishu_recorded_segment_progress_is_composed_into_next_card_edit():
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter._render_mode = "card"
+    adapter._always_card = True
+    adapter._card_footer_elapsed = True
+    adapter._card_footer_status = True
+    adapter._streaming_card_state = {"card_123": {"started_at": 100.0}}
+    adapter._execution_progress_lines = {}
+    adapter._tool_progress_lines = {}
+    adapter._latest_card_content = {"card_123": "第一段进度"}
+    adapter._active_card_for_chat = {"chat_id": "card_123"}
+    adapter.format_message = lambda content: content
+    update_content = MagicMock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace()))
+    adapter._client = SimpleNamespace(
+        cardkit=SimpleNamespace(
+            v1=SimpleNamespace(
+                card_element=SimpleNamespace(content=update_content),
+            )
+        )
+    )
+
+    record_result = await adapter.record_execution_progress("chat_id", "第一段进度")
+    edit_result = await adapter.edit_message("chat_id", "card_123", "第二段进度")
+
+    assert record_result.success is True
+    assert edit_result.success is True
+    content_request = update_content.call_args_list[0].args[0]
+    assert content_request.element_id == "content"
+    assert content_request.request_body.content == "第一段进度\n...\n第二段进度"
 
 
 @pytest.mark.asyncio

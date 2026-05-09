@@ -4338,6 +4338,30 @@ class FeishuAdapter(BasePlatformAdapter):
         }
         return json.dumps(card, ensure_ascii=False)
 
+    async def record_execution_progress(
+        self,
+        chat_id: str,
+        line: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Record a visible semantic segment for later same-card transcript composition.
+
+        StreamConsumer calls this at tool boundaries for CardKit adapters that
+        preserve the same editable target across segments.  It must not send a
+        second CardKit update: the segment was already visible; we only need to
+        keep it so the next content edit does not replace earlier transcript.
+        """
+        self._ensure_card_runtime_state()
+        text = str(line or "").strip()
+        active = (getattr(self, "_active_card_for_chat", {}) or {}).get(chat_id)
+        if not text:
+            return SendResult(success=True, message_id=active)
+        lines = list((getattr(self, "_execution_progress_lines", {}) or {}).get(chat_id, []))
+        if not lines or lines[-1] != text:
+            lines.append(text)
+        self._execution_progress_lines[chat_id] = lines[-20:]
+        return SendResult(success=True, message_id=active)
+
     async def append_execution_progress(
         self,
         chat_id: str,

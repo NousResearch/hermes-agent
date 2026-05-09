@@ -531,6 +531,96 @@ class TestSpawnEnvSanitization:
 
 
 # =========================================================================
+# Popen leak prevention
+# =========================================================================
+
+class TestPopenLeakOnSetupFailure:
+    """Regression for issue #2749: subprocess orphaned when post-Popen setup raises."""
+
+    def test_popen_killed_when_thread_creation_fails(self, registry):
+        """If Thread() raises after Popen, proc must be killed — not orphaned."""
+        killed = []
+
+        proc = MagicMock()
+        proc.pid = 9999
+        proc.stdout = iter([])
+        proc.stdin = MagicMock()
+        proc.poll.return_value = None
+
+        def fake_kill():
+            killed.append(True)
+
+        proc.kill = fake_kill
+        proc.wait = MagicMock()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("Thread creation failed")
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("threading.Thread", side_effect=boom), \
+             patch.object(registry, "_write_checkpoint"):
+            with pytest.raises(RuntimeError, match="Thread creation failed"):
+                registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert killed, "proc.kill() must be called when post-Popen setup raises"
+
+    def test_popen_killed_when_write_checkpoint_fails(self, registry):
+        """If _write_checkpoint raises after Popen, proc must still be killed."""
+        killed = []
+
+        proc = MagicMock()
+        proc.pid = 8888
+        proc.stdout = iter([])
+        proc.stdin = MagicMock()
+        proc.poll.return_value = None
+
+        def fake_kill():
+            killed.append(True)
+
+        proc.kill = fake_kill
+        proc.wait = MagicMock()
+
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint", side_effect=OSError("disk full")):
+            with pytest.raises(OSError, match="disk full"):
+                registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert killed, "proc.kill() must be called when _write_checkpoint raises"
+
+    def test_popen_not_killed_on_success(self, registry):
+        """Successful spawn must NOT kill the process."""
+        killed = []
+
+        proc = MagicMock()
+        proc.pid = 7777
+        proc.stdout = iter([])
+        proc.stdin = MagicMock()
+        proc.poll.return_value = None
+
+        def fake_kill():
+            killed.append(True)
+
+        proc.kill = fake_kill
+        proc.wait = MagicMock()
+
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert not killed, "proc.kill() must NOT be called on successful spawn"
+        assert session.pid == 7777
+
+
+# =========================================================================
 # Checkpoint
 # =========================================================================
 

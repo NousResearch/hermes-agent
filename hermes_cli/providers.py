@@ -114,7 +114,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "minimax-oauth": HermesOverlay(
         transport="anthropic_messages",
         auth_type="oauth_external",
-        base_url_override="https://api.minimax.io/anthropic",
+        base_url_override="https://api.minimax.io/v1",
     ),
     "minimax-cn": HermesOverlay(
         transport="anthropic_messages",

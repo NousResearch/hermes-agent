@@ -12,7 +12,7 @@ minimax = ProviderProfile(
     aliases=("mini-max",),
     api_mode="anthropic_messages",
     env_vars=("MINIMAX_API_KEY",),
-    base_url="https://api.minimax.io/anthropic",
+    base_url="https://api.minimax.io/v1",
     auth_type="api_key",
     default_aux_model="MiniMax-M2.7",
 )
@@ -22,7 +22,7 @@ minimax_cn = ProviderProfile(
     aliases=("minimax-china", "minimax_cn"),
     api_mode="anthropic_messages",
     env_vars=("MINIMAX_CN_API_KEY",),
-    base_url="https://api.minimaxi.com/anthropic",
+    base_url="https://api.minimaxi.com/v1",
     auth_type="api_key",
     default_aux_model="MiniMax-M2.7",
 )
@@ -35,7 +35,7 @@ minimax_oauth = ProviderProfile(
     description="MiniMax via OAuth browser flow — no API key required",
     signup_url="https://api.minimax.io/",
     env_vars=(),  # OAuth — tokens in auth.json, not env
-    base_url="https://api.minimax.io/anthropic",
+    base_url="https://api.minimax.io/v1",
     auth_type="oauth_external",
     default_aux_model="MiniMax-M2.7-highspeed",
 )

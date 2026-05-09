@@ -3162,7 +3162,7 @@ class AIAgent:
         # blanket is_claude gate above excludes these — opt them in
         # explicitly via provider id or host match so users on
         # provider=minimax / minimax-cn (or custom endpoints pointing at
-        # api.minimax.io/anthropic / api.minimaxi.com/anthropic) get the
+        # api.minimax.io/anthropic / api.minimaxi.com/v1) get the
         # same cost reduction as Claude traffic.
         # Docs: https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
         if is_anthropic_wire:
@@ -13315,7 +13315,7 @@ class AIAgent:
                             _provider_lower in {"minimax", "minimax-cn"}
                             or _base_lower.startswith((
                                 "https://api.minimax.io/anthropic",
-                                "https://api.minimaxi.com/anthropic",
+                                "https://api.minimaxi.com/v1",
                             ))
                         )
                         minimax_delta_only_overflow = (

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { applyVoiceRecordResponse, shouldFallThroughForScroll } from '../app/useInputHandlers.js'
+import { applyVoiceRecordResponse, getExplicitExitChordAction, shouldFallThroughForScroll } from '../app/useInputHandlers.js'
 
 const baseKey = {
   downArrow: false,
@@ -39,6 +39,26 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
 
   it('does NOT fall through for unrelated state (no scroll keys held)', () => {
     expect(shouldFallThroughForScroll(baseKey)).toBe(false)
+  })
+})
+
+const key = (overrides: Record<string, unknown> = {}) =>
+  ({ ctrl: false, meta: false, super: false, ...overrides }) as any
+
+describe('getExplicitExitChordAction', () => {
+  it('lets non-macOS Ctrl+D exit only when the composer is empty', () => {
+    expect(getExplicitExitChordAction(key({ ctrl: true }), 'd', false, false)).toBe('exit')
+    expect(getExplicitExitChordAction(key({ ctrl: true }), 'd', true, false)).toBe('composer')
+  })
+
+  it('uses only explicit Cmd/Super for macOS exit', () => {
+    expect(getExplicitExitChordAction(key({ super: true }), 'd', true, true)).toBe('exit')
+    expect(getExplicitExitChordAction(key({ ctrl: true }), 'd', false, true)).toBeNull()
+    expect(getExplicitExitChordAction(key({ meta: true }), 'd', false, true)).toBeNull()
+  })
+
+  it('ignores unrelated explicit action chords', () => {
+    expect(getExplicitExitChordAction(key({ ctrl: true }), 'l', false, false)).toBeNull()
   })
 })
 

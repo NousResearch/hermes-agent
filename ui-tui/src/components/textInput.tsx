@@ -11,7 +11,8 @@ import {
   isMac,
   isMacActionFallback,
   isVoiceToggleKey,
-  type ParsedVoiceRecordKey
+  type ParsedVoiceRecordKey,
+  shouldSwallowMacActionText
 } from '../lib/platform.js'
 import { isTermuxTuiMode } from '../lib/termux.js'
 
@@ -348,6 +349,61 @@ export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): 
   }
 
   return true
+}
+
+interface TextSelectionRange {
+  end: number
+  start: number
+}
+
+export interface ReadlineCtrlEditState {
+  cursor: number
+  selection: null | TextSelectionRange
+  value: string
+}
+
+export interface ReadlineCtrlEditResult {
+  changed: boolean
+  cursor: number
+  value: string
+}
+
+const isBareCtrlKey = (key: { alt?: boolean; ctrl: boolean; meta: boolean; shift?: boolean; super?: boolean }) =>
+  key.ctrl && !key.alt && !key.meta && key.super !== true && !key.shift
+
+export function applyReadlineCtrlEdit(
+  input: string,
+  key: { alt?: boolean; ctrl: boolean; meta: boolean; shift?: boolean; super?: boolean },
+  { cursor, selection, value }: ReadlineCtrlEditState
+): null | ReadlineCtrlEditResult {
+  if (!isBareCtrlKey(key)) {
+    return null
+  }
+
+  const ch = input.toLowerCase()
+  let nextCursor = cursor
+  let nextValue = value
+
+  if (ch === 'b') {
+    nextCursor = selection ? selection.start : prevPos(value, cursor)
+  } else if (ch === 'f') {
+    nextCursor = selection ? selection.end : nextPos(value, cursor)
+  } else if (ch === 'd') {
+    if (selection) {
+      nextValue = value.slice(0, selection.start) + value.slice(selection.end)
+      nextCursor = selection.start
+    } else if (cursor < value.length) {
+      nextValue = value.slice(0, cursor) + value.slice(nextPos(value, cursor))
+    }
+  } else {
+    return null
+  }
+
+  return {
+    changed: nextValue !== value || nextCursor !== cursor || selection !== null,
+    cursor: nextCursor,
+    value: nextValue
+  }
 }
 
 function renderWithCursor(value: string, cursor: number) {
@@ -889,6 +945,10 @@ export function TextInput({
         return
       }
 
+      if (shouldSwallowMacActionText(k, inp)) {
+        return
+      }
+
       if (
         eventRaw === '\x1bv' ||
         eventRaw === '\x1bV' ||
@@ -1013,147 +1073,158 @@ export function TextInput({
         moveCursor(c, k.shift)
 
         return
-      } else if (wordMod && inp === 'b') {
-        clearSel()
-        c = wordLeft(v, c)
-      } else if (wordMod && inp === 'f') {
-        clearSel()
-        c = wordRight(v, c)
-      } else if (range && (k.backspace || delFwd)) {
-        v = v.slice(0, range.start) + v.slice(range.end)
-        c = range.start
-      } else if (k.backspace && c > 0) {
-        if (wordMod) {
-          const t = wordLeft(v, c)
-          v = v.slice(0, t) + v.slice(c)
-          c = t
-        } else if (canFastBackspace(v, c)) {
-          const t = prevPos(v, c)
-          v = v.slice(0, t) + v.slice(c)
-          c = t
-          stdout!.write('\b \b')
-          // The "\b \b" sequence ends with the cursor one column to the
-          // LEFT of where Ink last parked it. Tell Ink so its `displayCursor`
-          // (and log-update's relative-move basis on the next frame) stays
-          // in sync — otherwise the cursor parks one cell to the right of
-          // the caret on the next unrelated re-render.
-          noteCursorAdvance(-1)
-          commit(v, c, true, false, false, Math.max(0, lineWidthRef.current - 1))
+      } else {
+        const readlineEdit = applyReadlineCtrlEdit(inp, k, { cursor: c, selection: range, value: v })
 
-          return
-        } else {
-          const t = prevPos(v, c)
-          v = v.slice(0, t) + v.slice(c)
-          c = t
-        }
-      } else if (delFwd && c < v.length) {
-        if (wordMod) {
-          const t = wordRight(v, c)
-          v = v.slice(0, c) + v.slice(t)
-        } else {
-          v = v.slice(0, c) + v.slice(nextPos(v, c))
-        }
-      } else if (actionDeleteWord) {
-        if (range) {
-          v = v.slice(0, range.start) + v.slice(range.end)
-          c = range.start
-        } else if (c > 0) {
+        if (readlineEdit) {
+          if (!readlineEdit.changed) {
+            return
+          }
+
+          v = readlineEdit.value
+          c = readlineEdit.cursor
+        } else if (wordMod && inp === 'b') {
           clearSel()
-          const t = wordLeft(v, c)
-          v = v.slice(0, t) + v.slice(c)
-          c = t
-        } else {
-          return
-        }
-      } else if (actionDeleteToStart) {
-        if (range) {
+          c = wordLeft(v, c)
+        } else if (wordMod && inp === 'f') {
+          clearSel()
+          c = wordRight(v, c)
+        } else if (range && (k.backspace || delFwd)) {
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start
-        } else {
-          v = v.slice(c)
-          c = 0
-        }
-      } else if (actionKillToEnd) {
-        if (range) {
-          v = v.slice(0, range.start) + v.slice(range.end)
-          c = range.start
-        } else {
-          v = v.slice(0, c)
-        }
-      } else if (event.keypress.isPasted || inp.length > 0) {
-        const bracketed = event.keypress.isPasted || inp.includes('[200~')
-        const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-
-        if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {
-          return
-        }
-
-        if (!text) {
-          return
-        }
-
-        if (text === '\n') {
-          return commit(ins(v, c, '\n'), c + 1)
-        }
-
-        if (text.length > 1 || text.includes('\n')) {
-          if (shouldRouteMultiCharInputAsPaste(text)) {
-            flushKeyBurst()
-
-            if (!emitPaste({ cursor: c, text, value: v })) {
-              commit(ins(v, c, text), c + text.length)
-            }
+        } else if (k.backspace && c > 0) {
+          if (wordMod) {
+            const t = wordLeft(v, c)
+            v = v.slice(0, t) + v.slice(c)
+            c = t
+          } else if (canFastBackspace(v, c)) {
+            const t = prevPos(v, c)
+            v = v.slice(0, t) + v.slice(c)
+            c = t
+            stdout!.write('\b \b')
+            // The "\b \b" sequence ends with the cursor one column to the
+            // LEFT of where Ink last parked it. Tell Ink so its `displayCursor`
+            // (and log-update's relative-move basis on the next frame) stays
+            // in sync — otherwise the cursor parks one cell to the right of
+            // the caret on the next unrelated re-render.
+            noteCursorAdvance(-1)
+            commit(v, c, true, false, false, Math.max(0, lineWidthRef.current - 1))
 
             return
-          }
-
-          const inserted = applyPrintableInsert(v, c, text, range)
-
-          if (!inserted) {
-            return
-          }
-
-          v = inserted.value
-          c = inserted.cursor
-          scheduleKeyBurstCommit(v, c)
-
-          return
-        }
-
-        {
-          const inserted = applyPrintableInsert(v, c, text, range)
-
-          if (!inserted) {
-            return
-          }
-
-          if (range) {
-            v = inserted.value
-            c = inserted.cursor
           } else {
-            const simpleAppend = canFastAppend(v, c, text)
+            const t = prevPos(v, c)
+            v = v.slice(0, t) + v.slice(c)
+            c = t
+          }
+        } else if (delFwd && c < v.length) {
+          if (wordMod) {
+            const t = wordRight(v, c)
+            v = v.slice(0, c) + v.slice(t)
+          } else {
+            v = v.slice(0, c) + v.slice(nextPos(v, c))
+          }
+        } else if (actionDeleteWord) {
+          if (range) {
+            v = v.slice(0, range.start) + v.slice(range.end)
+            c = range.start
+          } else if (c > 0) {
+            clearSel()
+            const t = wordLeft(v, c)
+            v = v.slice(0, t) + v.slice(c)
+            c = t
+          } else {
+            return
+          }
+        } else if (actionDeleteToStart) {
+          if (range) {
+            v = v.slice(0, range.start) + v.slice(range.end)
+            c = range.start
+          } else {
+            v = v.slice(c)
+            c = 0
+          }
+        } else if (actionKillToEnd) {
+          if (range) {
+            v = v.slice(0, range.start) + v.slice(range.end)
+            c = range.start
+          } else {
+            v = v.slice(0, c)
+          }
+        } else if (event.keypress.isPasted || inp.length > 0) {
+          const bracketed = event.keypress.isPasted || inp.includes('[200~')
+          const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
-            v = inserted.value
-            c = inserted.cursor
+          if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {
+            return
+          }
 
-            if (simpleAppend) {
-              stdout!.write(text)
-              // ASCII-printable text advances the physical cursor by exactly
-              // text.length cells (canFastAppendShape rejects non-ASCII,
-              // wide chars, newlines). Notify Ink so the cached displayCursor
-              // / log-update relative-move basis advances with it; otherwise
-              // any unrelated re-render that happens before the 16ms
-              // setCur/setParent flush parks the cursor text.length cells
-              // too far right (#cursor-drift).
-              noteCursorAdvance(text.length)
-              commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
+          if (!text) {
+            return
+          }
+
+          if (text === '\n') {
+            return commit(ins(v, c, '\n'), c + 1)
+          }
+
+          if (text.length > 1 || text.includes('\n')) {
+            if (shouldRouteMultiCharInputAsPaste(text)) {
+              flushKeyBurst()
+
+              if (!emitPaste({ cursor: c, text, value: v })) {
+                commit(ins(v, c, text), c + text.length)
+              }
 
               return
             }
+
+            const inserted = applyPrintableInsert(v, c, text, range)
+
+            if (!inserted) {
+              return
+            }
+
+            v = inserted.value
+            c = inserted.cursor
+            scheduleKeyBurstCommit(v, c)
+
+            return
           }
+
+          {
+            const inserted = applyPrintableInsert(v, c, text, range)
+
+            if (!inserted) {
+              return
+            }
+
+            if (range) {
+              v = inserted.value
+              c = inserted.cursor
+            } else {
+              const simpleAppend = canFastAppend(v, c, text)
+
+              v = inserted.value
+              c = inserted.cursor
+
+              if (simpleAppend) {
+                stdout!.write(text)
+                // ASCII-printable text advances the physical cursor by exactly
+                // text.length cells (canFastAppendShape rejects non-ASCII,
+                // wide chars, newlines). Notify Ink so the cached displayCursor
+                // / log-update relative-move basis advances with it; otherwise
+                // any unrelated re-render that happens before the 16ms
+                // setCur/setParent flush parks the cursor text.length cells
+                // too far right (#cursor-drift).
+                noteCursorAdvance(text.length)
+                commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
+
+                return
+              }
+            }
+          }
+        } else {
+          return
         }
-      } else {
-        return
       }
 
       commit(v, c)

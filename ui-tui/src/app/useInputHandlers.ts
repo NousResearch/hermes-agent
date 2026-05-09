@@ -10,7 +10,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { isAction, isCopyShortcut, isExplicitAction, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
@@ -57,6 +57,25 @@ export function shouldFallThroughForScroll(key: {
   }
 
   return false
+}
+
+export type ExplicitExitChordAction = 'composer' | 'exit'
+
+export function getExplicitExitChordAction(
+  key: { ctrl: boolean; meta: boolean; super?: boolean },
+  ch: string,
+  composerHasText: boolean,
+  mac = isMac
+): ExplicitExitChordAction | null {
+  const explicitActionMod = mac ? key.super === true : key.ctrl
+
+  if (!explicitActionMod || ch.toLowerCase() !== 'd') {
+    return null
+  }
+
+  // On non-macOS Ctrl+D is both the platform exit chord and readline
+  // delete-char. Let the focused composer own it while it has text.
+  return !mac && composerHasText ? 'composer' : 'exit'
 }
 
 export function applyVoiceRecordResponse(
@@ -496,11 +515,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.die()
     }
 
-    if (isAction(key, ch, 'd')) {
-      return actions.die()
+    const exitChordAction = getExplicitExitChordAction(key, ch, Boolean(cState.input || cState.inputBuf.length))
+
+    if (exitChordAction) {
+      return exitChordAction === 'exit' ? actions.die() : undefined
     }
 
-    if (isAction(key, ch, 'l')) {
+    if (isExplicitAction(key, ch, 'l')) {
       clearSelection()
       forceRedraw(terminal.stdout ?? process.stdout)
 

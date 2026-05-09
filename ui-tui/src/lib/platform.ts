@@ -15,6 +15,10 @@ export const isMac = process.platform === 'darwin'
 export const isActionMod = (key: { ctrl: boolean; meta: boolean; super?: boolean }): boolean =>
   isMac ? key.meta || key.super === true : key.ctrl
 
+/** True only for unambiguous platform action-modifier events. */
+export const isExplicitActionMod = (key: { ctrl: boolean; meta: boolean; super?: boolean }): boolean =>
+  isMac ? key.super === true : key.ctrl
+
 /**
  * Accept raw Ctrl+<letter> as an action shortcut on macOS, where `isActionMod`
  * otherwise means Cmd. Two motivations:
@@ -33,6 +37,19 @@ export const isMacActionFallback = (
 /** Match action-modifier + a single character (case-insensitive). */
 export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string, target: string): boolean =>
   isActionMod(key) && ch.toLowerCase() === target
+
+/** Match explicit action-modifier + a single character (case-insensitive). */
+export const isExplicitAction = (
+  key: { ctrl: boolean; meta: boolean; super?: boolean },
+  ch: string,
+  target: string
+): boolean => isExplicitActionMod(key) && ch.toLowerCase() === target
+
+/** Ambiguous macOS action chords that should never fall through as typed text. */
+export const shouldSwallowMacActionText = (
+  key: { ctrl: boolean; meta: boolean; super?: boolean },
+  ch: string
+): boolean => isMac && isActionMod(key) && (ch.toLowerCase() === 'd' || ch.toLowerCase() === 'l')
 
 export const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
   Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
@@ -152,8 +169,7 @@ const _NAMED_KEY_ALIASES: Record<string, VoiceRecordKeyNamed> = {
  * bindings (Copilot round-8 review on #19835). */
 const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l'])
 
-/** On macOS the action-modifier intercepts these editor chords via
- * ``isCopyShortcut`` / ``isAction`` in ``useInputHandlers()``:
+/** On macOS the action-modifier intercepts these editor chords before voice:
  *  - super+c → copy
  *  - super+d → exit
  *  - super+l → clear screen
@@ -164,14 +180,11 @@ const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l'])
  * non-mac users (Copilot round-8 review on #19835). */
 const _RESERVED_SUPER_CHARS = new Set(['c', 'd', 'l', 'v'])
 
-/** On macOS ``isActionMod`` accepts ``key.meta`` as the action
- * modifier — but hermes-ink reports Alt as ``key.meta`` on many
- * terminals. So on darwin a configured ``alt+c`` / ``alt+d`` / ``alt+l``
- * gets swallowed by ``isCopyShortcut`` / ``isAction`` before the voice
- * check runs. Block at parse time so /voice status doesn't advertise
- * a shortcut that actually copies / quits / clears (Copilot round-12
- * review on #19835). */
-const _RESERVED_ALT_CHARS_MAC = new Set(['c', 'd', 'l'])
+/** On macOS ``isCopyShortcut`` keeps the broad ``key.meta`` fallback
+ * because legacy terminals can report Cmd+C that way. hermes-ink also
+ * reports Alt as ``key.meta`` on many terminals, so configured ``alt+c``
+ * would be swallowed by copy before the voice check runs. */
+const _RESERVED_ALT_CHARS_MAC = new Set(['c'])
 
 interface RuntimeKeyEvent {
   alt?: boolean
@@ -284,7 +297,6 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
 
   // Same for ``super+c`` / ``super+d`` / ``super+l`` / ``super+v`` on
   // macOS only — those are copy / exit / clear / paste and get claimed
-  // by ``isCopyShortcut`` / ``isAction`` / the TextInput paste layer
   // before voice has a chance to toggle. On Linux/Windows the TUI
   // globals key off Ctrl (not Super), so kitty/CSI-u ``super+<letter>``
   // bindings stay usable for non-mac users.
@@ -292,11 +304,10 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
     return DEFAULT_VOICE_RECORD_KEY
   }
 
-  // On macOS hermes-ink reports Alt as ``key.meta``, which ``isActionMod``
-  // accepts as the mac action modifier. So ``alt+c`` / ``alt+d`` / ``alt+l``
-  // collide with copy / exit / clear in ``useInputHandlers()`` before the
-  // voice check. Reject at parse time on darwin only — non-mac ``alt+<letter>``
-  // bindings are still usable (Copilot round-12 review on #19835).
+  // On macOS hermes-ink reports Alt as ``key.meta``, and copy keeps
+  // the broad ``key.meta`` fallback for legacy Cmd+C compatibility.
+  // Reject ``alt+c`` at parse time on darwin only; non-mac ``alt+<letter>``
+  // bindings and macOS Alt+D/L remain usable.
   if (isMac && mod === 'alt' && last.length === 1 && _RESERVED_ALT_CHARS_MAC.has(last)) {
     return DEFAULT_VOICE_RECORD_KEY
   }

@@ -3482,6 +3482,36 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
 
 
 
+def _normalize_system_message_position(messages: list) -> list:
+    """Move every system message to the front, preserving relative order.
+
+    Some chat templates (Qwen3.5/3.6, recent DeepSeek-R1 variants, etc.) raise
+    ``System message must be at the beginning`` when a non-system role precedes
+    a system role.  Auxiliary callers occasionally build messages that violate
+    this — e.g. session_search appends a system "instruction" after prior turns.
+    Returns ``messages`` unchanged when already well-ordered to avoid allocating
+    on the hot path.  See issue #20866.
+    """
+    if not messages:
+        return messages
+    first_non_system = None
+    for idx, msg in enumerate(messages):
+        if (msg.get("role") if isinstance(msg, dict) else None) != "system":
+            first_non_system = idx
+            break
+    if first_non_system is None:
+        return messages
+    # If no system message follows a non-system message, ordering is already valid.
+    if not any(
+        isinstance(m, dict) and m.get("role") == "system"
+        for m in messages[first_non_system + 1:]
+    ):
+        return messages
+    system_msgs = [m for m in messages if isinstance(m, dict) and m.get("role") == "system"]
+    other_msgs = [m for m in messages if not (isinstance(m, dict) and m.get("role") == "system")]
+    return system_msgs + other_msgs
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -3494,6 +3524,7 @@ def _build_call_kwargs(
     base_url: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
+    messages = _normalize_system_message_position(messages)
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,

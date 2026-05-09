@@ -2041,6 +2041,73 @@ class TestBuildCallKwargsToolDedup:
         assert "tools" not in kwargs
 
 
+# ---------------------------------------------------------------------------
+# _normalize_system_message_position — reorder misplaced system messages
+# ---------------------------------------------------------------------------
+
+class TestNormalizeSystemMessagePosition:
+    """_build_call_kwargs must hoist system messages to index 0.
+
+    Qwen3.5/3.6 vLLM templates (and several other providers) raise
+    ``System message must be at the beginning`` when any non-system
+    role precedes a system role.  Auxiliary callers such as
+    session_search can inadvertently build such sequences.  See #20866.
+    """
+
+    def _msgs(self, *roles):
+        return [{"role": r, "content": f"msg-{i}"} for i, r in enumerate(roles)]
+
+    def test_already_ordered_unchanged(self):
+        """system first — ordering preserved."""
+        msgs = self._msgs("system", "user", "assistant")
+        kwargs = _build_call_kwargs(provider="custom", model="qwen3", messages=msgs)
+        result = kwargs["messages"]
+        assert [m["role"] for m in result] == ["system", "user", "assistant"]
+
+    def test_system_after_user_hoisted(self):
+        """system appended after user turns must move to index 0."""
+        msgs = [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "system", "content": "You are a helpful assistant."},
+        ]
+        kwargs = _build_call_kwargs(provider="custom", model="qwen3", messages=msgs)
+        result = kwargs["messages"]
+        assert result[0]["role"] == "system"
+        assert result[1]["role"] == "user"
+        assert result[2]["role"] == "assistant"
+
+    def test_no_system_message_unchanged(self):
+        """no system message — list returned as-is."""
+        msgs = self._msgs("user", "assistant", "user")
+        kwargs = _build_call_kwargs(provider="custom", model="qwen3", messages=msgs)
+        assert [m["role"] for m in kwargs["messages"]] == ["user", "assistant", "user"]
+
+    def test_empty_messages_unchanged(self):
+        kwargs = _build_call_kwargs(provider="custom", model="qwen3", messages=[])
+        assert kwargs["messages"] == []
+
+    def test_multiple_system_messages_all_hoisted(self):
+        """All system messages end up before non-system messages."""
+        msgs = [
+            {"role": "user", "content": "q"},
+            {"role": "system", "content": "sys-1"},
+            {"role": "assistant", "content": "a"},
+            {"role": "system", "content": "sys-2"},
+        ]
+        kwargs = _build_call_kwargs(provider="custom", model="qwen3", messages=msgs)
+        result = kwargs["messages"]
+        system_roles = [m["role"] for m in result if m["role"] == "system"]
+        non_system_start = next(i for i, m in enumerate(result) if m["role"] != "system")
+        assert all(result[i]["role"] == "system" for i in range(non_system_start))
+        assert len(system_roles) == 2
+
+    def test_system_only_messages_unchanged(self):
+        msgs = [{"role": "system", "content": "only system"}]
+        kwargs = _build_call_kwargs(provider="custom", model="qwen3", messages=msgs)
+        assert kwargs["messages"] == msgs
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""

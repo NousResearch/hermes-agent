@@ -176,6 +176,16 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _azure_foundry_api_mode_explicit(model_cfg: Dict[str, Any]) -> bool:
+    """Whether Azure Foundry api_mode was explicitly chosen by the user."""
+    raw = model_cfg.get("api_mode_explicit")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
 def _resolve_runtime_from_pool_entry(
     *,
     provider: str,
@@ -224,18 +234,21 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "azure-foundry":
         # Azure Foundry: read api_mode and base_url from config
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        configured_mode = None
+        explicit_mode = False
         if cfg_provider == "azure-foundry":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
             if cfg_base_url:
                 base_url = cfg_base_url
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+            explicit_mode = _azure_foundry_api_mode_explicit(model_cfg)
             if configured_mode:
                 api_mode = configured_mode
         # Model-family inference for GPT-5.x / codex / o1-o4: Azure rejects
         # /chat/completions on these with 400 "operation unsupported" — see
-        # azure_foundry_model_api_mode() for rationale.  Skip when the user
-        # explicitly picked anthropic_messages (Anthropic-style endpoint).
-        if effective_model and api_mode != "anthropic_messages":
+        # azure_foundry_model_api_mode() for rationale. Skip when the user
+        # explicitly picked an api_mode in config.
+        if effective_model and api_mode != "anthropic_messages" and not explicit_mode:
             try:
                 from hermes_cli.models import azure_foundry_model_api_mode
 
@@ -687,9 +700,13 @@ def _resolve_azure_foundry_runtime(
     cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
     cfg_base_url = ""
     cfg_api_mode = "chat_completions"
+    configured_mode = None
+    explicit_mode = False
     if cfg_provider == "azure-foundry":
         cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-        cfg_api_mode = _parse_api_mode(model_cfg.get("api_mode")) or "chat_completions"
+        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+        explicit_mode = _azure_foundry_api_mode_explicit(model_cfg)
+        cfg_api_mode = configured_mode or "chat_completions"
 
     # Model-family inference: Azure Foundry deploys GPT-5.x / codex / o1-o4
     # reasoning models as Responses-API-only.  Calling /chat/completions
@@ -697,7 +714,7 @@ def _resolve_azure_foundry_runtime(
     # Upgrade api_mode when the model name matches, unless the user has
     # explicitly chosen anthropic_messages (Anthropic-style endpoint).
     effective_model = str(target_model or model_cfg.get("default") or "").strip()
-    if effective_model and cfg_api_mode != "anthropic_messages":
+    if effective_model and cfg_api_mode != "anthropic_messages" and not explicit_mode:
         try:
             from hermes_cli.models import azure_foundry_model_api_mode
 

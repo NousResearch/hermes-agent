@@ -1843,13 +1843,22 @@ class TestAzureFoundryResolution:
     # config was persisted as ``chat_completions`` (the default the setup
     # wizard writes when the user didn't pick explicitly).
 
-    def _make_cfg_with_model(self, model: str, api_mode: str = "chat_completions"):
-        return {
+    def _make_cfg_with_model(
+        self,
+        model: str,
+        api_mode: str = "chat_completions",
+        *,
+        api_mode_explicit: bool = False,
+    ):
+        cfg = {
             "provider": "azure-foundry",
             "base_url": "https://synopsisse.openai.azure.com/openai/v1",
             "api_mode": api_mode,
             "default": model,
         }
+        if api_mode_explicit:
+            cfg["api_mode_explicit"] = True
+        return cfg
 
     def test_gpt5_codex_upgrades_chat_completions_to_responses(self, monkeypatch):
         """Reproduces Bob's April 2026 bug: gpt-5.3-codex on chat_completions."""
@@ -1863,6 +1872,21 @@ class TestAzureFoundryResolution:
 
         assert resolved["api_mode"] == "codex_responses"
         assert resolved["base_url"] == "https://synopsisse.openai.azure.com/openai/v1"
+
+    def test_explicit_chat_completions_is_not_overridden_for_gpt5_codex(self, monkeypatch):
+        """Explicit Azure Foundry api_mode must win over model-family inference."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg_with_model(
+            "gpt-5.3-codex",
+            "chat_completions",
+            api_mode_explicit=True,
+        ))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_mode"] == "chat_completions"
 
     def test_gpt4o_stays_on_chat_completions(self, monkeypatch):
         """gpt-4o-pure worked on Bob's endpoint — must not get upgraded."""

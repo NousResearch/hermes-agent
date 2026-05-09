@@ -2,7 +2,8 @@ name: Lint (ruff + ty)
 
 # Two things here:
 #   1. Advisory diff — ruff + ty diagnostics as a diff vs the target branch.
-#      Posts a Markdown summary and a PR comment. Exit zero always.
+#      Posts a Markdown summary and, when the PR is not from a fork, a PR
+#      comment. Exit zero always.
 #   2. Blocking ``ruff check .`` — enforces the explicit rules in
 #      ``[tool.ruff.lint.select]`` (currently PLW1514). Failure blocks merge.
 #      Separate job so the advisory diff still runs and posts even when
@@ -24,7 +25,8 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write # needed to post/update PR comments
+  issues: write # needed because PR comments use the Issues comments API
+  pull-requests: write # needed to post/update PR comments on same-repo PRs
 
 concurrency:
   group: lint-${{ github.ref }}
@@ -122,7 +124,9 @@ jobs:
           retention-days: 14
 
       - name: Post / update PR comment
-        if: github.event_name == 'pull_request'
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |

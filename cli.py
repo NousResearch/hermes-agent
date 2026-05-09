@@ -70,6 +70,14 @@ try:
     _STEADY_CURSOR = CursorShape.BLOCK  # Non-blinking block cursor
 except (ImportError, AttributeError):
     _STEADY_CURSOR = None
+
+try:
+    from hermes_cli.pt_input_extras import install_shift_enter_alias, install_ctrl_enter_alias
+    install_shift_enter_alias()
+    install_ctrl_enter_alias()
+    del install_shift_enter_alias, install_ctrl_enter_alias
+except Exception:
+    pass
 import threading
 import queue
 
@@ -1855,6 +1863,37 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 )
 
 
+def _preserve_ctrl_enter_newline() -> bool:
+    """Detect environments where Ctrl+Enter must produce a newline, not submit.
+
+    Native Windows, WSL, SSH sessions, and Windows Terminal all send Ctrl+Enter
+    as bare LF (c-j). On those terminals c-j must NOT be bound to submit;
+    binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
+    submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
+    some thin PTYs without SSH) still need c-j bound to submit, so we keep
+    that binding for those.
+
+    See issue #22379.
+    """
+    if sys.platform == "win32":
+        return True
+    if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
+        return True
+    if os.environ.get("WT_SESSION"):
+        return True
+    if "microsoft" in os.environ.get("WSL_DISTRO_NAME", "").lower():
+        return True
+    # WSL detection — env vars can be scrubbed under sudo, also peek /proc.
+    for p in ("/proc/version", "/proc/sys/kernel/osrelease"):
+        try:
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                if "microsoft" in f.read().lower():
+                    return True
+        except OSError:
+            continue
+    return False
+
+
 def _bind_prompt_submit_keys(kb, handler) -> None:
     """Bind terminal Enter forms to the submit handler.
 
@@ -1862,13 +1901,15 @@ def _bind_prompt_submit_keys(kb, handler) -> None:
     some thin PTYs (docker exec, certain SSH flavors) deliver Enter as LF
     instead of CR — without this, Enter appears dead on those terminals.
 
-    On Windows, Windows Terminal delivers Ctrl+Enter as a distinct c-j key
-    while plain Enter is c-m, so we leave c-j unbound here — it becomes the
-    multi-line newline keystroke, giving Windows users an Enter-involving
-    newline without any terminal settings changes.
+    Exception: on Windows, WSL, SSH sessions, and Windows Terminal,
+    c-j is the wire encoding of Ctrl+Enter (a distinct keystroke from
+    plain Enter / c-m). We leave c-j unbound there so the c-j newline
+    handler registered separately can fire — giving the user an
+    Enter-involving newline keystroke without terminal settings changes.
+    See _preserve_ctrl_enter_newline() and issue #22379.
     """
     kb.add("enter")(handler)
-    if sys.platform != "win32":
+    if sys.platform != "win32" and not _preserve_ctrl_enter_newline():
         kb.add("c-j")(handler)
 
 
@@ -5456,7 +5497,8 @@ class HermesCLI:
             return
 
         if not self._session_db:
-            _cprint("  Session database not available.")
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
             return
 
         # Resolve title or ID
@@ -5567,7 +5609,8 @@ class HermesCLI:
             return
 
         if not self._session_db:
-            _cprint("  Session database not available.")
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
             return
 
         parts = cmd_original.split(None, 1)
@@ -6742,6 +6785,12 @@ class HermesCLI:
             self._force_full_redraw()
             _cprint(f"  {_DIM}✓ UI redrawn{_RST}")
         elif canonical == "clear":
+            if self._confirm_destructive_slash(
+                "clear",
+                "This clears the screen and starts a new session.\n"
+                "The current conversation history will be discarded.",
+            ) is None:
+                return
             self.new_session(silent=True)
             _clear_output_history()
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
@@ -6843,7 +6892,8 @@ class HermesCLI:
                                 self._pending_title = new_title
                                 _cprint(f"  Session title queued: {new_title} (will be saved on first message)")
                     else:
-                        _cprint("  Session database not available.")
+                        from hermes_state import format_session_db_unavailable
+                        _cprint(f"  {format_session_db_unavailable()}")
                 else:
                     _cprint("  Usage: /title <your session title>")
             else:
@@ -6858,10 +6908,17 @@ class HermesCLI:
                     else:
                         _cprint("  No title set. Usage: /title <your session title>")
                 else:
-                    _cprint("  Session database not available.")
+                    from hermes_state import format_session_db_unavailable
+                    _cprint(f"  {format_session_db_unavailable()}")
         elif canonical == "new":
             parts = cmd_original.split(maxsplit=1)
             title = parts[1].strip() if len(parts) > 1 else None
+            if self._confirm_destructive_slash(
+                "new",
+                "This starts a fresh session.\n"
+                "The current conversation history will be discarded.",
+            ) is None:
+                return
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
@@ -6879,6 +6936,11 @@ class HermesCLI:
                 # Re-queue the message so process_loop sends it to the agent
                 self._pending_input.put(retry_msg)
         elif canonical == "undo":
+            if self._confirm_destructive_slash(
+                "undo",
+                "This removes the last user/assistant exchange from history.",
+            ) is None:
+                return
             self.undo_last()
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
@@ -8295,6 +8357,78 @@ class HermesCLI:
         _reload_thread.join(timeout=30)
         if _reload_thread.is_alive():
             print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
+
+    def _confirm_destructive_slash(self, command: str, detail: str) -> Optional[str]:
+        """Prompt the user to confirm a destructive session slash command.
+
+        Used by ``/clear``, ``/new``/``/reset``, and ``/undo`` before they
+        discard conversation state.  Three-option prompt:
+
+          1. Approve Once — proceed this time only
+          2. Always Approve — proceed and persist
+             ``approvals.destructive_slash_confirm: false`` so future
+             destructive commands run without confirmation
+          3. Cancel — abort
+
+        Gated by ``approvals.destructive_slash_confirm`` (default on).  If the
+        gate is off the function returns ``"once"`` immediately without
+        prompting.
+
+        Returns ``"once"``, ``"always"``, or ``None`` (cancelled).  Callers
+        proceed with the destructive action when the result is non-None.
+        """
+        # Gate check — respects prior "Always Approve" clicks.
+        try:
+            cfg = load_cli_config()
+            approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
+            confirm_required = True
+            if isinstance(approvals, dict):
+                confirm_required = bool(approvals.get("destructive_slash_confirm", True))
+        except Exception:
+            confirm_required = True
+
+        if not confirm_required:
+            return "once"
+
+        # Render warning + prompt — single-line composer prompt, mirrors
+        # ``_confirm_and_reload_mcp``.
+        print()
+        print(f"⚠️  /{command} — destroys conversation state")
+        print()
+        for line in detail.splitlines():
+            print(f"  {line}")
+        print()
+        print("  [1] Approve Once   — proceed this time only")
+        print("  [2] Always Approve — proceed and silence this prompt permanently")
+        print("  [3] Cancel         — keep current conversation")
+        print()
+        raw = self._prompt_text_input("Choice [1/2/3]: ")
+        if raw is None:
+            print(f"🟡 /{command} cancelled (no input).")
+            return None
+        choice_raw = raw.strip().lower()
+        if choice_raw in ("1", "once", "approve", "yes", "y", "ok"):
+            choice = "once"
+        elif choice_raw in ("2", "always", "remember"):
+            choice = "always"
+        elif choice_raw in ("3", "cancel", "nevermind", "no", "n", ""):
+            choice = "cancel"
+        else:
+            print(f"🟡 Unrecognized choice '{raw}'. /{command} cancelled.")
+            return None
+
+        if choice == "cancel":
+            print(f"🟡 /{command} cancelled. Conversation unchanged.")
+            return None
+
+        if choice == "always":
+            if save_config_value("approvals.destructive_slash_confirm", False):
+                print("🔒 Future /clear, /new, /reset, and /undo will run without confirmation.")
+                print("   Re-enable via `approvals.destructive_slash_confirm: true` in config.yaml.")
+            else:
+                print("⚠️  Couldn't persist opt-out — proceeding once.")
+
+        return choice
 
     def _confirm_and_reload_mcp(self, cmd_original: str = "") -> None:
         """Interactive /reload-mcp — confirm with the user, then reload.
@@ -10755,18 +10889,19 @@ class HermesCLI:
             """
             event.current_buffer.insert_text('\n')
 
-        if sys.platform == "win32":
+        if _preserve_ctrl_enter_newline():
             @kb.add('c-j')
-            def handle_ctrl_enter_newline_windows(event):
-                """Ctrl+Enter inserts a newline on Windows.
+            def handle_ctrl_enter_newline(event):
+                """Ctrl+Enter inserts a newline on Windows, WSL, SSH, and WT.
 
-                Windows Terminal delivers Ctrl+Enter as LF (c-j), distinct
-                from plain Enter (c-m). This binding makes Ctrl+Enter the
-                Windows equivalent of Alt+Enter, giving an Enter-involving
-                newline keystroke without requiring terminal settings changes.
-                Ctrl+J (the raw LF keystroke) also triggers this by virtue
-                of being the same key code — a harmless side effect since
-                Ctrl+J has no conflicting Hermes binding.
+                Windows Terminal (incl. WSL/SSH sessions through it) delivers
+                Ctrl+Enter as LF (c-j), distinct from plain Enter (c-m). This
+                binding makes Ctrl+Enter the equivalent of Alt+Enter on those
+                terminals, giving an Enter-involving newline keystroke
+                without requiring terminal settings changes. Ctrl+J (the raw
+                LF keystroke) also triggers this by virtue of being the same
+                key code — a harmless side effect since Ctrl+J has no
+                conflicting Hermes binding. See issue #22379.
                 """
                 event.current_buffer.insert_text('\n')
 

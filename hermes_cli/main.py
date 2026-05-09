@@ -144,11 +144,19 @@ def _apply_profile_override() -> None:
             profile_name = None
             consume = 0
 
-    # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it.
-    # This lets child processes (relaunch, subprocess) inherit the parent's
-    # profile choice without having to pass --profile again.
-    if profile_name is None and os.environ.get("HERMES_HOME"):
-        return
+    # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it
+    # only when it already points to a specific profile directory.  The
+    # distinguishing heuristic: a profile path has "profiles" as its immediate
+    # parent directory name (e.g. ~/.hermes/profiles/coder or
+    # /opt/data/profiles/coder).  If HERMES_HOME points to the hermes root
+    # instead (e.g. systemd hardcodes HERMES_HOME=/root/.hermes), we must
+    # still read active_profile — the user may have switched profiles via
+    # `hermes profile use` and the gateway should honour that choice.
+    # See issue #22502.
+    hermes_home_env = os.environ.get("HERMES_HOME", "")
+    if profile_name is None and hermes_home_env:
+        if Path(hermes_home_env).parent.name == "profiles":
+            return
 
     # 2. If no flag, check active_profile in the hermes root
     if profile_name is None:
@@ -5363,11 +5371,16 @@ def cmd_version(args):
     # Show Python version
     print(f"Python: {sys.version.split()[0]}")
 
-    # Check for key dependencies
+    # Check for key dependencies.  Use importlib.metadata rather than
+    # ``import openai`` — the SDK drags in ~800ms of pydantic-backed type
+    # modules just to expose ``__version__``.  Metadata lookup is ~2ms.
     try:
-        import openai
+        from importlib.metadata import version as _pkg_version, PackageNotFoundError
 
-        print(f"OpenAI SDK: {openai.__version__}")
+        try:
+            print(f"OpenAI SDK: {_pkg_version('openai')}")
+        except PackageNotFoundError:
+            print("OpenAI SDK: Not installed")
     except ImportError:
         print("OpenAI SDK: Not installed")
 
@@ -5918,16 +5931,19 @@ def _update_via_zip(args):
     # individually so update does not silently strip working capabilities.
     print("→ Updating Python dependencies...")
 
-    uv_bin = shutil.which("uv")
+    pip_cmd = [sys.executable, "-m", "pip"]
+    uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        if _is_termux_env(uv_env):
+            uv_env.pop("PYTHONPATH", None)
+            uv_env.pop("PYTHONHOME", None)
         _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
         # Some environments lose pip inside the venv; bootstrap it back with
         # ensurepip before trying the editable install.
-        pip_cmd = [sys.executable, "-m", "pip"]
         try:
             subprocess.run(
                 pip_cmd + ["--version"],
@@ -6672,6 +6688,25 @@ def _install_python_dependencies_with_optional_fallback(
         print(
             f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}"
         )
+
+
+def _is_termux_env(env: dict[str, str] | None = None) -> bool:
+    check = env or os.environ
+    prefix = str(check.get("PREFIX", ""))
+    return "com.termux" in prefix or prefix.startswith("/data/data/com.termux/")
+
+
+def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
+    """Best-effort uv bootstrap on Termux for faster update installs."""
+    uv_bin = shutil.which("uv")
+    if uv_bin or not _is_termux_env():
+        return uv_bin
+    try:
+        print("  → Termux detected: trying to install uv for faster dependency updates...")
+        subprocess.run(pip_cmd + ["install", "uv"], cwd=PROJECT_ROOT, check=False)
+    except Exception:
+        pass
+    return shutil.which("uv")
 
 
 def _update_node_dependencies() -> None:
@@ -7433,9 +7468,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
-        uv_bin = shutil.which("uv")
+        pip_cmd = [sys.executable, "-m", "pip"]
+        uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
         if uv_bin:
             uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            if _is_termux_env(uv_env):
+                uv_env.pop("PYTHONPATH", None)
+                uv_env.pop("PYTHONHOME", None)
             _install_python_dependencies_with_optional_fallback(
                 [uv_bin, "pip"], env=uv_env
             )
@@ -7885,14 +7924,56 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 )
 
                             if _graceful_ok:
-                                # Gateway exited 75; systemd should relaunch
-                                # via Restart=on-failure.  The unit's
-                                # RestartSec (default 30s on ours) gates the
-                                # respawn — poll past that + slack so we
-                                # don't give up mid-cooldown and falsely
-                                # print "drained but didn't relaunch".  For
-                                # units without RestartSec set we fall back
-                                # to the original 10s budget.
+                                # Gateway exited 75. ``Restart=always`` +
+                                # ``RestartForceExitStatus=75`` means systemd
+                                # WILL respawn the unit — but only after
+                                # ``RestartSec`` (default 60s on our unit
+                                # file). That 60s wait is a crash-loop guard,
+                                # and is the right default when the gateway
+                                # dies unexpectedly. For a voluntary restart
+                                # on update, it's dead time the user watches.
+                                #
+                                # Shortcut it: ``reset-failed`` + ``start``
+                                # skips RestartSec entirely (we're manually
+                                # initiating the unit, not waiting for
+                                # systemd's auto-restart logic). Takes about
+                                # as long as the process takes to come up
+                                # (~1-3s on a warm box).
+                                #
+                                # If the unit is already active because
+                                # RestartSec elapsed while we were draining,
+                                # ``start`` is a no-op and we fall through to
+                                # the poll below. Either way we collapse the
+                                # 60s+ delay to a ~5s one.
+                                subprocess.run(
+                                    scope_cmd + ["reset-failed", svc_name],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=10,
+                                )
+                                subprocess.run(
+                                    scope_cmd + ["start", svc_name],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=15,
+                                )
+                                # Short poll: the gateway should be up within
+                                # a few seconds now that we bypassed
+                                # RestartSec. Fall back to the longer
+                                # RestartSec + slack budget ONLY if the
+                                # explicit start failed and we need to rely
+                                # on systemd's auto-restart.
+                                if _wait_for_service_active(
+                                    scope_cmd,
+                                    svc_name,
+                                    timeout=10.0,
+                                ):
+                                    restarted_services.append(svc_name)
+                                    continue
+                                # Explicit start didn't take. Fall back to
+                                # the original passive poll (systemd's
+                                # auto-restart WILL fire after RestartSec
+                                # regardless).
                                 _restart_sec = _service_restart_sec(
                                     scope_cmd,
                                     svc_name,
@@ -8925,6 +9006,113 @@ def _build_provider_choices() -> list[str]:
             "stepfun", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee",
             "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",
         ]
+
+
+# Top-level subcommands that argparse knows about WITHOUT running plugin
+# discovery.  Used to short-circuit eager plugin imports (which can take
+# 500ms+ pulling in google.cloud.pubsub_v1, aiohttp, grpc, etc.) when the
+# user's invocation clearly doesn't need any plugin-registered subcommand.
+#
+# Keep this in sync with the ``subparsers.add_parser("NAME", ...)`` calls
+# below in ``main()``. Missing an entry here only costs a one-time
+# discovery; extra entries here would let a plugin command silently fail
+# to parse.
+_BUILTIN_SUBCOMMANDS = frozenset(
+    {
+        "acp", "auth", "backup", "checkpoints", "claw", "completion",
+        "config", "cron", "curator", "dashboard", "debug", "doctor",
+        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "kanban", "login", "logout", "logs", "mcp", "memory", "model",
+        "pairing", "plugins", "profile", "sessions", "setup", "skills",
+        "slack", "status", "tools", "uninstall", "update", "version",
+        "webhook", "whatsapp", "chat",
+        # Help-ish invocations — plugin commands not being listed in
+        # top-level --help is an acceptable trade-off for skipping an
+        # expensive eager import of every bundled plugin module.
+        "help",
+    }
+)
+
+
+# Top-level flags that take a value. Needed by ``_first_positional_argv``
+# so that in ``hermes -m gpt5 chat``, ``gpt5`` is correctly skipped as a
+# flag value rather than misclassified as a subcommand. Kept in sync with
+# the top-level flags declared in ``hermes_cli/_parser.py``.
+#
+# Correctness-safe either way: missing an entry here only makes the
+# fast-path bail out too eagerly (we run plugin discovery when we didn't
+# need to); extra entries would make us skip a real positional.
+_TOP_LEVEL_VALUE_FLAGS = frozenset(
+    {
+        "-z", "--oneshot",
+        "-m", "--model",
+        "--provider",
+        "-t", "--toolsets",
+        "-r", "--resume",
+        "-s", "--skills",
+        # ``-c / --continue`` is nargs='?' (optional value). Treat it as
+        # value-taking: if the next token is a subcommand-looking word
+        # the user almost certainly meant it as the session name, and
+        # either interpretation keeps us on the safe side.
+        "-c", "--continue",
+    }
+)
+
+
+def _first_positional_argv() -> str | None:
+    """Return the first non-flag, non-flag-value token in ``sys.argv[1:]``.
+
+    Used by ``main()`` to decide whether plugin discovery has to run at
+    argparse-setup time. Handles common invocations like
+    ``hermes -m gpt5 --provider openai chat "msg"`` by skipping the
+    values attached to known top-level flags.
+
+    Does NOT fully simulate argparse — unknown ``--foo=bar`` / ``--foo
+    bar`` flags degrade gracefully (``bar`` may be wrongly classified as
+    a positional, which at worst forces a one-time plugin discovery).
+    """
+    argv = sys.argv[1:]
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--":
+            # Everything after ``--`` is positional.
+            if i + 1 < len(argv):
+                return argv[i + 1]
+            return None
+        if tok.startswith("-"):
+            # ``--flag=value`` carries its value inline — single token.
+            if "=" in tok:
+                i += 1
+                continue
+            if tok in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(argv):
+                i += 2
+                continue
+            i += 1
+            continue
+        return tok
+    return None
+
+
+def _plugin_cli_discovery_needed() -> bool:
+    """True when the CLI might be invoking a plugin-registered subcommand.
+
+    Returning False lets ``main()`` skip plugin discovery entirely during
+    argparse setup, saving ~500-650ms per invocation for users whose
+    enabled plugins don't contribute any CLI command.
+    """
+    first = _first_positional_argv()
+    if first is None:
+        # Bare ``hermes`` or only flags → defaults to ``chat``.
+        return False
+    if first in _BUILTIN_SUBCOMMANDS:
+        return False
+    # Unknown token — could be a plugin subcommand, OR a chat prompt
+    # starting with a non-flag word. Either way we need discovery: if it
+    # IS a plugin command, argparse needs the subparser; if it's a chat
+    # prompt, argparse will route it via positional handling and the
+    # extra discovery cost is amortized over a full agent run anyway.
+    return True
 
 
 def main():
@@ -10211,39 +10399,46 @@ Examples:
     # Plugin CLI commands — dynamically registered by memory/general plugins.
     # Plugins provide a register_cli(subparser) function that builds their
     # own argparse tree.  No hardcoded plugin commands in main.py.
+    #
+    # Skipped when the invocation is already targeting a known built-in
+    # subcommand — ``hermes --help``, ``hermes version``, ``hermes logs``,
+    # etc.  This avoids eagerly importing every bundled plugin module
+    # (google.cloud.pubsub_v1, aiohttp, grpc, PIL …) which costs
+    # 500-650ms on typical installs.
     # =========================================================================
-    try:
-        from plugins.memory import discover_plugin_cli_commands
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    if _plugin_cli_discovery_needed():
+        try:
+            from plugins.memory import discover_plugin_cli_commands
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
 
-        seen_plugin_commands = set()
-        for cmd_info in discover_plugin_cli_commands():
-            plugin_parser = subparsers.add_parser(
-                cmd_info["name"],
-                help=cmd_info["help"],
-                description=cmd_info.get("description", ""),
-                formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
-            )
-            cmd_info["setup_fn"](plugin_parser)
-            if cmd_info.get("handler_fn") is not None:
-                plugin_parser.set_defaults(func=cmd_info["handler_fn"])
-            seen_plugin_commands.add(cmd_info["name"])
+            seen_plugin_commands = set()
+            for cmd_info in discover_plugin_cli_commands():
+                plugin_parser = subparsers.add_parser(
+                    cmd_info["name"],
+                    help=cmd_info["help"],
+                    description=cmd_info.get("description", ""),
+                    formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+                )
+                cmd_info["setup_fn"](plugin_parser)
+                if cmd_info.get("handler_fn") is not None:
+                    plugin_parser.set_defaults(func=cmd_info["handler_fn"])
+                seen_plugin_commands.add(cmd_info["name"])
 
-        discover_plugins()
-        for cmd_info in get_plugin_manager()._cli_commands.values():
-            if cmd_info["name"] in seen_plugin_commands:
-                continue
-            plugin_parser = subparsers.add_parser(
-                cmd_info["name"],
-                help=cmd_info["help"],
-                description=cmd_info.get("description", ""),
-                formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
-            )
-            cmd_info["setup_fn"](plugin_parser)
-            if cmd_info.get("handler_fn") is not None:
-                plugin_parser.set_defaults(func=cmd_info["handler_fn"])
-    except Exception as _exc:
-        logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
+            discover_plugins()
+            for cmd_info in get_plugin_manager()._cli_commands.values():
+                if cmd_info["name"] in seen_plugin_commands:
+                    continue
+                plugin_parser = subparsers.add_parser(
+                    cmd_info["name"],
+                    help=cmd_info["help"],
+                    description=cmd_info.get("description", ""),
+                    formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+                )
+                cmd_info["setup_fn"](plugin_parser)
+                if cmd_info.get("handler_fn") is not None:
+                    plugin_parser.set_defaults(func=cmd_info["handler_fn"])
+        except Exception as _exc:
+            logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
 
     # =========================================================================
     # curator command — background skill maintenance

@@ -972,6 +972,38 @@ def _get_platform_tools(
             ts for ts in toolset_names
             if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
         }
+        # Mixed config: composite toolset alongside configurables (e.g.
+        # ``[hermes-cli, spotify]`` after enabling Spotify via ``hermes
+        # tools``). Without expansion the composite name is silently dropped,
+        # leaving sessions with only the configurable opt-ins and no native
+        # tools. Mirror the else-branch's subset inference, but apply
+        # _DEFAULT_OFF_TOOLSETS only to the implicit expansion — anything the
+        # user explicitly listed (e.g. ``spotify``) must survive.
+        composite_tools = set()
+        for ts_name in toolset_names:
+            if ts_name in configurable_keys or ts_name in plugin_ts_keys:
+                continue
+            if ts_name not in TOOLSETS:
+                continue
+            composite_tools.update(resolve_toolset(ts_name))
+
+        if composite_tools:
+            expanded = set()
+            for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
+                if not _toolset_allowed_for_platform(ts_key, platform):
+                    continue
+                ts_tools = set(resolve_toolset(ts_key))
+                if ts_tools and ts_tools.issubset(composite_tools):
+                    expanded.add(ts_key)
+
+            default_off = set(_DEFAULT_OFF_TOOLSETS)
+            if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
+                default_off.remove(platform)
+            if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
+                default_off.remove("homeassistant")
+            expanded -= default_off
+
+            enabled_toolsets |= expanded
     else:
         # No explicit config — fall back to resolving composite toolset names
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.

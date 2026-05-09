@@ -298,6 +298,122 @@ def test_block_then_unblock(kanban_home):
         assert kb.get_task(conn, t).status == "ready"
 
 
+# ---------------------------------------------------------------------------
+# Parent-completion invariant at the claim gate (RCA t_a6acd07d)
+# ---------------------------------------------------------------------------
+
+def test_claim_rejects_when_parents_not_done(kanban_home):
+    """claim_task must refuse ready->running if any parent isn't 'done'.
+
+    Simulates the create-then-link race: a task gets status='ready' via a
+    racy writer while it still has undone parents. The claim gate must
+    detect the violation, demote the child back to 'todo', append a
+    'claim_rejected' event, and return None. Covers Fix 1 of the RCA.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        # Child correctly starts 'todo' because parent is not 'done'.
+        assert kb.get_task(conn, child).status == "todo"
+        # Simulate the race: a racy writer force-promotes the child to
+        # 'ready' while parent is still pending.
+        conn.execute(
+            "UPDATE tasks SET status='ready' WHERE id=?", (child,),
+        )
+        conn.commit()
+        assert kb.get_task(conn, child).status == "ready"
+
+        result = kb.claim_task(conn, child, claimer="host:1")
+
+    assert result is None
+    with kb.connect() as conn:
+        assert kb.get_task(conn, child).status == "todo"
+        events = conn.execute(
+            "SELECT kind, payload FROM task_events "
+            "WHERE task_id = ? ORDER BY id",
+            (child,),
+        ).fetchall()
+    kinds = [e["kind"] for e in events]
+    assert "claim_rejected" in kinds
+    # No 'claimed' event was emitted for the blocked attempt.
+    assert "claimed" not in kinds
+
+
+def test_claim_succeeds_once_parents_done(kanban_home):
+    """After parents complete, recompute_ready -> claim_task must succeed."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        kb.claim_task(conn, parent)
+        assert kb.complete_task(conn, parent, result="ok")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "ready"
+        claimed = kb.claim_task(conn, child, claimer="host:1")
+    assert claimed is not None
+    assert claimed.status == "running"
+
+
+def test_create_with_parents_stays_todo_until_parents_done(kanban_home):
+    """kanban_create(parents=[...]) must land in 'todo' and only promote on parent done."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        assert kb.get_task(conn, child).status == "todo"
+        # Dispatcher tick between create and some later event must NOT
+        # produce a winner for this child.
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "todo"
+        # Complete parent; complete_task internally runs recompute_ready,
+        # which promotes the child to 'ready'.
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, result="ok")
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_unblock_with_pending_parents_goes_to_todo(kanban_home):
+    """unblock_task must re-gate on parent completion (Fix 3).
+
+    A task blocked while parents are still in progress must return to
+    'todo' (not 'ready') on unblock. Otherwise the dispatcher will claim
+    it immediately, repeating Bug 2 from the RCA.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        # Force child into 'blocked' regardless of parent progress
+        # (simulates a worker that self-blocked, or an operator block).
+        conn.execute(
+            "UPDATE tasks SET status='blocked' WHERE id=?", (child,),
+        )
+        conn.commit()
+        assert kb.unblock_task(conn, child)
+        assert kb.get_task(conn, child).status == "todo"
+        # After parent completes + recompute, the child is ready.
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, result="ok")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_unblock_without_parents_goes_to_ready(kanban_home):
+    """Parent-free unblock still produces 'ready' (behavior preserved)."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="lone", assignee="a")
+        kb.claim_task(conn, t)
+        assert kb.block_task(conn, t, reason="need input")
+        assert kb.unblock_task(conn, t)
+        assert kb.get_task(conn, t).status == "ready"
+
+
 def test_assign_refuses_while_running(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
@@ -914,3 +1030,89 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
         assert out == {t1: "alpha", t3: "charlie"}
         # Empty input → empty dict, no SQL syntax error from "IN ()".
         assert kb.latest_summaries(conn, []) == {}
+
+
+
+# ---------------------------------------------------------------------------
+# NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
+# ---------------------------------------------------------------------------
+
+def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
+    """kanban_db.connect() must handle ``locking protocol`` on NFS/SMB.
+
+    Without this fallback, the gateway's kanban dispatcher crashes every
+    60s and the kanban migration (``consecutive_failures`` ADD COLUMN) is
+    retried forever — which is what the real-world user report shows
+    (see hermes-agent issue #22032).
+    """
+    import sqlite3 as _sqlite3
+    from unittest.mock import patch as _patch
+
+    # Clear module cache so a fresh connect() is attempted
+    kb._INITIALIZED_PATHS.clear()
+
+    real_connect = _sqlite3.connect
+
+    class _WalBlockingConnection(_sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                raise _sqlite3.OperationalError("locking protocol")
+            return super().execute(sql, *args, **kwargs)
+
+    def wal_blocking_connect(*args, **kwargs):
+        return real_connect(
+            *args, factory=_WalBlockingConnection, **kwargs
+        )
+
+    with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
+        with caplog.at_level("WARNING", logger="hermes_state"):
+            conn = kb.connect()
+
+    # One fallback warning, naming kanban.db
+    warnings = [
+        r for r in caplog.records
+        if r.levelname == "WARNING" and "kanban.db" in r.getMessage()
+    ]
+    assert len(warnings) >= 1, (
+        f"Expected a kanban.db WARNING, got: {[r.getMessage() for r in caplog.records]}"
+    )
+
+    # DB still usable end-to-end — create + list a task
+    t = kb.create_task(conn, title="post-fallback task")
+    tasks = kb.list_tasks(conn)
+    assert any(row.id == t for row in tasks)
+    conn.close()
+
+
+def test_unlink_tasks_triggers_recompute_ready(kanban_home):
+    """Regression test for issue #22459.
+
+    Removing a dependency via unlink_tasks must immediately promote the child
+    to ready when all remaining parents are done — same contract as
+    complete_task and unblock_task.
+
+    Before the fix, child stayed 'todo' indefinitely after unlink; only the
+    next dispatcher tick or a manual 'hermes kanban recompute' would promote it.
+    """
+    with kb.connect() as conn:
+        # A is done.
+        a = kb.create_task(conn, title="parent-done")
+        kb.complete_task(conn, a)
+
+        # C is running (not done) — blocks child B.
+        c = kb.create_task(conn, title="parent-running")
+        kb.claim_task(conn, c, claimer="worker:1")
+
+        # B depends on both A (done) and C (running) → stays todo.
+        b = kb.create_task(conn, title="child", parents=[a, c])
+        assert kb.get_task(conn, b).status == "todo"
+
+        # Remove the blocking dependency C → B.
+        removed = kb.unlink_tasks(conn, c, b)
+        assert removed is True
+
+        # B's only remaining parent is A (done) → must be ready immediately.
+        assert kb.get_task(conn, b).status == "ready", (
+            "child should promote to ready immediately after unlink_tasks "
+            "removes its last blocking dependency"
+        )

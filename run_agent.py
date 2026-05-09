@@ -5067,12 +5067,25 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
-        if not self._memory_manager:
-            return
-        try:
-            self._memory_manager.on_session_end(messages or [])
-        except Exception:
-            pass
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_session_end(messages or [])
+            except Exception:
+                pass
+        # Notify context engine of session end too — same lifecycle moment as
+        # the memory manager's on_session_end. Without this, engines that
+        # accumulate per-session state (DAGs, summaries) leak that state from
+        # the rotated-out session into whatever comes next under the same
+        # compressor instance. Mirrors the call in shutdown_memory_provider().
+        # See issue #22394.
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            try:
+                self.context_compressor.on_session_end(
+                    self.session_id or "",
+                    messages or [],
+                )
+            except Exception:
+                pass
 
     def _sync_external_memory_for_turn(
         self,
@@ -8029,6 +8042,32 @@ class AIAgent:
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
 
+        # Skip entries that resolve to the current (provider, model) — falling
+        # back to the same backend that just failed loops the failure. Compare
+        # base_url too so two distinct custom_providers entries pointing at the
+        # same shim/proxy URL also dedup. See issue #22548.
+        current_provider = (getattr(self, "provider", "") or "").strip().lower()
+        current_model = (getattr(self, "model", "") or "").strip()
+        current_base_url = str(getattr(self, "base_url", "") or "").rstrip("/").lower()
+        fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
+        if fb_provider == current_provider and fb_model == current_model:
+            logging.warning(
+                "Fallback skip: chain entry %s/%s matches current provider/model",
+                fb_provider, fb_model,
+            )
+            return self._try_activate_fallback()
+        if (
+            fb_base_url_for_dedup
+            and current_base_url
+            and fb_base_url_for_dedup == current_base_url
+            and fb_model == current_model
+        ):
+            logging.warning(
+                "Fallback skip: chain entry base_url %s matches current backend",
+                fb_base_url_for_dedup,
+            )
+            return self._try_activate_fallback()
+
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
         # access for Codex providers.
@@ -9869,7 +9908,8 @@ class AIAgent:
             )
         elif function_name == "session_search":
             if not self._session_db:
-                return json.dumps({"success": False, "error": "Session database not available."})
+                from hermes_state import format_session_db_unavailable
+                return json.dumps({"success": False, "error": format_session_db_unavailable()})
             from tools.session_search_tool import session_search as _session_search
             return _session_search(
                 query=function_args.get("query", ""),
@@ -10492,7 +10532,8 @@ class AIAgent:
                     self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
             elif function_name == "session_search":
                 if not self._session_db:
-                    function_result = json.dumps({"success": False, "error": "Session database not available."})
+                    from hermes_state import format_session_db_unavailable
+                    function_result = json.dumps({"success": False, "error": format_session_db_unavailable()})
                 else:
                     from tools.session_search_tool import session_search as _session_search
                     function_result = _session_search(
@@ -11112,7 +11153,29 @@ class AIAgent:
         # recover the todo state from the most recent todo tool response in history)
         if conversation_history and not self._todo_store.has_items():
             self._hydrate_todo_store(conversation_history)
-        
+
+        # Hydrate per-session nudge counters from persisted history.
+        # Gateway creates a fresh AIAgent per inbound message (cache miss /
+        # 1h idle eviction / config-signature mismatch / process restart), so
+        # _turns_since_memory and _user_turn_count start at 0 every turn and
+        # the memory.nudge_interval trigger may never be reached. Reconstruct
+        # an effective count from prior user turns in conversation_history.
+        # Idempotent: a cached agent that already accumulated counters keeps
+        # them; only a freshly-built agent with empty in-memory state hydrates.
+        # See issue #22357.
+        if conversation_history and self._user_turn_count == 0:
+            prior_user_turns = sum(
+                1 for m in conversation_history if m.get("role") == "user"
+            )
+            if prior_user_turns > 0:
+                self._user_turn_count = prior_user_turns
+                if self._memory_nudge_interval > 0 and self._turns_since_memory == 0:
+                    # % preserves original 1-in-N cadence rather than firing a
+                    # review immediately on resume (which would surprise users
+                    # whose session happened to land just past a multiple of N).
+                    self._turns_since_memory = prior_user_turns % self._memory_nudge_interval
+
+
         # Prefill messages (few-shot priming) are injected at API-call time only,
         # never stored in the messages list. This keeps them ephemeral: they won't
         # be saved to session DB, session logs, or batch trajectories, but they're

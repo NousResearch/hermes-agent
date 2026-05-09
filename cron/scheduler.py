@@ -578,7 +578,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
+            send_metadata = {"thread_id": thread_id} if thread_id else {}
+            if job.get("_proactive_controls"):
+                send_metadata["proactive_controls"] = job.get("_proactive_controls")
+            if not send_metadata:
+                send_metadata = None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -1746,9 +1750,23 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     should_deliver = False
 
                 delivery_error = None
+                delivery_job = job
+                if should_deliver and success:
+                    try:
+                        from hermes_cli.proactive import prepare_delivery_controls
+                        controls = prepare_delivery_controls(
+                            job=job,
+                            message=deliver_content,
+                            output_doc=output,
+                        )
+                        if controls:
+                            delivery_job = dict(job)
+                            delivery_job["_proactive_controls"] = controls
+                    except Exception as controls_exc:
+                        logger.debug("Job '%s': proactive controls unavailable: %s", job["id"], controls_exc)
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result(delivery_job, deliver_content, adapters=adapters, loop=loop)
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)

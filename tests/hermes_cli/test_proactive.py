@@ -88,6 +88,107 @@ def test_collect_proactive_signals_returns_structured_scan(monkeypatch):
     assert json.loads(rendered.splitlines()[-1]) == {"wakeAgent": True}
 
 
+def test_proactive_ledger_suppresses_recently_nudged_signal(tmp_path, monkeypatch):
+    monkeypatch.setattr(proactive, "get_hermes_home", lambda: tmp_path)
+    now = 1_700_000_000.0
+    report = {
+        "wakeAgent": True,
+        "signals": [
+            {
+                "kind": "content_opportunity",
+                "mode": "offer_to_produce",
+                "reason": "fresh notes",
+                "session_id": "s1",
+                "source": "telegram",
+                "excerpt": "meeting notes included a sales speech critique opportunity",
+            }
+        ],
+        "suppressed_topics": [],
+        "scan_errors": [],
+    }
+
+    nudge = proactive.record_proactive_nudge(
+        job={"id": "job1", "name": proactive.DEFAULT_JOB_NAME},
+        message="Want me to polish the strongest two X drafts?",
+        scan_report=report,
+        now=now,
+    )
+    filtered = proactive.apply_ledger_filters(report, now=now + 60)
+
+    assert nudge["id"]
+    assert filtered["signals"] == []
+    assert filtered["wakeAgent"] is False
+    assert filtered["suppressed_by_ledger"][0]["nudge_id"] == nudge["id"]
+
+
+def test_proactive_feedback_more_info_later_and_do_not_nudge(tmp_path, monkeypatch):
+    monkeypatch.setattr(proactive, "get_hermes_home", lambda: tmp_path)
+    report = {
+        "signals": [
+            {
+                "kind": "blocker_or_waiting",
+                "mode": "ask_or_checked",
+                "reason": "possible blocker",
+                "session_id": "s2",
+                "source": "telegram",
+                "excerpt": "TestFlight blocked until Xcode ready",
+            }
+        ],
+        "suppressed_topics": [],
+        "scan_errors": [],
+    }
+    nudge = proactive.record_proactive_nudge(
+        job={"id": "job2", "name": proactive.DEFAULT_JOB_NAME},
+        message="TestFlight is still blocked. Want me to continue once Xcode is ready?",
+        scan_report=report,
+        now=1_700_000_000.0,
+    )
+
+    more = proactive.handle_proactive_feedback(nudge["id"], "more", now=1_700_000_010.0)
+    assert more["ok"] is True
+    assert "Why this surfaced" in more["followup"]
+    assert "TestFlight blocked" in more["followup"]
+
+    later = proactive.handle_proactive_feedback(nudge["id"], "later", now=1_700_000_020.0)
+    assert later["ok"] is True
+    assert "snoozed" in later["ack"].lower()
+
+    hidden = proactive.handle_proactive_feedback(nudge["id"], "dont", now=1_700_000_030.0)
+    assert hidden["ok"] is True
+    assert "won't nudge" in hidden["ack"].lower()
+    filtered = proactive.apply_ledger_filters(report, now=1_700_000_040.0)
+    assert filtered["signals"] == []
+
+
+def test_proactive_do_it_feedback_builds_safe_agent_prompt(tmp_path, monkeypatch):
+    monkeypatch.setattr(proactive, "get_hermes_home", lambda: tmp_path)
+    nudge = proactive.record_proactive_nudge(
+        job={"id": "job3", "name": proactive.DEFAULT_JOB_NAME},
+        message="Want me to polish the strongest two X drafts?",
+        scan_report={
+            "signals": [
+                {
+                    "kind": "content_opportunity",
+                    "mode": "offer_to_produce",
+                    "reason": "fresh notes/content may create a useful draft",
+                    "session_id": "s3",
+                    "source": "telegram",
+                    "excerpt": "sales-meeting speech critique and X drafts are ready",
+                }
+            ]
+        },
+        now=1_700_000_000.0,
+    )
+
+    result = proactive.handle_proactive_feedback(nudge["id"], "do", now=1_700_000_001.0)
+
+    assert result["ok"] is True
+    assert "starting" in result["ack"].lower()
+    assert "agent_prompt" in result
+    assert "User tapped Do it" in result["agent_prompt"]
+    assert "Do not send, post, email" in result["agent_prompt"]
+
+
 def test_render_signal_scan_wake_gate_can_skip_agent():
     rendered = proactive.render_signal_scan({"wakeAgent": False, "signals": []})
     assert rendered == '{"wakeAgent": false}'

@@ -9,6 +9,7 @@ act externally.
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,6 +26,8 @@ DEFAULT_DELIVER = "local"
 # so cron runs do not wander for minutes through session_search.
 DEFAULT_ENABLED_TOOLSETS = ["memory"]
 DEFAULT_SCANNER_SCRIPT = "proactive_signal_scan.py"
+DEFAULT_COOLDOWN_HOURS = 72
+DEFAULT_SNOOZE_HOURS = 24
 _ALLOWED_CONFIDENCE = {"medium", "high"}
 _MAX_EXCERPT_CHARS = 280
 
@@ -124,6 +127,268 @@ def _signal_key(signal: Dict[str, Any]) -> tuple:
         signal.get("session_id"),
         _clip(signal.get("excerpt"), 100).lower(),
     )
+
+
+def _ledger_path() -> Path:
+    return get_hermes_home() / "proactive" / "ledger.json"
+
+
+def _load_ledger() -> Dict[str, Any]:
+    path = _ledger_path()
+    if not path.exists():
+        return {"version": 1, "nudges": [], "feedback": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("ledger root is not an object")
+        data.setdefault("version", 1)
+        data.setdefault("nudges", [])
+        data.setdefault("feedback", [])
+        if not isinstance(data["nudges"], list):
+            data["nudges"] = []
+        if not isinstance(data["feedback"], list):
+            data["feedback"] = []
+        return data
+    except Exception:
+        corrupt = path.with_suffix(f".corrupt-{int(time.time())}.json")
+        try:
+            path.replace(corrupt)
+        except Exception:
+            pass
+        return {"version": 1, "nudges": [], "feedback": []}
+
+
+def _save_ledger(ledger: Dict[str, Any]) -> None:
+    path = _ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(ledger, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _signal_fingerprint(signal: Dict[str, Any]) -> str:
+    basis = "|".join(
+        [
+            _clip(signal.get("kind"), 80).lower(),
+            _clip(signal.get("source"), 80).lower(),
+            _clip(signal.get("session_id"), 120).lower(),
+            _clip(signal.get("excerpt"), 220).lower(),
+        ]
+    )
+    return hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _top_signal(scan_report: Dict[str, Any]) -> Dict[str, Any]:
+    signals = scan_report.get("signals") or []
+    if signals and isinstance(signals[0], dict):
+        return dict(signals[0])
+    errors = scan_report.get("scan_errors") or []
+    if errors:
+        return {
+            "kind": "scan_error",
+            "mode": "already_checked",
+            "reason": "proactive scanner reported an error",
+            "excerpt": _clip(errors[0]),
+        }
+    return {"kind": "unknown", "mode": "ask_to_investigate", "reason": "proactive nudge", "excerpt": ""}
+
+
+def apply_ledger_filters(
+    report: Dict[str, Any],
+    *,
+    now: float | None = None,
+    cooldown_hours: int = DEFAULT_COOLDOWN_HOURS,
+) -> Dict[str, Any]:
+    """Suppress recently nudged, snoozed, or explicitly muted signals."""
+
+    now = time.time() if now is None else float(now)
+    cooldown_secs = max(0, int(cooldown_hours)) * 3600
+    ledger = _load_ledger()
+    nudges = [n for n in ledger.get("nudges", []) if isinstance(n, dict)]
+    filtered = json.loads(json.dumps(report))
+    kept: List[Dict[str, Any]] = []
+    suppressed: List[Dict[str, Any]] = []
+
+    for signal in filtered.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        fp = _signal_fingerprint(signal)
+        match = None
+        reason = ""
+        for nudge in reversed(nudges):
+            if nudge.get("fingerprint") != fp:
+                continue
+            if nudge.get("muted") or nudge.get("last_feedback") in {"dont", "not"}:
+                match, reason = nudge, "muted"
+                break
+            snoozed_until = float(nudge.get("snoozed_until") or 0)
+            if snoozed_until > now:
+                match, reason = nudge, "snoozed"
+                break
+            created_at = float(nudge.get("created_at") or 0)
+            if cooldown_secs and created_at and now - created_at < cooldown_secs:
+                match, reason = nudge, "cooldown"
+                break
+        if match:
+            suppressed.append({"nudge_id": match.get("id"), "reason": reason, "signal": signal})
+        else:
+            kept.append(signal)
+
+    filtered["signals"] = kept
+    if suppressed:
+        filtered["suppressed_by_ledger"] = suppressed
+    filtered["wakeAgent"] = bool(kept or filtered.get("scan_errors"))
+    return filtered
+
+
+def record_proactive_nudge(
+    *,
+    job: Dict[str, Any],
+    message: str,
+    scan_report: Dict[str, Any],
+    now: float | None = None,
+) -> Dict[str, Any]:
+    """Persist a delivered proactive nudge so future scans can cool it down."""
+
+    now = time.time() if now is None else float(now)
+    signal = _top_signal(scan_report)
+    fingerprint = _signal_fingerprint(signal)
+    nudge_id = hashlib.sha256(
+        f"{fingerprint}|{now:.6f}|{_clip(message, 200)}".encode("utf-8", "replace")
+    ).hexdigest()[:12]
+    nudge = {
+        "id": nudge_id,
+        "created_at": now,
+        "job_id": job.get("id"),
+        "job_name": job.get("name"),
+        "message": _clip(message, 800),
+        "fingerprint": fingerprint,
+        "signal": signal,
+        "status": "sent",
+    }
+    ledger = _load_ledger()
+    ledger.setdefault("nudges", []).append(nudge)
+    _save_ledger(ledger)
+    return nudge
+
+
+def proactive_controls_for_nudge(nudge: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "nudge_id": nudge.get("id"),
+        "buttons": ["do", "more", "later", "not", "dont"],
+    }
+
+
+def _find_nudge(ledger: Dict[str, Any], nudge_id: str) -> Dict[str, Any] | None:
+    for nudge in ledger.get("nudges", []):
+        if isinstance(nudge, dict) and str(nudge.get("id")) == str(nudge_id):
+            return nudge
+    return None
+
+
+def _detail_card(nudge: Dict[str, Any]) -> str:
+    signal = nudge.get("signal") or {}
+    return (
+        "**Why this surfaced**\n"
+        f"- Type: `{_clip(signal.get('kind'), 80)}`\n"
+        f"- Reason: {_clip(signal.get('reason'), 180)}\n"
+        f"- Source: {_clip(signal.get('source') or signal.get('session_id') or 'local scan', 120)}\n"
+        f"- Evidence: {_clip(signal.get('excerpt'), 360)}\n\n"
+        "**Suggested next action**\n"
+        f"{_clip(nudge.get('message'), 500)}\n\n"
+        "I can work internally from this. I still need explicit approval before sending, posting, emailing, buying, scheduling, or changing external systems."
+    )
+
+
+def _agent_prompt_for_nudge(nudge: Dict[str, Any]) -> str:
+    signal = nudge.get("signal") or {}
+    return (
+        "User tapped Do it on a proactive Hermes nudge. Execute the internal next step now.\n\n"
+        f"Original nudge: {_clip(nudge.get('message'), 700)}\n"
+        f"Signal type: {_clip(signal.get('kind'), 80)}\n"
+        f"Reason: {_clip(signal.get('reason'), 220)}\n"
+        f"Evidence: {_clip(signal.get('excerpt'), 600)}\n\n"
+        "Do not send, post, email, buy, schedule with other people, delete, or modify external systems without explicit approval in this chat. "
+        "Draft, inspect, summarize, or prepare internal work as appropriate, then report the concrete result."
+    )
+
+
+def handle_proactive_feedback(
+    nudge_id: str,
+    action: str,
+    *,
+    now: float | None = None,
+) -> Dict[str, Any]:
+    """Apply feedback from proactive inline buttons and return UI instructions."""
+
+    now = time.time() if now is None else float(now)
+    action = str(action or "").lower().strip()
+    ledger = _load_ledger()
+    nudge = _find_nudge(ledger, nudge_id)
+    if not nudge:
+        return {"ok": False, "ack": "This proactive nudge expired."}
+
+    nudge["last_feedback"] = action
+    nudge["last_feedback_at"] = now
+    event = {"nudge_id": nudge_id, "action": action, "timestamp": now}
+    ledger.setdefault("feedback", []).append(event)
+
+    result: Dict[str, Any]
+    if action == "more":
+        result = {"ok": True, "ack": "More info", "followup": _detail_card(nudge)}
+    elif action == "later":
+        nudge["snoozed_until"] = now + DEFAULT_SNOOZE_HOURS * 3600
+        result = {"ok": True, "ack": "Snoozed for later."}
+    elif action == "not":
+        nudge["status"] = "not_useful"
+        result = {"ok": True, "ack": "Got it — I’ll tune this down."}
+    elif action == "dont":
+        nudge["muted"] = True
+        nudge["status"] = "muted"
+        result = {"ok": True, "ack": "Got it — I won't nudge this again."}
+    elif action == "do":
+        nudge["status"] = "accepted"
+        result = {"ok": True, "ack": "Starting.", "agent_prompt": _agent_prompt_for_nudge(nudge)}
+    else:
+        result = {"ok": False, "ack": "Unknown proactive action."}
+
+    _save_ledger(ledger)
+    return result
+
+
+def extract_scan_report_from_text(text: str) -> Dict[str, Any] | None:
+    """Extract the JSON proactive scan embedded in a cron output document."""
+
+    marker = "## Proactive signal scan"
+    idx = str(text or "").find(marker)
+    if idx < 0:
+        return None
+    json_start = str(text).find("{", idx)
+    if json_start < 0:
+        return None
+    try:
+        report, _end = json.JSONDecoder().raw_decode(str(text)[json_start:])
+    except Exception:
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def prepare_delivery_controls(
+    *,
+    job: Dict[str, Any],
+    message: str,
+    output_doc: str,
+    now: float | None = None,
+) -> Dict[str, Any] | None:
+    """Record a proactive delivery and return Telegram/adapter controls metadata."""
+
+    if job.get("name") != DEFAULT_JOB_NAME and job.get("script") != DEFAULT_SCANNER_SCRIPT:
+        return None
+    scan_report = extract_scan_report_from_text(output_doc)
+    if not scan_report:
+        return None
+    nudge = record_proactive_nudge(job=job, message=message, scan_report=scan_report, now=now)
+    return proactive_controls_for_nudge(nudge)
 
 
 def build_reflection_prompt(
@@ -420,7 +685,7 @@ def _ensure_scanner_script() -> str:
 def cmd_scan_script() -> int:
     """Entrypoint used by the cron pre-run scanner script."""
 
-    report = collect_proactive_signals()
+    report = apply_ledger_filters(collect_proactive_signals())
     print(render_signal_scan(report, include_wake_gate=True))
     return 0
 
@@ -538,9 +803,11 @@ def cmd_proactive(args) -> int:
         return 0
 
     if subcmd == "scan":
-        report = collect_proactive_signals(
-            lookback_days=getattr(args, "lookback_days", 7),
-            max_sessions=getattr(args, "max_sessions", 30),
+        report = apply_ledger_filters(
+            collect_proactive_signals(
+                lookback_days=getattr(args, "lookback_days", 7),
+                max_sessions=getattr(args, "max_sessions", 30),
+            )
         )
         if getattr(args, "json", False):
             print(json.dumps(report, indent=2, sort_keys=True))

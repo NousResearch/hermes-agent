@@ -14,6 +14,7 @@ import os
 import tempfile
 import html as _html
 import re
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -374,6 +375,31 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         reply_to = metadata.get("telegram_reply_to_message_id")
         return int(reply_to) if reply_to is not None else None
+
+    @staticmethod
+    def _build_proactive_controls_keyboard(controls: Optional[Dict[str, Any]]):
+        if not controls:
+            return None
+        nudge_id = str(controls.get("nudge_id") or "").strip()
+        if not nudge_id:
+            return None
+        labels = {
+            "do": "Do it",
+            "more": "More Info",
+            "later": "Later",
+            "not": "Not useful",
+            "dont": "Don't nudge this",
+        }
+        wanted = controls.get("buttons") or ["do", "more", "later", "not", "dont"]
+        buttons = [
+            InlineKeyboardButton(labels[action], callback_data=f"pa:{action}:{nudge_id}")
+            for action in wanted
+            if action in labels
+        ]
+        if not buttons:
+            return None
+        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+        return InlineKeyboardMarkup(rows)
 
     @classmethod
     def _reply_to_message_id_for_send(
@@ -1353,6 +1379,9 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
+            proactive_reply_markup = self._build_proactive_controls_keyboard(
+                metadata.get("proactive_controls") if metadata else None
+            )
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -1398,6 +1427,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=proactive_reply_markup if i == 0 else None,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                             )
@@ -1411,6 +1441,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=proactive_reply_markup if i == 0 else None,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                 )
@@ -2268,6 +2299,89 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._bot.send_message(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Proactive nudge callbacks (pa:action:nudge_id) ---
+        if data.startswith("pa:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid proactive action.")
+                return
+            action, nudge_id = parts[1], parts[2]
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to control this nudge.")
+                return
+
+            try:
+                from hermes_cli.proactive import handle_proactive_feedback
+                feedback = handle_proactive_feedback(nudge_id, action)
+            except Exception as exc:
+                logger.error("[%s] proactive feedback callback failed: %s", self.name, exc, exc_info=True)
+                await query.answer(text="Could not update this nudge.")
+                return
+
+            await query.answer(text=str(feedback.get("ack") or "Noted."))
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+            if feedback.get("followup") and query.message:
+                send_kwargs: Dict[str, Any] = {
+                    "chat_id": int(query.message.chat_id),
+                    "text": str(feedback["followup"]),
+                    "parse_mode": ParseMode.MARKDOWN,
+                    **self._link_preview_kwargs(),
+                }
+                if query_thread_id is not None:
+                    send_kwargs.update(
+                        self._thread_kwargs_for_send(
+                            str(query.message.chat_id),
+                            str(query_thread_id),
+                            {"thread_id": str(query_thread_id)},
+                        )
+                    )
+                await self._bot.send_message(**send_kwargs)
+
+            if feedback.get("agent_prompt") and query.message:
+                message = query.message
+                chat = getattr(message, "chat", None)
+                from_user = getattr(query, "from_user", None)
+                chat_id_value = str(getattr(chat, "id", getattr(message, "chat_id", "")))
+                chat_type_value = str(getattr(chat, "type", "private"))
+                chat_type = "dm"
+                if chat_type_value in {str(getattr(ChatType, "GROUP", "group")), "group"}:
+                    chat_type = "group"
+                elif chat_type_value in {str(getattr(ChatType, "SUPERGROUP", "supergroup")), "supergroup"}:
+                    chat_type = "group"
+                elif chat_type_value in {str(getattr(ChatType, "CHANNEL", "channel")), "channel"}:
+                    chat_type = "channel"
+                source = self.build_source(
+                    chat_id=chat_id_value,
+                    chat_name=(getattr(chat, "title", None) or getattr(chat, "full_name", None)),
+                    chat_type=chat_type,
+                    user_id=str(getattr(from_user, "id", chat_id_value)),
+                    user_name=getattr(from_user, "full_name", None) or getattr(from_user, "first_name", None),
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                )
+                event = MessageEvent(
+                    text=str(feedback["agent_prompt"]),
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    raw_message=message,
+                    message_id=f"{getattr(message, 'message_id', '0')}:proactive:{nudge_id}",
+                    reply_to_message_id=str(getattr(message, "message_id", "")) or None,
+                    reply_to_text=getattr(message, "text", None),
+                    timestamp=getattr(message, "date", None) or datetime.now(timezone.utc),
+                )
+                await self.handle_message(event)
             return
 
         # --- Update prompt callbacks ---

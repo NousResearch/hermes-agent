@@ -441,3 +441,101 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+
+class TestTelegramProactiveButtons:
+    @pytest.mark.asyncio
+    async def test_send_adds_proactive_control_buttons_to_first_chunk(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 99
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send(
+            "12345",
+            "Tiny proactive nudge",
+            metadata={
+                "proactive_controls": {
+                    "nudge_id": "abc123def456",
+                    "buttons": ["do", "more", "later", "not", "dont"],
+                }
+            },
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert kwargs["reply_markup"] is not None
+        from gateway.platforms import telegram as telegram_mod
+        recent_buttons = telegram_mod.InlineKeyboardButton.call_args_list[-5:]
+        labels = [call.args[0] for call in recent_buttons]
+        data = [call.kwargs.get("callback_data") for call in recent_buttons]
+        assert "Do it" in labels
+        assert "More Info" in labels
+        assert "pa:do:abc123def456" in data
+        assert "pa:more:abc123def456" in data
+
+    @pytest.mark.asyncio
+    async def test_more_info_callback_sends_detail_card(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+
+        query = AsyncMock()
+        query.data = "pa:more:n1"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 99
+        query.message.message_thread_id = None
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Charles"
+        query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch("hermes_cli.proactive.handle_proactive_feedback", return_value={"ok": True, "ack": "More info", "followup": "Why this surfaced: X"}):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_called_once()
+        adapter._bot.send_message.assert_called_once()
+        assert "Why this surfaced" in adapter._bot.send_message.call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_do_it_callback_enqueues_agent_prompt(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+        handled = []
+
+        async def fake_handle(event):
+            handled.append(event)
+
+        adapter.handle_message = fake_handle
+        query = AsyncMock()
+        query.data = "pa:do:n2"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 100
+        query.message.message_thread_id = None
+        query.message.chat.id = 12345
+        query.message.chat.title = None
+        query.message.chat.full_name = "Charles"
+        query.message.chat.type = "private"
+        query.message.chat.is_forum = False
+        query.message.text = "Original proactive nudge"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Charles"
+        query.from_user.full_name = "Charles McDowell"
+        query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch("hermes_cli.proactive.handle_proactive_feedback", return_value={"ok": True, "ack": "Starting", "agent_prompt": "User tapped Do it. Draft internally."}):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_called_once()
+        assert handled
+        assert handled[0].text == "User tapped Do it. Draft internally."
+        assert handled[0].source.user_id == "111"

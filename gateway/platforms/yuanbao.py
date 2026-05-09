@@ -925,6 +925,7 @@ class InboundContext:
     # Populated by QuoteContextMiddleware
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None
+    quote_media_refs: list = dc_field(default_factory=list)  # List of (rid, kind, filename)
 
     # Populated by MediaResolveMiddleware
     media_urls: list = dc_field(default_factory=list)
@@ -2172,22 +2173,23 @@ class QuoteContextMiddleware(InboundMiddleware):
     name = "quote-context"
 
     @staticmethod
-    def _extract_quote_context(cloud_custom_data: str) -> Tuple[Optional[str], Optional[str]]:
+    def _extract_quote_context(cloud_custom_data: str) -> Tuple[Optional[str], Optional[str], list]:
         """Extract quote context, mapping to MessageEvent.reply_to_*.
 
         Returns:
-          (reply_to_message_id, reply_to_text)
+          (reply_to_message_id, reply_to_text, quote_media_refs)
+          where quote_media_refs is a list of (rid, kind, filename) tuples
         """
         if not cloud_custom_data:
-            return None, None
+            return None, None, []
         try:
             parsed = json.loads(cloud_custom_data)
         except (json.JSONDecodeError, TypeError):
-            return None, None
+            return None, None, []
 
         quote = parsed.get("quote") if isinstance(parsed, dict) else None
         if not isinstance(quote, dict):
-            return None, None
+            return None, None, []
 
         # type=2 corresponds to image reference; desc may be empty, provide a placeholder.
         quote_type = int(quote.get("type") or 0)
@@ -2195,15 +2197,25 @@ class QuoteContextMiddleware(InboundMiddleware):
         if quote_type == 2 and not desc:
             desc = "[image]"
         if not desc:
-            return None, None
+            return None, None, []
 
         quote_id = str(quote.get("id") or "").strip() or None
         sender = str(quote.get("sender_nickname") or quote.get("sender_id") or "").strip()
         quote_text = f"{sender}: {desc}" if sender else desc
-        return quote_id, quote_text
+
+        # Extract media references from desc using _YB_RES_REF_RE regex
+        media_refs: list = []
+        for m in _YB_RES_REF_RE.finditer(desc):
+            head = m.group(1)  # "image" | "file:<name>" | "voice" | "video"
+            rid = m.group(2)
+            kind, _, filename = head.partition(":")
+            kind = kind.strip()
+            media_refs.append((rid, kind, filename.strip()))
+
+        return quote_id, quote_text, media_refs
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
-        ctx.reply_to_message_id, ctx.reply_to_text = self._extract_quote_context(ctx.cloud_custom_data)
+        ctx.reply_to_message_id, ctx.reply_to_text, ctx.quote_media_refs = self._extract_quote_context(ctx.cloud_custom_data)
         await next_fn()
 
 

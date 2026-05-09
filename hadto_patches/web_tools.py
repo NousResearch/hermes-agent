@@ -137,6 +137,432 @@ def get_web_provider_status() -> dict:
         "providers": providers,
     }
 
+
+# ─── Firecrawl v2 option builders ───────────────────────────────────────────
+
+_FIRECRAWL_SEARCH_SOURCES = {"web", "images", "news"}
+_FIRECRAWL_SEARCH_CATEGORIES = {"github", "research", "pdf"}
+_FIRECRAWL_FORMAT_ALIASES = {
+    "markdown": "markdown",
+    "md": "markdown",
+    "html": "html",
+    "raw": "rawHtml",
+    "raw_html": "rawHtml",
+    "rawHtml": "rawHtml",
+    "rawhtml": "rawHtml",
+    "links": "links",
+    "images": "images",
+    "screenshot": "screenshot",
+    "summary": "summary",
+}
+_FIRECRAWL_PDF_PARSER_MODES = {"fast", "auto", "ocr"}
+
+
+def _as_str_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        return []
+    result = []
+    for item in values:
+        if isinstance(item, str):
+            stripped = item.strip()
+            if stripped:
+                result.append(stripped)
+    return result
+
+
+def _unique_in_order(values: List[str]) -> List[str]:
+    seen = set()
+    result = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _coerce_int(value: Any, *, minimum: int | None = None, maximum: int | None = None) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if minimum is not None and number < minimum:
+        return None
+    if maximum is not None and number > maximum:
+        number = maximum
+    return number
+
+
+def _coerce_float(value: Any, *, minimum: float | None = None) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if minimum is not None and number < minimum:
+        return None
+    return number
+
+
+def _normalize_firecrawl_domain(value: str) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate or _url_contains_embedded_secret(candidate):
+        return None
+    parsed = urlsplit(candidate if "://" in candidate else f"//{candidate}")
+    host = (parsed.hostname or "").lower().strip(".")
+    if not host:
+        return None
+    return host
+
+
+def _normalize_firecrawl_domains(values: Any) -> List[str]:
+    domains = []
+    for value in _as_str_list(values):
+        domain = _normalize_firecrawl_domain(value)
+        if domain:
+            domains.append(domain)
+    return _unique_in_order(domains)
+
+
+def _build_firecrawl_formats(
+    format: Optional[str] = None,
+    formats: Optional[List[str]] = None,
+    *,
+    default: Optional[List[str]] = None,
+) -> List[str]:
+    requested = _as_str_list(formats)
+    if not requested and format:
+        requested = [format]
+    if not requested and default is not None:
+        requested = default
+
+    normalized = []
+    for value in requested:
+        mapped = _FIRECRAWL_FORMAT_ALIASES.get(value, _FIRECRAWL_FORMAT_ALIASES.get(value.lower()))
+        if mapped:
+            normalized.append(mapped)
+    return _unique_in_order(normalized)
+
+
+
+
+def _get_firecrawl_result_value(obj: Any, *names: str) -> Any:
+    """Read a Firecrawl response field from dicts or SDK objects."""
+    if obj is None:
+        return None
+    if hasattr(obj, "model_dump"):
+        try:
+            obj = obj.model_dump()
+        except Exception:
+            pass
+    for name in names:
+        if isinstance(obj, dict) and name in obj:
+            return obj.get(name)
+        if hasattr(obj, name):
+            return getattr(obj, name)
+    return None
+
+
+def _compact_firecrawl_aux_content(format_name: str, value: Any) -> str:
+    """Serialize non-text Firecrawl formats into compact, safe text content."""
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, str):
+        return clean_base64_images(f"## Firecrawl {format_name}\n\n{value}")
+    try:
+        serialized = json.dumps(value, ensure_ascii=False, indent=2)
+    except TypeError:
+        serialized = json.dumps(str(value), ensure_ascii=False)
+    return clean_base64_images(f"## Firecrawl {format_name}\n\n```json\n{serialized}\n```")
+
+
+def _choose_firecrawl_content(content_by_format: Dict[str, Any], preferred_formats: List[str]) -> str:
+    """Pick requested Firecrawl content, including compact non-text formats."""
+    if not preferred_formats:
+        preferred_formats = ["markdown", "html"]
+    for preferred in preferred_formats:
+        value = content_by_format.get(preferred)
+        if not value:
+            continue
+        if preferred in {"links", "images", "screenshot"}:
+            compact = _compact_firecrawl_aux_content(preferred, value)
+            if compact:
+                return compact
+        elif isinstance(value, str):
+            return value
+        else:
+            compact = _compact_firecrawl_aux_content(preferred, value)
+            if compact:
+                return compact
+    for fallback in ("markdown", "html", "rawHtml", "summary", "links", "images", "screenshot"):
+        value = content_by_format.get(fallback)
+        if value:
+            return _compact_firecrawl_aux_content(fallback, value) if fallback in {"links", "images", "screenshot"} else value
+    return ""
+
+def _sanitize_firecrawl_actions(actions: Any) -> List[Dict[str, Any]]:
+    """Allow low-risk browser setup actions, but not text entry, JS, or PDF generation."""
+    if not isinstance(actions, list):
+        return []
+
+    sanitized: List[Dict[str, Any]] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        action_type = str(action.get("type", "")).strip()
+        if action_type == "wait":
+            milliseconds = _coerce_int(action.get("milliseconds"), minimum=1, maximum=30000)
+            selector = action.get("selector") if isinstance(action.get("selector"), str) else None
+            if milliseconds is not None:
+                sanitized.append({"type": "wait", "milliseconds": milliseconds})
+            elif selector:
+                sanitized.append({"type": "wait", "selector": selector.strip()})
+        elif action_type == "click":
+            selector = action.get("selector")
+            if isinstance(selector, str) and selector.strip():
+                sanitized.append({"type": "click", "selector": selector.strip()})
+        elif action_type == "press":
+            key = action.get("key")
+            if isinstance(key, str) and 0 < len(key.strip()) <= 40:
+                sanitized.append({"type": "press", "key": key.strip()})
+        elif action_type == "scroll":
+            direction = action.get("direction", "down")
+            if direction not in ("up", "down"):
+                continue
+            scroll_action = {"type": "scroll", "direction": direction}
+            selector = action.get("selector")
+            if isinstance(selector, str) and selector.strip():
+                scroll_action["selector"] = selector.strip()
+            sanitized.append(scroll_action)
+        elif action_type == "screenshot":
+            screenshot_action: Dict[str, Any] = {"type": "screenshot"}
+            if isinstance(action.get("full_page"), bool):
+                screenshot_action["full_page"] = action["full_page"]
+            elif isinstance(action.get("fullPage"), bool):
+                screenshot_action["full_page"] = action["fullPage"]
+            quality = _coerce_int(action.get("quality"), minimum=1, maximum=100)
+            if quality is not None:
+                screenshot_action["quality"] = quality
+            viewport = action.get("viewport")
+            if isinstance(viewport, dict):
+                width = _coerce_int(viewport.get("width"), minimum=1, maximum=5000)
+                height = _coerce_int(viewport.get("height"), minimum=1, maximum=5000)
+                if width is not None and height is not None:
+                    screenshot_action["viewport"] = {"width": width, "height": height}
+            sanitized.append(screenshot_action)
+    return sanitized
+
+
+def _build_firecrawl_scrape_kwargs(
+    format: str = None,
+    formats: Optional[List[str]] = None,
+    only_main_content: Optional[bool] = None,
+    only_clean_content: Optional[bool] = None,
+    include_tags: Optional[List[str]] = None,
+    exclude_tags: Optional[List[str]] = None,
+    max_age: Optional[int] = None,
+    min_age: Optional[int] = None,
+    wait_for: Optional[int] = None,
+    mobile: Optional[bool] = None,
+    timeout: Optional[int] = None,
+    pdf_parser_mode: Optional[str] = None,
+    pdf_max_pages: Optional[int] = None,
+    actions: Optional[List[Dict[str, Any]]] = None,
+    location: Optional[str] = None,
+    default_formats: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build safe Firecrawl scrape kwargs.
+
+    Firecrawl onlyMainContent defaults true. onlyCleanContent is an LLM cleaner
+    beta and is not compatible with zero-data-retention. maxAge uses fresh-enough
+    cache; minAge is cache-only and can return SCRAPE_NO_CACHED_DATA.
+    """
+    kwargs: Dict[str, Any] = {}
+
+    built_formats = _build_firecrawl_formats(format, formats, default=default_formats)
+    if built_formats:
+        kwargs["formats"] = built_formats
+
+    if only_main_content is not None:
+        kwargs["only_main_content"] = bool(only_main_content)
+    if only_clean_content is not None:
+        kwargs["only_clean_content"] = bool(only_clean_content)
+
+    tags = _as_str_list(include_tags)
+    if tags:
+        kwargs["include_tags"] = tags
+    tags = _as_str_list(exclude_tags)
+    if tags:
+        kwargs["exclude_tags"] = tags
+
+    int_value = _coerce_int(max_age, minimum=0)
+    if int_value is not None:
+        kwargs["max_age"] = int_value
+    int_value = _coerce_int(min_age, minimum=1)
+    if int_value is not None:
+        kwargs["min_age"] = int_value
+    int_value = _coerce_int(wait_for, minimum=0)
+    if int_value is not None:
+        kwargs["wait_for"] = int_value
+    if mobile is not None:
+        kwargs["mobile"] = bool(mobile)
+    int_value = _coerce_int(timeout, minimum=1000, maximum=300000)
+    if int_value is not None:
+        kwargs["timeout"] = int_value
+
+    parser: Dict[str, Any] = {"type": "pdf"}
+    mode = pdf_parser_mode.strip().lower() if isinstance(pdf_parser_mode, str) else None
+    if mode in _FIRECRAWL_PDF_PARSER_MODES:
+        parser["mode"] = mode
+    pages = _coerce_int(pdf_max_pages, minimum=1, maximum=10000)
+    if pages is not None:
+        parser["max_pages"] = pages
+    if len(parser) > 1:
+        kwargs["parsers"] = [parser]
+
+    clean_actions = _sanitize_firecrawl_actions(actions)
+    if clean_actions:
+        kwargs["actions"] = clean_actions
+
+    if isinstance(location, str) and location.strip():
+        kwargs["location"] = location.strip()
+
+    return kwargs
+
+
+def _build_firecrawl_search_kwargs(
+    query: str,
+    limit: int = 5,
+    sources: Optional[List[str]] = None,
+    categories: Optional[List[str]] = None,
+    include_domains: Optional[List[str]] = None,
+    exclude_domains: Optional[List[str]] = None,
+    tbs: Optional[str] = None,
+    location: Optional[str] = None,
+) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {"query": query}
+    safe_limit = _coerce_int(limit, minimum=1, maximum=100)
+    if safe_limit is not None:
+        kwargs["limit"] = safe_limit
+
+    safe_sources = [
+        source for source in _as_str_list(sources)
+        if source in _FIRECRAWL_SEARCH_SOURCES
+    ]
+    if safe_sources:
+        kwargs["sources"] = _unique_in_order(safe_sources)
+
+    safe_categories = [
+        category for category in _as_str_list(categories)
+        if category in _FIRECRAWL_SEARCH_CATEGORIES
+    ]
+    if safe_categories:
+        kwargs["categories"] = _unique_in_order(safe_categories)
+
+    includes = _normalize_firecrawl_domains(include_domains)
+    excludes = _normalize_firecrawl_domains(exclude_domains)
+    # Firecrawl documents includeDomains/excludeDomains as mutually exclusive.
+    if includes:
+        kwargs["include_domains"] = includes
+    elif excludes:
+        kwargs["exclude_domains"] = excludes
+
+    if isinstance(tbs, str) and tbs.strip():
+        kwargs["tbs"] = tbs.strip()
+    if isinstance(location, str) and location.strip():
+        kwargs["location"] = location.strip()
+
+    return kwargs
+
+
+def _build_firecrawl_crawl_kwargs(
+    instructions: str = None,
+    limit: int = 20,
+    include_paths: Optional[List[str]] = None,
+    exclude_paths: Optional[List[str]] = None,
+    max_discovery_depth: Optional[int] = None,
+    sitemap: Optional[str] = None,
+    ignore_query_parameters: Optional[bool] = None,
+    regex_on_full_url: Optional[bool] = None,
+    crawl_entire_domain: Optional[bool] = None,
+    allow_external_links: Optional[bool] = None,
+    allow_subdomains: Optional[bool] = None,
+    delay: Optional[float] = None,
+    max_concurrency: Optional[int] = None,
+    scrape_options: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {}
+    if isinstance(instructions, str) and instructions.strip():
+        kwargs["prompt"] = instructions.strip()
+
+    safe_limit = _coerce_int(limit, minimum=1, maximum=10000)
+    if safe_limit is not None:
+        kwargs["limit"] = safe_limit
+
+    paths = _as_str_list(include_paths)
+    if paths:
+        kwargs["include_paths"] = paths
+    paths = _as_str_list(exclude_paths)
+    if paths:
+        kwargs["exclude_paths"] = paths
+
+    int_value = _coerce_int(max_discovery_depth, minimum=0)
+    if int_value is not None:
+        kwargs["max_discovery_depth"] = int_value
+    if sitemap in {"skip", "include", "only"}:
+        kwargs["sitemap"] = sitemap
+
+    if ignore_query_parameters is not None:
+        kwargs["ignore_query_parameters"] = bool(ignore_query_parameters)
+    if regex_on_full_url is not None:
+        kwargs["regex_on_full_url"] = bool(regex_on_full_url)
+    if crawl_entire_domain is not None:
+        kwargs["crawl_entire_domain"] = bool(crawl_entire_domain)
+    if allow_external_links is not None:
+        kwargs["allow_external_links"] = bool(allow_external_links)
+    if allow_subdomains is not None:
+        kwargs["allow_subdomains"] = bool(allow_subdomains)
+
+    delay_value = _coerce_float(delay, minimum=0)
+    if delay_value is not None:
+        kwargs["delay"] = delay_value
+    int_value = _coerce_int(max_concurrency, minimum=1, maximum=100)
+    if int_value is not None:
+        kwargs["max_concurrency"] = int_value
+
+    nested = scrape_options if isinstance(scrape_options, dict) else {}
+    scrape_kwargs = _build_firecrawl_scrape_kwargs(
+        format=nested.get("format"),
+        formats=nested.get("formats"),
+        only_main_content=nested.get("only_main_content"),
+        only_clean_content=nested.get("only_clean_content"),
+        include_tags=nested.get("include_tags"),
+        exclude_tags=nested.get("exclude_tags"),
+        max_age=nested.get("max_age"),
+        min_age=nested.get("min_age"),
+        wait_for=nested.get("wait_for"),
+        mobile=nested.get("mobile"),
+        timeout=nested.get("timeout"),
+        pdf_parser_mode=nested.get("pdf_parser_mode"),
+        pdf_max_pages=nested.get("pdf_max_pages"),
+        actions=nested.get("actions"),
+        location=nested.get("location"),
+        default_formats=["markdown"],
+    )
+    kwargs["scrape_options"] = scrape_kwargs
+
+    return kwargs
+
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
 _firecrawl_client = None
@@ -784,34 +1210,214 @@ def _parallel_search(query: str, limit: int = 5) -> dict:
     return {"success": True, "data": {"web": web_results}}
 
 
-def _firecrawl_search(query: str, limit: int = 5) -> dict:
+def _to_plain_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "__dict__"):
+        return dict(value.__dict__)
+    return {}
+
+
+def _firecrawl_scrape_payload(scrape_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    field_map = {
+        "include_tags": "includeTags",
+        "exclude_tags": "excludeTags",
+        "only_main_content": "onlyMainContent",
+        "only_clean_content": "onlyCleanContent",
+        "max_age": "maxAge",
+        "min_age": "minAge",
+        "wait_for": "waitFor",
+        "mobile": "mobile",
+        "timeout": "timeout",
+        "location": "location",
+    }
+    for key, value in scrape_kwargs.items():
+        if key == "formats":
+            payload["formats"] = value
+        elif key == "parsers":
+            converted = []
+            for parser in value:
+                if isinstance(parser, dict):
+                    parser_data = dict(parser)
+                    if "max_pages" in parser_data:
+                        parser_data["maxPages"] = parser_data.pop("max_pages")
+                    converted.append(parser_data)
+                else:
+                    converted.append(parser)
+            payload["parsers"] = converted
+        elif key == "actions":
+            converted = []
+            for action in value:
+                if not isinstance(action, dict):
+                    continue
+                action_data = dict(action)
+                if "full_page" in action_data:
+                    action_data["fullPage"] = action_data.pop("full_page")
+                converted.append(action_data)
+            payload["actions"] = converted
+        elif key in field_map:
+            payload[field_map[key]] = value
+    return payload
+
+
+def _firecrawl_search_payload(search_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"query": search_kwargs["query"]}
+    field_map = {
+        "limit": "limit",
+        "tbs": "tbs",
+        "location": "location",
+        "include_domains": "includeDomains",
+        "exclude_domains": "excludeDomains",
+    }
+    for key, target in field_map.items():
+        if key in search_kwargs:
+            payload[target] = search_kwargs[key]
+    if "sources" in search_kwargs:
+        payload["sources"] = [{"type": source} for source in search_kwargs["sources"]]
+    if "categories" in search_kwargs:
+        payload["categories"] = [{"type": category} for category in search_kwargs["categories"]]
+    return payload
+
+
+def _firecrawl_crawl_payload(url: str, crawl_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"url": url}
+    field_map = {
+        "prompt": "prompt",
+        "limit": "limit",
+        "include_paths": "includePaths",
+        "exclude_paths": "excludePaths",
+        "max_discovery_depth": "maxDiscoveryDepth",
+        "sitemap": "sitemap",
+        "ignore_query_parameters": "ignoreQueryParameters",
+        "regex_on_full_url": "regexOnFullURL",
+        "crawl_entire_domain": "crawlEntireDomain",
+        "allow_external_links": "allowExternalLinks",
+        "allow_subdomains": "allowSubdomains",
+        "delay": "delay",
+        "max_concurrency": "maxConcurrency",
+    }
+    for key, target in field_map.items():
+        if key in crawl_kwargs:
+            payload[target] = crawl_kwargs[key]
+    if "scrape_options" in crawl_kwargs:
+        payload["scrapeOptions"] = _firecrawl_scrape_payload(crawl_kwargs["scrape_options"])
+    return payload
+
+
+def _firecrawl_http_client(client: Any):
+    return getattr(getattr(client, "_v2_client", None), "http_client", None)
+
+
+def _firecrawl_post_json(client: Any, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    http_client = _firecrawl_http_client(client)
+    if http_client is None:
+        raise ValueError("Firecrawl SDK client does not expose a v2 HTTP client")
+    response = http_client.post(endpoint, payload)
+    if not getattr(response, "ok", False):
+        response.raise_for_status()
+    body = response.json()
+    if isinstance(body, dict) and body.get("success") is False:
+        raise Exception(body.get("error", "Unknown Firecrawl error"))
+    return body if isinstance(body, dict) else {}
+
+
+def _call_firecrawl_scrape(url: str, scrape_kwargs: Dict[str, Any]) -> Any:
+    client = _get_firecrawl_client()
+    # The installed SDK lags a few v2 docs fields on the high-level scrape()
+    # signature, so use the v2 HTTP client when those fields are requested.
+    if {"only_clean_content", "min_age"} & set(scrape_kwargs) and _firecrawl_http_client(client) is not None:
+        body = _firecrawl_post_json(
+            client,
+            "/v2/scrape",
+            {"url": url, **_firecrawl_scrape_payload(scrape_kwargs)},
+        )
+        return body.get("data", body)
+    return client.scrape(url=url, **scrape_kwargs)
+
+
+def _call_firecrawl_crawl(url: str, crawl_kwargs: Dict[str, Any]) -> Any:
+    client = _get_firecrawl_client()
+    scrape_options = crawl_kwargs.get("scrape_options", {})
+    delay = crawl_kwargs.get("delay")
+    needs_docs_payload = (
+        bool({"only_clean_content", "min_age"} & set(scrape_options))
+        or (isinstance(delay, float) and not delay.is_integer())
+    )
+    if needs_docs_payload and _firecrawl_http_client(client) is not None:
+        body = _firecrawl_post_json(client, "/v2/crawl", _firecrawl_crawl_payload(url, crawl_kwargs))
+        job_id = body.get("id")
+        if not job_id:
+            return body.get("data", body)
+        from firecrawl.v2.methods.crawl import wait_for_crawl_completion
+
+        return wait_for_crawl_completion(_firecrawl_http_client(client), job_id, poll_interval=2, timeout=None)
+    return client.crawl(url=url, **crawl_kwargs)
+
+
+def _normalize_firecrawl_search_response(response: Any) -> dict:
+    response_dict = _to_plain_dict(response)
+    data = response_dict.get("data", response_dict)
+    normalized_data: Dict[str, List[Dict[str, Any]]] = {}
+
+    for source in ("web", "images", "news"):
+        raw_results = []
+        if isinstance(data, dict):
+            raw_results = data.get(source) or []
+        elif hasattr(response, source):
+            raw_results = getattr(response, source) or []
+        results = []
+        for item in raw_results:
+            plain = _to_plain_dict(item)
+            if plain:
+                results.append(plain)
+        if results or source == "web":
+            normalized_data[source] = results
+
+    return {"success": True, "data": normalized_data}
+
+
+def _firecrawl_search(
+    query: str,
+    limit: int = 5,
+    sources: Optional[List[str]] = None,
+    categories: Optional[List[str]] = None,
+    include_domains: Optional[List[str]] = None,
+    exclude_domains: Optional[List[str]] = None,
+    tbs: Optional[str] = None,
+    location: Optional[str] = None,
+) -> dict:
     logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
-    response = _get_firecrawl_client().search(
+    search_kwargs = _build_firecrawl_search_kwargs(
         query=query,
-        limit=limit
+        limit=limit,
+        sources=sources,
+        categories=categories,
+        include_domains=include_domains,
+        exclude_domains=exclude_domains,
+        tbs=tbs,
+        location=location,
     )
+    client = _get_firecrawl_client()
 
-    web_results = []
-    if hasattr(response, 'web'):
-        if response.web:
-            for result in response.web:
-                if hasattr(result, 'model_dump'):
-                    web_results.append(result.model_dump())
-                elif hasattr(result, '__dict__'):
-                    web_results.append(result.__dict__)
-                elif isinstance(result, dict):
-                    web_results.append(result)
-    elif hasattr(response, 'model_dump'):
-        response_dict = response.model_dump()
-        if 'web' in response_dict and response_dict['web']:
-            web_results = response_dict['web']
-    elif isinstance(response, dict):
-        if 'web' in response and response['web']:
-            web_results = response['web']
+    if {"include_domains", "exclude_domains"} & set(search_kwargs) and _firecrawl_http_client(client) is not None:
+        body = _firecrawl_post_json(client, "/v2/search", _firecrawl_search_payload(search_kwargs))
+        response = body.get("data", body)
+    else:
+        sdk_kwargs = {
+            key: value
+            for key, value in search_kwargs.items()
+            if key not in {"query", "include_domains", "exclude_domains"}
+        }
+        response = client.search(query=search_kwargs["query"], **sdk_kwargs)
 
-    logger.info("Found %d search results", len(web_results))
-    return {"success": True, "data": {"web": web_results}}
+    response_data = _normalize_firecrawl_search_response(response)
+    results_count = sum(len(value) for value in response_data.get("data", {}).values())
+    logger.info("Found %d search results", results_count)
+    return response_data
 
 
 def _canonicalize_result_url(url: str) -> str:
@@ -886,7 +1492,17 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
-def web_search_tool(query: str, limit: int = 5, user_task: Optional[str] = None) -> str:
+def web_search_tool(
+    query: str,
+    limit: int = 5,
+    user_task: Optional[str] = None,
+    sources: Optional[List[str]] = None,
+    categories: Optional[List[str]] = None,
+    include_domains: Optional[List[str]] = None,
+    exclude_domains: Optional[List[str]] = None,
+    tbs: Optional[str] = None,
+    location: Optional[str] = None,
+) -> str:
     """
     Search the web for information using available search API backend.
 
@@ -923,7 +1539,13 @@ def web_search_tool(query: str, limit: int = 5, user_task: Optional[str] = None)
     debug_call_data = {
         "parameters": {
             "query": query,
-            "limit": limit
+            "limit": limit,
+            "sources": sources,
+            "categories": categories,
+            "include_domains": include_domains,
+            "exclude_domains": exclude_domains,
+            "tbs": tbs,
+            "location": location,
         },
         "error": None,
         "results_count": 0,
@@ -965,7 +1587,16 @@ def web_search_tool(query: str, limit: int = 5, user_task: Optional[str] = None)
             _debug.save()
             return result_json
 
-        response_data = _firecrawl_search(query, limit)
+        response_data = _firecrawl_search(
+            query,
+            limit,
+            sources=sources,
+            categories=categories,
+            include_domains=include_domains,
+            exclude_domains=exclude_domains,
+            tbs=tbs,
+            location=location,
+        )
         results_count = len(response_data.get("data", {}).get("web", []))
         
         # Capture debug information
@@ -996,9 +1627,23 @@ def web_search_tool(query: str, limit: int = 5, user_task: Optional[str] = None)
 async def web_extract_tool(
     urls: List[str], 
     format: str = None, 
+    formats: Optional[List[str]] = None,
     use_llm_processing: bool = True,
     model: str = DEFAULT_SUMMARIZER_MODEL,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
+    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
+    only_main_content: Optional[bool] = None,
+    only_clean_content: Optional[bool] = None,
+    include_tags: Optional[List[str]] = None,
+    exclude_tags: Optional[List[str]] = None,
+    max_age: Optional[int] = None,
+    min_age: Optional[int] = None,
+    wait_for: Optional[int] = None,
+    mobile: Optional[bool] = None,
+    timeout: Optional[int] = None,
+    pdf_parser_mode: Optional[str] = None,
+    pdf_max_pages: Optional[int] = None,
+    actions: Optional[List[Dict[str, Any]]] = None,
+    location: Optional[str] = None,
 ) -> str:
     """
     Extract content from specific web pages using available extraction API backend.
@@ -1024,9 +1669,23 @@ async def web_extract_tool(
         "parameters": {
             "urls": urls,
             "format": format,
+            "formats": formats,
             "use_llm_processing": use_llm_processing,
             "model": model,
-            "min_length": min_length
+            "min_length": min_length,
+            "only_main_content": only_main_content,
+            "only_clean_content": only_clean_content,
+            "include_tags": include_tags,
+            "exclude_tags": exclude_tags,
+            "max_age": max_age,
+            "min_age": min_age,
+            "wait_for": wait_for,
+            "mobile": mobile,
+            "timeout": timeout,
+            "pdf_parser_mode": pdf_parser_mode,
+            "pdf_max_pages": pdf_max_pages,
+            "actions": actions,
+            "location": location,
         },
         "error": None,
         "pages_extracted": 0,
@@ -1078,15 +1737,24 @@ async def web_extract_tool(
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
             else:
                 # ── Firecrawl extraction ──
-                # Determine requested formats for Firecrawl v2
-                formats: List[str] = []
-                if format == "markdown":
-                    formats = ["markdown"]
-                elif format == "html":
-                    formats = ["html"]
-                else:
-                    # Default: request markdown for LLM-readiness and include html as backup
-                    formats = ["markdown", "html"]
+                scrape_kwargs = _build_firecrawl_scrape_kwargs(
+                    format=format,
+                    formats=formats,
+                    only_main_content=only_main_content,
+                    only_clean_content=only_clean_content,
+                    include_tags=include_tags,
+                    exclude_tags=exclude_tags,
+                    max_age=max_age,
+                    min_age=min_age,
+                    wait_for=wait_for,
+                    mobile=mobile,
+                    timeout=timeout,
+                    pdf_parser_mode=pdf_parser_mode,
+                    pdf_max_pages=pdf_max_pages,
+                    actions=actions,
+                    location=location,
+                    default_formats=["markdown", "html"],
+                )
 
                 # Always use individual scraping for simplicity and reliability
                 # Batch scraping adds complexity without much benefit for small numbers of URLs
@@ -1111,16 +1779,18 @@ async def web_extract_tool(
 
                     try:
                         logger.info("Scraping: %s", url)
-                        scrape_result = _get_firecrawl_client().scrape(
-                            url=url,
-                            formats=formats
-                        )
+                        scrape_result = _call_firecrawl_scrape(url, scrape_kwargs)
 
                         # Process the result - properly handle object serialization
                         metadata = {}
                         title = ""
                         content_markdown = None
                         content_html = None
+                        content_raw_html = None
+                        content_summary = None
+                        content_links = None
+                        content_images = None
+                        content_screenshot = None
 
                         # Extract data from the scrape result
                         if hasattr(scrape_result, 'model_dump'):
@@ -1128,11 +1798,21 @@ async def web_extract_tool(
                             result_dict = scrape_result.model_dump()
                             content_markdown = result_dict.get('markdown')
                             content_html = result_dict.get('html')
+                            content_raw_html = result_dict.get('rawHtml') or result_dict.get('raw_html')
+                            content_summary = result_dict.get('summary')
+                            content_links = result_dict.get('links')
+                            content_images = result_dict.get('images')
+                            content_screenshot = result_dict.get('screenshot')
                             metadata = result_dict.get('metadata', {})
                         elif hasattr(scrape_result, '__dict__'):
                             # Regular object with attributes
                             content_markdown = getattr(scrape_result, 'markdown', None)
                             content_html = getattr(scrape_result, 'html', None)
+                            content_raw_html = getattr(scrape_result, 'rawHtml', None) or getattr(scrape_result, 'raw_html', None)
+                            content_summary = getattr(scrape_result, 'summary', None)
+                            content_links = getattr(scrape_result, 'links', None)
+                            content_images = getattr(scrape_result, 'images', None)
+                            content_screenshot = getattr(scrape_result, 'screenshot', None)
 
                             # Handle metadata - convert to dict if it's an object
                             metadata_obj = getattr(scrape_result, 'metadata', {})
@@ -1148,6 +1828,11 @@ async def web_extract_tool(
                             # Already a dictionary
                             content_markdown = scrape_result.get('markdown')
                             content_html = scrape_result.get('html')
+                            content_raw_html = scrape_result.get('rawHtml') or scrape_result.get('raw_html')
+                            content_summary = scrape_result.get('summary')
+                            content_links = scrape_result.get('links')
+                            content_images = scrape_result.get('images')
+                            content_screenshot = scrape_result.get('screenshot')
                             metadata = scrape_result.get('metadata', {})
 
                         # Ensure metadata is a dict (not an object)
@@ -1174,8 +1859,20 @@ async def web_extract_tool(
                             })
                             continue
 
-                        # Choose content based on requested format
-                        chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
+                        # Choose content based on requested format, falling back to markdown.
+                        preferred_formats = _build_firecrawl_formats(format, formats)
+                        if not preferred_formats:
+                            preferred_formats = ["markdown", "html"]
+                        content_by_format = {
+                            "markdown": content_markdown,
+                            "html": content_html,
+                            "rawHtml": content_raw_html,
+                            "summary": content_summary,
+                            "links": content_links,
+                            "images": content_images,
+                            "screenshot": content_screenshot,
+                        }
+                        chosen_content = _choose_firecrawl_content(content_by_format, preferred_formats)
 
                         results.append({
                             "url": final_url,
@@ -1329,7 +2026,20 @@ async def web_crawl_tool(
     depth: str = "basic", 
     use_llm_processing: bool = True,
     model: str = DEFAULT_SUMMARIZER_MODEL,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
+    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
+    limit: int = 20,
+    include_paths: Optional[List[str]] = None,
+    exclude_paths: Optional[List[str]] = None,
+    max_discovery_depth: Optional[int] = None,
+    sitemap: Optional[str] = None,
+    ignore_query_parameters: Optional[bool] = None,
+    regex_on_full_url: Optional[bool] = None,
+    crawl_entire_domain: Optional[bool] = None,
+    allow_subdomains: Optional[bool] = None,
+    allow_external_links: bool = False,
+    delay: Optional[float] = None,
+    max_concurrency: Optional[int] = None,
+    scrape_options: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Crawl a website with specific instructions using available crawling API backend.
@@ -1360,7 +2070,20 @@ async def web_crawl_tool(
             "depth": depth,
             "use_llm_processing": use_llm_processing,
             "model": model,
-            "min_length": min_length
+            "min_length": min_length,
+            "limit": limit,
+            "include_paths": include_paths,
+            "exclude_paths": exclude_paths,
+            "max_discovery_depth": max_discovery_depth,
+            "sitemap": sitemap,
+            "ignore_query_parameters": ignore_query_parameters,
+            "regex_on_full_url": regex_on_full_url,
+            "crawl_entire_domain": crawl_entire_domain,
+            "allow_subdomains": allow_subdomains,
+            "allow_external_links": allow_external_links,
+            "delay": delay,
+            "max_concurrency": max_concurrency,
+            "scrape_options": scrape_options,
         },
         "error": None,
         "pages_crawled": 0,
@@ -1488,32 +2211,31 @@ async def web_crawl_tool(
             return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": blocked["message"],
                 "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]}}]}, ensure_ascii=False)
 
-        # Use Firecrawl's v2 crawl functionality
-        # Docs: https://docs.firecrawl.dev/features/crawl
-        # The crawl() method automatically waits for completion and returns all data
-        
-        # Build crawl parameters - keep it simple
-        crawl_params = {
-            "limit": 20,  # Limit number of pages to crawl
-            "scrape_options": {
-                "formats": ["markdown"]  # Just markdown for simplicity
-            }
-        }
-        
-        # Note: The 'prompt' parameter is not documented for crawl
-        # Instructions are typically used with the Extract endpoint, not Crawl
-        if instructions:
-            logger.info("Instructions parameter ignored (not supported in crawl API)")
+        # Firecrawl v2 documents crawl prompt: explicit params override any
+        # natural-language options generated from the prompt.
+        crawl_params = _build_firecrawl_crawl_kwargs(
+            instructions=instructions,
+            limit=limit,
+            include_paths=include_paths,
+            exclude_paths=exclude_paths,
+            max_discovery_depth=max_discovery_depth,
+            sitemap=sitemap,
+            ignore_query_parameters=ignore_query_parameters,
+            regex_on_full_url=regex_on_full_url,
+            crawl_entire_domain=crawl_entire_domain,
+            allow_external_links=allow_external_links,
+            allow_subdomains=allow_subdomains,
+            delay=delay,
+            max_concurrency=max_concurrency,
+            scrape_options=scrape_options,
+        )
         
         from tools.interrupt import is_interrupted as _is_int
         if _is_int():
             return json.dumps({"error": "Interrupted", "success": False})
 
         try:
-            crawl_result = _get_firecrawl_client().crawl(
-                url=url,
-                **crawl_params
-            )
+            crawl_result = _call_firecrawl_crawl(url, crawl_params)
         except Exception as e:
             logger.debug("Crawl API call failed: %s", e)
             raise
@@ -1550,6 +2272,11 @@ async def web_crawl_tool(
             title = ""
             content_markdown = None
             content_html = None
+            content_raw_html = None
+            content_summary = None
+            content_links = None
+            content_images = None
+            content_screenshot = None
             metadata = {}
             
             # Extract data from the item
@@ -1558,11 +2285,21 @@ async def web_crawl_tool(
                 item_dict = item.model_dump()
                 content_markdown = item_dict.get('markdown')
                 content_html = item_dict.get('html')
+                content_raw_html = item_dict.get('rawHtml') or item_dict.get('raw_html')
+                content_summary = item_dict.get('summary')
+                content_links = item_dict.get('links')
+                content_images = item_dict.get('images')
+                content_screenshot = item_dict.get('screenshot')
                 metadata = item_dict.get('metadata', {})
             elif hasattr(item, '__dict__'):
                 # Regular object with attributes
                 content_markdown = getattr(item, 'markdown', None)
                 content_html = getattr(item, 'html', None)
+                content_raw_html = getattr(item, 'rawHtml', None) or getattr(item, 'raw_html', None)
+                content_summary = getattr(item, 'summary', None)
+                content_links = getattr(item, 'links', None)
+                content_images = getattr(item, 'images', None)
+                content_screenshot = getattr(item, 'screenshot', None)
                 
                 # Handle metadata - convert to dict if it's an object
                 metadata_obj = getattr(item, 'metadata', {})
@@ -1578,6 +2315,11 @@ async def web_crawl_tool(
                 # Already a dictionary
                 content_markdown = item.get('markdown')
                 content_html = item.get('html')
+                content_raw_html = item.get('rawHtml') or item.get('raw_html')
+                content_summary = item.get('summary')
+                content_links = item.get('links')
+                content_images = item.get('images')
+                content_screenshot = item.get('screenshot')
                 metadata = item.get('metadata', {})
             
             # Ensure metadata is a dict (not an object)
@@ -1604,8 +2346,19 @@ async def web_crawl_tool(
                 })
                 continue
 
-            # Choose content (prefer markdown)
-            content = content_markdown or content_html or ""
+            # Choose content based on nested scrape options, falling back to markdown.
+            crawl_preferred_formats = []
+            if isinstance(crawl_params.get("scrape_options"), dict):
+                crawl_preferred_formats = crawl_params["scrape_options"].get("formats", []) or []
+            content = _choose_firecrawl_content({
+                "markdown": content_markdown,
+                "html": content_html,
+                "rawHtml": content_raw_html,
+                "summary": content_summary,
+                "links": content_links,
+                "images": content_images,
+                "screenshot": content_screenshot,
+            }, crawl_preferred_formats)
             
             pages.append({
                 "url": page_url,
@@ -1872,7 +2625,8 @@ from tools.registry import registry
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
     "description": (
-        "Search the web for information on any topic using a single backend."
+        "Search the web for information on any topic using a single backend. "
+        "Firecrawl supports optional sources, categories, domain filters, tbs, and location; other backends ignore those filters."
     ),
     "parameters": {
         "type": "object",
@@ -1880,6 +2634,41 @@ WEB_SEARCH_SCHEMA = {
             "query": {
                 "type": "string",
                 "description": "The search query to look up on the web"
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return",
+                "default": 5,
+                "minimum": 1,
+                "maximum": 20
+            },
+            "sources": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["web", "images", "news"]},
+                "description": "Firecrawl result sources to search"
+            },
+            "categories": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["github", "research", "pdf"]},
+                "description": "Firecrawl category filters"
+            },
+            "include_domains": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Firecrawl domains to restrict results to; hostnames only, no protocol needed"
+            },
+            "exclude_domains": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Firecrawl domains to exclude; ignored when include_domains is set"
+            },
+            "tbs": {
+                "type": "string",
+                "description": "Firecrawl time-based search filter such as qdr:w or sbd:1,qdr:w"
+            },
+            "location": {
+                "type": "string",
+                "description": "Firecrawl search location such as San Francisco,California,United States"
             }
         },
         "required": ["query"]
@@ -1897,9 +2686,144 @@ WEB_EXTRACT_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "List of URLs to extract content from (max 5 URLs per call)",
                 "maxItems": 5
+            },
+            "format": {
+                "type": "string",
+                "enum": ["markdown", "html", "raw_html", "summary", "links", "images", "screenshot"],
+                "description": "Single Firecrawl output format to request"
+            },
+            "formats": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["markdown", "html", "raw_html", "summary", "links", "images", "screenshot"]},
+                "description": "Multiple Firecrawl output formats to request; overrides format when provided"
+            },
+            "only_main_content": {
+                "type": "boolean",
+                "description": "Firecrawl onlyMainContent; defaults true in Firecrawl when omitted"
+            },
+            "only_clean_content": {
+                "type": "boolean",
+                "description": "Firecrawl beta LLM cleaner; not compatible with zero-data-retention"
+            },
+            "include_tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "HTML tags/selectors Firecrawl should include"
+            },
+            "exclude_tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "HTML tags/selectors Firecrawl should exclude"
+            },
+            "max_age": {
+                "type": "integer",
+                "description": "Firecrawl cache maxAge in milliseconds"
+            },
+            "min_age": {
+                "type": "integer",
+                "description": "Firecrawl cache-only minAge in milliseconds"
+            },
+            "wait_for": {
+                "type": "integer",
+                "description": "Extra Firecrawl wait time before extraction, in milliseconds"
+            },
+            "mobile": {
+                "type": "boolean",
+                "description": "Use Firecrawl mobile emulation"
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Firecrawl request timeout in milliseconds",
+                "minimum": 1000,
+                "maximum": 300000
+            },
+            "pdf_parser_mode": {
+                "type": "string",
+                "enum": ["fast", "auto", "ocr"],
+                "description": "Firecrawl PDF parser mode"
+            },
+            "pdf_max_pages": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000,
+                "description": "Maximum PDF pages Firecrawl should parse"
+            },
+            "actions": {
+                "type": "array",
+                "description": "Safe Firecrawl pre-scrape actions: wait, click, press, scroll, screenshot",
+                "items": {"type": "object"}
             }
         },
         "required": ["urls"]
+    }
+}
+
+WEB_CRAWL_SCHEMA = {
+    "name": "web_crawl",
+    "description": (
+        "Crawl a website with Firecrawl. Uses instructions as Firecrawl crawl prompt; "
+        "explicit crawl parameters override prompt-generated equivalents."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "Base URL to crawl"},
+            "instructions": {"type": "string", "description": "Natural-language Firecrawl crawl prompt"},
+            "limit": {
+                "type": "integer",
+                "description": "Maximum pages to crawl",
+                "default": 20,
+                "minimum": 1,
+                "maximum": 10000
+            },
+            "include_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "URL pathname regexes to include"
+            },
+            "exclude_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "URL pathname regexes to exclude"
+            },
+            "max_discovery_depth": {"type": "integer", "minimum": 0},
+            "sitemap": {"type": "string", "enum": ["skip", "include", "only"]},
+            "ignore_query_parameters": {"type": "boolean"},
+            "regex_on_full_url": {"type": "boolean"},
+            "crawl_entire_domain": {"type": "boolean"},
+            "allow_subdomains": {"type": "boolean"},
+            "allow_external_links": {
+                "type": "boolean",
+                "default": False,
+                "description": "Allow external links; defaults false"
+            },
+            "delay": {"type": "number", "minimum": 0},
+            "max_concurrency": {"type": "integer", "minimum": 1},
+            "scrape_options": {
+                "type": "object",
+                "description": "Nested safe Firecrawl scrape options for each crawled page",
+                "properties": {
+                    "format": {"type": "string", "enum": ["markdown", "html", "raw_html", "summary", "links", "images", "screenshot"]},
+                    "formats": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["markdown", "html", "raw_html", "summary", "links", "images", "screenshot"]}
+                    },
+                    "only_main_content": {"type": "boolean"},
+                    "only_clean_content": {"type": "boolean"},
+                    "include_tags": {"type": "array", "items": {"type": "string"}},
+                    "exclude_tags": {"type": "array", "items": {"type": "string"}},
+                    "max_age": {"type": "integer"},
+                    "min_age": {"type": "integer"},
+                    "wait_for": {"type": "integer"},
+                    "mobile": {"type": "boolean"},
+                    "timeout": {"type": "integer", "minimum": 1000, "maximum": 300000},
+                    "pdf_parser_mode": {"type": "string", "enum": ["fast", "auto", "ocr"]},
+                    "pdf_max_pages": {"type": "integer", "minimum": 1, "maximum": 10000},
+                    "actions": {"type": "array", "items": {"type": "object"}}
+                }
+            }
+        },
+        "required": ["url"]
     }
 }
 
@@ -1909,11 +2833,17 @@ registry.register(
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(
         args.get("query", ""),
-        limit=5,
+        limit=args.get("limit", 5),
         user_task=kw.get("user_task"),
+        sources=args.get("sources"),
+        categories=args.get("categories"),
+        include_domains=args.get("include_domains"),
+        exclude_domains=args.get("exclude_domains"),
+        tbs=args.get("tbs"),
+        location=args.get("location"),
     ),
     check_fn=check_web_api_key,
-    requires_env=["EXA_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
+    requires_env=["EXA_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "TAVILY_API_KEY"],
     emoji="🔍",
 )
 registry.register(
@@ -1921,9 +2851,50 @@ registry.register(
     toolset="web",
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+        args.get("format", "markdown"),
+        formats=args.get("formats"),
+        only_main_content=args.get("only_main_content"),
+        only_clean_content=args.get("only_clean_content"),
+        include_tags=args.get("include_tags"),
+        exclude_tags=args.get("exclude_tags"),
+        max_age=args.get("max_age"),
+        min_age=args.get("min_age"),
+        wait_for=args.get("wait_for"),
+        mobile=args.get("mobile"),
+        timeout=args.get("timeout"),
+        pdf_parser_mode=args.get("pdf_parser_mode"),
+        pdf_max_pages=args.get("pdf_max_pages"),
+        actions=args.get("actions"),
+    ),
     check_fn=check_web_api_key,
-    requires_env=["EXA_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
+    requires_env=["EXA_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "TAVILY_API_KEY"],
     is_async=True,
     emoji="📄",
+)
+registry.register(
+    name="web_crawl",
+    toolset="web",
+    schema=WEB_CRAWL_SCHEMA,
+    handler=lambda args, **kw: web_crawl_tool(
+        args.get("url", ""),
+        instructions=args.get("instructions"),
+        limit=args.get("limit", 20),
+        include_paths=args.get("include_paths"),
+        exclude_paths=args.get("exclude_paths"),
+        max_discovery_depth=args.get("max_discovery_depth"),
+        sitemap=args.get("sitemap"),
+        ignore_query_parameters=args.get("ignore_query_parameters"),
+        regex_on_full_url=args.get("regex_on_full_url"),
+        crawl_entire_domain=args.get("crawl_entire_domain"),
+        allow_subdomains=args.get("allow_subdomains"),
+        allow_external_links=args.get("allow_external_links", False),
+        delay=args.get("delay"),
+        max_concurrency=args.get("max_concurrency"),
+        scrape_options=args.get("scrape_options"),
+    ),
+    check_fn=check_web_api_key,
+    requires_env=["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"],
+    is_async=True,
+    emoji="🕸️",
 )

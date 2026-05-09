@@ -983,11 +983,11 @@ class AIAgent:
                 if effective_key and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
         else:
-            if api_key:
+            if api_key or base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
                 effective_base = base_url or self.base_url
-                client_kwargs = {"api_key": api_key, "base_url": effective_base}
+                client_kwargs = {"api_key": api_key or "", "base_url": effective_base}
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
@@ -4205,7 +4205,10 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
-        client = OpenAI(**client_kwargs)
+        sdk_kwargs = dict(client_kwargs)
+        if not sdk_kwargs.get("api_key"):
+            sdk_kwargs["api_key"] = "dummy-key"
+        client = OpenAI(**sdk_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
             reason,

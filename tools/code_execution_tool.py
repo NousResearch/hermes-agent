@@ -84,15 +84,15 @@ def check_sandbox_requirements() -> bool:
 _TOOL_STUBS = {
     "web_search": (
         "web_search",
-        "query: str, limit: int = 5",
+        'query: str, limit: int = 5, sources: list = None, categories: list = None, include_domains: list = None, exclude_domains: list = None, tbs: str = None, location: str = None',
         '"""Search the web. Returns dict with data.web list of {url, title, description}."""',
-        '{"query": query, "limit": limit}',
+        '{"query": query, "limit": limit, "sources": sources, "categories": categories, "include_domains": include_domains, "exclude_domains": exclude_domains, "tbs": tbs, "location": location}',
     ),
     "web_extract": (
         "web_extract",
-        "urls: list",
+        'urls: list, format: str = None, formats: list = None, only_main_content: bool = None, only_clean_content: bool = None, include_tags: list = None, exclude_tags: list = None, max_age: int = None, min_age: int = None, wait_for: int = None, mobile: bool = None, timeout: int = None, pdf_parser_mode: str = None, pdf_max_pages: int = None, actions: list = None',
         '"""Extract content from URLs. Returns dict with results list of {url, title, content, error}."""',
-        '{"urls": urls}',
+        '{"urls": urls, "format": format, "formats": formats, "only_main_content": only_main_content, "only_clean_content": only_clean_content, "include_tags": include_tags, "exclude_tags": exclude_tags, "max_age": max_age, "min_age": min_age, "wait_for": wait_for, "mobile": mobile, "timeout": timeout, "pdf_parser_mode": pdf_parser_mode, "pdf_max_pages": pdf_max_pages, "actions": actions}',
     ),
     "read_file": (
         "read_file",
@@ -1307,7 +1307,7 @@ def _load_config() -> dict:
 # Ordered to match the canonical display order.
 _TOOL_DOC_LINES = [
     ("web_search",
-     "  web_search(query: str, limit: int = 5) -> dict\n"
+     "  web_search(query: str, limit: int = 5, sources=None, categories=None, include_domains=None, exclude_domains=None, tbs=None, location=None) -> dict\n"
      "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
     ("web_extract",
      "  web_extract(urls: list[str]) -> dict\n"

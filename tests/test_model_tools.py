@@ -251,6 +251,7 @@ class TestBackwardCompat:
         assert len(names) > 0
         # Should contain well-known tools
         assert "web_search" in names
+        assert "web_crawl" in names
         assert "terminal" in names
 
     def test_get_toolset_for_tool(self):

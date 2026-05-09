@@ -209,6 +209,16 @@ class _SlashWorker:
             cwd=os.getcwd(),
             env=os.environ.copy(),
         )
+        # Register with global registry for central lifecycle management (Issue #21370)
+        try:
+            from tools.process_registry import process_registry
+            process_registry.register_host_process(
+                self.proc.pid,
+                command=f"slash_worker:{session_key}",
+                task_id=session_key
+            )
+        except Exception:
+            pass
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
 

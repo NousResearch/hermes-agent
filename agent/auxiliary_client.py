@@ -1840,10 +1840,12 @@ def _is_connection_error(exc: Exception) -> bool:
     distinct from API errors (4xx/5xx) which indicate the provider IS
     reachable but returned an error.
     """
-    from openai import APIConnectionError, APITimeoutError
-
-    if isinstance(exc, (APIConnectionError, APITimeoutError)):
-        return True
+    try:
+        from openai import APIConnectionError, APITimeoutError
+        if isinstance(exc, (APIConnectionError, APITimeoutError)):
+            return True
+    except ImportError:
+        pass
     # urllib3 / httpx / httpcore connection errors
     err_type = type(exc).__name__
     if any(kw in err_type for kw in ("Connection", "Timeout", "DNS", "SSL")):
@@ -1853,6 +1855,16 @@ def _is_connection_error(exc: Exception) -> bool:
         "connection refused", "name or service not known",
         "no route to host", "network is unreachable",
         "timed out", "connection reset",
+        # httpcore / httpx streaming premature-close errors.  These surface
+        # when a proxy or provider drops the connection mid-stream and are
+        # transient by nature — the request should be retried or rerouted.
+        # See issue #18458.
+        "incomplete chunked read",
+        "peer closed connection",
+        "response ended prematurely",
+        "unexpected eof",
+        "remoteprotocolerror",
+        "localprotocolerror",
     )):
         return True
     return False

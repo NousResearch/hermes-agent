@@ -499,6 +499,131 @@ class TestSummaryFallbackToMainModel:
         assert c._summary_failure_cooldown_until == 1030.0
 
 
+class TestStreamingClosedFallback:
+    """httpcore / httpx streaming premature-close errors must be classified the
+    same as timeouts so the compressor retries on the main model instead of
+    entering a 60-second cooldown.  Issue #18458.
+
+    ``_is_connection_error`` is patched here because the test venv may not
+    have ``openai`` installed (the real function does ``from openai import ...``
+    inside its body).  We test the *wiring* — that `_generate_summary` calls
+    ``_is_connection_error`` and acts on its result — not the classifier itself
+    (that's covered in ``test_auxiliary_client.py::TestIsConnectionError``).
+    """
+
+    def _msgs(self):
+        return [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+    def test_incomplete_chunked_read_falls_back_to_main(self):
+        """``httpcore.RemoteProtocolError: incomplete chunked read`` triggers
+        the retry-on-main path when ``_is_connection_error`` returns True."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        err = Exception("RemoteProtocolError: incomplete chunked read")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-stream-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err, mock_ok],
+        ) as mock_call, patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ):
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "aux-stream-model"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model" in result
+
+    def test_peer_closed_connection_falls_back_to_main(self):
+        """``peer closed connection`` triggers the retry-on-main path."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary ok"
+
+        err = Exception("peer closed connection without sending complete message body")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err, mock_ok],
+        ) as mock_call, patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ):
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert result is not None
+
+    def test_streaming_closed_on_main_uses_short_cooldown(self):
+        """When already on the main model, a streaming-closed error should use
+        the 30s cooldown, not the default 60s — these errors are transient."""
+        err = Exception("RemoteProtocolError: response ended prematurely")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                # No summary_model_override → no fallback path.
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err,
+        ), patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+
+        assert result is None
+        # Streaming-closed should use the 30s short cooldown.
+        assert c._summary_failure_cooldown_until == 1030.0
+
+    def test_non_streaming_unknown_error_still_uses_long_cooldown(self):
+        """Unclassified errors should retain the 60s default cooldown to
+        prevent hammering a broken provider."""
+        err = Exception("Internal Server Error: something unexpected happened")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err,
+        ), patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=False,
+        ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+
+        assert result is None
+        assert c._summary_failure_cooldown_until == 1060.0
+
+
 class TestAuxModelFallbackSurfacedToCallers:
     """When summary_model fails but retry-on-main succeeds, compress() must
     expose the aux-model failure via _last_aux_model_failure_{model,error}

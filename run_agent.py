@@ -3840,10 +3840,55 @@ class AIAgent:
         Ensures conversations are never lost, even on errors or early returns.
         """
         self._drop_trailing_empty_response_scaffolding(messages)
+        self._drop_private_truncation_recovery_scaffolding(messages)
         self._apply_persist_user_message_override(messages)
+        self._drop_private_truncation_recovery_scaffolding(messages)
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
+
+    @staticmethod
+    def _strip_private_truncation_recovery_text(content: Any) -> Any:
+        """Remove internal truncation-retry prompts from persisted user text."""
+        if not isinstance(content, str) or "[System: Your previous tool call arguments were" not in content:
+            return content
+        cleaned = re.sub(
+            r"\n*\[System: Your previous tool call arguments were (?:repeatedly )?"
+            r"truncated by the provider output window[^\]]*\]",
+            "",
+            content,
+            flags=re.DOTALL,
+        ).strip()
+        return cleaned
+
+    def _drop_private_truncation_recovery_scaffolding(self, messages: List[Dict]) -> int:
+        """Prune private tool-truncation retry prompts from live transcripts.
+
+        Older builds persisted these prompts as ordinary user messages.  Once
+        present in history, they can keep steering later turns away from tool
+        execution even after the original truncation was handled.
+        """
+        repairs = 0
+        idx = 0
+        while idx < len(messages):
+            msg = messages[idx]
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                idx += 1
+                continue
+
+            content = msg.get("content")
+            cleaned = self._strip_private_truncation_recovery_text(content)
+            if cleaned == content:
+                idx += 1
+                continue
+
+            repairs += 1
+            if isinstance(cleaned, str) and cleaned:
+                msg["content"] = cleaned
+                idx += 1
+            else:
+                messages.pop(idx)
+        return repairs
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -10902,6 +10947,14 @@ class AIAgent:
 
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
+        cleaned_recovery_prompts = self._drop_private_truncation_recovery_scaffolding(messages)
+        if cleaned_recovery_prompts:
+            logger.info(
+                "Removed %s stale truncation-recovery prompts before request (session=%s)",
+                cleaned_recovery_prompts,
+                self.session_id or "-",
+            )
+        user_message = self._strip_private_truncation_recovery_text(user_message)
 
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
@@ -11129,6 +11182,7 @@ class AIAgent:
         length_continue_stalled_retries = 0
         truncated_tool_call_retries = 0
         truncated_response_prefix = ""
+        ephemeral_retry_messages: list[dict[str, str]] = []
         compression_attempts = 0
         _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
@@ -11149,9 +11203,20 @@ class AIAgent:
                     "instead of a giant write_file content string. Emit only complete valid JSON "
                     "for any tool call.]"
                 )
-            messages.append({"role": "user", "content": content})
-            self._session_messages = messages
-            self._save_session_log(messages)
+            ephemeral_retry_messages.clear()
+            ephemeral_retry_messages.append({"role": "user", "content": content})
+
+        def _truncation_recovery_final_response(*, tool_call: bool = False) -> str:
+            if tool_call:
+                return (
+                    "⚠️ The model repeatedly generated an oversized or truncated tool call. "
+                    "Hermes did not execute incomplete tool arguments. Please send the next "
+                    "step again as a smaller batch, or ask me to continue one item at a time."
+                )
+            return (
+                "⚠️ The model response was repeatedly truncated before Hermes could recover "
+                "a complete answer. Please ask me to continue with a smaller step."
+            )
         
         # Record the execution thread so interrupt()/clear_interrupt() can
         # scope the tool-level interrupt signal to THIS agent's thread only.
@@ -11401,6 +11466,9 @@ class AIAgent:
                 sys_offset = 1 if effective_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
+
+            if ephemeral_retry_messages:
+                api_messages.extend([msg.copy() for msg in ephemeral_retry_messages])
 
             # Apply Anthropic prompt caching for Claude models on native
             # Anthropic, OpenRouter, and third-party Anthropic-compatible
@@ -12059,7 +12127,8 @@ class AIAgent:
                                 self._cleanup_task_resources(effective_task_id)
                                 self._persist_session(messages, conversation_history)
                                 return {
-                                    "final_response": partial_response or None,
+                                    "final_response": partial_response
+                                    or _truncation_recovery_final_response(),
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,
@@ -12104,12 +12173,12 @@ class AIAgent:
                                 self._cleanup_task_resources(effective_task_id)
                                 self._persist_session(messages, conversation_history)
                                 return {
-                                    "final_response": None,
+                                    "final_response": _truncation_recovery_final_response(tool_call=True),
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,
                                     "partial": True,
-                                    "error": "Response truncated due to output length limit",
+                                    "error": "Tool call output remained truncated after recovery attempts",
                                 }
 
                         # If we have prior messages, roll back to last complete state
@@ -12121,25 +12190,27 @@ class AIAgent:
                             self._persist_session(messages, conversation_history)
 
                             return {
-                                "final_response": None,
+                                "final_response": _truncation_recovery_final_response(),
                                 "messages": rolled_back_messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Response truncated due to output length limit"
+                                "error": "Response remained truncated after recovery attempts"
                             }
                         else:
                             # First message was truncated - mark as failed
                             self._vprint(f"{self.log_prefix}❌ First response truncated - cannot recover", force=True)
                             self._persist_session(messages, conversation_history)
                             return {
-                                "final_response": None,
+                                "final_response": _truncation_recovery_final_response(),
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "failed": True,
-                                "error": "First response truncated due to output length limit"
+                                "error": "First response remained truncated after recovery attempts"
                             }
+
+                    ephemeral_retry_messages.clear()
                     
                     # Track actual token usage from response for context management
                     if hasattr(response, 'usage') and response.usage:
@@ -13708,12 +13779,12 @@ class AIAgent:
                             self._cleanup_task_resources(effective_task_id)
                             self._persist_session(messages, conversation_history)
                             return {
-                                "final_response": None,
+                                "final_response": _truncation_recovery_final_response(tool_call=True),
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Response truncated due to output length limit",
+                                "error": "Tool call arguments remained truncated after recovery attempts",
                             }
 
                         # Track retries for invalid JSON arguments

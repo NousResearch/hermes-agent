@@ -3247,6 +3247,44 @@ class TestRunConversation:
         final_call_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
         assert final_call_kwargs.get("tools") in (None, [])
         mock_handle_function_call.assert_not_called()
+        assert all(
+            "[System: Your previous tool call arguments were" not in (m.get("content") or "")
+            for m in result["messages"]
+            if isinstance(m, dict)
+        )
+
+    def test_repeated_truncated_tool_calls_return_safe_recovery_response(self, agent):
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        resp = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        agent.client.chat.completions.create.side_effect = [resp, resp, resp, resp, resp]
+
+        with (
+            patch("run_agent.handle_function_call") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert "oversized or truncated tool call" in result["final_response"]
+        assert "Response truncated due to output length limit" not in result["final_response"]
+        assert "Response truncated due to output length limit" not in result["error"]
+        assert agent.client.chat.completions.create.call_count == 5
+        mock_handle_function_call.assert_not_called()
+        final_call_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
+        assert final_call_kwargs.get("tools") in (None, [])
+        assert all(
+            "[System: Your previous tool call arguments were" not in (m.get("content") or "")
+            for m in result["messages"]
+            if isinstance(m, dict)
+        )
 
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
         """When tool call args are truncated, the agent retries the API call
@@ -3320,6 +3358,34 @@ class TestRunConversation:
         final_call_kwargs = agent.client.chat.completions.create.call_args_list[-1].kwargs
         assert final_call_kwargs.get("tools") in (None, [])
         mock_handle_function_call.assert_not_called()
+        assert all(
+            "[System: Your previous tool call arguments were" not in (m.get("content") or "")
+            for m in result["messages"]
+            if isinstance(m, dict)
+        )
+
+    def test_private_truncation_recovery_prompts_are_pruned_from_history(self, agent):
+        leaked = (
+            "[System: Your previous tool call arguments were truncated by the provider "
+            "output window before valid JSON completed. Retry the task.]"
+        )
+        leaked_text_only = (
+            "[System: Your previous tool call arguments were repeatedly truncated by "
+            "the provider output window. Do not call tools in the next response.]"
+        )
+        messages = [
+            {"role": "user", "content": f"确认\n\n{leaked}"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": leaked_text_only},
+        ]
+
+        repairs = agent._drop_private_truncation_recovery_scaffolding(messages)
+
+        assert repairs == 2
+        assert messages == [
+            {"role": "user", "content": "确认"},
+            {"role": "assistant", "content": "ok"},
+        ]
 
 
 class TestRetryExhaustion:

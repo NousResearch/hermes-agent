@@ -96,6 +96,30 @@ async def test_stt_echo_separate_sends_transcript_before_agent(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_stt_echo_separate_uses_explicit_echo_metadata(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "tools.transcription_tools.transcribe_audio",
+        lambda path: {"success": True, "transcript": "topic voice note"},
+    )
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner = _make_runner(stt_config={"echo_transcript": True, "echo_mode": "separate"}, adapter=adapter, tmp_path=tmp_path)
+    event = _make_voice_event()
+
+    await runner._enrich_message_with_transcription(
+        "",
+        event.media_urls,
+        source=event.source,
+        echo_metadata={"thread_id": "63014", "telegram_reply_to_message_id": 999},
+    )
+
+    adapter.send.assert_awaited_once_with(
+        "123",
+        'Heard: "topic voice note"',
+        metadata={"thread_id": "63014", "telegram_reply_to_message_id": 999},
+    )
+
+
+@pytest.mark.asyncio
 async def test_stt_echo_separate_uses_thread_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "tools.transcription_tools.transcribe_audio",
@@ -115,5 +139,9 @@ async def test_stt_echo_separate_uses_thread_metadata(monkeypatch, tmp_path):
     adapter.send.assert_awaited_once_with(
         "123",
         'Heard: "threaded voice note"',
-        metadata={"thread_id": "61892"},
+        metadata={
+            "thread_id": "61892",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "99",
+        },
     )

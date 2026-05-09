@@ -6852,10 +6852,15 @@ class GatewayRunner:
                     )
 
             if audio_paths:
+                _stt_echo_meta = self._thread_metadata_for_source(
+                    source,
+                    self._reply_anchor_for_event(event),
+                )
                 message_text = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
                     source=source,
+                    echo_metadata=_stt_echo_meta,
                 )
                 _stt_fail_markers = (
                     "No STT provider",
@@ -13210,6 +13215,7 @@ class GatewayRunner:
         user_text: str,
         audio_paths: List[str],
         source: Optional[SessionSource] = None,
+        echo_metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -13219,6 +13225,7 @@ class GatewayRunner:
             user_text:   The user's original caption / message text.
             audio_paths: List of local file paths to cached audio files.
             source:      Optional platform routing metadata for transcript echo.
+            echo_metadata: Optional platform send metadata (thread/reply routing) for transcript echo.
 
         Returns:
             The enriched message string with transcriptions prepended.
@@ -13297,9 +13304,12 @@ class GatewayRunner:
             if echo_mode == "separate" and source is not None:
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    metadata = {"thread_id": source.thread_id} if source.thread_id else None
+                    metadata = dict(echo_metadata or {})
+                    if source.thread_id and "thread_id" not in metadata:
+                        metadata["thread_id"] = source.thread_id
+                    metadata_arg = metadata or None
                     try:
-                        await adapter.send(source.chat_id, echo_text, metadata=metadata)
+                        await adapter.send(source.chat_id, echo_text, metadata=metadata_arg)
                     except Exception as exc:
                         logger.debug("Failed to send STT transcript echo: %s", exc)
             elif echo_mode == "prefix":

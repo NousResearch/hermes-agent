@@ -2047,7 +2047,6 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as send_err:
             if (
                 message_thread_id is not None
-                and self._is_bad_request_error(send_err)
                 and self._is_thread_not_found_error(send_err)
             ):
                 logger.warning(

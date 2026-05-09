@@ -314,10 +314,11 @@ def test_viking_client_headers_include_bearer_when_api_key_set():
     assert headers["Authorization"] == "Bearer test-key"
 
 
-def test_viking_client_headers_omit_tenant_when_legacy_default():
-    # Existing installs have account/user set to the literal string "default".
-    # Those should NOT be sent as headers — the server would interpret that
-    # as a real tenant override and reject/misroute requests.
+def test_viking_client_headers_send_tenant_when_default():
+    # account/user set to the literal string "default". OpenViking 0.3.x
+    # requires X-OpenViking-Account and X-OpenViking-User for ROOT API key
+    # requests to tenant-scoped APIs — omitting them causes
+    # INVALID_ARGUMENT errors even when account="default".
     client = _VikingClient(
         "https://example.com",
         api_key="test-key",
@@ -326,13 +327,15 @@ def test_viking_client_headers_omit_tenant_when_legacy_default():
         agent="hermes",
     )
     headers = client._headers()
-    assert "X-OpenViking-Account" not in headers
-    assert "X-OpenViking-User" not in headers
+    assert headers["X-OpenViking-Account"] == "default"
+    assert headers["X-OpenViking-User"] == "default"
     assert headers["X-OpenViking-Agent"] == "hermes"
     assert headers["Authorization"] == "Bearer test-key"
 
 
-def test_viking_client_headers_omit_tenant_when_empty():
+def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
+    # Empty account/user strings fall back to "default" via the constructor.
+    # Headers are sent even for the default value — ROOT API keys need them.
     client = _VikingClient(
         "https://example.com",
         api_key="",
@@ -341,8 +344,8 @@ def test_viking_client_headers_omit_tenant_when_empty():
         agent="hermes",
     )
     headers = client._headers()
-    assert "X-OpenViking-Account" not in headers
-    assert "X-OpenViking-User" not in headers
+    assert headers["X-OpenViking-Account"] == "default"
+    assert headers["X-OpenViking-User"] == "default"
     assert "Authorization" not in headers
     assert "X-API-Key" not in headers
 

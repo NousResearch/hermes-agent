@@ -1,3 +1,4 @@
+import { stringWidth } from '@hermes/ink'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -37,8 +38,11 @@ describe('inputMetrics — CJK / emoji / multi-line edge cases', () => {
     it('treats multi-codepoint emoji ZWJ sequence as a single grapheme', () => {
       const family = '👨‍👩‍👧'
       const layout = cursorLayout(family, family.length, 80)
-      expect(layout.line).toBe(0)
-      expect(layout.column).toBeGreaterThanOrEqual(2)
+      // If the ZWJ sequence were segmented into multiple graphemes, the
+      // cumulative column would exceed the grapheme's stringWidth. Assert
+      // the exact column matches stringWidth(family) so any regression in
+      // grapheme segmentation fails this test.
+      expect(layout).toEqual({ column: stringWidth(family), line: 0 })
     })
 
     it('handles \\n with row increment', () => {

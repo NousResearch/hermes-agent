@@ -2725,6 +2725,14 @@ class HermesCLI:
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
+            # Per-turn breakdown so consumers can show ``cached / new``
+            # instead of just the sum. A cache flush (tools[] mutation,
+            # session resume, etc.) doubles ``context_tokens`` without
+            # any new content; surfacing the split prevents misreading
+            # that as a real balloon.
+            snapshot["context_input_tokens"] = getattr(compressor, "last_input_tokens", 0) or 0
+            snapshot["context_cache_read_tokens"] = getattr(compressor, "last_cache_read_tokens", 0) or 0
+            snapshot["context_cache_write_tokens"] = getattr(compressor, "last_cache_write_tokens", 0) or 0
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 

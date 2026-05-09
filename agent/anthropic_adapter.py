@@ -2112,6 +2112,177 @@ def _relocate_orphaned_tool_search_results(messages: List[Dict[str, Any]]) -> No
                 break
 
 
+def drop_orphan_server_tool_uses_in_storage(
+    messages: List[Dict[str, Any]],
+) -> int:
+    """Drop any ``server_tool_use`` block whose paired
+    ``tool_search_tool_*_tool_result`` doesn't exist anywhere in the
+    message list.
+
+    Why: relocation handles "result split across messages" — the normal
+    Anthropic delivery pattern. But a stream interruption (timeout,
+    cancel, 5xx mid-response) can land the ``server_tool_use`` on disk
+    without the result EVER arriving. Every subsequent API call then
+    400s with:
+      ``tool_search_tool_<variant> tool use with id ... was found
+      without a corresponding tool_search_tool_<variant>_tool_result``.
+    The session is permanently wedged until the orphan is removed.
+
+    Verified against ``session_20260509_145003_c5e465`` where one
+    server_tool_use had no result anywhere — dropping it unwedges the
+    session with no loss of usable data (the unfinished tool search
+    yielded nothing the model could act on anyway).
+
+    Returns the number of orphan use blocks removed.
+    """
+    result_ids: set[str] = set()
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("anthropic_content_blocks")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            t = block.get("type")
+            if not isinstance(t, str):
+                continue
+            if (
+                t == "tool_search_tool_result"
+                or (t.startswith("tool_search_tool_") and t.endswith("_tool_result"))
+            ):
+                tu_id = block.get("tool_use_id")
+                if isinstance(tu_id, str):
+                    result_ids.add(tu_id)
+
+    dropped = 0
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("anthropic_content_blocks")
+        if not isinstance(content, list):
+            continue
+        keep = []
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "server_tool_use"
+                and isinstance(block.get("id"), str)
+                and block["id"] not in result_ids
+            ):
+                dropped += 1
+                continue
+            keep.append(block)
+        if dropped:
+            msg["anthropic_content_blocks"] = keep
+    return dropped
+
+
+def relocate_orphaned_tool_search_results_in_storage(
+    messages: List[Dict[str, Any]],
+) -> int:
+    """Capture-time variant of ``_relocate_orphaned_tool_search_results``
+    that operates on the **session-storage shape**: assistant messages
+    carry their verbatim Anthropic blocks under
+    ``msg["anthropic_content_blocks"]`` (set by
+    ``transports/anthropic.py`` when capturing each response), not under
+    ``msg["content"]``.
+
+    Why we need a separate pass at capture time
+    --------------------------------------------
+    Anthropic delivers a ``tool_search_tool_<variant>_tool_result`` block
+    in a *later* assistant turn than the one that emitted the matching
+    ``server_tool_use(id=X)``. The request-build relocation
+    (``_relocate_orphaned_tool_search_results``) fixes this on outbound,
+    but the on-disk session JSON keeps the split. If compaction
+    summarises one of the two messages and the API call rebuilds, you
+    get a 400:
+      ``tool_search_tool_<variant> tool use with id ... was found
+      without a corresponding tool_search_tool_<variant>_tool_result``.
+
+    Calling this at persistence time co-locates the pair on disk so
+    compaction can never split them — the compactor's existing
+    ``_align_boundary_*`` logic treats the merged message as a single
+    unit, and ``_sanitize_tool_pairs`` doesn't need any awareness of
+    server-side block types.
+
+    Returns the number of result blocks relocated. Mutates ``messages``
+    in place.
+    """
+    tool_use_sources: Dict[str, int] = {}
+    for mi, msg in enumerate(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("anthropic_content_blocks")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "server_tool_use":
+                tu_id = block.get("id")
+                if isinstance(tu_id, str):
+                    tool_use_sources[tu_id] = mi
+
+    relocations: List[Tuple[str, int, int, Dict[str, Any]]] = []
+    for mi, msg in enumerate(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("anthropic_content_blocks")
+        if not isinstance(content, list):
+            continue
+        for ci, block in enumerate(content):
+            if not isinstance(block, dict):
+                continue
+            t = block.get("type")
+            if not isinstance(t, str):
+                continue
+            # Match both the bare canonical and any variant-suffixed form
+            # (some persisted sessions still carry pre-canonicalisation
+            # types like ``tool_search_tool_regex_tool_result``).
+            if not (
+                t == "tool_search_tool_result"
+                or (t.startswith("tool_search_tool_") and t.endswith("_tool_result"))
+            ):
+                continue
+            tu_id = block.get("tool_use_id")
+            if not isinstance(tu_id, str):
+                continue
+            target_mi = tool_use_sources.get(tu_id)
+            if target_mi is not None and target_mi != mi:
+                relocations.append((tu_id, mi, ci, block))
+
+    if not relocations:
+        return 0
+
+    # Remove orphans from their source messages, deepest index first so
+    # earlier indices stay valid.
+    by_source: Dict[int, List[int]] = {}
+    for _, src_mi, src_ci, _ in relocations:
+        by_source.setdefault(src_mi, []).append(src_ci)
+    for src_mi, indices in by_source.items():
+        src_content = messages[src_mi].get("anthropic_content_blocks")
+        if not isinstance(src_content, list):
+            continue
+        for ci in sorted(indices, reverse=True):
+            del src_content[ci]
+
+    for tu_id, _, _, block in relocations:
+        target_mi = tool_use_sources[tu_id]
+        target_content = messages[target_mi].get("anthropic_content_blocks")
+        if not isinstance(target_content, list):
+            continue
+        for ci, b in enumerate(target_content):
+            if (
+                isinstance(b, dict)
+                and b.get("type") == "server_tool_use"
+                and b.get("id") == tu_id
+            ):
+                target_content.insert(ci + 1, block)
+                break
+
+    return len(relocations)
+
+
 def _move_client_tool_use_blocks_to_end(messages: List[Dict[str, Any]]) -> None:
     """Reorder assistant content so client ``tool_use`` blocks come AFTER
     any server-side blocks (``server_tool_use`` / ``*_tool_result``) within
@@ -2749,6 +2920,49 @@ def convert_messages_to_anthropic(
     # owns the matching server_tool_use.
     _relocate_orphaned_tool_search_results(result)
 
+    # Drop ``server_tool_use`` blocks whose paired result NEVER arrived
+    # (stream interruption, timeout, cancel mid-response). Without this,
+    # the assistant message has a use without a result, and every API
+    # call replays the orphan and 400s. Runs after relocation so a
+    # split-but-deliverable pair gets repaired first; only truly
+    # missing results trigger a drop. Operates on the wire-shape
+    # ``msg["content"]`` (lists of blocks).
+    _result_ids_wire: set = set()
+    for _m in result:
+        if _m.get("role") != "assistant":
+            continue
+        _c = _m.get("content")
+        if not isinstance(_c, list):
+            continue
+        for _b in _c:
+            if not isinstance(_b, dict):
+                continue
+            _t = _b.get("type")
+            if isinstance(_t, str) and (
+                _t == "tool_search_tool_result"
+                or (_t.startswith("tool_search_tool_") and _t.endswith("_tool_result"))
+            ):
+                _ru = _b.get("tool_use_id")
+                if isinstance(_ru, str):
+                    _result_ids_wire.add(_ru)
+    for _m in result:
+        if _m.get("role") != "assistant":
+            continue
+        _c = _m.get("content")
+        if not isinstance(_c, list):
+            continue
+        _kept = [
+            _b for _b in _c
+            if not (
+                isinstance(_b, dict)
+                and _b.get("type") == "server_tool_use"
+                and isinstance(_b.get("id"), str)
+                and _b["id"] not in _result_ids_wire
+            )
+        ]
+        if len(_kept) != len(_c):
+            _m["content"] = _kept or [{"type": "text", "text": "(empty)"}]
+
     # Defense-in-depth: canonicalize tool_search_tool_*_tool_result block
     # types to the bare ``tool_search_tool_result`` form. The capture-time
     # fix in ``agent/transports/anthropic.py`` handles fresh responses,
@@ -2867,6 +3081,8 @@ def build_anthropic_kwargs(
     drop_context_1m_beta: bool = False,
     tool_search_config: Optional[Dict[str, Any]] = None,
     session_id: str | None = None,
+    cache_tools: bool = False,
+    cache_ttl: str = "5m",
 ) -> Dict[str, Any]:
     """Build kwargs for ``client.beta.messages.{create,stream}``.
 
@@ -3012,6 +3228,11 @@ def build_anthropic_kwargs(
 
     if anthropic_tools:
         anthropic_tools = _apply_tool_search(anthropic_tools, tool_search_config)
+        if cache_tools:
+            from agent.prompt_caching import apply_anthropic_tools_cache_control
+            anthropic_tools = apply_anthropic_tools_cache_control(
+                anthropic_tools, cache_ttl=cache_ttl
+            )
         kwargs["tools"] = anthropic_tools
         # Map OpenAI tool_choice to Anthropic format
         if tool_choice == "auto" or tool_choice is None:

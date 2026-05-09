@@ -87,6 +87,8 @@ class AnthropicTransport(ProviderTransport):
             drop_context_1m_beta=params.get("drop_context_1m_beta", False),
             tool_search_config=params.get("tool_search_config"),
             session_id=params.get("session_id"),
+            cache_tools=params.get("cache_tools", False),
+            cache_ttl=params.get("cache_ttl", "5m"),
         )
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:

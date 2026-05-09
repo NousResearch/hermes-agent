@@ -442,6 +442,9 @@ class ContextCompressor(ContextEngine):
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
+        self.last_input_tokens = 0
+        self.last_cache_read_tokens = 0
+        self.last_cache_write_tokens = 0
 
         self.summary_model = summary_model_override or ""
 
@@ -465,9 +468,25 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model: Optional[str] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
-        """Update tracked token usage from API response."""
+        """Update tracked token usage from API response.
+
+        Accepts both the legacy 2-field shape (``prompt_tokens``,
+        ``completion_tokens``) and the breakdown shape
+        (``input_tokens``, ``cache_read_tokens``, ``cache_write_tokens``,
+        ``completion_tokens``). The breakdown lets the status bar show
+        ``cached / new`` instead of a single total — when the same content
+        flips from cached (cheap) to uncached (full price), a 500K → 1M
+        ``prompt_tokens`` jump reads as a balloon when it's actually a
+        cache flush. See discussion in #18900.
+        """
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
+        if "input_tokens" in usage:
+            self.last_input_tokens = usage.get("input_tokens", 0)
+        if "cache_read_tokens" in usage:
+            self.last_cache_read_tokens = usage.get("cache_read_tokens", 0)
+        if "cache_write_tokens" in usage:
+            self.last_cache_write_tokens = usage.get("cache_write_tokens", 0)
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.

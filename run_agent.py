@@ -40,7 +40,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -2250,7 +2250,16 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        
+
+        # Per-turn usage breakdown — append one record per successful API
+        # response so post-mortems can spot a cache flush (cache_read drops
+        # to ~0 while msg_count keeps climbing) without needing the bloaty
+        # ``HERMES_DUMP_REQUESTS`` capture. Bounded so a long session
+        # doesn't grow the field unbounded.
+        self._usage_history: List[Dict[str, Any]] = []
+        self._usage_history_cap: int = 2000
+        self._tools_hash_cache: Optional[Tuple[int, str]] = None
+
         # ── Ollama num_ctx injection ──
         # Ollama defaults to 2048 context regardless of the model's capabilities.
         # When running against an Ollama server, detect the model's max context
@@ -2391,7 +2400,9 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        
+        self._usage_history = []
+        self._tools_hash_cache = None
+
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
@@ -3919,6 +3930,35 @@ class AIAgent:
         Ensures conversations are never lost, even on errors or early returns.
         """
         self._apply_persist_user_message_override(messages)
+        # Co-locate ``server_tool_use`` and its
+        # ``tool_search_tool_*_tool_result`` partner in the same message
+        # before persisting. Anthropic delivers them in different turns;
+        # if compaction later cuts the boundary between them, the next
+        # request 400s with "server_tool_use ... was found without a
+        # corresponding tool_search_tool_*_tool_result block". Merging at
+        # capture time means the pair always travels together — the
+        # compactor's existing tool_call/result group logic handles them
+        # without needing server-tool awareness. Mutates in place; no-op
+        # when nothing is orphaned, idempotent on subsequent calls.
+        try:
+            from agent.anthropic_adapter import (
+                relocate_orphaned_tool_search_results_in_storage,
+                drop_orphan_server_tool_uses_in_storage,
+            )
+            n_relocated = relocate_orphaned_tool_search_results_in_storage(messages)
+            # Defense in depth: a stream interruption can leave a
+            # ``server_tool_use`` on disk whose result never arrived.
+            # Drop it — otherwise every subsequent API call 400s
+            # forever and the only recovery is `--no-resume`.
+            n_dropped = drop_orphan_server_tool_uses_in_storage(messages)
+            if (n_relocated or n_dropped) and getattr(self, "verbose_logging", False):
+                logging.debug(
+                    "Pair fix-up at persist: relocated=%d dropped=%d",
+                    n_relocated, n_dropped,
+                )
+        except Exception as e:
+            if getattr(self, "verbose_logging", False):
+                logging.debug("Pair relocation failed (non-fatal): %s", e)
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
@@ -4450,6 +4490,56 @@ class AIAgent:
         content = re.sub(r'(</think>)\n+', r'\1\n', content)
         return content.strip()
 
+    def _tools_signature(self) -> str:
+        """Stable short hash of the current tools[] for cache-flush diagnostics.
+
+        Cached behind ``id(self.tools), len(self.tools)`` so the hash is only
+        recomputed when tools[] is replaced or grows — adding a new tool
+        appends, so the length changes; ToolSearch reloading the same set
+        keeps the same hash.
+        """
+        tools = self.tools or []
+        key = (id(tools), len(tools))
+        if self._tools_hash_cache and self._tools_hash_cache[0] == key:
+            return self._tools_hash_cache[1]
+        try:
+            blob = json.dumps(tools, sort_keys=True, default=str).encode("utf-8")
+        except Exception:
+            blob = repr(tools).encode("utf-8", errors="replace")
+        digest = hashlib.sha256(blob).hexdigest()[:8]
+        self._tools_hash_cache = (key, digest)
+        return digest
+
+    def _record_usage_history(self, canonical_usage) -> None:
+        """Append one per-turn usage record to ``self._usage_history``.
+
+        Record shape: ``{ts, input, cache_read, cache_write, output,
+        msg_count, tools_count, tools_hash}``. ~80 bytes serialized — a
+        2000-turn session adds ~160KB to the session log file. Persisted
+        as part of the session JSON so post-mortems can spot a cache
+        flush without HERMES_DUMP_REQUESTS bodies on disk.
+        """
+        try:
+            record = {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "input": int(getattr(canonical_usage, "input_tokens", 0) or 0),
+                "cache_read": int(getattr(canonical_usage, "cache_read_tokens", 0) or 0),
+                "cache_write": int(getattr(canonical_usage, "cache_write_tokens", 0) or 0),
+                "output": int(getattr(canonical_usage, "output_tokens", 0) or 0),
+                "msg_count": len(self._session_messages or []),
+                "tools_count": len(self.tools or []),
+                "tools_hash": self._tools_signature(),
+            }
+            self._usage_history.append(record)
+            if len(self._usage_history) > self._usage_history_cap:
+                # Keep tail — the recent window is what's useful for
+                # diagnosing the current session's behavior.
+                drop = len(self._usage_history) - self._usage_history_cap
+                del self._usage_history[:drop]
+        except Exception as e:
+            if getattr(self, "verbose_logging", False):
+                logging.debug("Failed to record usage history: %s", e)
+
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """
         Save the full raw session to a JSON file.
@@ -4503,6 +4593,7 @@ class AIAgent:
                 "tools": self.tools or [],
                 "message_count": len(cleaned),
                 "messages": cleaned,
+                "usage_history": list(self._usage_history),
             }
 
             atomic_json_write(
@@ -9314,6 +9405,11 @@ class AIAgent:
                 drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
                 tool_search_config=self._build_tool_search_config(),
                 session_id=getattr(self, "session_id", None),
+                cache_tools=bool(
+                    getattr(self, "_use_prompt_caching", False)
+                    and getattr(self, "_use_native_cache_layout", False)
+                ),
+                cache_ttl=getattr(self, "_cache_ttl", "5m"),
             )
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -12145,10 +12241,16 @@ class AIAgent:
             # conversations. Layout is chosen per endpoint by
             # ``_anthropic_prompt_cache_policy``.
             if self._use_prompt_caching:
+                # Reserve one of the 4 breakpoints for ``tools[]`` ONLY when
+                # we're going to actually emit it (native Anthropic path —
+                # ``cache_tools=True`` in _build_api_kwargs). On third-party
+                # gateways that path is off, so use all 3 message breakpoints.
+                _reserve_tools_bp = bool(self._use_native_cache_layout)
                 api_messages = apply_anthropic_cache_control(
                     api_messages,
                     cache_ttl=self._cache_ttl,
                     native_anthropic=self._use_native_cache_layout,
+                    reserve_tools_breakpoint=_reserve_tools_bp,
                 )
 
             # Safety net: strip orphaned tool results / add stubs for missing
@@ -12853,8 +12955,12 @@ class AIAgent:
                             "prompt_tokens": prompt_tokens,
                             "completion_tokens": completion_tokens,
                             "total_tokens": total_tokens,
+                            "input_tokens": canonical_usage.input_tokens,
+                            "cache_read_tokens": canonical_usage.cache_read_tokens,
+                            "cache_write_tokens": canonical_usage.cache_write_tokens,
                         }
                         self.context_compressor.update_from_response(usage_dict)
+                        self._record_usage_history(canonical_usage)
 
                         # Cache discovered context length after successful call.
                         # Only persist limits confirmed by the provider (parsed
@@ -14671,8 +14777,18 @@ class AIAgent:
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
                         _pre_tokens = _real_tokens
                         _pre_msgs = len(messages)
+                        # Show cache breakdown so a sudden ``500K → 1M``
+                        # display reads as the cache flush it usually is
+                        # (same content, just billed as new instead of
+                        # cached) rather than a real content balloon.
+                        _bd = ""
+                        _cr = getattr(_compressor, "last_cache_read_tokens", 0) or 0
+                        _in = getattr(_compressor, "last_input_tokens", 0) or 0
+                        _cw = getattr(_compressor, "last_cache_write_tokens", 0) or 0
+                        if _cr or _in or _cw:
+                            _bd = f" ({_cr:,} cached + {_in:,} new + {_cw:,} written)"
                         self._emit_status(
-                            f"⟳ Compacting context: {_pre_tokens:,} tokens / {_pre_msgs} messages "
+                            f"⟳ Compacting context: {_pre_tokens:,} tokens{_bd} / {_pre_msgs} messages "
                             f"→ summarizing with {self.context_compressor.summary_model or self.model}…"
                         )
                         messages, active_system_prompt = self._compress_context(

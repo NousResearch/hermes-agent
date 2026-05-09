@@ -46,6 +46,23 @@ class OpenRouterProfile(ProviderProfile):
         prefs = context.get("provider_preferences")
         if prefs:
             body["provider"] = prefs
+
+        # Pareto Code router — model-gated. The plugins block is only
+        # meaningful for openrouter/pareto-code; sending it on any other
+        # model has no documented effect and would be confusing in logs.
+        # See: https://openrouter.ai/docs/guides/routing/routers/pareto-router
+        model = (context.get("model") or "")
+        if model == "openrouter/pareto-code":
+            score = context.get("openrouter_min_coding_score")
+            if score is not None and score != "":
+                try:
+                    score_f = float(score)
+                except (TypeError, ValueError):
+                    score_f = None
+                if score_f is not None and 0.0 <= score_f <= 1.0:
+                    body["plugins"] = [
+                        {"id": "pareto-router", "min_coding_score": score_f}
+                    ]
         return body
 
     def build_api_kwargs_extras(

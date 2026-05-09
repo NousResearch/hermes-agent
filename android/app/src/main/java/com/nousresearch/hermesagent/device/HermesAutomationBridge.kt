@@ -629,7 +629,10 @@ object HermesAutomationBridge {
         putOptionalExpandedPayloadString(payload, "priority", arguments, "priority", "notification_priority")
         putOptionalExpandedPayloadString(payload, "importance", arguments, "importance", "notification_importance")
         putOptionalExpandedPayloadString(payload, "group_key", arguments, "group_key", "notification_group", "group")
-        listOf("ongoing", "auto_cancel", "only_alert_once", "show_when", "group_summary").forEach { key ->
+        putOptionalExpandedPayloadString(payload, "status_text", arguments, "status_text", "notification_status_text", "short_critical_text", "critical_text", allowEmpty = true)
+        putOptionalExpandedPayloadString(payload, "progress_value", arguments, "progress_value", "notification_progress", "progress", "progress_current")
+        putOptionalExpandedPayloadString(payload, "progress_max", arguments, "progress_max", "notification_progress_max")
+        listOf("ongoing", "auto_cancel", "only_alert_once", "show_when", "group_summary", "progress_indeterminate").forEach { key ->
             if (arguments.has(key) && !arguments.isNull(key)) {
                 payload.put(key, arguments.optBoolean(key))
             }
@@ -660,6 +663,9 @@ object HermesAutomationBridge {
             "priority",
             "importance",
             "group_key",
+            "status_text",
+            "progress_value",
+            "progress_max",
         ).mapNotNull { key -> payload.optString(key).takeIf { it.indexOf('\u0000') >= 0 } }
         if (nulValues.isNotEmpty()) {
             return errorJson("create_notification_task fields must not contain NUL bytes")
@@ -4625,6 +4631,9 @@ object HermesAutomationBridge {
         "priority",
         "importance",
         "group_key",
+        "status_text",
+        "progress_value",
+        "progress_max",
     )
     private val NOTIFICATION_BOOLEAN_PAYLOAD_KEYS = listOf(
         "ongoing",
@@ -4632,6 +4641,7 @@ object HermesAutomationBridge {
         "only_alert_once",
         "show_when",
         "group_summary",
+        "progress_indeterminate",
     )
     private val TASKER_VARIABLE_PATTERN = Regex("%([A-Za-z_][A-Za-z0-9_]{1,63})")
     private val BRACE_VARIABLE_PATTERN = Regex("\\{\\{([A-Za-z_][A-Za-z0-9_]{0,63})\\}\\}")

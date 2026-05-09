@@ -71,10 +71,18 @@ object HermesNotificationActionBridge {
         ensureChannel(context, channelId, payload)
         val notificationId = notificationId(payload)
         val tag = payload.optString("notification_tag").ifBlank { null }?.take(MAX_NOTIFICATION_FIELD_CHARS)
+        val progress = notificationProgress(payload)
+        if (progress.error != null) {
+            return errorJson(progress.error)
+        }
         val buttonResult = parseNotificationButtons(payload)
         if (buttonResult.error != null) {
             return errorJson(buttonResult.error)
         }
+        val statusText = payload.optString("status_text")
+            .ifBlank { payload.optString("notification_status_text") }
+            .ifBlank { payload.optString("short_critical_text") }
+            .take(MAX_NOTIFICATION_FIELD_CHARS)
         val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_nav_hermes)
             .setContentTitle(title.ifBlank { context.getString(R.string.app_name) })
@@ -86,6 +94,12 @@ object HermesNotificationActionBridge {
             .setAutoCancel(payload.optBoolean("auto_cancel", true))
             .setOnlyAlertOnce(payload.optBoolean("only_alert_once", false))
             .setShowWhen(payload.optBoolean("show_when", true))
+        if (statusText.isNotBlank()) {
+            builder.setSubText(statusText)
+        }
+        progress.spec?.let { spec ->
+            builder.setProgress(spec.max, spec.current, spec.indeterminate)
+        }
         val groupKey = payload.optString("group_key").ifBlank { "" }.take(MAX_NOTIFICATION_FIELD_CHARS)
         if (groupKey.isNotBlank()) {
             builder.setGroup(groupKey)
@@ -117,6 +131,10 @@ object HermesNotificationActionBridge {
             .put("channel_id", channelId)
             .put("group_key", groupKey)
             .put("notification_button_count", buttonResult.buttons.size)
+            .put("progress_max", progress.spec?.max ?: 0)
+            .put("progress_value", progress.spec?.current ?: 0)
+            .put("progress_indeterminate", progress.spec?.indeterminate ?: false)
+            .put("status_text", statusText)
             .put("message", "Posted Hermes notification")
             .toString()
     }
@@ -262,6 +280,53 @@ object HermesNotificationActionBridge {
         return NotificationButtonParseResult(buttons)
     }
 
+    private fun notificationProgress(payload: JSONObject): NotificationProgressResult {
+        val hasProgress = listOf(
+            "progress_value",
+            "progress",
+            "progress_current",
+            "progress_max",
+            "progress_indeterminate",
+        ).any { payload.has(it) && !payload.isNull(it) }
+        if (!hasProgress) {
+            return NotificationProgressResult()
+        }
+        listOf("progress_value", "progress", "progress_current", "progress_max").firstOrNull { key ->
+            payload.has(key) && !payload.isNull(key) && optionalInt(payload, key) == null
+        }?.let { key ->
+            return NotificationProgressResult(error = "notification $key must be an integer")
+        }
+        val indeterminate = payload.optBoolean("progress_indeterminate", false)
+        val max = optionalInt(payload, "progress_max") ?: DEFAULT_PROGRESS_MAX
+        if (max < 0 || max > MAX_PROGRESS_VALUE) {
+            return NotificationProgressResult(error = "notification progress_max must be between 0 and $MAX_PROGRESS_VALUE")
+        }
+        if (!indeterminate && max <= 0) {
+            return NotificationProgressResult(error = "notification progress_max must be greater than zero unless progress_indeterminate is true")
+        }
+        val rawCurrent = optionalInt(payload, "progress_value")
+            ?: optionalInt(payload, "progress")
+            ?: optionalInt(payload, "progress_current")
+            ?: 0
+        if (rawCurrent < 0 || rawCurrent > MAX_PROGRESS_VALUE) {
+            return NotificationProgressResult(error = "notification progress value must be between 0 and $MAX_PROGRESS_VALUE")
+        }
+        val current = if (indeterminate || max == 0) 0 else rawCurrent.coerceAtMost(max)
+        return NotificationProgressResult(NotificationProgressSpec(max, current, indeterminate))
+    }
+
+    private fun optionalInt(payload: JSONObject, key: String): Int? {
+        if (!payload.has(key) || payload.isNull(key)) {
+            return null
+        }
+        val raw = payload.opt(key)
+        return when (raw) {
+            is Number -> raw.toInt()
+            is String -> raw.trim().toIntOrNull()
+            else -> null
+        }
+    }
+
     private fun pendingIntentForButton(
         context: Context,
         notificationId: Int,
@@ -388,10 +453,23 @@ object HermesNotificationActionBridge {
     private const val MAX_NOTIFICATION_FIELD_CHARS = 120
     private const val MAX_NOTIFICATION_TEXT_CHARS = 2_000
     private const val MAX_NOTIFICATION_AUTOMATION_ID_CHARS = 120
+    private const val DEFAULT_PROGRESS_MAX = 100
+    private const val MAX_PROGRESS_VALUE = 1_000_000
     private val SUPPORTED_BUTTON_ACTIONS = setOf(
         BUTTON_ACTION_OPEN_APP,
         BUTTON_ACTION_CANCEL,
         BUTTON_ACTION_RUN_AUTOMATION,
+    )
+
+    private data class NotificationProgressSpec(
+        val max: Int,
+        val current: Int,
+        val indeterminate: Boolean,
+    )
+
+    private data class NotificationProgressResult(
+        val spec: NotificationProgressSpec? = null,
+        val error: String? = null,
     )
 
     private data class NotificationButtonSpec(

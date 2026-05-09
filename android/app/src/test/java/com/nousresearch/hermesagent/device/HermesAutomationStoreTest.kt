@@ -1790,6 +1790,7 @@ class HermesAutomationStoreTest {
 
         assertTrue(store.setVariable("NOTICE_ID", "77"))
         assertTrue(store.setVariable("NOTICE_TAG", "hermes-test"))
+        assertTrue(store.setVariable("NOTICE_PROGRESS", "42"))
         val created = org.json.JSONObject(
             HermesAutomationBridge.performActionJson(
                 context,
@@ -1803,12 +1804,19 @@ class HermesAutomationStoreTest {
                     .put("notification_tag", "%NOTICE_TAG")
                     .put("priority", "high")
                     .put("group_key", "hermes-group")
+                    .put("status_text", "Working %NOTICE_PROGRESS%")
+                    .put("progress_value", "%NOTICE_PROGRESS")
+                    .put("progress_max", "100")
                     .put("only_alert_once", true)
                     .put("enabled", false),
             ),
         )
         assertTrue(created.toString(), created.getBoolean("success"))
         assertEquals(ACTION_TYPE_NOTIFICATION_ACTION, created.getJSONObject("automation").getString("action_type"))
+        val payload = org.json.JSONObject(created.getJSONObject("automation").getString("command"))
+        assertEquals("%NOTICE_PROGRESS", payload.getString("progress_value"))
+        assertEquals("100", payload.getString("progress_max"))
+        assertEquals("Working %NOTICE_PROGRESS%", payload.getString("status_text"))
 
         val run = org.json.JSONObject(
             HermesAutomationBridge.performActionJson(
@@ -1822,6 +1830,9 @@ class HermesAutomationStoreTest {
             assertEquals("notification_post", result.getString("action"))
             assertEquals(77, result.getInt("notification_id"))
             assertEquals("hermes-test", result.getString("notification_tag"))
+            assertEquals(42, result.getInt("progress_value"))
+            assertEquals(100, result.getInt("progress_max"))
+            assertEquals("Working 42%", result.getString("status_text"))
         } else {
             assertEquals("android.permission.POST_NOTIFICATIONS", result.getString("requires_permission"))
         }

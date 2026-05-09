@@ -1631,3 +1631,86 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+# ---------------------------------------------------------------------------
+# TestOnPreCompressIntegration — fix #7192
+# ---------------------------------------------------------------------------
+
+class TestOnPreCompressIntegration:
+    """Regression tests for capturing on_pre_compress return value (GH #7192)."""
+
+    def test_compress_accepts_memory_context_kwarg(self):
+        """compress() accepts memory_context parameter without TypeError."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+        msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}] * 4
+        # Must not raise TypeError — must accept memory_context kwarg.
+        result = c.compress(msgs, memory_context="some context")
+        assert isinstance(result, list)
+
+    def test_generate_summary_injects_memory_context_into_prompt(self):
+        """When memory_context is non-empty, it appears in the summarizer prompt."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+        # Patch call_llm to capture the prompt without making an API call.
+        captured_prompts = []
+
+        def capture_call_llm(**kwargs):
+            captured_prompts.append(kwargs["messages"][0]["content"])
+            raise RuntimeError("test: stop")
+
+        with patch("agent.context_compressor.call_llm", side_effect=capture_call_llm):
+            try:
+                c._generate_summary(
+                    [{"role": "user", "content": "test"}] * 3,
+                    focus_topic=None,
+                    memory_context="[artifact] ~/Riki/triage.md created",
+                )
+            except RuntimeError:
+                pass
+
+        assert len(captured_prompts) == 1
+        assert "Memory Provider Context" in captured_prompts[0]
+        assert "[artifact] ~/Riki/triage.md created" in captured_prompts[0]
+
+    def test_empty_memory_context_does_not_add_section(self):
+        """When memory_context is empty, no Memory Provider Context section appears."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+        captured_prompts = []
+
+        def capture_call_llm(**kwargs):
+            captured_prompts.append(kwargs["messages"][0]["content"])
+            raise RuntimeError("test: stop")
+
+        with patch("agent.context_compressor.call_llm", side_effect=capture_call_llm):
+            try:
+                c._generate_summary(
+                    [{"role": "user", "content": "test"}] * 3,
+                    focus_topic=None,
+                    memory_context="",
+                )
+            except RuntimeError:
+                pass
+
+        assert len(captured_prompts) == 1
+        assert "Memory Provider Context" not in captured_prompts[0]

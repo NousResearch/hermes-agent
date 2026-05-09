@@ -9605,19 +9605,39 @@ class AIAgent:
             focus_topic,
         )
 
-        # Notify external memory provider before compression discards context
+        # Notify external memory provider before compression discards context.
+        # Capture return value: providers may return structured context (decisions,
+        # artifacts, blockers) that should be injected into the compression
+        # summary.  Fixes #7192.
+        pre_compress_context = ""
         if self._memory_manager:
             try:
-                self._memory_manager.on_pre_compress(messages)
+                pre_compress_context = self._memory_manager.on_pre_compress(messages)
             except Exception:
                 pass
 
         try:
-            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+            compressed = self.context_compressor.compress(
+                messages,
+                current_tokens=approx_tokens,
+                focus_topic=focus_topic,
+                memory_context=pre_compress_context,
+            )
         except TypeError:
             # Plugin context engine with strict signature that doesn't accept
             # focus_topic — fall back to calling without it.
-            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+            try:
+                compressed = self.context_compressor.compress(
+                    messages,
+                    current_tokens=approx_tokens,
+                    memory_context=pre_compress_context,
+                )
+            except TypeError:
+                # Plugin context engine also doesn't accept memory_context.
+                compressed = self.context_compressor.compress(
+                    messages,
+                    current_tokens=approx_tokens,
+                )
 
         summary_error = getattr(self.context_compressor, "_last_summary_error", None)
         if summary_error:

@@ -391,6 +391,16 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # --- agent.i18n — cached config/catalogs ---
+    # i18n tests monkeypatch the locale directory to a temp tree and load
+    # deliberately incomplete catalogs. Clear the process-global cache so
+    # later gateway tests don't render user-facing keys like gateway.draining.
+    try:
+        from agent import i18n as _i18n_mod
+        _i18n_mod.reset_language_cache()
+    except Exception:
+        pass
+
     # --- tools.env_passthrough — ContextVar<set[str]> with no default ---
     # LookupError is normal if the test never set it. Setting it to an
     # empty set unconditionally normalizes the starting state.

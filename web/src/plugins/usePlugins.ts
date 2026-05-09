@@ -41,24 +41,25 @@ export function usePlugins() {
     const injectedScripts: HTMLScriptElement[] = [];
 
     for (const manifest of manifests) {
+      // Load JS bundle. In dev, cache-bust so Vite HMR can clear the
+      // in-memory registry while the browser would otherwise never
+      // re-execute a previously cached <script> URL.
+      const versionQuery = `v=${manifest.version}`;
+      const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
+      const scriptSrc = import.meta.env.DEV
+        ? `${baseUrl}?hermes_dv=${Date.now()}`
+        : `${baseUrl}?${versionQuery}`;
+
       // Inject CSS if specified.
       if (manifest.css) {
-        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
-        if (!document.querySelector(`link[href="${cssUrl}"]`)) {
+        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}?${versionQuery}`;
+        if (!document.querySelector(`link[href^="${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}"]`)) {
           const link = document.createElement("link");
           link.rel = "stylesheet";
           link.href = cssUrl;
           document.head.appendChild(link);
         }
       }
-
-      // Load JS bundle. In dev, cache-bust so Vite HMR can clear the
-      // in-memory registry while the browser would otherwise never
-      // re-execute a previously cached <script> URL.
-      const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
-      const scriptSrc = import.meta.env.DEV
-        ? `${baseUrl}?hermes_dv=${Date.now()}`
-        : baseUrl;
       if (!import.meta.env.DEV) {
         if (loadedScripts.current.has(baseUrl)) continue;
         loadedScripts.current.add(baseUrl);

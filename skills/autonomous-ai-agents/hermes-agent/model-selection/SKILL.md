@@ -31,9 +31,21 @@ Match rule: served model must equal requested model, OR match `{requested}-DIGIT
 
 Controlled by env var `HERMES_CODEX_STRICT_MODEL` (default `1`). Set to `0` to disable if it ever causes false positives.
 
-When substitution is detected, you'll see this in `/opt/data/logs/agent.log`:
+### Cooldown + Telegram notifications
+
+To avoid wasting one Codex call per turn during a sustained quota outage, detection triggers a per-model cooldown (`HERMES_CODEX_COOLDOWN_S`, default 3600 = 1 hour). While the cooldown is active, `_run_codex_stream` returns `None` immediately without hitting the API, routing to the fallback chain.
+
+A Telegram message goes to `$TELEGRAM_HOME_CHANNEL` once per cooldown entry:
+- **On substitution detected:** `⚠️ Codex model substitution detected — Routing to MiniMax for the next ~60 min, then probing GPT again.`
+- **On successful recovery probe** (first matching response after the cooldown elapses): `✅ Codex back online — Resuming primary routing.`
+
+If the post-cooldown probe still substitutes, the cooldown re-arms and another "off" notification fires. Steady-state during outage: ~1 wasted Codex call + 1 notification per cooldown period.
+
+Logs to grep when debugging:
 ```
-WARNING - Codex model substitution detected: requested=gpt-5.5 served=gpt-5.5-mini — routing to fallback.
+/opt/data/logs/agent.log
+  WARNING - Codex model substitution detected: requested=gpt-5.5 served=gpt-5.5-mini — routing to fallback.
+  DEBUG   - Codex cooldown active for gpt-5.5 (until 1778303456); skipping API call.
 ```
 
 ## When to manually switch

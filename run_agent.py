@@ -253,6 +253,42 @@ def _install_safe_stdio() -> None:
             setattr(sys, stream_name, _SafeWriter(stream))
 
 
+# ---------- Codex substitution cooldown + notification state ----------
+# Module-level state shared across all agent instances in this process.
+# Tracks per-model cooldowns so we don't keep wasting Codex calls when
+# the OpenAI backend is silently downgrading to mini variants.
+_codex_cooldown_until: Dict[str, float] = {}
+_codex_recovery_pending: set = set()
+
+
+def _codex_cooldown_seconds() -> int:
+    try:
+        return max(60, int(os.environ.get("HERMES_CODEX_COOLDOWN_S", "3600")))
+    except (TypeError, ValueError):
+        return 3600
+
+
+def _notify_telegram_home(message: str) -> None:
+    """Best-effort Telegram notification to the configured home channel.
+    Silent no-op if env vars aren't set or the request fails."""
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_HOME_CHANNEL")
+    if not bot_token or not chat_id:
+        return
+    try:
+        import urllib.parse
+        import urllib.request
+        data = urllib.parse.urlencode({"chat_id": chat_id, "text": message}).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            data=data,
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            r.read()
+    except Exception as exc:
+        logging.warning("Failed to send Telegram home notification: %s", exc)
+
+
 class IterationBudget:
     """Thread-safe iteration counter for an agent.
 
@@ -5655,6 +5691,22 @@ class AIAgent:
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
 
+        # Cooldown bypass: if a recent strict-check substitution detection set
+        # a cooldown for this model, skip the API call entirely. Returning None
+        # routes through the existing 'response is None → response_invalid'
+        # validation path, triggering the explicit fallback chain (MiniMax).
+        # Avoids paying ~1 wasted Codex call per turn during a sustained
+        # quota-exhaustion window.
+        _req_model_cd = api_kwargs.get("model")
+        if _req_model_cd:
+            _cd_until = _codex_cooldown_until.get(str(_req_model_cd), 0.0)
+            if _cd_until and time.time() < _cd_until:
+                logging.debug(
+                    "Codex cooldown active for %s (until %s); skipping API call. %s",
+                    _req_model_cd, _cd_until, self._client_log_context(),
+                )
+                return None
+
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
         has_tool_calls = False
@@ -10866,6 +10918,34 @@ class AIAgent:
                                     error_details.append(
                                         f"served model {_served_model} != requested {_req_model}"
                                     )
+                                    # Set per-model cooldown so subsequent turns skip
+                                    # the wasted Codex call and go straight to fallback.
+                                    # Notify once per cooldown entry (not per request).
+                                    _cd_s = _codex_cooldown_seconds()
+                                    _key = str(_req_model)
+                                    _was_pending = _key in _codex_recovery_pending
+                                    _codex_cooldown_until[_key] = time.time() + _cd_s
+                                    _codex_recovery_pending.add(_key)
+                                    if not _was_pending:
+                                        _notify_telegram_home(
+                                            f"⚠️ Codex model substitution detected\n"
+                                            f"Requested: {_req_model}\n"
+                                            f"Served: {_served_model}\n"
+                                            f"Routing to MiniMax for the next ~{_cd_s // 60} min, "
+                                            f"then probing GPT again."
+                                        )
+                                elif _ok:
+                                    # Recovery notification: successful probe after a cooldown.
+                                    # Fires only on the first matching response after a
+                                    # substitution event, then clears the pending flag.
+                                    _key_ok = str(_req_model)
+                                    if _key_ok in _codex_recovery_pending:
+                                        _codex_recovery_pending.discard(_key_ok)
+                                        _codex_cooldown_until.pop(_key_ok, None)
+                                        _notify_telegram_home(
+                                            f"✅ Codex back online\n"
+                                            f"{_req_model} served correctly. Resuming primary routing."
+                                        )
                         _ct_v = self._get_transport()
                         if not response_invalid and not _ct_v.validate_response(response):
                             if response is None:

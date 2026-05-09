@@ -1210,6 +1210,20 @@ class APIServerAdapter(BasePlatformAdapter):
         if not final_response:
             final_response = result.get("error", "(No response generated)")
 
+        # Reflect the actual terminal state in finish_reason so API clients
+        # can distinguish a genuine answer from a failed/truncated run.
+        # Clients that only check HTTP 200 still receive the response; those
+        # that inspect finish_reason or the X-Hermes-* headers get the truth.
+        # See issue #22496.
+        _run_failed = result.get("failed", False)
+        _run_partial = result.get("partial", False)
+        if _run_failed:
+            finish_reason = "error"
+        elif _run_partial:
+            finish_reason = "length"  # OpenAI convention for truncated output
+        else:
+            finish_reason = "stop"
+
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
@@ -1222,7 +1236,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "role": "assistant",
                         "content": final_response,
                     },
-                    "finish_reason": "stop",
+                    "finish_reason": finish_reason,
                 }
             ],
             "usage": {
@@ -1235,6 +1249,10 @@ class APIServerAdapter(BasePlatformAdapter):
         response_headers = {
             "X-Hermes-Session-Id": result.get("session_id", session_id),
         }
+        if _run_failed:
+            response_headers["X-Hermes-Failed"] = "true"
+        if _run_partial:
+            response_headers["X-Hermes-Partial"] = "true"
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(response_data, headers=response_headers)

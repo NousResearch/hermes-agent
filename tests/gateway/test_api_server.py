@@ -1180,6 +1180,87 @@ class TestChatCompletionsEndpoint:
 
         assert session_ids[0] != session_ids[1]
 
+    # ------------------------------------------------------------------
+    # finish_reason and X-Hermes-* header tests (issue #22496)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_failed_run_sets_finish_reason_error_and_header(self, adapter):
+        """When result['failed'] is True, finish_reason is 'error' and X-Hermes-Failed header is set."""
+        mock_result = {
+            "final_response": "Something went wrong.",
+            "failed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "do something"}],
+                    },
+                )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["choices"][0]["finish_reason"] == "error"
+            assert resp.headers.get("X-Hermes-Failed") == "true"
+            assert "X-Hermes-Partial" not in resp.headers
+
+    @pytest.mark.asyncio
+    async def test_partial_run_sets_finish_reason_length_and_header(self, adapter):
+        """When result['partial'] is True, finish_reason is 'length' and X-Hermes-Partial header is set."""
+        mock_result = {
+            "final_response": "Truncated output...",
+            "partial": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "do something"}],
+                    },
+                )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["choices"][0]["finish_reason"] == "length"
+            assert resp.headers.get("X-Hermes-Partial") == "true"
+            assert "X-Hermes-Failed" not in resp.headers
+
+    @pytest.mark.asyncio
+    async def test_successful_run_finish_reason_stop_no_extra_headers(self, adapter):
+        """Clean run: finish_reason is 'stop' and no X-Hermes-Failed / X-Hermes-Partial headers."""
+        mock_result = {
+            "final_response": "All good.",
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["choices"][0]["finish_reason"] == "stop"
+            assert "X-Hermes-Failed" not in resp.headers
+            assert "X-Hermes-Partial" not in resp.headers
+
 
 # ---------------------------------------------------------------------------
 # _derive_chat_session_id unit tests

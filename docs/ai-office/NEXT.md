@@ -1,6 +1,6 @@
 # Hermes AI Office — NEXT
 
-Last updated: 2026-05-09 13:08 KST
+Last updated: 2026-05-09 13:44 KST
 
 ## Start here after `/new`
 
@@ -64,7 +64,7 @@ When not to rely on `/goal` alone:
 
 ## Current next stage
 
-Stage 9-E Korean-first readability pass, Stage 9-F browser-local dynamic tracking through Stage 9-F4, Stage 9-G fixture/source-health hardening, Stage 9-I DeskRPG-like CSS marker motion, Stage 10-A RPG character projection, Stage 10-B CSS/SVG character presentation, Stage 10-C safe role action chips, Stage 10-D room-to-room RPG route choreography, Stage 10-E safe character inspector, Stage 10-F usability hardening, Stage 10-G density/readability modes, Stage 10-H keyboard jump targets, Stage 11-A renderer evidence, Stage 11-B CSS/SVG layout-density polish, and Stage 11-C renderer decision checkpoint are implemented on top of Stage 9-D and the Stage 8 read-only dashboard. Stage 8-A/B/C and Stage 9-A/B/C/D remain completed and verified.
+Stage 9-E Korean-first readability pass, Stage 9-F browser-local dynamic tracking through Stage 9-F4, Stage 9-G fixture/source-health hardening, Stage 9-I DeskRPG-like CSS marker motion, Stage 10-A RPG character projection, Stage 10-B CSS/SVG character presentation, Stage 10-C safe role action chips, Stage 10-D room-to-room RPG route choreography, Stage 10-E safe character inspector, Stage 10-F usability hardening, Stage 10-G density/readability modes, Stage 10-H keyboard jump targets, Stage 11-A renderer evidence, Stage 11-B CSS/SVG layout-density polish, Stage 11-C renderer decision checkpoint, Stage 12-A responsive readability, and Stage 12-B empty-source copy polish are implemented on top of Stage 9-D and the Stage 8 read-only dashboard. Stage 8-A/B/C and Stage 9-A/B/C/D remain completed and verified.
 
 
 Stage 9-E current implementation:
@@ -92,6 +92,7 @@ Stage 9-F current implementation:
 - Stage 10-F adds usability hardening: `OfficeUsabilitySummary` and `buildOfficeUsabilitySummary(state, characters, options)` surface dense-state aggregation, missing/partial source fallback, reduced-motion static meaning, responsive layout posture, and Korean-first copy in a safe map rail with `data-office-usability` smoke hooks.
 - Stage 10-G adds local density/readability modes: `OfficeMapDensityMode`, `OfficeMapDensityPlan`, and `buildOfficeMapDensityPlan(mode, characters)` derive 요약/표준/상세 display plans, cap visible generated characters, expose `data-office-density-controls`, and fold the recent-change rail only in 요약 mode.
 - Stage 10-H adds safe keyboard jump targets: `OfficeMapJumpTarget` and `buildOfficeMapJumpTargets(densityPlan)` expose 지도/사용성/최근 변화/안전 정보 quick links with stable focusable section anchors and summary-mode collapsed recent rail targeting.
+- Stage 12-B adds empty-source copy polish: `OfficeEmptySourceCopyPlan` and `buildOfficeEmptySourceCopyPlan(state)` explain an empty source list as a safe DTO/source-gap state and render `data-office-empty-source-copy` without controls or raw projection.
 - First snapshots produce no fabricated history; manual refresh remains the default.
 - Planning note expanded: `docs/ai-office/plans/2026-05-09-koreanization-and-dynamic-map.md`.
 
@@ -133,7 +134,7 @@ Browser smoke: http://127.0.0.1:8765/office
 
 Immediate next action should remain a product/UX decision point, not a control-plane expansion:
 
-1. Stage 12-A responsive/mobile readability is now the active non-renderer slice; after verification, prefer Office empty-source copy polish or a small handoff/PR summary pass next.
+1. Stage 12-B empty-source copy polish is now the active non-renderer slice; after verification, prefer a small non-mutating handoff/PR summary pass next.
 2. Renderer decision: keep CSS/SVG by default; Stage 11-A/B/C and Stage 12-A did not record a measured performance/functional gap that justifies a renderer spike.
 3. Test-harness review: consider React DOM coverage for polling cleanup/pause behavior only if adding/standardizing that harness is separately approved.
 4. Renderer research: only after future evidence proves CSS/SVG is insufficient and after separate dependency/licensing/security/accessibility review, decide whether Phaser/PixiJS is worth the bundle/maintenance cost.

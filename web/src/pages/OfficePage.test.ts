@@ -19,6 +19,7 @@ import {
   buildOfficeSceneObjects,
   buildOfficeStateDelta,
   buildOfficeAutomationTimingSummary,
+  buildOfficeEmptySourceCopyPlan,
   buildOfficeEmptyStateHints,
   buildOfficeSourceHealthSummary,
   buildOfficeUsabilitySummary,
@@ -577,6 +578,23 @@ describe("OfficePage view helpers", () => {
     expect(sceneObjects.find((object) => object.kind === "avatar")?.label).toBe("모델 캐릭터 1");
     expect(sceneObjects.every((object) => object.id.startsWith("character:"))).toBe(true);
     expect(sceneObjects.map((object) => `${object.label} ${object.detail}`).join(" ")).not.toMatch(/raw|prompt|transcript|body|script|secret|model-name/i);
+  });
+
+  it("builds Korean empty-source copy without exposing raw adapter data", () => {
+    const plan = buildOfficeEmptySourceCopyPlan(
+      officeFixture({
+        data_sources: [],
+        agents: [{ id: "agent-raw", prompt: "raw prompt must not matter", token: "sk-test-must-not-matter" }],
+        work_items: [{ id: "task-raw", body: "raw task body must not matter" }],
+      }),
+    );
+
+    expect(plan.title).toBe("아직 연결된 소스가 없습니다");
+    expect(plan.detail).toContain("대시보드 오류가 아니라 안전 DTO가 비어 있는 상태");
+    expect(plan.items.map((item) => item.label)).toEqual(["연결 상태", "읽기 범위", "다음 확인"]);
+    expect(plan.items.map((item) => item.detail).join(" ")).toContain("미보고 소스 5개");
+    expect(plan.items.map((item) => item.detail).join(" ")).toContain("읽기 전용");
+    expect(`${plan.title} ${plan.detail} ${plan.items.map((item) => `${item.label} ${item.detail}`).join(" ")}`).not.toMatch(/raw|prompt|task_body|body|script|secret|token|sk-/i);
   });
 
   it("summarizes source health and empty fixture hints without leaking raw adapter errors", () => {

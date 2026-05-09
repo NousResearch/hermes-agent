@@ -153,6 +153,18 @@ export type OfficeSourceHealthSummary = {
   tone: OfficeDeltaBadge["tone"];
 };
 
+export type OfficeEmptySourceCopyItem = {
+  label: string;
+  detail: string;
+  tone: OfficeDeltaBadge["tone"];
+};
+
+export type OfficeEmptySourceCopyPlan = {
+  title: string;
+  detail: string;
+  items: OfficeEmptySourceCopyItem[];
+};
+
 export type OfficeEmptyStateHints = Record<"rooms" | "agents" | "workItems" | "automations" | "topics" | "events", string>;
 
 export type OfficeUsabilityItem = {
@@ -256,6 +268,38 @@ export function buildOfficeSourceHealthSummary(state: OfficeState): OfficeSource
     totalWarningCount,
     missingSourceIds,
     tone,
+  };
+}
+
+export function buildOfficeEmptySourceCopyPlan(state: OfficeState): OfficeEmptySourceCopyPlan {
+  const sourceHealth = buildOfficeSourceHealthSummary(state);
+  const missingCount = sourceHealth.missingSourceIds.length;
+  const reportedCount = state.data_sources.length;
+  const gapCount = sourceHealth.counts.missing + sourceHealth.counts.unavailable;
+
+  return {
+    title: reportedCount === 0 ? "아직 연결된 소스가 없습니다" : "일부 소스가 비어 있습니다",
+    detail:
+      reportedCount === 0
+        ? "대시보드 오류가 아니라 안전 DTO가 비어 있는 상태입니다. 연결 전에도 읽기 전용 셸과 가림 정책은 유지됩니다."
+        : "보고된 소스와 미보고 소스를 분리해 표시합니다. 비어 있는 영역은 민감 원문을 추론하지 않습니다.",
+    items: [
+      {
+        label: "연결 상태",
+        detail: missingCount > 0 ? `미보고 소스 ${missingCount}개 · ${sourceHealth.missingSourceIds.join(" · ")}` : `보고 소스 ${reportedCount}개`,
+        tone: gapCount > 0 ? "neutral" : "positive",
+      },
+      {
+        label: "읽기 범위",
+        detail: "읽기 전용 안전 DTO의 개수·상태·시각만 사용합니다.",
+        tone: "positive",
+      },
+      {
+        label: "다음 확인",
+        detail: "필요하면 어댑터 연결 상태를 확인하되 이 화면에서는 실행·수정 제어를 제공하지 않습니다.",
+        tone: "neutral",
+      },
+    ],
   };
 }
 

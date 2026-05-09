@@ -36,14 +36,42 @@ Current Stage 11-B result: `/office` applies a small CSS/SVG layout-density poli
 
 Current Stage 11-C result: the renderer decision gate is closed for now. Fresh browser checkpoint evidence on `/office?stage11c=decision` showed compact standard labels, minimal summary labels, detached rail mode, working jump targets, safe character caps, raw leak regex false, and no console JS errors. The decision remains CSS/SVG primary; no PixiJS, Phaser, canvas, hybrid overlay, sprites, or DeskRPG code/assets should be added without new measured evidence and explicit user approval.
 
-Current Stage 12-A result: `/office` now adds a CSS/SVG responsive readability posture on top of the Stage 11-B polished map. `OfficeResponsiveReadabilityPlan` and `buildOfficeResponsiveReadabilityPlan(densityPlan, { viewportWidth })` derive narrow/desktop posture from browser-local viewport width only, recommend summary mode for narrow screens, and expose map/rail smoke hooks without persistence or backend changes.
+Current Stage 12-B result: `/office` now adds Korean empty-source copy polish for the source-status card. `OfficeEmptySourceCopyPlan` and `buildOfficeEmptySourceCopyPlan(state)` explain an empty source list as a safe DTO/source-gap state, expose `data-office-empty-source-copy`, and keep the panel informational/read-only with no backend, renderer, storage, or mutation changes.
 
-Next phase: continue non-renderer product/dashboard polish unless new evidence appears. Prefer Office empty-source copy polish or a small non-mutating handoff/PR summary pass. Still no individual task identity, generated content-like speech bubbles, sprite assets, Phaser, PixiJS, canvas renderer, backend/API changes, mutation controls, persistent storage, or raw record projection.
+Next phase: prefer a small non-mutating handoff/PR summary pass unless the user selects another product-polish slice. Still no individual task identity, generated content-like speech bubbles, sprite assets, Phaser, PixiJS, canvas renderer, backend/API changes, mutation controls, persistent storage, or raw record projection.
 
 Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
 
 
 
+
+## Stage 12-B empty-source copy polish implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeEmptySourceCopyPlan`, `OfficeEmptySourceCopyItem`, and `buildOfficeEmptySourceCopyPlan(state)` for Korean empty-source copy derived from safe source-health counts only.
+- `web/src/pages/OfficePage.tsx`
+  - Renders `data-office-empty-source-copy` only when `state.data_sources` is empty, with informational read-only/safe DTO copy and no controls.
+- `web/src/pages/OfficePage.test.ts`
+  - Added Stage 12-B helper coverage for Korean copy, expected source-gap count, read-only wording, and raw-term exclusion.
+- `docs/ai-office/plans/2026-05-09-stage-12-empty-source-copy-polish.md`
+  - Documents scope, constraints, implementation, and verification checklist.
+
+Safety notes:
+
+- Stage 12-B does not add renderer dependencies, canvas paths, sprite assets, DeskRPG code/assets, backend/API/schema changes, mutation controls, persistent browser storage, or raw record projection.
+- The empty-source copy helper does not inspect prompts, transcripts, task bodies, cron scripts, logs, auth fields, secrets, tokens, model/provider identity strings, or individual task identity.
+
+Verification 2026-05-09 13:44 KST:
+
+- RED verified first: Stage 12-B test failed because `buildOfficeEmptySourceCopyPlan` did not exist.
+- GREEN focused frontend test passed: `OfficePage.test.ts` 29 passed.
+- ESLint passed for `OfficePage.tsx`, `officeView.ts`, and `OfficePage.test.ts`.
+- `npm run build` passed with the existing Vite large-chunk warning; current build size was JS `1,257.73 kB` / gzip `367.75 kB`, CSS `127.84 kB` / gzip `20.50 kB`.
+- Backend focused office tests passed: `18 passed in 1.00s`.
+- Browser smoke `/office?stage12b=empty-source-copy`: live source fixture had 5 reported source cards, so `data-office-empty-source-copy` was correctly absent; source names `kanban`, `cron`, `sessions`, `topics`, and `provenance` were visible, raw leak regex false, console JS errors none.
+- Empty-source copy rendering is covered by the focused helper test because the live API fixture is currently non-empty.
 
 ## Stage 12-A responsive/mobile readability implemented
 

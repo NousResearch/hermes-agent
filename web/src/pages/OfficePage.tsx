@@ -26,6 +26,7 @@ import {
   buildOfficeCharacterSceneObjects,
   buildOfficeCharacterView,
   buildOfficeCharacters,
+  buildOfficeEmptySourceCopyPlan,
   buildOfficeEmptyStateHints,
   buildOfficeMapDensityPlan,
   buildOfficeMapJumpTargets,
@@ -834,6 +835,7 @@ export default function OfficePage() {
     [officeCharacters, prefersReducedMotion, state, viewportWidth],
   );
   const emptyHints = useMemo(() => buildOfficeEmptyStateHints(), []);
+  const emptySourceCopy = useMemo(() => buildOfficeEmptySourceCopyPlan(state ?? { ...EMPTY_OFFICE_STATE }), [state]);
 
   const sourceCounts = sourceHealth.counts;
 
@@ -987,7 +989,20 @@ export default function OfficePage() {
               <span className="border border-red-400/30 px-2 py-1 text-red-300">오류 {sourceCounts.error}</span>
             </div>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {state.data_sources.map((source) => (
+              {state.data_sources.length === 0 ? (
+                <div className="md:col-span-2 xl:col-span-3 border border-sky-400/25 bg-sky-950/10 p-4 text-sm text-sky-100" data-office-empty-source-copy="true">
+                  <div className="font-semibold text-sky-100">{emptySourceCopy.title}</div>
+                  <div className="mt-2 text-xs leading-5 text-sky-100/75">{emptySourceCopy.detail}</div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-3">
+                    {emptySourceCopy.items.map((item) => (
+                      <div key={item.label} className={`border p-2 text-xs ${changeToneClass(item.tone)}`} data-office-empty-source-item={item.label}>
+                        <div className="font-semibold">{item.label}</div>
+                        <div className="mt-1 text-current/75">{item.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : state.data_sources.map((source) => (
                 <SourceCard
                   key={source.id}
                   source={source}

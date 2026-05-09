@@ -70,6 +70,34 @@ class TestHermesApiServerToolset:
     def test_mobile_chat_toolset_is_no_tool_default(self):
         assert resolve_toolset("hermes-mobile-chat") == []
 
+    def test_mobile_chat_platform_does_not_inherit_default_plugins_or_mcp(self, monkeypatch):
+        from hermes_cli import tools_config
+
+        monkeypatch.setattr(tools_config, "_get_plugin_toolset_keys", lambda: {"plugin_default"})
+        config = {
+            "mcp_servers": {
+                "global_mcp": {"enabled": True},
+            }
+        }
+
+        assert tools_config._get_platform_tools(config, "mobile_chat") == set()
+
+    def test_mobile_chat_platform_allows_explicit_plugin_and_mcp(self, monkeypatch):
+        from hermes_cli import tools_config
+
+        monkeypatch.setattr(tools_config, "_get_plugin_toolset_keys", lambda: {"plugin_default"})
+        config = {
+            "platform_toolsets": {
+                "mobile_chat": ["plugin_default", "explicit_mcp"],
+            },
+            "mcp_servers": {
+                "explicit_mcp": {"enabled": True},
+                "global_mcp": {"enabled": True},
+            },
+        }
+
+        assert tools_config._get_platform_tools(config, "mobile_chat") == {"plugin_default", "explicit_mcp"}
+
 
 class TestApiServerPlatformConfig:
     def test_platforms_dict_includes_api_server(self):
@@ -177,6 +205,12 @@ class TestApiServerAdapterToolset:
         assert _normalize_api_platform(None) == "api_server"
         assert _normalize_api_platform(" mobile_chat ") == "mobile_chat"
         assert _normalize_api_platform("web") == "web"
+
+        with pytest.raises(ValueError):
+            _normalize_api_platform("cli")
+
+        with pytest.raises(ValueError):
+            _normalize_api_platform("telegram")
 
         with pytest.raises(ValueError):
             _normalize_api_platform("terminal")

@@ -96,6 +96,13 @@ _TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
     "discord_admin": {"discord"},
 }
 
+# Platforms in this set must only receive the toolsets explicitly selected for
+# that platform.  They do not inherit default-enabled plugin toolsets or global
+# MCP servers.  This keeps constrained API-client surfaces such as mobile chat
+# genuinely lightweight by default while still allowing the server operator to
+# opt in specific plugin/MCP toolsets via platform_toolsets.<platform>.
+_NO_DEFAULT_AUGMENTED_TOOL_PLATFORMS: Set[str] = {"mobile_chat"}
+
 
 def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     """Return True if ``ts_key`` is configurable on ``platform``.
@@ -986,6 +993,7 @@ def _get_platform_tools(
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
+    inherit_default_augmented_toolsets = platform not in _NO_DEFAULT_AUGMENTED_TOOL_PLATFORMS
 
     if toolset_names is None or not isinstance(toolset_names, list):
         plat_info = PLATFORMS.get(platform)
@@ -1131,6 +1139,9 @@ def _get_platform_tools(
             elif pts in _DEFAULT_OFF_TOOLSETS:
                 # Opt-in plugin toolset — stay off until user picks it
                 continue
+            elif not inherit_default_augmented_toolsets:
+                # Constrained platform — no default plugin inheritance
+                continue
             elif pts not in known_for_platform:
                 # New plugin not yet seen by hermes tools — default enabled
                 enabled_toolsets.add(pts)
@@ -1164,7 +1175,7 @@ def _get_platform_tools(
     else:
         explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
         enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
-    if include_default_mcp_servers:
+    if include_default_mcp_servers and inherit_default_augmented_toolsets:
         if explicit_mcp_servers or "no_mcp" in toolset_names:
             enabled_toolsets.update(explicit_mcp_servers)
         else:

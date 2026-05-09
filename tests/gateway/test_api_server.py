@@ -201,6 +201,18 @@ class TestIdempotencyCache:
 
 
 class TestAdapterInit:
+    def test_cors_allow_headers_include_api_platform_and_session_headers(self):
+        allow_headers = _CORS_HEADERS["Access-Control-Allow-Headers"]
+        assert "X-Platform" in allow_headers
+        assert "X-Hermes-Platform" in allow_headers
+        assert "X-Hermes-Session-Id" in allow_headers
+        assert "X-Hermes-Session-Key" in allow_headers
+
+        expose_headers = _CORS_HEADERS["Access-Control-Expose-Headers"]
+        assert "X-Hermes-Platform" in expose_headers
+        assert "X-Hermes-Session-Id" in expose_headers
+        assert "X-Hermes-Session-Key" in expose_headers
+
     def test_default_config(self):
         config = PlatformConfig(enabled=True)
         adapter = APIServerAdapter(config)
@@ -602,6 +614,8 @@ class TestCapabilitiesEndpoint:
             assert "api_server" in data["features"]["api_platforms"]
             assert "web" in data["features"]["api_platforms"]
             assert "mobile_chat" in data["features"]["api_platforms"]
+            assert "cli" not in data["features"]["api_platforms"]
+            assert "telegram" not in data["features"]["api_platforms"]
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
 
     @pytest.mark.asyncio
@@ -690,6 +704,43 @@ class TestChatCompletionsEndpoint:
             assert resp.status == 400
             data = await resp.json()
             assert "Unknown API platform selector" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_is_scoped_by_requested_platform(self, adapter, monkeypatch):
+        import gateway.platforms.api_server as api_server_mod
+
+        monkeypatch.setattr(api_server_mod, "_idem_cache", _IdempotencyCache())
+        app = _create_app(adapter)
+        body = {"model": "test", "messages": [{"role": "user", "content": "hi"}]}
+
+        async def _mock_run_agent(**kwargs):
+            platform = kwargs["api_platform"]
+            return (
+                {"final_response": platform, "messages": [], "api_calls": 1, "session_id": f"sid-{platform}"},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.side_effect = _mock_run_agent
+                first = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Idempotency-Key": "same-key", "X-Platform": "mobile_chat"},
+                    json=body,
+                )
+                second = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Idempotency-Key": "same-key", "X-Platform": "web"},
+                    json=body,
+                )
+                first_data = await first.json()
+                second_data = await second.json()
+
+        assert first.status == 200
+        assert second.status == 200
+        assert first_data["choices"][0]["message"]["content"] == "mobile_chat"
+        assert second_data["choices"][0]["message"]["content"] == "web"
+        assert mock_run.await_count == 2
 
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):
@@ -1340,6 +1391,43 @@ class TestResponsesEndpoint:
             # Last message is user_message, rest are history
             assert call_kwargs["user_message"] == "What is 2+2?"
             assert len(call_kwargs["conversation_history"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_responses_idempotency_key_is_scoped_by_requested_platform(self, adapter, monkeypatch):
+        import gateway.platforms.api_server as api_server_mod
+
+        monkeypatch.setattr(api_server_mod, "_idem_cache", _IdempotencyCache())
+        app = _create_app(adapter)
+        body = {"model": "hermes-agent", "input": "Hello"}
+
+        async def _mock_run_agent(**kwargs):
+            platform = kwargs["api_platform"]
+            return (
+                {"final_response": platform, "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.side_effect = _mock_run_agent
+                first = await cli.post(
+                    "/v1/responses",
+                    headers={"Idempotency-Key": "same-key", "X-Platform": "mobile_chat"},
+                    json=body,
+                )
+                second = await cli.post(
+                    "/v1/responses",
+                    headers={"Idempotency-Key": "same-key", "X-Platform": "web"},
+                    json=body,
+                )
+                first_data = await first.json()
+                second_data = await second.json()
+
+        assert first.status == 200
+        assert second.status == 200
+        assert first_data["output"][0]["content"][0]["text"] == "mobile_chat"
+        assert second_data["output"][0]["content"][0]["text"] == "web"
+        assert mock_run.await_count == 2
 
     @pytest.mark.asyncio
     async def test_instructions_as_ephemeral_prompt(self, adapter):

@@ -64,25 +64,33 @@ MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 API_PLATFORM_HEADER = "X-Platform"
 API_PLATFORM_ALT_HEADER = "X-Hermes-Platform"
 API_PLATFORM_RESPONSE_HEADER = "X-Hermes-Platform"
+API_SELECTABLE_PLATFORMS = frozenset({"api_server", "web", "mobile_chat"})
 
 
 def _known_api_platforms() -> set[str]:
-    """Return the server-known platform/surface names accepted by the API server."""
+    """Return API-server client surfaces accepted by the platform header.
+
+    The API server intentionally does not accept every Hermes platform key here.
+    Messaging/CLI platform profiles may include tools or UX assumptions that are
+    unsafe or nonsensical for an HTTP API client.  Keep this list explicit until
+    Hermes has a first-class registry flag for API-selectable surfaces.
+    """
     try:
         from hermes_cli.platforms import get_all_platforms
-        return set(get_all_platforms().keys())
+        platforms = set(get_all_platforms().keys())
     except Exception:
-        return {"api_server"}
+        platforms = {"api_server"}
+    return platforms.intersection(API_SELECTABLE_PLATFORMS)
 
 
 def _normalize_api_platform(raw_value: Any) -> str:
     """Normalize and validate an API client platform/surface selector.
 
     A missing selector preserves the historical API-server behavior.  An
-    explicit but unknown selector is rejected instead of silently falling back
-    to the full API-server tool surface; that is safer for constrained clients
-    such as browser/mobile chat UIs where a typo should not accidentally grant
-    terminal/file tools.
+    explicit but unknown or non-API selector is rejected instead of silently
+    falling back to the full API-server tool surface; that is safer for
+    constrained clients such as browser/mobile chat UIs where a typo should not
+    accidentally grant terminal/file tools.
     """
     value = str(raw_value or "").strip().lower()
     if not value:
@@ -435,7 +443,14 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, "
+        "X-Platform, X-Hermes-Platform, "
+        "X-Hermes-Session-Id, X-Hermes-Session-Key"
+    ),
+    "Access-Control-Expose-Headers": (
+        "X-Hermes-Platform, X-Hermes-Session-Id, X-Hermes-Session-Key"
+    ),
 }
 
 
@@ -1241,7 +1256,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp_body = dict(body)
+            fp_body["__hermes_api_platform"] = api_platform
+            fp = _make_request_fingerprint(
+                fp_body,
+                keys=["model", "messages", "tools", "tool_choice", "stream", "__hermes_api_platform"],
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -2295,9 +2315,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            fp_body = dict(body)
+            fp_body["__hermes_api_platform"] = api_platform
             fp = _make_request_fingerprint(
-                body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                fp_body,
+                keys=[
+                    "input", "instructions", "previous_response_id", "conversation",
+                    "model", "tools", "__hermes_api_platform",
+                ],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)

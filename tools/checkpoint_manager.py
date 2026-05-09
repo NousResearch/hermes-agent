@@ -482,6 +482,8 @@ def _touch_project(store: Path, working_dir: str) -> None:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
     meta["workdir"] = str(_normalize_path(working_dir))
     meta["last_touch"] = time.time()
     meta.setdefault("created_at", meta["last_touch"])

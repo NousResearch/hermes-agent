@@ -5484,6 +5484,88 @@ class HermesCLI:
             else:
                 print("(^_^)v New session started!")
 
+    def _handle_handoff_command(self, cmd_original: str) -> None:
+        """Handle /handoff <platform> — hand off current session to a messaging platform."""
+        from hermes_state import format_session_db_unavailable
+
+        parts = cmd_original.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /handoff <platform>")
+            _cprint("  Supported: telegram, discord, slack, whatsapp, signal, matrix")
+            _cprint("  The session will become available on that platform's home channel.")
+            return
+
+        platform = parts[1].strip().lower()
+        supported = {"telegram", "discord", "slack", "whatsapp", "signal", "matrix"}
+        if platform not in supported:
+            _cprint(f"  Unknown platform '{platform}'. Supported: {', '.join(sorted(supported))}")
+            return
+
+        # Ensure session is in the DB
+        if not self._session_db:
+            from hermes_state import SessionDB
+            self._session_db = SessionDB()
+
+        if not self._session_db:
+            _cprint(f"  {format_session_db_unavailable()}")
+            return
+
+        # Make sure the session has a title
+        session_title = ""
+        try:
+            session_meta = self._session_db.get_session(self.session_id)
+            if session_meta:
+                session_title = session_meta.get("title") or ""
+        except Exception:
+            pass
+
+        if not session_title:
+            # Auto-title from conversation if not set
+            if hasattr(self, "agent") and self.agent and self.conversation_history:
+                last_user_msgs = [m for m in self.conversation_history[-6:] if m.get("role") == "user"]
+                if last_user_msgs:
+                    title = last_user_msgs[0].get("content", "")[:60]
+                    title = title.replace("\n", " ").strip()
+                    if title:
+                        session_title = title
+                        self._session_db.set_session_title(self.session_id, title)
+
+        if not session_title:
+            session_title = "untitled session"
+
+        # Mark session for handoff
+        ok = self._session_db.set_handoff_pending(self.session_id, platform)
+        if not ok:
+            _cprint(f"  Session is already pending handoff or not found.")
+            return
+
+        _cprint(f"  Session '{session_title}' queued for handoff to {platform}.")
+        _cprint(f"  The session will resume when the next message arrives on the {platform} home channel.")
+
+        # Also try to send a notification via send_message
+        try:
+            summary_lines = ["Handoff from CLI", f"Session: {session_title}"]
+            if hasattr(self, "agent") and self.agent:
+                last_msgs = self.conversation_history[-4:] if self.conversation_history else []
+                for msg in last_msgs:
+                    role = msg.get("role", "")
+                    content = str(msg.get("content", ""))[:120]
+                    if content.strip():
+                        summary_lines.append(f"[{role}] {content}")
+            summary = "\n".join(summary_lines)
+
+            from tools.send_message_tool import send_message_tool
+            result_json = send_message_tool({"target": platform, "message": summary})
+            import json
+            result = json.loads(result_json)
+            if result.get("success"):
+                _cprint(f"  Notification sent to {platform} home channel.")
+            else:
+                err = result.get("error", "unknown error")
+                _cprint(f"  Could not send notification to {platform}: {err}")
+        except Exception as e:
+            _cprint(f"  Could not send notification: {e}")
+
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         parts = cmd_original.split(None, 1)
@@ -6910,6 +6992,8 @@ class HermesCLI:
                 else:
                     from hermes_state import format_session_db_unavailable
                     _cprint(f"  {format_session_db_unavailable()}")
+        elif canonical == "handoff":
+            self._handle_handoff_command(cmd_original)
         elif canonical == "new":
             parts = cmd_original.split(maxsplit=1)
             title = parts[1].strip() if len(parts) > 1 else None

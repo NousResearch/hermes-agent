@@ -75,6 +75,55 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
+    def test_schema_description_advertises_runtime_limits(self):
+        """The model must see the user's actual concurrency / spawn-depth caps,
+        not the framework defaults. Without this, models that read 'default 3'
+        will self-cap below the user's real limit.
+        """
+        from tools.delegate_tool import (
+            _build_dynamic_schema_overrides,
+            _get_max_concurrent_children,
+            _get_max_spawn_depth,
+        )
+
+        overrides = _build_dynamic_schema_overrides()
+        max_children = _get_max_concurrent_children()
+        max_depth = _get_max_spawn_depth()
+
+        desc = overrides["description"]
+        tasks_desc = overrides["parameters"]["properties"]["tasks"]["description"]
+        role_desc = overrides["parameters"]["properties"]["role"]["description"]
+
+        # Top-level description names the user's concurrency limit explicitly.
+        self.assertIn(f"up to {max_children}", desc)
+        # Top-level description names the user's spawn-depth limit explicitly.
+        self.assertIn(f"max_spawn_depth={max_depth}", desc)
+        # tasks parameter description repeats the concurrency cap.
+        self.assertIn(f"up to {max_children}", tasks_desc)
+        # role parameter description names the spawn-depth limit.
+        self.assertIn(f"max_spawn_depth={max_depth}", role_desc)
+        # The misleading "default 3" / "default 2" wording is gone from
+        # every dynamic surface (model-facing).
+        for surface in (desc, tasks_desc, role_desc):
+            self.assertNotIn("default 3", surface)
+            self.assertNotIn("default 2", surface)
+
+    def test_schema_overrides_applied_via_get_definitions(self):
+        """Registry.get_definitions() must apply dynamic_schema_overrides so
+        the model API call sees current values, not the static import-time text.
+        """
+        from tools.registry import registry
+        defs = registry.get_definitions({"delegate_task"})
+        self.assertEqual(len(defs), 1)
+        fn = defs[0]["function"]
+        # Description should mention the user's actual limits, not "default 3".
+        from tools.delegate_tool import (
+            _get_max_concurrent_children,
+            _get_max_spawn_depth,
+        )
+        self.assertIn(f"up to {_get_max_concurrent_children()}", fn["description"])
+        self.assertIn(f"max_spawn_depth={_get_max_spawn_depth()}", fn["description"])
+
 
 class TestChildSystemPrompt(unittest.TestCase):
     def test_goal_only(self):

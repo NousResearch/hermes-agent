@@ -201,6 +201,25 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
 
+def _use_google_ai_studio_apikey_header(
+    env_vars: tuple[str, ...],
+    default_url: str | None,
+    base_url: str,
+) -> bool:
+    """Return True when doctor should authenticate with x-goog-api-key.
+
+    Google AI Studio API keys are not accepted via Authorization: Bearer on
+    generativelanguage.googleapis.com. Doctor's generic OpenAI-compatible probe
+    would otherwise misreport valid Gemini keys as invalid.
+    """
+    env_var_set = set(env_vars)
+    if {"GOOGLE_API_KEY", "GEMINI_API_KEY"} & env_var_set:
+        return True
+
+    candidate_urls = [u for u in (base_url, default_url) if u]
+    return any(base_url_host_matches(url, "generativelanguage.googleapis.com") for url in candidate_urls)
+
+
 def _build_apikey_providers_list() -> list:
     """Build the API-key provider health-check list once and cache it.
 
@@ -1291,10 +1310,11 @@ def run_doctor(args):
                 if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
                     _base = _base.rstrip("/") + "/v1"
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
-                _headers = {
-                    "Authorization": f"Bearer {_key}",
-                    "User-Agent": _HERMES_USER_AGENT,
-                }
+                _headers = {"User-Agent": _HERMES_USER_AGENT}
+                if _use_google_ai_studio_apikey_header(_env_vars, _default_url, _base):
+                    _headers["x-goog-api-key"] = _key
+                else:
+                    _headers["Authorization"] = f"Bearer {_key}"
                 if base_url_host_matches(_base, "api.kimi.com"):
                     _headers["User-Agent"] = "claude-code/0.1.0"
                 _resp = httpx.get(

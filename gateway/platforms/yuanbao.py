@@ -2216,6 +2216,34 @@ class QuoteContextMiddleware(InboundMiddleware):
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         ctx.reply_to_message_id, ctx.reply_to_text, ctx.quote_media_refs = self._extract_quote_context(ctx.cloud_custom_data)
+
+        # Fallback: if quote has a message_id but no media_refs extracted from desc,
+        # look up the quoted message in transcript history by message_id to find ybres anchors.
+        if ctx.reply_to_message_id and not ctx.quote_media_refs:
+            store = getattr(ctx.adapter, "_session_store", None)
+            if store:
+                try:
+                    session_entry = store.get_or_create_session(ctx.source)
+                    history = store.load_transcript(session_entry.session_id)
+                    for msg in (history or []):
+                        mid = msg.get("message_id", "")
+                        if mid and mid == ctx.reply_to_message_id:
+                            content = msg.get("content", "")
+                            if isinstance(content, str) and "|ybres:" in content:
+                                for m in _YB_RES_REF_RE.finditer(content):
+                                    head = m.group(1)
+                                    rid = m.group(2)
+                                    kind, _, filename = head.partition(":")
+                                    kind = kind.strip()
+                                    if kind in ("image", "file"):
+                                        ctx.quote_media_refs.append((rid, kind, filename.strip()))
+                            break
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] QuoteContext transcript lookup failed: %s",
+                        ctx.adapter.name, exc,
+                    )
+
         await next_fn()
 
 
@@ -2589,7 +2617,11 @@ class DispatchMiddleware(InboundMiddleware):
 
             event = MessageEvent(
                 text=_patched_event_text,
-                message_type=ctx.msg_type,
+                message_type=(
+                    MessageType.DOCUMENT
+                    if any(not mt.startswith("image/") for mt in media_types)
+                    else ctx.msg_type
+                ),
                 source=ctx.source,
                 message_id=ctx.msg_id or None,
                 raw_message=ctx.push,

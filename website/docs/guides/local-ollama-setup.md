@@ -31,11 +31,11 @@ By the end, you'll have:
 | **GPU** | Not required | NVIDIA GPU with 8+ GB VRAM speeds things up significantly |
 
 :::tip CPU-only works, but expect slower responses
-Ollama runs on CPU-only servers. A 9B model on a modern 8-core CPU gives ~10 tokens/sec. A 31B model on CPU is slower (~2–5 tokens/sec) — each response takes 30–120 seconds, but it works. A GPU dramatically improves this. For CPU-only setups, increase the API timeout in config:
+Ollama runs on CPU-only servers. A 9B model on a modern 8-core CPU gives ~10 tokens/sec. A 31B model on CPU is slower (~2–5 tokens/sec) — each response takes 30–120 seconds, but it works. A GPU dramatically improves this. For CPU-only setups, widen the API timeout via the env var (it's not a `config.yaml` key):
 
-```yaml
-agent:
-  api_timeout: 1800   # 30 minutes — generous for slow local models
+```bash
+# ~/.hermes/.env
+HERMES_API_TIMEOUT=1800   # 30 minutes — generous for slow local models
 ```
 :::
 

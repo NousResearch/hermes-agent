@@ -288,6 +288,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
+        self._app_ids: set = set()  # Slack API app IDs for multi-app filtering
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
@@ -556,7 +557,11 @@ class SlackAdapter(BasePlatformAdapter):
                 team_id = auth_response.get("team_id", "")
                 bot_user_id = auth_response.get("user_id", "")
                 bot_name = auth_response.get("user", "unknown")
-                team_name = auth_response.get("team", "unknown")
+                team_name = auth_response.get("team", "")
+                # Collect app_id for multi-app slash-command filtering
+                app_id = auth_response.get("app_id", "")
+                if app_id:
+                    self._app_ids.add(app_id)
 
                 self._team_clients[team_id] = client
                 self._team_bot_user_ids[team_id] = bot_user_id
@@ -2692,6 +2697,17 @@ class SlackAdapter(BasePlatformAdapter):
         what's the weather`` — non-slash text is treated as a regular
         message).
         """
+        # Multi-app filtering: in Socket Mode, Slack sends ALL events to ALL
+        # connected apps. Filter by api_app_id so each gateway only processes
+        # commands intended for its own app (e.g. Kimberly vs Derp).
+        if self._app_ids:
+            cmd_app_id = command.get("api_app_id", "")
+            if cmd_app_id and cmd_app_id not in self._app_ids:
+                logger.info(
+                    "[Slack] Ignoring slash command for other app (api_app_id=%s, our app_ids=%s)",
+                    cmd_app_id, self._app_ids,
+                )
+                return
         slash_name = (command.get("command") or "").lstrip("/").strip()
         text = command.get("text", "").strip()
         user_id = command.get("user_id", "")

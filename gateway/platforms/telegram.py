@@ -190,8 +190,11 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
 
         heading = next((cell for cell in cells if cell), f"Row {index}")
         rendered_rows.append(f"**{heading}**")
+        # Skip the first column (row-label) when rendering bullet items,
+        # matching the expected Telegram output format.
         rendered_rows.extend(
-            f"• {header}: {value}" for header, value in zip(headers, cells)
+            f"• {header}: {value}"
+            for header, value in zip(headers[1:], cells[1:])
         )
 
     return "\n\n".join(rendered_rows)

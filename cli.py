@@ -6922,6 +6922,8 @@ class HermesCLI:
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
+        elif canonical == "context":
+            self._show_context_report()
         elif canonical == "insights":
             self._show_insights(cmd_original)
         elif canonical == "copy":
@@ -8100,6 +8102,46 @@ class HermesCLI:
 
         args = SimpleNamespace(lines=200, expire=7, local=False)
         run_debug_share(args)
+
+    def _show_context_report(self):
+        """Show a rough pre-flight breakdown of the active request context."""
+        if not self.agent:
+            print("(._.) No active agent -- send a message first.")
+            return
+
+        from agent.context_observability import build_context_breakdown, format_context_breakdown
+
+        agent = self.agent
+        messages = getattr(self, "conversation_history", []) or []
+        tools = getattr(agent, "tools", None) or []
+        system_prompt = (
+            getattr(agent, "_cached_system_prompt", None)
+            or getattr(agent, "system_prompt", "")
+            or ""
+        )
+        compressor = getattr(agent, "context_compressor", None)
+        ctx_len = getattr(compressor, "context_length", 0) or 0
+        enabled_toolsets = getattr(agent, "enabled_toolsets", None) or getattr(self, "enabled_toolsets", None) or []
+        model = getattr(agent, "model", getattr(self, "model", "unknown"))
+        provider = getattr(agent, "provider", getattr(self, "provider", "unknown"))
+        openrouter_cache_enabled = None
+        try:
+            cfg = globals().get("CLI_CONFIG", {}) or {}
+            openrouter_cache_enabled = bool((cfg.get("openrouter") or {}).get("response_cache"))
+        except Exception:
+            openrouter_cache_enabled = None
+
+        report = build_context_breakdown(
+            messages,
+            tools=tools,
+            system_prompt=system_prompt,
+            model=model,
+            provider=provider,
+            context_window=ctx_len,
+            enabled_toolsets=enabled_toolsets,
+            openrouter_cache_enabled=openrouter_cache_enabled,
+        )
+        print(format_context_breakdown(report))
 
     def _show_usage(self):
         """Show rate limits (if available) and session token usage."""

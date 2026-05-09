@@ -81,6 +81,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 |---------|-------------|
 | `/help` | Show this help message |
 | `/usage` | Show token usage, cost breakdown, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits / plan usage pulled live from the provider's API. |
+| `/context` | Show rough prompt/context composition for the active CLI session: system prompt, messages, tool schemas, estimated request size, context window, and compression threshold. |
 | `/insights` | Show usage insights and analytics (last 30 days) |
 | `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status |
 | `/paste` | Attach a clipboard image |

@@ -11030,14 +11030,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            #
+            # Inline quote cap matches the passive-hydration prefix (500
+            # chars) so the disambiguation pointer is byte-identical to the
+            # base behaviour. When the quoted message is longer, or the agent
+            # needs the messages around it, the appended fetch hint points at
+            # discord.fetch_messages with around=<msg_id> for the full context.
+            INLINE_REPLY_QUOTE_CAP = 500
+            full_quote = event.reply_to_text
+            reply_snippet = full_quote[:INLINE_REPLY_QUOTE_CAP]
+
             if getattr(event, "reply_to_is_own_message", False):
-                message_text = (
-                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
-                    f"{message_text}"
-                )
+                pointer = f'[Replying to your previous message: "{reply_snippet}"]'
             else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+                pointer = f'[Replying to: "{reply_snippet}"]'
+
+            # Active-fetch hint: appended as a separate line so the base
+            # pointer above stays unchanged. Carries the channel + message
+            # snowflake the agent needs to pull the full message and its
+            # neighbours via the discord tool's around= anchor.
+            ref_chan = getattr(event, "reply_to_channel_id", None) or source.chat_id
+            ref_msg = event.reply_to_message_id
+            fetch_hint = (
+                f"\n[For the full message or surrounding context, call "
+                f"discord(action='fetch_messages', channel_id='{ref_chan}', "
+                f"around='{ref_msg}', limit=20).]"
+            )
+            message_text = f"{pointer}{fetch_hint}\n\n{message_text}"
 
         if "@" in message_text:
             try:

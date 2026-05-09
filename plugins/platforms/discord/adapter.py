@@ -6641,10 +6641,29 @@ class DiscordAdapter(BasePlatformAdapter):
 
         reply_to_id = None
         reply_to_text = None
+        reply_to_channel_id = None
+        reply_to_author = None
         if message.reference:
             reply_to_id = str(message.reference.message_id)
+            # message.reference.channel_id is the channel the referenced message
+            # lives in. When the user replies to a parent-channel message from
+            # inside a thread (or vice-versa), this differs from message.channel.id.
+            ref_chan = getattr(message.reference, "channel_id", None)
+            if ref_chan:
+                reply_to_channel_id = str(ref_chan)
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
+                ref_author = getattr(message.reference.resolved, "author", None)
+                if ref_author is not None:
+                    reply_to_author = (
+                        getattr(ref_author, "display_name", None)
+                        or getattr(ref_author, "global_name", None)
+                        or getattr(ref_author, "name", None)
+                    )
+        # Fall back to the current channel when Discord didn't set channel_id
+        # on the reference (older payloads).
+        if reply_to_id and not reply_to_channel_id:
+            reply_to_channel_id = _chan_id or None
 
         event = MessageEvent(
             text=event_text,
@@ -6656,6 +6675,8 @@ class DiscordAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            reply_to_channel_id=reply_to_channel_id,
+            reply_to_author=reply_to_author,
             timestamp=message.created_at,
             auto_skill=_skills,
             channel_prompt=_channel_prompt,

@@ -1793,6 +1793,8 @@ class MessageEvent:
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+    reply_to_channel_id: Optional[str] = None  # Channel where the replied-to message lives (may differ from current chat — e.g. user replied in a parent channel from inside a thread, or vice versa)
+    reply_to_author: Optional[str] = None  # Display name of the replied-to message author (Discord adapter; signal uses reply_to_author_name)
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.

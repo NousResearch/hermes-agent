@@ -9884,6 +9884,31 @@ class AIAgent:
                 db=self._session_db,
                 current_session_id=self.session_id,
             )
+        elif function_name == "recall":
+            from tools.recall_tool import recall as _recall_tool
+            result = _recall_tool(
+                query=function_args.get("query", ""),
+                mode=function_args.get("mode", "manual"),
+                depth=function_args.get("depth", "standard"),
+                sources=function_args.get("sources"),
+                budget=function_args.get("budget", "medium"),
+                provenance=function_args.get("provenance", "ids"),
+                role_filter=function_args.get("role_filter"),
+                limit=function_args.get("limit"),
+                memory_manager=self._memory_manager,
+                db=self._session_db,
+                current_session_id=self.session_id,
+            )
+            try:
+                _payload = json.loads(result)
+                _key = _payload.get("recall_key")
+                if _key:
+                    _recent = getattr(self, "_memory_recall_recent_keys", {}) or {}
+                    _recent[_key] = self._user_turn_count
+                    self._memory_recall_recent_keys = _recent
+            except Exception:
+                pass
+            return result
         elif function_name == "memory":
             target = function_args.get("target", "memory")
             from tools.memory_tool import memory_tool as _memory_tool
@@ -10511,6 +10536,33 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
+            elif function_name == "recall":
+                from tools.recall_tool import recall as _recall_tool
+                function_result = _recall_tool(
+                    query=function_args.get("query", ""),
+                    mode=function_args.get("mode", "manual"),
+                    depth=function_args.get("depth", "standard"),
+                    sources=function_args.get("sources"),
+                    budget=function_args.get("budget", "medium"),
+                    provenance=function_args.get("provenance", "ids"),
+                    role_filter=function_args.get("role_filter"),
+                    limit=function_args.get("limit"),
+                    memory_manager=self._memory_manager,
+                    db=self._session_db,
+                    current_session_id=self.session_id,
+                )
+                try:
+                    _payload = json.loads(function_result)
+                    _key = _payload.get("recall_key")
+                    if _key:
+                        _recent = getattr(self, "_memory_recall_recent_keys", {}) or {}
+                        _recent[_key] = self._user_turn_count
+                        self._memory_recall_recent_keys = _recent
+                except Exception:
+                    pass
+                tool_duration = time.time() - tool_start_time
+                if self._should_emit_quiet_tool_messages():
+                    self._vprint(f"  {_get_cute_tool_message_impl('recall', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
                 target = function_args.get("target", "memory")
                 from tools.memory_tool import memory_tool as _memory_tool

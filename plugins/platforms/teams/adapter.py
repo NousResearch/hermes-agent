@@ -418,6 +418,9 @@ def _env_enablement() -> dict | None:
             seed["port"] = int(port)
         except ValueError:
             pass
+    service_url = os.getenv("TEAMS_SERVICE_URL", "").strip()
+    if service_url:
+        seed["service_url"] = service_url
     home = os.getenv("TEAMS_HOME_CHANNEL", "").strip()
     if home:
         seed["home_channel"] = {
@@ -425,6 +428,173 @@ def _env_enablement() -> dict | None:
             "name": os.getenv("TEAMS_HOME_CHANNEL_NAME", "Home"),
         }
     return seed
+
+
+# Bot Framework default service URL for the global Teams endpoint.  Some
+# regional/government tenants need a different host (e.g.
+# ``https://smba.infra.gov.teams.microsoft.us/``) which can be supplied via
+# ``TEAMS_SERVICE_URL`` or ``extra['service_url']``.
+_DEFAULT_TEAMS_SERVICE_URL = "https://smba.trafficmanager.net/teams/"
+
+# Allowlist of Bot Framework service hosts that may receive a freshly
+# minted bearer token.  Operator-supplied URLs are matched against this
+# allowlist to block SSRF / token-exfiltration via a tampered env var.
+_ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({
+    "smba.trafficmanager.net",
+    "smba.infra.gov.teams.microsoft.us",
+})
+
+# Conservative pattern for Bot Framework conversation IDs.  Real values
+# combine digits, colons, hyphens, dots, '@', and the ``thread.skype`` /
+# ``thread.tacv2`` suffixes; reject anything outside this set so a hostile
+# value cannot path-traverse out of ``/v3/conversations/<id>/activities``.
+import re as _re_teams
+_TEAMS_CONV_ID_RE = _re_teams.compile(r"^[A-Za-z0-9:@\-_.]+$")
+
+
+def _validate_teams_service_url(raw: str) -> Optional[str]:
+    """Return a normalized service URL or ``None`` if it is not allowed.
+
+    Requires ``https://`` and a host in ``_ALLOWED_TEAMS_SERVICE_HOSTS``.
+    The trailing slash is added if absent so callers can append
+    ``v3/conversations/...`` without double slashes.
+    """
+    if not raw:
+        return None
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    if parsed.scheme != "https":
+        return None
+    if parsed.hostname not in _ALLOWED_TEAMS_SERVICE_HOSTS:
+        return None
+    normalized = raw if raw.endswith("/") else raw + "/"
+    return normalized
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[list] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """Acquire a Bot Framework bearer token and POST a single message activity.
+
+    Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
+    runner is not in this process (e.g. ``hermes cron`` running as a
+    separate process from ``hermes gateway``).  Without this hook,
+    ``deliver=teams`` cron jobs fail with ``No live adapter for platform``.
+
+    Configuration: requires ``TEAMS_CLIENT_ID``, ``TEAMS_CLIENT_SECRET``,
+    ``TEAMS_TENANT_ID``, ``TEAMS_HOME_CHANNEL`` (the conversation ID), and
+    optionally ``TEAMS_SERVICE_URL`` (Bot Framework service host; must be
+    a known Bot Framework endpoint, see ``_ALLOWED_TEAMS_SERVICE_HOSTS``).
+
+    Security: ``service_url`` is validated against an allowlist of known
+    Bot Framework hosts to block SSRF / token-exfiltration via a tampered
+    env var.  ``chat_id`` is validated to match the documented Bot
+    Framework ID character set so it cannot escape the URL path.
+
+    ``media_files`` and ``force_document`` are accepted for signature
+    parity but not implemented for the standalone path; messages with
+    attachments will send as text-only.  The live adapter handles
+    attachments via the SDK.
+    """
+    extra = getattr(pconfig, "extra", {}) or {}
+    client_id = os.getenv("TEAMS_CLIENT_ID") or extra.get("client_id", "")
+    client_secret = os.getenv("TEAMS_CLIENT_SECRET") or extra.get("client_secret", "")
+    tenant_id = os.getenv("TEAMS_TENANT_ID") or extra.get("tenant_id", "")
+    if not (client_id and client_secret and tenant_id):
+        return {"error": "Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required"}
+
+    raw_service_url = (
+        os.getenv("TEAMS_SERVICE_URL")
+        or extra.get("service_url", "")
+        or _DEFAULT_TEAMS_SERVICE_URL
+    )
+    service_url = _validate_teams_service_url(raw_service_url)
+    if service_url is None:
+        return {"error": (
+            f"Teams standalone send: TEAMS_SERVICE_URL host is not on the "
+            f"Bot Framework allowlist; expected one of "
+            f"{sorted(_ALLOWED_TEAMS_SERVICE_HOSTS)}"
+        )}
+
+    # Bot Framework conversation IDs are restricted to a known character
+    # set; anything else means a tampered chat_id trying to break out of
+    # the URL path.
+    if not chat_id:
+        return {"error": "Teams standalone send: chat_id (conversation ID) is required"}
+    if not _TEAMS_CONV_ID_RE.match(chat_id):
+        return {"error": "Teams standalone send: chat_id contains characters outside the Bot Framework conversation ID set"}
+    if not _TEAMS_CONV_ID_RE.match(tenant_id):
+        return {"error": "Teams standalone send: TEAMS_TENANT_ID contains characters outside the expected set"}
+
+    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
+
+    if not AIOHTTP_AVAILABLE:
+        return {"error": "Teams standalone send: aiohttp not installed"}
+
+    try:
+        import aiohttp as _aiohttp
+
+        # Per-request timeouts so a slow STS endpoint cannot starve the
+        # subsequent activity POST of its budget.
+        per_request_timeout = _aiohttp.ClientTimeout(total=15.0)
+        async with _aiohttp.ClientSession() as session:
+            async with session.post(
+                token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "scope": "https://api.botframework.com/.default",
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=per_request_timeout,
+            ) as token_resp:
+                if token_resp.status >= 400:
+                    body = await token_resp.text()
+                    return {"error": f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}"}
+                token_payload = await token_resp.json()
+            access_token = token_payload.get("access_token")
+            if not access_token:
+                return {"error": "Teams standalone send: token response missing access_token"}
+
+            activity = {
+                "type": "message",
+                "text": message,
+                "textFormat": "markdown",
+            }
+            async with session.post(
+                activities_url,
+                json=activity,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                timeout=per_request_timeout,
+            ) as send_resp:
+                if send_resp.status >= 400:
+                    body = await send_resp.text()
+                    return {"error": f"Teams standalone send: activity post failed ({send_resp.status}): {body[:300]}"}
+                send_payload = await send_resp.json()
+        return {
+            "success": True,
+            "message_id": send_payload.get("id"),
+        }
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.debug("Teams standalone send raised", exc_info=True)
+        return {"error": f"Teams standalone send failed: {e}"}
 
 
 # Keep the old name as an alias so existing test imports don't break.
@@ -985,6 +1155,10 @@ def register(ctx) -> None:
         # jobs route to the configured Teams chat/channel without editing
         # cron/scheduler.py's hardcoded sets.
         cron_deliver_env_var="TEAMS_HOME_CHANNEL",
+        # Out-of-process cron delivery via Bot Framework REST.  Without
+        # this hook, deliver=teams cron jobs fail with "No live adapter"
+        # when cron runs separately from the gateway.
+        standalone_sender_fn=_standalone_send,
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="TEAMS_ALLOWED_USERS",
         allow_all_env="TEAMS_ALLOW_ALL_USERS",

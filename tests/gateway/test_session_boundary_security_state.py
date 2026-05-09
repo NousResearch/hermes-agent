@@ -9,6 +9,7 @@ from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 from tools import approval as approval_mod
+from tools import slash_confirm as slash_confirm_mod
 from tools.approval import (
     _ApprovalEntry,
     approve_session,
@@ -26,6 +27,7 @@ def _clear_approval_state():
     approval_mod._session_yolo.clear()
     approval_mod._permanent_approved.clear()
     approval_mod._pending.clear()
+    slash_confirm_mod._pending.clear()
     yield
     approval_mod._gateway_queues.clear()
     approval_mod._gateway_notify_cbs.clear()
@@ -33,6 +35,7 @@ def _clear_approval_state():
     approval_mod._session_yolo.clear()
     approval_mod._permanent_approved.clear()
     approval_mod._pending.clear()
+    slash_confirm_mod._pending.clear()
 
 
 def _make_source() -> SessionSource:
@@ -249,6 +252,15 @@ def test_clear_session_boundary_security_state_is_scoped():
         "[USER INITIATED SKILLS RELOAD: other]"
     )
 
+    async def _target_handler(choice):
+        return f"target:{choice}"
+
+    async def _other_handler(choice):
+        return f"other:{choice}"
+
+    slash_confirm_mod.register(session_key, "confirm-target", "reload-mcp", _target_handler)
+    slash_confirm_mod.register(other_key, "confirm-other", "reload-mcp", _other_handler)
+
     runner._clear_session_boundary_security_state(session_key)
 
     # Target session cleared
@@ -257,18 +269,21 @@ def test_clear_session_boundary_security_state_is_scoped():
     assert session_key not in runner._pending_approvals
     assert session_key not in runner._update_prompt_pending
     assert session_key not in runner._pending_skills_reload_notes
+    assert slash_confirm_mod.get_pending(session_key) is None
     # Other session untouched
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
     assert other_key in runner._pending_approvals
     assert other_key in runner._update_prompt_pending
     assert other_key in runner._pending_skills_reload_notes
+    assert slash_confirm_mod.get_pending(other_key) is not None
 
     # Empty session_key is a no-op
     runner._clear_session_boundary_security_state("")
     assert is_approved(other_key, "recursive delete") is True
     assert other_key in runner._update_prompt_pending
     assert other_key in runner._pending_skills_reload_notes
+    assert slash_confirm_mod.get_pending(other_key) is not None
 
 
 def test_clear_session_boundary_security_state_wakes_blocked_approvals():

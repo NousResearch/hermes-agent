@@ -12804,6 +12804,20 @@ class GatewayRunner:
             update_prompt_pending.pop(session_key, None)
 
         try:
+            from tools import slash_confirm as _slash_confirm_mod
+        except Exception:
+            _slash_confirm_mod = None
+        if _slash_confirm_mod is not None:
+            try:
+                _slash_confirm_mod.clear(session_key)
+            except Exception as e:
+                logger.debug(
+                    "Failed to clear slash-confirm state for session boundary %s: %s",
+                    session_key,
+                    e,
+                )
+
+        try:
             from tools.approval import clear_session as _clear_approval_session
         except Exception:
             return

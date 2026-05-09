@@ -5781,16 +5781,15 @@ def _kill_stale_dashboard_processes(
         while pending and _time.monotonic() < deadline:
             _time.sleep(0.1)
             still_pending = []
+            try:
+                from gateway.status import _pid_exists as _safe_pid_exists
+            except Exception:
+                _safe_pid_exists = lambda _pid: True
             for pid in pending:
-                try:
-                    os.kill(pid, 0)  # probe
-                except ProcessLookupError:
-                    killed.append(pid)
-                except (PermissionError, OSError):
-                    # Can't probe — assume still there.
+                if _safe_pid_exists(pid):
                     still_pending.append(pid)
                 else:
-                    still_pending.append(pid)
+                    killed.append(pid)
             pending = still_pending
 
         # SIGKILL any survivors.
@@ -6786,10 +6785,7 @@ def _ensure_fhs_path_guard() -> None:
     """
     if sys.platform != "linux":
         return
-    try:
-        if os.geteuid() != 0:
-            return
-    except AttributeError:
+    if getattr(os, "geteuid", lambda: 1)() != 0:
         return
     # Only act when this is actually an FHS-layout install (command link at
     # /usr/local/bin/hermes, code at /usr/local/lib/hermes-agent).

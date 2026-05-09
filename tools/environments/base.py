@@ -696,7 +696,10 @@ class BaseEnvironment(ABC):
                         pgid = None
                 if isinstance(pgid, int) and pgid > 0 and hasattr(os, "killpg"):
                     try:
-                        os.killpg(pgid, signal.SIGKILL)
+                        killpg = getattr(os, "killpg", None)
+                        sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                        if callable(killpg):
+                            killpg(pgid, sigkill)
                     except (ProcessLookupError, PermissionError, OSError):
                         pass
             except Exception:

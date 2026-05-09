@@ -42,9 +42,24 @@ fi
 PYTHON="$VENV/bin/python"
 
 # ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
+# Listed in pyproject.toml's dev extra, but venvs created before that change
+# (or by `uv venv` without pip) may still be missing it. Try pip first, fall
+# back to `uv pip install --python "$PYTHON"` so uv-managed venvs without pip
+# still bootstrap cleanly. If neither works, surface a clear setup hint
+# instead of silently exiting.
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
   echo "→ installing pytest-split into $VENV"
-  "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+  if "$PYTHON" -m pip --version >/dev/null 2>&1; then
+    "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+  elif command -v uv >/dev/null 2>&1; then
+    uv pip install --quiet --python "$PYTHON" "pytest-split>=0.9,<1"
+  else
+    echo "error: pytest-split is not installed and neither pip nor uv is available." >&2
+    echo "       Re-create the venv with the dev extra, e.g.:" >&2
+    echo "         uv pip install -e \".[dev]\" --python \"$PYTHON\"" >&2
+    echo "       or install pip into the venv first." >&2
+    exit 1
+  fi
 fi
 
 # ── Hermetic environment ────────────────────────────────────────────────────

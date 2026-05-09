@@ -466,3 +466,189 @@ class TestRequestMessageCoercion:
             user_message="u",
         ) == [{"role": "user", "content": "h"}]
         assert mod._coerce_request_messages(user_message="u") == [{"role": "user", "content": "u"}]
+
+
+class TestToolCallOutputBackfill:
+    def test_post_tool_call_backfills_matching_turn_tool_call_output(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        observation = object()
+        state = mod.TraceState(trace_id="trace-1", root_ctx=None, root_span=None)
+        state.tools["call-1"] = observation
+        state.turn_tool_calls.append({
+            "id": "call-1",
+            "type": "function",
+            "name": "web_extract",
+            "arguments": '{"urls": ["https://example.com"]}',
+            "function": {
+                "name": "web_extract",
+                "arguments": '{"urls": ["https://example.com"]}',
+            },
+        })
+
+        task_key = mod._trace_key("task-1", "session-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        ended = {}
+
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+            ended["observation"] = obs
+            ended["output"] = output
+            ended["metadata"] = metadata
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
+
+        mod.on_post_tool_call(
+            tool_name="web_extract",
+            args={"urls": ["https://example.com"]},
+            result='{"results": [{"url": "https://example.com", "content": "Example Domain"}]}',
+            task_id="task-1",
+            session_id="session-1",
+            tool_call_id="call-1",
+        )
+
+        assert ended["observation"] is observation
+        assert state.turn_tool_calls[0]["output"] == ended["output"]
+        assert state.turn_tool_calls[0]["function"]["output"] == ended["output"]
+        assert state.turn_tool_calls[0]["output"] == {
+            "results": [{"url": "https://example.com", "content": "Example Domain"}]
+        }
+
+    def test_serialize_messages_keeps_tool_name_and_call_id(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        messages = [{
+            "role": "tool",
+            "name": "web_extract",
+            "tool_call_id": "call-1",
+            "content": '{"ok": true}',
+        }]
+
+        assert mod._serialize_messages(messages) == [{
+            "role": "tool",
+            "name": "web_extract",
+            "tool_call_id": "call-1",
+            "content": {"ok": True},
+        }]
+
+    def test_serialize_tool_calls_emits_openai_style_function_shape(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        class _Fn:
+            name = "web_extract"
+            arguments = '{"urls": ["https://example.com"]}'
+
+        class _ToolCall:
+            id = "call-1"
+            type = "function"
+            function = _Fn()
+
+        assert mod._serialize_tool_calls([_ToolCall()]) == [{
+            "id": "call-1",
+            "type": "function",
+            "name": "web_extract",
+            "arguments": '{"urls": ["https://example.com"]}',
+            "function": {
+                "name": "web_extract",
+                "arguments": '{"urls": ["https://example.com"]}',
+            },
+        }]
+
+
+class TestToolObservationKeying:
+    """Tests for pre/post tool_call observation matching when tool_call_id is absent."""
+
+    def _make_mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_empty_tool_call_id_single_tool_sets_output(self, monkeypatch):
+        mod = self._make_mod()
+        obs = object()
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state.pending_tools_by_name.setdefault("my_tool", []).append(obs)
+
+        task_key = mod._trace_key("task-1", "sess-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        ended = {}
+
+        def fake_end(o, *, output=None, metadata=None, **kw):
+            ended["obs"] = o
+            ended["output"] = output
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        mod.on_post_tool_call(
+            tool_name="my_tool",
+            args={},
+            result='{"ok": true}',
+            task_id="task-1",
+            session_id="sess-1",
+            tool_call_id="",
+        )
+
+        assert ended["obs"] is obs
+        assert ended["output"] == {"ok": True}
+        assert state.pending_tools_by_name.get("my_tool") is None
+
+    def test_empty_tool_call_id_concurrent_fifo_order(self, monkeypatch):
+        """Two queued observations are consumed in FIFO order, not swapped."""
+        mod = self._make_mod()
+        obs_a, obs_b = object(), object()
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state.pending_tools_by_name["web_extract"] = [obs_a, obs_b]
+
+        task_key = mod._trace_key("task-1", "sess-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        calls = []
+
+        def fake_end(o, *, output=None, metadata=None, **kw):
+            calls.append((o, output))
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        mod.on_post_tool_call(
+            tool_name="web_extract", args={}, result='{"val": "a"}',
+            task_id="task-1", session_id="sess-1", tool_call_id="",
+        )
+        mod.on_post_tool_call(
+            tool_name="web_extract", args={}, result='{"val": "b"}',
+            task_id="task-1", session_id="sess-1", tool_call_id="",
+        )
+
+        assert calls[0] == (obs_a, {"val": "a"})
+        assert calls[1] == (obs_b, {"val": "b"})
+        assert state.pending_tools_by_name.get("web_extract") is None
+
+    def test_explicit_tool_call_id_uses_tools_dict(self, monkeypatch):
+        """When tool_call_id is present, pending_tools_by_name is not touched."""
+        mod = self._make_mod()
+        obs = object()
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        state.tools["call-99"] = obs
+
+        task_key = mod._trace_key("task-1", "sess-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        ended = {}
+
+        def fake_end(o, *, output=None, metadata=None, **kw):
+            ended["obs"] = o
+            ended["output"] = output
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        mod.on_post_tool_call(
+            tool_name="my_tool", args={}, result='{"status": "done"}',
+            task_id="task-1", session_id="sess-1", tool_call_id="call-99",
+        )
+
+        assert ended["obs"] is obs
+        assert ended["output"] == {"status": "done"}
+        assert not state.tools
+

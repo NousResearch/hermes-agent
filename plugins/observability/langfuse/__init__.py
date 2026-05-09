@@ -47,6 +47,7 @@ class TraceState:
     root_span: Any
     generations: Dict[str, Any] = field(default_factory=dict)
     tools: Dict[str, Any] = field(default_factory=dict)
+    pending_tools_by_name: Dict[str, list] = field(default_factory=dict)
     turn_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     last_updated_at: float = field(default_factory=time.time)
 
@@ -432,8 +433,11 @@ def _serialize_messages(messages: Any) -> list[dict[str, Any]]:
                 parse_json_strings=(role == "tool"),
             ),
         }
-        if role == "tool" and message.get("tool_call_id"):
-            item["tool_call_id"] = message.get("tool_call_id")
+        if role == "tool":
+            if message.get("tool_call_id"):
+                item["tool_call_id"] = message.get("tool_call_id")
+            if message.get("name"):
+                item["name"] = _safe_value(message.get("name"))
         if message.get("tool_calls"):
             item["tool_calls"] = _safe_value(message.get("tool_calls"), parse_json_strings=True)
         serialized.append(item)
@@ -448,15 +452,16 @@ def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
         fn = getattr(tool_call, "function", None)
         name = getattr(fn, "name", None) if fn else None
         arguments = getattr(fn, "arguments", None) if fn else None
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except Exception:
-                pass
+        safe_arguments = _safe_value(arguments, parse_json_strings=False)
         serialized.append({
             "id": getattr(tool_call, "id", None),
+            "type": getattr(tool_call, "type", None) or "function",
             "name": name,
-            "arguments": _safe_value(arguments, parse_json_strings=True),
+            "arguments": safe_arguments,
+            "function": {
+                "name": name,
+                "arguments": safe_arguments,
+            },
         })
     return serialized
 
@@ -653,6 +658,9 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
             _end_observation(observation)
         for observation in state.tools.values():
             _end_observation(observation)
+        for queue in state.pending_tools_by_name.values():
+            for observation in queue:
+                _end_observation(observation)
         final_output = _merge_trace_output(output, state)
         if final_output is not None:
             state.root_span.set_trace_io(output=final_output)
@@ -914,13 +922,12 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
         return
 
     task_key = _trace_key(task_id, session_id)
-    tool_key = tool_call_id or f"{tool_name}:{time.time_ns()}"
 
     with _STATE_LOCK:
         state = _TRACE_STATE.get(task_key)
         if state is None:
             return
-        state.tools[tool_key] = _start_child_observation(
+        observation = _start_child_observation(
             state,
             client=client,
             name=f"Tool: {tool_name}",
@@ -928,22 +935,29 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
             input_value=_safe_value(args),
             metadata={"tool_name": tool_name, "tool_call_id": tool_call_id},
         )
+        if tool_call_id:
+            state.tools[tool_call_id] = observation
+        else:
+            state.pending_tools_by_name.setdefault(tool_name, []).append(observation)
 
 
 def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = None,
                       task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
     task_key = _trace_key(task_id, session_id)
-    tool_key = tool_call_id or ""
     observation = None
 
     with _STATE_LOCK:
         state = _TRACE_STATE.get(task_key)
         if state is None:
             return
-        if tool_key:
-            observation = state.tools.pop(tool_key, None)
-        elif state.tools:
-            _, observation = state.tools.popitem()
+        if tool_call_id:
+            observation = state.tools.pop(tool_call_id, None)
+        if observation is None:
+            queue = state.pending_tools_by_name.get(tool_name)
+            if queue:
+                observation = queue.pop(0)
+                if not queue:
+                    state.pending_tools_by_name.pop(tool_name, None)
 
     if observation is None:
         return
@@ -953,10 +967,24 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
     else:
         result_value = result
     result_value = _normalize_payload(result_value, tool_name=tool_name, args=args)
+    safe_result_value = _safe_value(result_value, parse_json_strings=True)
+
+    # Backfill so the generation's tool_call record carries the result alongside arguments.
+    if tool_call_id:
+        with _STATE_LOCK:
+            state = _TRACE_STATE.get(task_key)
+            if state is not None:
+                for tool_call in reversed(state.turn_tool_calls):
+                    if tool_call.get("id") == tool_call_id:
+                        tool_call["output"] = safe_result_value
+                        function_payload = tool_call.get("function")
+                        if isinstance(function_payload, dict):
+                            function_payload["output"] = safe_result_value
+                        break
 
     _end_observation(
         observation,
-        output=_safe_value(result_value, parse_json_strings=True),
+        output=safe_result_value,
         metadata={"tool_name": tool_name, "args": _safe_value(args, parse_json_strings=True)},
     )
 

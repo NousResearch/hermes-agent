@@ -1,0 +1,5 @@
+name: litellm-provider
+kind: model-provider
+version: 1.0.0
+description: LiteLLM Proxy — multi-provider gateway (OpenAI-compatible)
+author: b4lduin

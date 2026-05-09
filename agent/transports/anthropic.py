@@ -95,7 +95,14 @@ class AnthropicTransport(ProviderTransport):
         reasoning_details = []
         tool_calls = []
 
-        for block in response.content:
+        # Some Anthropic-compatible endpoints (e.g. Kimi For Coding) return
+        # HTTP 200 with `content: null` for cache-only hits or trailing-assistant
+        # turns. Iterate over `(content or [])` so the normalizer hands a
+        # NormalizedResponse to validate_response, which already classifies
+        # non-list content as malformed and routes to the empty-response path.
+        # Without this, TypeError: 'NoneType' object is not iterable burns the
+        # per-call retry budget. (NousResearch/hermes-agent#21820)
+        for block in (response.content or []):
             if block.type == "text":
                 text_parts.append(block.text)
             elif block.type == "thinking":

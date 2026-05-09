@@ -1474,6 +1474,21 @@ class TestNormalizeResponse:
         assert nr.content is None
         assert len(nr.tool_calls) == 1
 
+    def test_null_content_does_not_raise(self):
+        # Regression: some Anthropic-compatible endpoints (Kimi For Coding,
+        # third-party gateways) return HTTP 200 with `content: null` for
+        # cache-only hits or trailing-assistant message arrays. Previously,
+        # `for block in response.content` raised TypeError and burned the
+        # per-call retry budget before validate_response could classify the
+        # response as malformed. (NousResearch/hermes-agent#21820)
+        nr = get_transport("anthropic_messages").normalize_response(
+            self._make_response(None, "end_turn")
+        )
+        assert nr.content is None
+        assert nr.tool_calls is None
+        assert nr.reasoning is None
+        assert nr.finish_reason == "stop"
+
 
 # ---------------------------------------------------------------------------
 # Role alternation

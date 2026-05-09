@@ -2674,6 +2674,27 @@ class AIAgent:
         self._fallback_chain = fallback_chain
         self._fallback_model = fallback_chain[0] if fallback_chain else None
 
+        # Keep /insights aligned with an explicit /model switch even when the
+        # session row was already stamped with the old runtime metadata.
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if session_db and session_id:
+            try:
+                session_db.set_session_runtime(
+                    session_id,
+                    model=self.model,
+                    billing_provider=self.provider,
+                    billing_base_url=self.base_url,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Failed to update session runtime metadata after model switch "
+                    "(session=%s, model=%s): %s",
+                    session_id,
+                    self.model,
+                    exc,
+                )
+
         logging.info(
             "Model switched in-place: %s (%s) -> %s (%s)",
             old_model, old_provider, new_model, new_provider,

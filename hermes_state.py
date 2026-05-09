@@ -518,11 +518,11 @@ class SessionDB:
         self,
         session_id: str,
         source: str,
-        model: str = None,
-        model_config: Dict[str, Any] = None,
-        system_prompt: str = None,
-        user_id: str = None,
-        parent_session_id: str = None,
+        model: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
+        system_prompt: Optional[str] = None,
+        user_id: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
@@ -680,6 +680,50 @@ class SessionDB:
         )
         def _do(conn):
             conn.execute(sql, params)
+        self._execute_write(_do)
+
+    def set_session_runtime(
+        self,
+        session_id: str,
+        *,
+        model: Optional[str] = None,
+        billing_provider: Optional[str] = None,
+        billing_base_url: Optional[str] = None,
+    ) -> None:
+        """Explicitly overwrite runtime metadata for an existing session.
+
+        This is narrower than ``update_token_counts()``: use it only for
+        deliberate runtime changes such as an explicit ``/model`` switch
+        inside the current session, where ``COALESCE(model, ?)`` would keep
+        stale metadata forever and make ``/insights`` report the wrong model.
+        """
+        self._insert_session_row(session_id, "unknown", model=model)
+        params = (
+            model,
+            model,
+            billing_provider,
+            billing_provider,
+            billing_base_url,
+            billing_base_url,
+            session_id,
+        )
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE sessions SET
+                   model = CASE WHEN ? IS NULL THEN model ELSE ? END,
+                   billing_provider = CASE
+                       WHEN ? IS NULL THEN billing_provider
+                       ELSE ?
+                   END,
+                   billing_base_url = CASE
+                       WHEN ? IS NULL THEN billing_base_url
+                       ELSE ?
+                   END
+                   WHERE id = ?""",
+                params,
+            )
+
         self._execute_write(_do)
 
     def ensure_session(
@@ -2671,4 +2715,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

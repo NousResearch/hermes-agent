@@ -12,9 +12,19 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # Install system dependencies in one layer, clear APT cache
 # tini reaps orphaned zombie processes (MCP stdio subprocesses, git, bun, etc.)
 # that would otherwise accumulate when hermes runs as PID 1. See #15012.
+#
+# Node 22 is installed from NodeSource so the image matches the Node version
+# pinned by scripts/install.sh (NODE_VERSION="22"). Debian 13's apt-shipped
+# nodejs is 20.x, and at least one transitive web/ dep (language-tags@2.1.0)
+# requires Node ≥22. npm only WARN-s on engine mismatch, so the install
+# completes but the resolver chain breaks silently and the Vite build fails
+# with a misleading "can't resolve clsx" error. (#21656)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
+    build-essential curl python3 ripgrep ffmpeg gcc python3-dev libffi-dev \
+    procps git openssh-client docker-cli tini ca-certificates gnupg && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime

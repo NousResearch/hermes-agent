@@ -236,6 +236,36 @@ async def test_send_typing_does_not_fall_back_to_root_for_dm_topic():
 
 
 @pytest.mark.asyncio
+async def test_send_typing_skips_api_call_for_dm_topic_reply_fallback():
+    """Hermes-created DM topic lanes have no working Bot API typing route.
+
+    ``send_chat_action`` only accepts ``message_thread_id``, which Telegram's
+    Bot API 10.0 rejects for these lanes — the call would silently fail and
+    log a "thread not found" warning every typing tick (every 2s). Skipping
+    the call entirely keeps logs clean while preserving the user-visible
+    behavior (no typing indicator either way for these lanes).
+    """
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_chat_action(**kwargs):
+        call_log.append(dict(kwargs))
+
+    adapter._bot = SimpleNamespace(send_chat_action=mock_send_chat_action)
+
+    await adapter.send_typing(
+        "12345",
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "462",
+        },
+    )
+
+    assert call_log == []
+
+
+@pytest.mark.asyncio
 async def test_send_retries_without_thread_on_thread_not_found():
     """When message_thread_id causes 'thread not found', retry without it."""
     adapter = _make_adapter()

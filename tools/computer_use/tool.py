@@ -675,6 +675,11 @@ def _maybe_follow_capture(
 ) -> Any:
     if not do_capture:
         return _text_response(res)
+    # Skip the follow-up capture when the action itself failed: showing a
+    # normal-looking screenshot after a failure misleads the model into thinking
+    # the action succeeded. Return the error text instead.
+    if not res.ok:
+        return _text_response(res)
     try:
         # Preserve the app context established by the preceding capture/focus_app so
         # that capture_after=True re-captures the same app rather than the frontmost

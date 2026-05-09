@@ -205,6 +205,25 @@ class TestCreateProfile:
             / "SKILL.md"
         ).read_text() == "---\nname: installed-skill\n---\n"
 
+    def test_clone_config_preserves_skill_symlinks(self, profile_env):
+        default_home = profile_env / ".hermes"
+        shared_skill = profile_env / "shared-gstack"
+        shared_skill.mkdir()
+        (shared_skill / "SKILL.md").write_text("---\nname: gstack\n---\n")
+
+        source_link = default_home / "skills" / "custom" / "gstack"
+        source_link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            source_link.symlink_to(shared_skill, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        cloned_link = profile_dir / "skills" / "custom" / "gstack"
+
+        assert cloned_link.is_symlink()
+        assert cloned_link.resolve() == shared_skill.resolve()
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
@@ -243,6 +262,25 @@ class TestCreateProfile:
 
         assert (profile_dir / "memories" / "note.md").read_text() == "remember this"
         assert not (profile_dir / "profiles").exists()
+
+    def test_clone_all_preserves_skill_symlinks(self, profile_env):
+        default_home = profile_env / ".hermes"
+        shared_skill = profile_env / "shared-gstack"
+        shared_skill.mkdir()
+        (shared_skill / "SKILL.md").write_text("---\nname: gstack\n---\n")
+
+        source_link = default_home / "skills" / "custom" / "gstack"
+        source_link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            source_link.symlink_to(shared_skill, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+        cloned_link = profile_dir / "skills" / "custom" / "gstack"
+
+        assert cloned_link.is_symlink()
+        assert cloned_link.resolve() == shared_skill.resolve()
 
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""

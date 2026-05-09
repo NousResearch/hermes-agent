@@ -560,6 +560,7 @@ def create_profile(
             source_dir,
             profile_dir,
             ignore=_clone_all_copytree_ignore(source_dir),
+            symlinks=True,
         )
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
@@ -583,7 +584,12 @@ def create_profile(
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                shutil.copytree(
+                    source_skills,
+                    profile_dir / "skills",
+                    dirs_exist_ok=True,
+                    symlinks=True,
+                )
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:

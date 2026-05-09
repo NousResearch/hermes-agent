@@ -8042,6 +8042,32 @@ class AIAgent:
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
 
+        # Skip entries that resolve to the current (provider, model) — falling
+        # back to the same backend that just failed loops the failure. Compare
+        # base_url too so two distinct custom_providers entries pointing at the
+        # same shim/proxy URL also dedup. See issue #22548.
+        current_provider = (getattr(self, "provider", "") or "").strip().lower()
+        current_model = (getattr(self, "model", "") or "").strip()
+        current_base_url = str(getattr(self, "base_url", "") or "").rstrip("/").lower()
+        fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
+        if fb_provider == current_provider and fb_model == current_model:
+            logging.warning(
+                "Fallback skip: chain entry %s/%s matches current provider/model",
+                fb_provider, fb_model,
+            )
+            return self._try_activate_fallback()
+        if (
+            fb_base_url_for_dedup
+            and current_base_url
+            and fb_base_url_for_dedup == current_base_url
+            and fb_model == current_model
+        ):
+            logging.warning(
+                "Fallback skip: chain entry base_url %s matches current backend",
+                fb_base_url_for_dedup,
+            )
+            return self._try_activate_fallback()
+
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
         # access for Codex providers.

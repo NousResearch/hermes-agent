@@ -226,6 +226,21 @@ class TestDispatch:
         parsed = json.loads(out)
         assert "error" in parsed
 
+    def test_set_value_routes_to_backend(self, noop_backend):
+        """set_value must reach the backend — regression for missing _NoopBackend stub."""
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "set_value", "value": "Option A", "element": 5})
+        parsed = json.loads(out)
+        assert parsed.get("ok") is True
+        assert parsed.get("action") == "set_value"
+        assert any(c[0] == "set_value" for c in noop_backend.calls)
+
+    def test_set_value_missing_value_returns_error(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "set_value"})
+        parsed = json.loads(out)
+        assert "error" in parsed
+
 
 # ---------------------------------------------------------------------------
 # Safety guards (type / key block lists)

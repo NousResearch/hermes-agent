@@ -3853,12 +3853,9 @@ class GatewayRunner:
 
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
         # Terminal event kinds trigger automatic unsubscription — the task
-        # is done, blocked, or in a retry-needed state that the human
-        # shouldn't keep pinging a stale chat for. Previously we only
-        # unsubbed when task.status in ('done', 'archived'), which left
-        # subscriptions on 'blocked' / 'gave_up' / 'crashed' / 'timed_out'
-        # tasks stranded forever.
-        TERMINAL_EVENT_KINDS = TERMINAL_KINDS
+        # is done or in a retry-needed state that the human
+        # shouldn't keep pinging a stale chat for.
+        TERMINAL_EVENT_KINDS = ("completed", "gave_up", "crashed", "timed_out")
         # Per-subscription send-failure counter. Adapter.send raising
         # means the chat is dead (deleted, bot kicked, etc.) — after N
         # consecutive send failures the sub is dropped so we don't spin

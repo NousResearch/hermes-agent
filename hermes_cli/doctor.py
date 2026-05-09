@@ -134,6 +134,46 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
+def _doctor_enabled_registry_toolsets_from_config() -> set[str] | None:
+    """Return registry toolsets enabled by Hermes config, or None if unknown.
+
+    ``check_tool_availability()`` reports every registered toolset globally, but
+    doctor should only turn missing API keys into actionable issues for toolsets
+    the user has enabled for at least one platform.  Optional platform-specific
+    tools like Discord can remain installed but intentionally unconfigured.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        cfg = load_config()
+        platform_toolsets = cfg.get("platform_toolsets")
+        platforms = {"cli"}
+        if isinstance(platform_toolsets, dict):
+            platforms.update(str(platform) for platform in platform_toolsets.keys())
+
+        enabled: set[str] = set()
+        for platform in platforms:
+            enabled.update(_get_platform_tools(cfg, platform))
+        return enabled
+    except Exception:
+        return None
+
+
+def _doctor_should_count_tool_api_issue(item: dict) -> bool:
+    """Whether an unavailable env-gated toolset should become a doctor issue."""
+    env_vars = item.get("missing_vars") or item.get("env_vars") or []
+    if not env_vars:
+        return False
+
+    enabled_toolsets = _doctor_enabled_registry_toolsets_from_config()
+    if enabled_toolsets is None:
+        # Fail open for unusual/test configs: preserve historical behaviour when
+        # we cannot tell which toolsets the user intentionally enabled.
+        return True
+    return str(item.get("name") or "") in enabled_toolsets
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     updated_available = list(available)
@@ -1395,10 +1435,13 @@ def run_doctor(args):
             else:
                 check_warn(item["name"], "(system dependency not met)")
 
-        # Count disabled tools with API key requirements
-        api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
+        # Count disabled tools with API key requirements only when the toolset is
+        # enabled for at least one configured platform.  Optional installed
+        # integrations (for example Discord admin tools without a Discord bot)
+        # should remain warnings, not force a global setup issue.
+        api_disabled = [u for u in unavailable if _doctor_should_count_tool_api_issue(u)]
         if api_disabled:
-            issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+            issues.append("Run 'hermes setup' to configure missing API keys for enabled tool access")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
     

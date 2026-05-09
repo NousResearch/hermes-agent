@@ -167,6 +167,39 @@ class TestDoctorToolAvailabilityOverrides:
 
         assert doctor._doctor_tool_availability_detail("kanban") == "(runtime-gated; loaded only for dispatcher-spawned workers)"
 
+    def test_default_config_does_not_treat_discord_as_enabled(self, monkeypatch):
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setattr(config_mod, "load_config", lambda: {})
+
+        enabled = doctor._doctor_enabled_registry_toolsets_from_config()
+
+        assert enabled is not None
+        assert "web" in enabled
+        assert "discord" not in enabled
+        assert "discord_admin" not in enabled
+
+    def test_does_not_count_unenabled_optional_tool_api_issue(self, monkeypatch):
+        monkeypatch.setattr(doctor, "_doctor_enabled_registry_toolsets_from_config", lambda: {"web", "terminal"})
+
+        assert not doctor._doctor_should_count_tool_api_issue(
+            {"name": "discord", "env_vars": ["DISCORD_BOT_TOKEN"], "tools": ["discord"]}
+        )
+
+    def test_counts_enabled_platform_tool_api_issue(self, monkeypatch):
+        monkeypatch.setattr(doctor, "_doctor_enabled_registry_toolsets_from_config", lambda: {"hermes-discord", "discord", "discord_admin"})
+
+        assert doctor._doctor_should_count_tool_api_issue(
+            {"name": "discord", "env_vars": ["DISCORD_BOT_TOKEN"], "tools": ["discord"]}
+        )
+
+    def test_no_api_issue_for_system_dependency_failure(self, monkeypatch):
+        monkeypatch.setattr(doctor, "_doctor_enabled_registry_toolsets_from_config", lambda: {"browser"})
+
+        assert not doctor._doctor_should_count_tool_api_issue(
+            {"name": "browser", "env_vars": [], "tools": ["browser_navigate"]}
+        )
+
 
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):

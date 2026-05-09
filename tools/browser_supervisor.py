@@ -59,70 +59,6 @@ CONSOLE_HISTORY_MAX = 50
 # dialog fired, even if they couldn't respond to it in time.
 RECENT_DIALOGS_MAX = 20
 
-# Magic host the injected dialog bridge XHRs to.  Intercepted via the CDP
-# Fetch domain before any network resolution happens, so the hostname never
-# has to exist.  Keep this ASCII + URL-safe; we also gate Fetch patterns on it.
-DIALOG_BRIDGE_HOST = "hermes-dialog-bridge.invalid"
-DIALOG_BRIDGE_URL_PATTERN = f"http://{DIALOG_BRIDGE_HOST}/*"
-
-# Script injected into every frame via Page.addScriptToEvaluateOnNewDocument.
-# Overrides alert/confirm/prompt to round-trip through a sync XHR that we
-# intercept via Fetch.requestPaused. Works on Browserbase (whose CDP proxy
-# auto-dismisses REAL native dialogs) because the native dialogs never fire
-# in the first place — the overrides take precedence.
-_DIALOG_BRIDGE_SCRIPT = r"""
-(() => {
-  if (window.__hermesDialogBridgeInstalled) return;
-  window.__hermesDialogBridgeInstalled = true;
-  const ENDPOINT = "http://hermes-dialog-bridge.invalid/";
-  function ask(kind, message, defaultPrompt) {
-    try {
-      const xhr = new XMLHttpRequest();
-      // Use GET with query params so we don't need to worry about request
-      // body encoding in the Fetch interceptor.
-      const params = new URLSearchParams({
-        kind: String(kind || ""),
-        message: String(message == null ? "" : message),
-        default_prompt: String(defaultPrompt == null ? "" : defaultPrompt),
-      });
-      xhr.open("GET", ENDPOINT + "?" + params.toString(), false);  // sync
-      xhr.send(null);
-      if (xhr.status !== 200) return null;
-      const body = xhr.responseText || "";
-      let parsed;
-      try { parsed = JSON.parse(body); } catch (e) { return null; }
-      if (kind === "alert") return undefined;
-      if (kind === "confirm") return Boolean(parsed && parsed.accept);
-      if (kind === "prompt") {
-        if (!parsed || !parsed.accept) return null;
-        return parsed.prompt_text == null ? "" : String(parsed.prompt_text);
-      }
-      return null;
-    } catch (e) {
-      // If the bridge is unreachable, fall back to the native call so the
-      // page still sees *some* behavior (the backend will auto-dismiss).
-      return null;
-    }
-  }
-  const realAlert   = window.alert;
-  const realConfirm = window.confirm;
-  const realPrompt  = window.prompt;
-  window.alert   = function(message) { ask("alert",   message, ""); };
-  window.confirm = function(message) {
-    const r = ask("confirm", message, "");
-    return r === null ? false : Boolean(r);
-  };
-  window.prompt  = function(message, def) {
-    const r = ask("prompt", message, def == null ? "" : def);
-    return r === null ? null : String(r);
-  };
-  // onbeforeunload — we can't really synchronously prompt the user from this
-  // event without racing navigation.  Leave native behavior for now; the
-  // supervisor's native-dialog fallback path still surfaces them in
-  // recent_dialogs.
-})();
-"""
-
 
 # ── Data model ────────────────────────────────────────────────────────────────
 
@@ -138,10 +74,6 @@ class PendingDialog:
     opened_at: float
     cdp_session_id: str  # which attached CDP session the dialog fired in
     frame_id: Optional[str] = None
-    # When set, the dialog was captured via the bridge XHR path (Fetch domain).
-    # Response must be delivered via Fetch.fulfillRequest, NOT
-    # Page.handleJavaScriptDialog — the native dialog never fired.
-    bridge_request_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -587,7 +519,7 @@ class CDPSupervisor:
             backoff = min(backoff * 2, 10.0)
 
     async def _attach_initial_page(self) -> None:
-        """Find a page target, attach flattened session, enable domains, install dialog bridge."""
+        """Find a page target, attach flattened session, enable domains."""
         resp = await self._cdp("Target.getTargets")
         targets = resp.get("result", {}).get("targetInfos", [])
         page_target = next((t for t in targets if t.get("type") == "page"), None)
@@ -609,69 +541,6 @@ class CDPSupervisor:
             {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
             session_id=self._page_session_id,
         )
-        # Install the dialog bridge — overrides native alert/confirm/prompt with
-        # a synchronous XHR we intercept via Fetch domain. This is how we make
-        # dialog response work on Browserbase (whose CDP proxy auto-dismisses
-        # real native dialogs before we can call handleJavaScriptDialog).
-        await self._install_dialog_bridge(self._page_session_id)
-
-    async def _install_dialog_bridge(self, session_id: str) -> None:
-        """Install the dialog-bridge init script + Fetch interceptor on a session.
-
-        Two CDP calls:
-          1. ``Page.addScriptToEvaluateOnNewDocument`` — the JS override runs
-             in every frame before any page script. Replaces alert/confirm/
-             prompt with a sync XHR to our bridge URL.
-          2. ``Fetch.enable`` scoped to the bridge URL — we catch those XHRs,
-             surface them as pending dialogs, then fulfill once the agent
-             responds.
-
-        Idempotent at the CDP level: Chromium de-duplicates identical
-        add-script calls by source, and Fetch.enable replaces prior patterns.
-        """
-        try:
-            await self._cdp(
-                "Page.addScriptToEvaluateOnNewDocument",
-                {"source": _DIALOG_BRIDGE_SCRIPT, "runImmediately": True},
-                session_id=session_id,
-                timeout=5.0,
-            )
-        except Exception as e:
-            logger.debug(
-                "dialog bridge: addScriptToEvaluateOnNewDocument failed on sid=%s: %s",
-                (session_id or "")[:16], e,
-            )
-        try:
-            await self._cdp(
-                "Fetch.enable",
-                {
-                    "patterns": [
-                        {
-                            "urlPattern": DIALOG_BRIDGE_URL_PATTERN,
-                            "requestStage": "Request",
-                        }
-                    ],
-                    "handleAuthRequests": False,
-                },
-                session_id=session_id,
-                timeout=5.0,
-            )
-        except Exception as e:
-            logger.debug(
-                "dialog bridge: Fetch.enable failed on sid=%s: %s",
-                (session_id or "")[:16], e,
-            )
-        # Also try to inject into the already-loaded document so existing
-        # pages pick up the override on reconnect. Best-effort.
-        try:
-            await self._cdp(
-                "Runtime.evaluate",
-                {"expression": _DIALOG_BRIDGE_SCRIPT, "returnByValue": True},
-                session_id=session_id,
-                timeout=3.0,
-            )
-        except Exception:
-            pass
 
     async def _cdp(
         self,
@@ -734,8 +603,6 @@ class CDPSupervisor:
             await self._on_dialog_opening(params, session_id)
         elif method == "Page.javascriptDialogClosed":
             await self._on_dialog_closed(params, session_id)
-        elif method == "Fetch.requestPaused":
-            await self._on_fetch_paused(params, session_id)
         elif method == "Page.frameAttached":
             self._on_frame_attached(params, session_id)
         elif method == "Page.frameNavigated":
@@ -827,22 +694,20 @@ class CDPSupervisor:
             self.dialog_timeout_s,
         )
         try:
-            # Archive with watchdog tag BEFORE fulfilling / dismissing.
+            # Archive with watchdog tag BEFORE calling _handle_dialog_cdp
+            # (which archives with auto_policy/agent). We want the record to
+            # reflect the watchdog expiry.
             with self._state_lock:
                 if dialog_id in self._pending_dialogs:
                     self._pending_dialogs.pop(dialog_id, None)
                     self._archive_dialog_locked(dialog, "watchdog")
-            # Unblock the page — via bridge Fetch fulfill for bridge dialogs,
-            # else native Page.handleJavaScriptDialog for real dialogs.
-            if dialog.bridge_request_id:
-                await self._fulfill_bridge_request(dialog, accept=False, prompt_text="")
-            else:
-                await self._cdp(
-                    "Page.handleJavaScriptDialog",
-                    {"accept": False},
-                    session_id=dialog.cdp_session_id or None,
-                    timeout=5.0,
-                )
+            # Still send the CDP dismiss so the page actually unblocks.
+            await self._cdp(
+                "Page.handleJavaScriptDialog",
+                {"accept": False},
+                session_id=dialog.cdp_session_id or None,
+                timeout=5.0,
+            )
         except Exception as e:
             logger.debug("auto-dismiss failed for %s: %s", dialog_id, e)
 
@@ -864,26 +729,7 @@ class CDPSupervisor:
     async def _handle_dialog_cdp(
         self, dialog: PendingDialog, *, accept: bool, prompt_text: str
     ) -> None:
-        """Send the Page.handleJavaScriptDialog CDP command (agent path only).
-
-        Routes to the bridge-fulfill path when the dialog was captured via
-        the injected XHR override (see ``_on_fetch_paused``).
-        """
-        if dialog.bridge_request_id:
-            try:
-                await self._fulfill_bridge_request(
-                    dialog, accept=accept, prompt_text=prompt_text
-                )
-            finally:
-                with self._state_lock:
-                    if dialog.id in self._pending_dialogs:
-                        self._pending_dialogs.pop(dialog.id, None)
-                        self._archive_dialog_locked(dialog, "agent")
-                handle = self._dialog_watchdogs.pop(dialog.id, None)
-                if handle is not None:
-                    handle.cancel()
-            return
-
+        """Send the Page.handleJavaScriptDialog CDP command (agent path only)."""
         params: Dict[str, Any] = {"accept": accept}
         if dialog.type == "prompt":
             params["promptText"] = prompt_text
@@ -920,10 +766,6 @@ class CDPSupervisor:
                 d.id
                 for d in self._pending_dialogs.values()
                 if d.cdp_session_id == session_id
-                # Bridge-captured dialogs aren't cleared by native close events;
-                # they're resolved via Fetch.fulfillRequest instead. Only the
-                # real-native-dialog path uses Page.javascriptDialogClosed.
-                and d.bridge_request_id is None
             ]
             if candidate_ids:
                 did = candidate_ids[0]
@@ -933,116 +775,6 @@ class CDPSupervisor:
                 handle = self._dialog_watchdogs.pop(did, None)
                 if handle is not None:
                     handle.cancel()
-
-    async def _on_fetch_paused(
-        self, params: Dict[str, Any], session_id: Optional[str]
-    ) -> None:
-        """Bridge XHR captured mid-flight — materialize as a pending dialog.
-
-        The injected script (``_DIALOG_BRIDGE_SCRIPT``) fires a synchronous
-        XHR to ``DIALOG_BRIDGE_HOST`` whenever page code calls alert/confirm/
-        prompt. We catch it via Fetch.enable pattern; the page's JS thread
-        is blocked on the XHR's response until we call Fetch.fulfillRequest
-        (which happens from ``respond_to_dialog``) or until the watchdog
-        fires (at which point we fulfill with a cancel response).
-        """
-        url = str(params.get("request", {}).get("url") or "")
-        request_id = params.get("requestId")
-        if not request_id:
-            return
-        # Only care about our bridge URLs. Fetch can still deliver other
-        # intercepted requests if patterns were ever broadened.
-        if DIALOG_BRIDGE_HOST not in url:
-            # Not ours — forward unchanged so the page sees its own request.
-            try:
-                await self._cdp(
-                    "Fetch.continueRequest", {"requestId": request_id},
-                    session_id=session_id, timeout=3.0,
-                )
-            except Exception:
-                pass
-            return
-
-        # Parse query string for dialog metadata. Use urllib to be robust.
-        from urllib.parse import urlparse, parse_qs
-        q = parse_qs(urlparse(url).query)
-
-        def _q(name: str) -> str:
-            v = q.get(name, [""])
-            return v[0] if v else ""
-
-        kind = _q("kind") or "alert"
-        message = _q("message")
-        default_prompt = _q("default_prompt")
-
-        self._dialog_seq += 1
-        dialog = PendingDialog(
-            id=f"d-{self._dialog_seq}",
-            type=kind,
-            message=message,
-            default_prompt=default_prompt,
-            opened_at=time.time(),
-            cdp_session_id=session_id or self._page_session_id or "",
-            frame_id=params.get("frameId"),
-            bridge_request_id=str(request_id),
-        )
-
-        # Apply policy exactly as for native dialogs.
-        if self.dialog_policy == DIALOG_POLICY_AUTO_DISMISS:
-            with self._state_lock:
-                self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
-                self._fulfill_bridge_request(dialog, accept=False, prompt_text="")
-            )
-        elif self.dialog_policy == DIALOG_POLICY_AUTO_ACCEPT:
-            with self._state_lock:
-                self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
-                self._fulfill_bridge_request(
-                    dialog, accept=True, prompt_text=default_prompt
-                )
-            )
-        else:
-            # must_respond — add to pending + arm watchdog.
-            with self._state_lock:
-                self._pending_dialogs[dialog.id] = dialog
-            loop = asyncio.get_running_loop()
-            handle = loop.call_later(
-                self.dialog_timeout_s,
-                lambda: asyncio.create_task(self._dialog_timeout_expired(dialog.id)),
-            )
-            self._dialog_watchdogs[dialog.id] = handle
-
-    async def _fulfill_bridge_request(
-        self, dialog: PendingDialog, *, accept: bool, prompt_text: str
-    ) -> None:
-        """Resolve a bridge XHR via Fetch.fulfillRequest so the page unblocks."""
-        if not dialog.bridge_request_id:
-            return
-        payload = {
-            "accept": bool(accept),
-            "prompt_text": prompt_text if dialog.type == "prompt" else "",
-            "dialog_id": dialog.id,
-        }
-        body = json.dumps(payload).encode()
-        try:
-            import base64 as _b64
-            await self._cdp(
-                "Fetch.fulfillRequest",
-                {
-                    "requestId": dialog.bridge_request_id,
-                    "responseCode": 200,
-                    "responseHeaders": [
-                        {"name": "Content-Type", "value": "application/json"},
-                        {"name": "Access-Control-Allow-Origin", "value": "*"},
-                    ],
-                    "body": _b64.b64encode(body).decode(),
-                },
-                session_id=dialog.cdp_session_id or None,
-                timeout=5.0,
-            )
-        except Exception as e:
-            logger.debug("bridge fulfill failed for %s: %s", dialog.id, e)
 
     # ── Frame / target tracking ─────────────────────────────────────────────
 
@@ -1085,38 +817,10 @@ class CDPSupervisor:
     def _on_frame_detached(
         self, params: Dict[str, Any], session_id: Optional[str]
     ) -> None:
-        """Remove a frame from our state only when it's truly gone.
-
-        CDP emits ``Page.frameDetached`` with a ``reason`` of either
-        ``"remove"`` (the frame is actually gone from the DOM) or ``"swap"``
-        (the frame is migrating to a new process — typical when a
-        same-process iframe becomes an OOPIF, or when history navigates).
-        Dropping on ``swap`` would hide OOPIFs from the agent the moment
-        Chromium promotes them to their own process, so treat swap as a
-        no-op.
-
-        Even with ``reason=remove``, the parent page's perspective is
-        "the child frame left MY process tree" — which is what happens
-        when a same-origin iframe gets promoted to an OOPIF. If we
-        already have a live child CDP session attached for that frame_id,
-        the frame is still very much alive; only drop it when we have
-        no session record.
-        """
         frame_id = params.get("frameId")
         if not frame_id:
             return
-        reason = str(params.get("reason") or "remove").lower()
-        if reason == "swap":
-            return
         with self._state_lock:
-            existing = self._frames.get(frame_id)
-            # Keep OOPIF records even when the parent says the frame was
-            # "removed" — the iframe is still visible, just in a different
-            # process. If the frame truly goes away later, Target.detached
-            # + the next Page.frameDetached without a live session will
-            # clear it.
-            if existing and existing.is_oopif and existing.cdp_session_id:
-                return
             self._frames.pop(frame_id, None)
 
     async def _on_target_attached(self, params: Dict[str, Any]) -> None:
@@ -1148,11 +852,7 @@ class CDPSupervisor:
         asyncio.create_task(self._enable_child_domains(sid))
 
     async def _enable_child_domains(self, sid: str) -> None:
-        """Enable Page+Runtime (+nested setAutoAttach) on a child CDP session.
-
-        Also installs the dialog bridge so iframe-scoped alert/confirm/prompt
-        calls round-trip through Fetch too.
-        """
+        """Enable Page+Runtime (+nested setAutoAttach) on a child CDP session."""
         try:
             await self._cdp("Page.enable", session_id=sid, timeout=3.0)
             await self._cdp("Runtime.enable", session_id=sid, timeout=3.0)
@@ -1164,38 +864,18 @@ class CDPSupervisor:
             )
         except Exception as e:
             logger.debug("child session %s setup failed: %s", sid[:16], e)
-        # Install the dialog bridge on the child so iframe dialogs are captured.
-        await self._install_dialog_bridge(sid)
 
     def _on_target_detached(self, params: Dict[str, Any]) -> None:
-        """Handle a child CDP session detaching.
-
-        We deliberately DO NOT drop frames from ``_frames`` here — Browserbase
-        fires transient detach events during page transitions even while the
-        iframe is still visible to the user, and dropping the record hides
-        OOPIFs from the agent between the detach and the next
-        ``Target.attachedToTarget``. Instead, we just clear the session
-        binding so stale ``cdp_session_id`` values aren't used for routing.
-        If the iframe truly goes away, ``Page.frameDetached`` will clean up.
-        """
         sid = params.get("sessionId")
         if not sid:
             return
         self._child_sessions.pop(sid, None)
         with self._state_lock:
-            for fid, frame in list(self._frames.items()):
-                if frame.cdp_session_id == sid:
-                    # Replace with a copy that has cdp_session_id cleared so
-                    # routing falls back to top-level page session if retried.
-                    self._frames[fid] = FrameInfo(
-                        frame_id=frame.frame_id,
-                        url=frame.url,
-                        origin=frame.origin,
-                        parent_frame_id=frame.parent_frame_id,
-                        is_oopif=frame.is_oopif,
-                        cdp_session_id=None,
-                        name=frame.name,
-                    )
+            drop_ids = [
+                fid for fid, frame in self._frames.items() if frame.cdp_session_id == sid
+            ]
+            for fid in drop_ids:
+                self._frames.pop(fid, None)
 
     # ── Console / exception ring buffer ─────────────────────────────────────
 

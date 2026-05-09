@@ -12307,10 +12307,26 @@ class GatewayRunner:
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"]
-                    enriched_parts.append(
-                        f'[The user sent a voice message~ '
-                        f'Here\'s what they said: "{transcript}"]'
-                    )
+                    segments = result.get("segments", [])
+
+                    # Format with timestamps if available
+                    if segments:
+                        ts_lines = []
+                        for seg in segments:
+                            mins = int(seg["start"] // 60)
+                            secs = int(seg["start"] % 60)
+                            ts = f"{mins:02d}:{secs:02d}"
+                            ts_lines.append(f"[{ts}] {seg['text'].strip()}")
+                        ts_block = "\n".join(ts_lines)
+                        enriched_parts.append(
+                            f"【🎤 语音消息时间戳】\n{ts_block}\n\n"
+                            f"【📋 完整内容】: \"{transcript}\"]"
+                        )
+                    else:
+                        enriched_parts.append(
+                            f'[The user sent a voice message~ '
+                            f'Here\'s what they said: "{transcript}"]'
+                        )
                 else:
                     error = result.get("error", "unknown error")
                     if (

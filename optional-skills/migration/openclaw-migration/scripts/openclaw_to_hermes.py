@@ -2701,13 +2701,13 @@ class Migrator:
             hermes_cfg["terminal"] = terminal_cfg
             changed = True
 
-        # Map web search API key (path: tools.web.search.brave.apiKey in OpenClaw)
+        # Map web search API key (path: tools.web.search.ddg.apiKey in OpenClaw)
         web_cfg = tools.get("web") or tools.get("webSearch") or {}
         search_cfg = web_cfg.get("search") or web_cfg if not web_cfg.get("search") else web_cfg["search"]
-        brave_cfg = search_cfg.get("brave") or {}
-        brave_key = brave_cfg.get("apiKey") or search_cfg.get("braveApiKey") or web_cfg.get("braveApiKey")
-        if brave_key and isinstance(brave_key, str) and self.migrate_secrets:
-            self._set_env_var("BRAVE_API_KEY", brave_key, "tools.web.search.brave.apiKey")
+        ddg_cfg = search_cfg.get("ddg") or {}
+        ddg_key = ddg_cfg.get("apiKey") or search_cfg.get("ddgApiKey") or web_cfg.get("ddgApiKey")
+        if ddg_key and isinstance(ddg_key, str) and self.migrate_secrets:
+            self._set_env_var("DDG_API_KEY", ddg_key, "tools.web.search.ddg.apiKey")
 
         if changed and self.execute:
             self.maybe_backup(hermes_cfg_path)

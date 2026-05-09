@@ -301,12 +301,12 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
-                "name": "SearXNG",
-                "badge": "free · self-hosted · search only",
-                "tag": "Privacy-respecting metasearch engine — search only (pair with any extract provider)",
+                "name": "Searxng",
+                "badge": "free · self-hosted",
+                "tag": "Run your own Searxng privacy-respecting search engine (Docker)",
                 "web_backend": "searxng",
                 "env_vars": [
-                    {"key": "SEARXNG_URL", "prompt": "Your SearXNG instance URL (e.g., http://localhost:8080)", "url": "https://searxng.github.io/searxng/"},
+                    {"key": "SEARXNG_API_URL", "prompt": "Your Searxng instance URL (e.g., http://localhost:8888)", "default": "http://localhost:8888"},
                 ],
             },
             {

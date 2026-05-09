@@ -154,7 +154,7 @@ TTS settings are read from **two** OpenClaw config locations with this priority:
 | Command allowlist | `exec-approvals.json` | `config.yaml` → `command_allowlist` | Patterns merged and deduped |
 | Browser CDP URL | `browser.cdpUrl` | `config.yaml` → `browser.cdp_url` | |
 | Browser headless | `browser.headless` | `config.yaml` → `browser.headless` | |
-| Brave search key | `tools.web.search.brave.apiKey` | `.env` → `BRAVE_API_KEY` | Requires `--migrate-secrets` |
+| DuckDuckGo | `tools.web.search.ddg` | `.env` → `DDG_API_KEY` (optional, free) |
 | Gateway auth token | `gateway.auth.token` | `.env` → `HERMES_GATEWAY_TOKEN` | Requires `--migrate-secrets` |
 | Working directory | `agents.defaults.workspace` | `.env` → `MESSAGING_CWD` | |
 

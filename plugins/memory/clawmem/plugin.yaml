@@ -1,0 +1,4 @@
+name: clawmem
+version: 1.0.0
+description: "ClawMem — shared memory between Jane and Hermes via ClawMem API"
+pip_dependencies: []

@@ -1,0 +1,10 @@
+name: mempalace
+version: 1.0.0
+description: "MemPalace — local palace-structured memory with AAAK compression, ChromaDB semantic search, and knowledge graph. 96.6% LongMemEval R@5, no API key required."
+pip_dependencies:
+  - mempalace>=3.0.0
+  - chromadb>=0.4.0
+hooks:
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write

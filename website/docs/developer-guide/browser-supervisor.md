@@ -1,6 +1,6 @@
 # Browser CDP Supervisor — Design
 
-**Status:** Shipped (PR 14540)
+**Status:** In progress (PR 1 of 2)
 **Last updated:** 2026-04-23
 **Author:** @teknium1
 
@@ -27,28 +27,24 @@ Using throwaway probe scripts against a data-URL page that fires alerts in the
 main frame and in a same-origin srcdoc iframe, plus a cross-origin
 `https://example.com` iframe:
 
-| Backend | Dialog detect | Dialog respond | Frame tree | OOPIF `Runtime.evaluate` via `browser_cdp(frame_id=...)` |
-|---|---|---|---|---|
-| Local Chrome (`--remote-debugging-port`) / `/browser connect` | ✓ | ✓ full workflow | ✓ | ✓ |
-| Browserbase | ✓ (via bridge) | ✓ full workflow (via bridge) | ✓ | ✓ (`document.title = "Example Domain"` verified on real cross-origin iframe) |
-| Camofox | ✗ no CDP (REST-only) | ✗ | partial via DOM snapshot | ✗ |
+| Backend | `Page.javascriptDialogOpening` | `Page.frameAttached` | Cross-origin iframe (OOPIF) | Runtime.evaluate inside OOPIF | Agent can **respond** to dialogs |
+|---|---|---|---|---|---|
+| Local Chrome (`--remote-debugging-port`) / `/browser connect` | ✓ | ✓ | ✓ via `Target.attachedToTarget` | ✓ on child sessionId | ✓ full workflow |
+| Browserbase | ✓ (brief window) | ✓ | ✓ verified with `example.com` | ✓ (`document.title = "Example Domain"`) | ✗ Browserbase auto-dismisses dialogs server-side within ~10ms; agent can observe but not respond |
+| Camofox | ✗ no CDP (REST-only) | partial via DOM snapshot | ✗ | top-level only | ✗ |
 
-**How Browserbase respond works.** Browserbase's CDP proxy uses Playwright
-internally and auto-dismisses native dialogs within ~10ms, so
-`Page.handleJavaScriptDialog` can't keep up. To work around this, the
-supervisor injects a bridge script via
-`Page.addScriptToEvaluateOnNewDocument` that overrides
-`window.alert`/`confirm`/`prompt` with a synchronous XHR to a magic host
-(`hermes-dialog-bridge.invalid`). `Fetch.enable` intercepts those XHRs
-before they touch the network — the dialog becomes a `Fetch.requestPaused`
-event the supervisor captures, and `respond_to_dialog` fulfills via
-`Fetch.fulfillRequest` with a JSON body the injected script decodes.
+**Why Browserbase respond is limited:** Browserbase's CDP proxy uses Playwright
+internally, and Playwright auto-dismisses dialogs by default. The sequence we
+see is `javascriptDialogOpening` followed ~10ms later by
+`javascriptDialogClosed` — the supervisor captures the event but any
+`Page.handleJavaScriptDialog` call from us returns `"No dialog is showing"`.
+Browserbase's recommended pattern is to prevent dialogs via
+`addInitScript` before page load rather than respond to them at runtime.
+[Their docs here](https://docs.browserbase.com/platform/browser/techniques/dialogues).
 
-Net result: from the page's perspective, `prompt()` still returns the
-agent-supplied string. From the agent's perspective, it's the same
-`browser_dialog(action=...)` API either way. Tested end-to-end against
-real Browserbase sessions — 4/4 (alert/prompt/confirm-accept/confirm-dismiss)
-pass including value round-tripping back into page JS.
+For full dialog-response support on Browserbase, a separate follow-up can
+add an `addInitScript` path that overrides `window.alert`/`confirm`/`prompt`
+with Python-side handlers — different mechanism, different PR.
 
 Camofox stays unsupported for this PR; follow-up upstream issue planned at
 `jo-inc/camofox-browser` requesting a dialog polling endpoint.
@@ -161,28 +157,23 @@ Both surfaces gate on `_browser_cdp_check` (supervisor can only run when a CDP
 endpoint is reachable). On Camofox / no-backend sessions, the dialog tool is
 hidden and snapshot omits the new fields — no schema bloat.
 
-## Cross-origin iframe interaction
+## PR 2 scope (separate)
 
-Extending the dialog-detect work, `browser_cdp(frame_id=...)` routes CDP
-calls (notably `Runtime.evaluate`) through the supervisor's already-connected
-WebSocket using the OOPIF's child `sessionId`. Agents pick frame_ids out of
-`browser_snapshot.frame_tree.children[]` where `is_oopif=true` and pass them
-to `browser_cdp`. For same-origin iframes (no dedicated CDP session), the
-agent uses `contentWindow`/`contentDocument` from a top-level
-`Runtime.evaluate` instead — supervisor surfaces an error pointing at that
-fallback when `frame_id` belongs to a non-OOPIF.
+Adds `frame_id` parameter to `browser_click`, `browser_type`, `browser_fill`,
+`browser_scroll`, etc. When supplied, the tool looks up the frame's
+`session_id` in the supervisor registry and routes the CDP command to that
+attached session. Cross-origin iframe interaction works end-to-end.
 
-On Browserbase, this is the ONLY reliable path for iframe interaction —
-stateless CDP connections (opened per `browser_cdp` call) hit signed-URL
-expiry, while the supervisor's long-lived connection keeps a valid session.
+## PR 3 scope (Camofox upstream)
 
-## Camofox (follow-up)
-
-Issue planned against `jo-inc/camofox-browser` adding:
+Issue opened against `jo-inc/camofox-browser` (and optionally a PR) adding:
 - Playwright `page.on('dialog', handler)` per session
 - `GET /tabs/:tabId/dialogs` polling endpoint
 - `POST /tabs/:tabId/dialogs/:id` to accept/dismiss
-- Frame-tree introspection endpoint
+
+If upstream rejects, we add a polling fallback in hermes-agent that uses their
+existing `/tabs/:tabId/evaluate` to probe for a blocked state. Documented as a
+known gap in the meantime.
 
 ## Files touched (PR 1)
 

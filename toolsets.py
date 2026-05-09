@@ -36,7 +36,7 @@ _HERMES_CORE_TOOLS = [
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
-    "vision_analyze", "image_generate",
+    "vision_analyze", "video_analyze", "image_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -60,9 +60,10 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-    # Kanban multi-agent coordination — only in schema when the agent is
-    # spawned as a kanban worker (HERMES_KANBAN_TASK env set), otherwise
-    # zero schema footprint. Gated via check_fn in tools/kanban_tools.py.
+    # GBrain knowledge brain (gated on gbrain CLI check_fn)
+    "brain_search", "brain_query", "brain_get", "brain_put",
+    "brain_backlinks", "brain_timeline", "brain_stats", "brain_list",
+    # Kanban multi-agent coordination
     "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
@@ -88,7 +89,7 @@ TOOLSETS = {
     
     "vision": {
         "description": "Image analysis and vision tools",
-        "tools": ["vision_analyze"],
+        "tools": ["vision_analyze", "video_analyze"],
         "includes": []
     },
 
@@ -131,7 +132,16 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
-    
+
+    "brain": {
+        "description": "GBrain knowledge brain — brain-first lookup, read/write, ambient signal capture. GBrain must be checked BEFORE any external API call.",
+        "tools": [
+            "brain_search", "brain_query", "brain_get", "brain_put",
+            "brain_backlinks", "brain_timeline", "brain_stats", "brain_list"
+        ],
+        "includes": []
+    },
+
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
         "tools": [
@@ -319,7 +329,7 @@ TOOLSETS = {
             "web_search", "web_extract",
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
-            "vision_analyze",
+            "vision_analyze", "video_analyze",
             "skills_list", "skill_view", "skill_manage",
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
@@ -342,7 +352,7 @@ TOOLSETS = {
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
-            "vision_analyze", "image_generate",
+            "vision_analyze", "video_analyze", "image_generate",
             # Skills
             "skills_list", "skill_view", "skill_manage",
             # Browser automation

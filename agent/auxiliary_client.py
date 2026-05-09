@@ -141,6 +141,7 @@ _PROVIDER_ALIASES = {
     "zhipu": "zai",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
+    "zai-coding": "zai-coding",
     "kimi-cn": "kimi-coding-cn",
     "moonshot-cn": "kimi-coding-cn",
     "gmi-cloud": "gmi",
@@ -261,6 +262,7 @@ def _get_aux_model_for_provider(provider_id: str) -> str:
 _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
     "zai": "glm-4.5-flash",
+    "zai-coding": "glm-5.1",
     "kimi-coding": "kimi-k2-turbo-preview",
     "stepfun": "step-3.5-flash",
     "kimi-coding-cn": "kimi-k2-turbo-preview",
@@ -288,6 +290,8 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALL
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
+    "minimax": "MiniMax-VL-01",
+    "minimax-cn": "MiniMax-VL-01",
 }
 
 # Providers whose endpoint does not accept image input, even though the

@@ -1262,7 +1262,14 @@ def run_doctor(args):
     if _APIKEY_PROVIDERS_CACHE is None:
         _APIKEY_PROVIDERS_CACHE = _build_apikey_providers_list()
     _apikey_providers = _APIKEY_PROVIDERS_CACHE
+    # Providers with dedicated health-check sections above — skip to avoid
+    # duplicate checks with wrong auth headers (e.g. anthropic needs x-api-key,
+    # not the generic Bearer token the loop uses).
+    _DEDICATED_CHECKS = {"anthropic", "openrouter"}
     for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
+        # Skip providers that have dedicated health-check sections above
+        if _pname.lower() in _DEDICATED_CHECKS:
+            continue
         _key = ""
         for _ev in _env_vars:
             _key = os.getenv(_ev, "")

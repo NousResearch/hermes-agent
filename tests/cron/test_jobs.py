@@ -207,6 +207,26 @@ class TestJobCRUD:
         jobs = list_jobs()
         assert len(jobs) == 2
 
+    def test_list_jobs_normalizes_partial_legacy_records(self, tmp_cron_dir):
+        save_jobs([
+            {
+                "id": "abc123deadbe",
+                "name": None,
+                "prompt": None,
+                "schedule_display": None,
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "enabled": True,
+            }
+        ])
+
+        jobs = list_jobs()
+
+        assert jobs[0]["id"] == "abc123deadbe"
+        assert jobs[0]["name"] == "abc123deadbe"
+        assert jobs[0]["prompt"] == ""
+        assert jobs[0]["schedule_display"] == "every 60m"
+        assert jobs[0]["state"] == "scheduled"
+
     def test_remove_job(self, tmp_cron_dir):
         job = create_job(prompt="Temp job", schedule="30m")
         assert remove_job(job["id"]) is True

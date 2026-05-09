@@ -845,7 +845,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
     """
-    prompt = job.get("prompt", "")
+    prompt = str(job.get("prompt") or "")
     skills = job.get("skills")
 
     # Run data-collection script if configured, inject output as context.
@@ -933,6 +933,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []
+    elif isinstance(skills, str):
+        skills = [skills]
 
     skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
@@ -1015,7 +1017,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
     job_id = job["id"]
-    job_name = job["name"]
+    job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.

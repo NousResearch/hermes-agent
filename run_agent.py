@@ -5067,12 +5067,25 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
-        if not self._memory_manager:
-            return
-        try:
-            self._memory_manager.on_session_end(messages or [])
-        except Exception:
-            pass
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_session_end(messages or [])
+            except Exception:
+                pass
+        # Notify context engine of session end too — same lifecycle moment as
+        # the memory manager's on_session_end. Without this, engines that
+        # accumulate per-session state (DAGs, summaries) leak that state from
+        # the rotated-out session into whatever comes next under the same
+        # compressor instance. Mirrors the call in shutdown_memory_provider().
+        # See issue #22394.
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            try:
+                self.context_compressor.on_session_end(
+                    self.session_id or "",
+                    messages or [],
+                )
+            except Exception:
+                pass
 
     def _sync_external_memory_for_turn(
         self,

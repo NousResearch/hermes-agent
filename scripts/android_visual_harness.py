@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -13,7 +15,7 @@ from pathlib import Path
 
 
 DEFAULT_PACKAGE = "com.nousresearch.hermesagent"
-DEFAULT_READY_TEXT = "Message Hermes"
+DEFAULT_READY_TEXT = "Message Hermes|Settings|Hermes"
 UI_DUMP_REMOTE_PATH = "/sdcard/window_dump.xml"
 
 
@@ -23,7 +25,19 @@ def adb_path() -> str:
         candidate = Path(sdk) / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb")
         if candidate.is_file():
             return str(candidate)
-    return "adb"
+    if os.name == "nt":
+        default_sdk = Path(
+            r"C:\Users\Ady\Documents\Codex\2026-05-02\c-users-ady-downloads-hermes-android\_android_sdk"
+        )
+        candidate = default_sdk / "platform-tools" / "adb.exe"
+        if candidate.is_file():
+            return str(candidate)
+    resolved = shutil.which("adb.exe" if os.name == "nt" else "adb")
+    if resolved:
+        return resolved
+    raise FileNotFoundError(
+        "adb was not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or put adb on PATH."
+    )
 
 
 def adb_args(serial: str | None, *args: str) -> list[str]:
@@ -103,7 +117,7 @@ def swipe(args: argparse.Namespace) -> int:
 
 def text(args: argparse.Namespace) -> int:
     payload = args.text.replace("%", "%s").replace(" ", "%s")
-    run_adb(args.serial, "shell", "input", "text", payload)
+    run_adb(args.serial, "shell", f"input text {shlex.quote(payload)}")
     return 0
 
 
@@ -209,10 +223,13 @@ def continue_past_anr_dialog(serial: str | None, xml: str) -> bool:
 def wait_for_ui_text(serial: str | None, ready_text: str, timeout_ms: int) -> bool:
     if not ready_text:
         return True
+    ready_texts = tuple(text.strip() for text in ready_text.split("|") if text.strip())
+    if not ready_texts:
+        return True
     deadline = time.monotonic() + (timeout_ms / 1000)
     while time.monotonic() <= deadline:
         xml = read_ui_xml(serial)
-        if ready_text in xml:
+        if any(text in xml for text in ready_texts):
             return True
         if xml and continue_past_anr_dialog(serial, xml):
             time.sleep(1)
@@ -334,7 +351,7 @@ def parser() -> argparse.ArgumentParser:
     wide_parser.add_argument("--package", default=DEFAULT_PACKAGE)
     wide_parser.add_argument("--size", default="1920x1080", help="Temporary emulator resolution.")
     wide_parser.add_argument("--density", type=int, default=240, help="Temporary emulator density.")
-    wide_parser.add_argument("--wait-ms", type=int, default=1500, help="Wait after launch before capture.")
+    wide_parser.add_argument("--wait-ms", type=int, default=8000, help="Wait after launch before capture.")
     wide_parser.add_argument(
         "--ready-timeout-ms",
         type=int,
@@ -344,7 +361,7 @@ def parser() -> argparse.ArgumentParser:
     wide_parser.add_argument(
         "--ready-text",
         default=DEFAULT_READY_TEXT,
-        help="UI text that must appear before capture; pass an empty value to skip this check.",
+        help="Pipe-separated UI text alternatives that may appear before capture; pass an empty value to skip this check.",
     )
     wide_parser.add_argument("--no-launch", action="store_true", help="Capture current screen without launching Hermes.")
     wide_parser.add_argument("--keep-size", action="store_true", help="Do not reset wm size/density after capture.")

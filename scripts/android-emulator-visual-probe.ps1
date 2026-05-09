@@ -33,7 +33,7 @@ param(
     [string]$OutDir = "artifacts/emulator-visual",
     [string]$WideSize = "1920x1080",
     [int]$WideDensity = 240,
-    [int]$WaitMs = 1500,
+    [int]$WaitMs = 8000,
     [switch]$NoLaunch,
     [switch]$KeepSize,
     [switch]$Open

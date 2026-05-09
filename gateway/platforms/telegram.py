@@ -319,6 +319,27 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Notification mode for message sends.
+        # "all"      — every message triggers a push notification (default).
+        # "important" — only final responses, approvals, and slash confirmations
+        #               trigger notifications; tool progress, streaming, status
+        #               messages are delivered silently via disable_notification.
+        self._notifications_mode: str = "all"
+
+    def _notification_kwargs(
+        self, metadata: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Return disable_notification kwargs when the adapter is in silent mode.
+
+        In "important" mode, all message sends are silently delivered
+        (disable_notification=True) unless the caller explicitly requests a
+        notification by setting ``metadata["notify"] = True``.
+        """
+        if getattr(self, "_notifications_mode", "all") != "important":
+            return {}
+        if (metadata or {}).get("notify"):
+            return {}
+        return {"disable_notification": True}
 
     def _is_callback_user_authorized(
         self,
@@ -1414,6 +1435,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
+                                **self._notification_kwargs(metadata),
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -1427,6 +1449,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
+                                    **self._notification_kwargs(metadata),
                                 )
                             else:
                                 raise
@@ -2374,6 +2397,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **voice_thread_kwargs,
+                            **self._notification_kwargs(metadata),
                         },
                         metadata,
                         reply_to_id,
@@ -2398,6 +2422,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **audio_thread_kwargs,
+                            **self._notification_kwargs(metadata),
                         },
                         metadata,
                         reply_to_id,
@@ -2534,6 +2559,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "media": media,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._notification_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -2591,6 +2617,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._notification_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -2686,6 +2713,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._notification_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -2731,6 +2759,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._notification_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -2781,6 +2810,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **photo_thread_kwargs,
+                    **self._notification_kwargs(metadata),
                 },
                 metadata,
                 reply_to_id,
@@ -2816,6 +2846,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **upload_thread_kwargs,
+                        **self._notification_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -2861,6 +2892,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **animation_thread_kwargs,
+                    **self._notification_kwargs(metadata),
                 },
                 metadata,
                 reply_to_id,

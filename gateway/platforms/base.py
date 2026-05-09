@@ -2950,6 +2950,18 @@ class BasePlatformAdapter(ABC):
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
+                    # Mark final response messages for notification delivery.
+                    # Platform adapters that support per-message notification
+                    # control (e.g. Telegram's disable_notification) use this
+                    # flag to override silent-mode and ensure the final
+                    # response triggers a push notification.
+                    # Clone to avoid mutating the metadata shared with the
+                    # typing-indicator task (which must remain unmarked).
+                    if _thread_metadata is not None:
+                        _thread_metadata = dict(_thread_metadata)
+                        _thread_metadata["notify"] = True
+                    else:
+                        _thread_metadata = {"notify": True}
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,

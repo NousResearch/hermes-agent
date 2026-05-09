@@ -2189,6 +2189,12 @@ class DiscordAdapter(BasePlatformAdapter):
         has_roles = bool(allowed_roles)
         if not has_users and not has_roles:
             return True
+        # Open-mode wildcard ("*" entry) means "any user" — same convention as
+        # SIGNAL_ALLOWED_USERS, DISCORD_ALLOWED_CHANNELS, and the `claw migrate`
+        # output for OpenClaw `allowFrom: ["*"]`. Without this, mixed lists
+        # like `<id>,*` silently reject everyone except <id> (#22334).
+        if has_users and "*" in allowed_users:
+            return True
         # Check user ID allowlist (works for both DMs and guild messages)
         if has_users and user_id in allowed_users:
             return True

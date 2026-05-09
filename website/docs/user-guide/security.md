@@ -137,7 +137,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `nsjail`, `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the sandbox itself is the security boundary. Destructive commands inside the jail can't harm the host.
 :::
 
 ### Approval Flow (CLI)
@@ -345,6 +345,7 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | Backend | Isolation | Dangerous Cmd Check | Best For |
 |---------|-----------|-------------------|----------|
 | **local** | None — runs on host | ✅ Yes | Development, trusted users |
+| **nsjail** | User/mount/net namespaces (Linux) | ❌ Skipped | Fast local sandboxing of short-lived code |
 | **ssh** | Remote machine | ✅ Yes | Running on a separate server |
 | **docker** | Container | ❌ Skipped (container is boundary) | Production gateway |
 | **singularity** | Container | ❌ Skipped | HPC environments |

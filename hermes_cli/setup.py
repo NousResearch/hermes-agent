@@ -1320,6 +1320,11 @@ def setup_terminal_backend(config: dict):
         backend_to_idx["singularity"] = next_idx
         next_idx += 1
 
+        terminal_choices.append("Nsjail - lightweight namespace sandbox (fast, no daemon)")
+        idx_to_backend[next_idx] = "nsjail"
+        backend_to_idx["nsjail"] = next_idx
+        next_idx += 1
+
     # Add keep current option
     keep_current_idx = next_idx
     terminal_choices.append(f"Keep current ({current_backend})")
@@ -1401,6 +1406,45 @@ def setup_terminal_backend(config: dict):
         image = prompt("  Container image", current_image)
         config["terminal"]["singularity_image"] = image
         save_env_value("TERMINAL_SINGULARITY_IMAGE", image)
+
+        _prompt_container_resources(config)
+
+    elif selected_backend == "nsjail":
+        print_success("Terminal backend: Nsjail")
+        print_info(
+            "Lightweight Linux namespace sandbox. No daemon, no container image, "
+            "~20 ms per command."
+        )
+
+        # Preflight: locate the binary so the user gets an install hint if missing.
+        from tools.environments.nsjail import find_nsjail as _find_nsjail
+        nsjail_bin = _find_nsjail()
+        if not nsjail_bin:
+            print_warning("nsjail not found in PATH!")
+            print_info(
+                "Install from source: https://github.com/google/nsjail "
+                "(or set HERMES_NSJAIL_BINARY to the absolute path)."
+            )
+        else:
+            print_info(f"nsjail found: {nsjail_bin}")
+
+        current_config_path = config.get("terminal", {}).get("nsjail_config", "")
+        cfg_prompt_hint = (
+            "  nsjail.cfg path (optional, empty for Hermes defaults)"
+        )
+        config_path = prompt(cfg_prompt_hint, current_config_path)
+        config["terminal"]["nsjail_config"] = config_path or ""
+        save_env_value("TERMINAL_NSJAIL_CONFIG", config_path or "")
+
+        current_allow_net = bool(
+            config.get("terminal", {}).get("nsjail_allow_net", False)
+        )
+        allow_net = prompt_yes_no(
+            "Allow network access from inside the jail? (default: deny)",
+            current_allow_net,
+        )
+        config["terminal"]["nsjail_allow_net"] = allow_net
+        save_env_value("TERMINAL_NSJAIL_ALLOW_NET", "true" if allow_net else "false")
 
         _prompt_container_resources(config)
 

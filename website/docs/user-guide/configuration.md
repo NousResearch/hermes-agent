@@ -83,11 +83,11 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, an Nsjail namespace sandbox, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | nsjail | docker | ssh | modal | daytona | vercel_sandbox | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
@@ -103,6 +103,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | Backend | Where commands run | Isolation | Best for |
 |---------|-------------------|-----------|----------|
 | **local** | Your machine directly | None | Development, personal use |
+| **nsjail** | Local namespace sandbox | User/mount/net namespaces, rlimits | Fast sandboxing of short-lived untrusted code (Linux only) |
 | **docker** | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
@@ -161,6 +162,58 @@ Parallel subagents spawned via `delegate_task(tasks=[...])` share this one conta
 - Size-limited tmpfs for `/tmp` (512MB), `/var/tmp` (256MB), `/run` (64MB)
 
 **Credential forwarding:** Env vars listed in `docker_forward_env` are resolved from your shell environment first, then `~/.hermes/.env`. Skills can also declare `required_environment_variables` which are merged automatically.
+
+### Nsjail Backend
+
+Runs commands inside a fresh [nsjail](https://github.com/google/nsjail) user-namespace sandbox. No daemon, no container image, no root required. Spawn latency is ~20 ms on a Pi-class device — a good fit for deep-research workflows that run many short-lived code snippets and don't want Docker's per-call overhead.
+
+```yaml
+terminal:
+  backend: nsjail
+  nsjail_config: ""        # Optional: path to a user-supplied nsjail.cfg
+  nsjail_allow_net: false  # Grant network access from inside the jail
+  nsjail_forward_env: []   # Env var names to forward into the jail
+
+  # Resource limits (shared with the container backends)
+  container_memory: 5120   # MB → --rlimit_as
+  container_disk: 51200    # MB → --rlimit_fsize
+```
+
+**Requirements:** Linux with user namespaces enabled (the default on most distributions). The `nsjail` binary on `$PATH`, or `HERMES_NSJAIL_BINARY` pointing at the absolute path. Install from source: `https://github.com/google/nsjail`.
+
+**Default policy (when `nsjail_config` is empty):**
+- Host root filesystem bindmounted read-only
+- The launch working directory bindmounted read-write at the same path
+- A private host-side session directory bindmounted at `/tmp` so env/cwd snapshots persist across commands
+- Network namespace: new and empty (no outbound access) unless `nsjail_allow_net: true`
+- `rlimit_as` (address space) from `container_memory`, `rlimit_fsize` from `container_disk`, `rlimit_nofile` 1024
+- Wall-clock `--time_limit` tracks the Hermes per-command timeout (with a few-second cushion)
+
+**Custom policy:** Set `nsjail_config` to the path of a protobuf text-format `nsjail.cfg` and Hermes delegates all sandbox policy to that file (only the time limit is re-injected). Use this when you need seccomp filters, finer mount control, or PID/UTS namespace tuning.
+
+**Initial-cwd pin:** Only the cwd captured at session init is bindmounted read-write. If the agent `cd`s elsewhere mid-session, the new location stays readable but read-only — preventing a stray `cd /etc` from silently widening the write surface.
+
+**What it won't sandbox:** Commands that rely on privileged syscalls (`ptrace`, raw sockets, `unshare` under some kernel configs) may behave differently or fail. For those, use Docker.
+
+**Fork bombs:** The default profile does not set `rlimit_nproc` because that flag is enforced host-wide per real uid, which would interfere with the user's other processes outside the jail. Wall-clock `--time_limit` is the containment. If you need a per-jail process cap, supply an `nsjail.cfg` that uses cgroup v2 `pids.max` instead.
+
+#### Isolating execute_code only
+
+Setting `terminal.backend` affects **every** file- and shell-touching tool (`terminal`, `read_file`, `write_file`, `patch`, `search_files`, `process`). That's usually too restrictive for a coding agent — you want it to freely edit your repo, run `pip install`, commit to git, etc. — and only sandbox the *experimental* scripts the LLM writes on the fly.
+
+For that, set a separate `code_execution.backend` and leave `terminal.backend` on `local`:
+
+```yaml
+terminal:
+  backend: local           # normal agent work — file edits, git, installs
+
+code_execution:
+  backend: nsjail          # LLM-authored scripts run isolated
+```
+
+When `code_execution.backend` is empty (the default), `execute_code` inherits `terminal.backend` — so existing single-backend configs keep working unchanged. When it's set, only the `execute_code` tool uses that backend; everything else runs via `terminal.backend`.
+
+The nsjail-specific settings (`nsjail_config`, `nsjail_allow_net`, `nsjail_forward_env`) live under `terminal:` and apply to whichever tool routes through the nsjail backend.
 
 ### SSH Backend
 
@@ -296,6 +349,7 @@ terminal:
 If terminal commands fail immediately or the terminal tool is reported as disabled:
 
 - **Local** — No special requirements. The safest default when getting started.
+- **Nsjail** — Run `nsjail --help` to confirm the binary is reachable. Needs Linux with user namespaces enabled (default on mainstream distros; check `sysctl kernel.unprivileged_userns_clone` on older Debian/Ubuntu kernels).
 - **Docker** — Run `docker version` to verify Docker is working. If it fails, fix Docker or `hermes config set terminal.backend local`.
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.

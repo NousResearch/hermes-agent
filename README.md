@@ -154,28 +154,40 @@ See `hermes claw migrate --help` for all options, or use the `openclaw-migration
 
 ## Contributing
 
-We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
+We welcome contributions! See the full [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
 
-Quick start for contributors — clone and go with `setup-hermes.sh`:
+### Quick Start for Contributors (Recommended)
 
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
-./setup-hermes.sh     # installs uv, creates venv, installs .[all], symlinks ~/.local/bin/hermes
-./hermes              # auto-detects the venv, no need to `source` first
+./scripts/setup-hermes.sh     # installs uv, Python 3.11 venv, all dependencies, and symlinks `hermes`
 ```
 
-Manual path (equivalent to the above):
+After running the script you can immediately start the agent:
+
+```bash
+hermes              # starts the interactive CLI (auto-detects the virtual environment)
+```
+
+Manual Setup (if the script fails)
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv .venv --python 3.11
-source .venv/bin/activate
+source .venv/bin/activate      # Linux/macOS
+# or
+.venv\Scripts\activate         # Windows
+
 uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
 ```
 
-> **RL Training (optional):** The RL/Atropos integration (`environments/`) — see [`CONTRIBUTING.md`](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#development-setup) for the full setup.
+**Common Issues**
+- Permission error → `chmod +x scripts/*.sh`
+- Python version → Must use Python 3.11+
+- WSL2 → Highly recommended for best compatibility
+
+> **RL Training:** See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for Atropos / RL environment setup.
 
 ---
 

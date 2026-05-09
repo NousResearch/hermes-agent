@@ -8,7 +8,7 @@
 
 **Tech Stack:** Current Hermes web dashboard, React/TypeScript, Vitest, CSS/Tailwind-style utility classes, SVG/CSS only for the next prototype; no Phaser/PixiJS/canvas dependency in the next implementation slice.
 
-**Last updated:** 2026-05-09 08:23 KST
+**Last updated:** 2026-05-09 12:01 KST
 
 ---
 
@@ -295,40 +295,44 @@ Then request independent code review focused on:
 
 ---
 
-## 5. Later implementation plan: Stage 10 renderer decision gate
+## 5. Later implementation plan: Stage 10+ character RPG office
 
-Only after Stage 9-C proves useful:
+The user clarified the real north star after Stage 9-I: the map should show each model/agent as its own RPG-like character performing its role, DeskRPG-inspired but Hermes-native and privacy-safe.
 
-### Decision inputs
+Detailed plan:
 
-- Does the CSS/SVG prototype make `/office` easier to understand?
-- Does it remain fast/readable after object placeholders are added?
-- Are users clicking map objects naturally, or mostly using panels?
-- Is animation needed beyond CSS?
-- Is panning/zooming needed?
-- Is tile-map authoring needed?
+- `docs/ai-office/plans/2026-05-09-stage-10-character-rpg-office.md`
 
-### If no engine is needed
+Updated stage sequence:
 
-Continue CSS/SVG:
+1. Stage 10-A: character role projection model — completed
+   - Added `OfficeCharacter` and `buildOfficeCharacters(state, nodes)`.
+   - Derive only safe role/status/count/source-health metadata from `OfficeState`.
+   - Start with Korean generic labels such as `모델 캐릭터 1`, `작업자 1`, `자동화 관리인 1`, `전달자 1` when safe identity is unavailable.
 
-- original inline SVG tile/furniture library,
-- richer fixtures,
-- visual regression,
-- small theme tokens,
-- no Phaser/PixiJS.
+2. Stage 10-B: original CSS/SVG character style — completed
+   - Replaced generic markers with recognizable role characters.
+   - No external sprite assets, DeskRPG assets, Phaser, PixiJS, or canvas.
 
-### If an engine is needed
+3. Stage 10-C: role action loops — completed
+   - Show safe activities such as `생각 중`, `작업 중`, `검토 중`, `전달 중`, `예약 대기`, `확인 필요`.
+   - Do not invent speech bubbles or display private work contents.
 
-Open a separate plan for:
+4. Stage 10-D: room-to-room RPG flow choreography — completed
+   - Added route hints only from safe `changedFlows` / room-level deltas.
+   - Provided static text equivalents under reduced-motion.
 
-- Phaser vs PixiJS vs custom canvas review,
-- dependency/bundle-size review,
-- security review,
-- license review,
-- accessibility fallback,
-- `OfficeState -> PixelSceneModel -> Renderer` adapter implementation,
-- no DeskRPG asset/code copying unless explicitly cleared.
+5. Stage 10-E: safe character inspector — completed
+   - Added character click/keyboard inspect affordances after ARIA/helper tests.
+   - Inspector shows generated role, room, status, action, safe delta, and redaction note only.
+   - No raw record fields, individual task identity, speech bubbles, or mutation target.
+
+6. Stage 10-F: usability hardening
+   - Dense-state caps, missing-source sentinels, small-screen smoke, Korean-first copy, and visual regression checklist.
+
+7. Stage 11: renderer decision gate
+   - Decide whether CSS/SVG remains enough or whether PixiJS, Phaser, or custom canvas is justified.
+   - Any renderer dependency requires explicit user approval, bundle-size/security/accessibility/license review, and a CSS/SVG fallback path.
 
 ---
 

@@ -4,12 +4,12 @@ import { useI18n } from "@/i18n/context";
 
 /**
  * Compact language toggle — shows a clickable flag that switches between
- * English and Chinese.  Persists choice to localStorage.
+ * Korean and Chinese. Persists choice to localStorage.
  */
 export function LanguageSwitcher() {
   const { locale, setLocale, t } = useI18n();
 
-  const toggle = () => setLocale(locale === "en" ? "zh" : "en");
+  const toggle = () => setLocale(locale === "ko" ? "zh" : "ko");
 
   return (
     <Button
@@ -21,14 +21,14 @@ export function LanguageSwitcher() {
     >
       <span className="inline-flex items-center gap-1.5">
         <span className="text-base leading-none">
-          {locale === "en" ? "🇬🇧" : "🇨🇳"}
+          {locale === "ko" ? "🇰🇷" : "🇨🇳"}
         </span>
 
         <Typography
           mondwest
           className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
         >
-          {locale === "en" ? "EN" : "中文"}
+          {locale === "ko" ? "KO" : "中文"}
         </Typography>
       </span>
     </Button>

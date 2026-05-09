@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -20,22 +20,43 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api, type OfficeDataSource, type OfficeSourceStatus, type OfficeState } from "@/lib/api";
 import {
   buildOfficeAttentionItems,
+  buildOfficeCharacterActivity,
+  buildOfficeCharacterInspector,
+  buildOfficeCharacterRoutes,
+  buildOfficeCharacterSceneObjects,
+  buildOfficeCharacterView,
+  buildOfficeCharacters,
+  buildOfficeEmptyStateHints,
+  buildOfficeMapDensityPlan,
+  buildOfficeMapJumpTargets,
   buildOfficeMapFlows,
   buildOfficeMapNodes,
+  buildOfficeSceneMotionTrack,
   buildOfficeSceneObjectView,
   buildOfficeSceneObjects,
+  buildOfficeSourceHealthSummary,
+  buildOfficeStateDelta,
+  buildOfficeUsabilitySummary,
   groupByText,
+  mergeOfficeRecentChanges,
   numberField,
+  OFFICE_LIVE_TRACKING_BASE_INTERVAL_MS,
+  resolveOfficeLiveTrackingInterval,
   textField,
   visibleRows,
+  type OfficeCharacter,
+  type OfficeMapDensityMode,
   type OfficeMapFlow,
   type OfficeMapNode,
+  type OfficeRecentChange,
   type OfficeSceneObject,
+  type OfficeStateDelta,
 } from "./officeView";
 
 const FOCUS_OPTIONS = ["overview", "work", "automation", "routing"] as const;
 const LIST_LIMIT = 6;
 const EVENT_LIMIT = 12;
+const CHANGE_LIMIT = 6;
 type FocusOption = (typeof FOCUS_OPTIONS)[number];
 
 const FOCUS_LABEL: Record<FocusOption, string> = {
@@ -87,6 +108,31 @@ const SOURCE_LABEL: Record<OfficeSourceStatus, string> = {
   missing: "미연결",
   unavailable: "사용 불가",
   error: "오류",
+};
+
+const EMPTY_STATE_DELTA: OfficeStateDelta = {
+  hasChanges: false,
+  nodeBadges: { sessions: [], work: [], automation: [], routing: [] },
+  changedFlows: [],
+  recentChanges: [],
+};
+
+const EMPTY_OFFICE_STATE: OfficeState = {
+  schema_version: 1,
+  generated_at: "",
+  mode: "read_only",
+  display_mode: "localhost",
+  capabilities: { read_only: true, mutations_enabled: false, remote_mode: "unsupported" },
+  data_sources: [],
+  summary: {},
+  rooms: [],
+  agents: [],
+  work_items: [],
+  automations: [],
+  topics: [],
+  events: [],
+  provenance: [],
+  redactions: { policy_version: 1, redacted_field_count: 0, omitted_sections: [], warnings: [] },
 };
 
 function StatusPill({ status }: { status: OfficeSourceStatus | string }) {
@@ -222,18 +268,88 @@ function mapFlowTone(health: OfficeMapFlow["health"]): string {
   return "text-sky-200/45";
 }
 
+function changeToneClass(tone: OfficeRecentChange["tone"]): string {
+  if (tone === "positive") return "border-emerald-300/40 bg-emerald-950/40 text-emerald-200";
+  if (tone === "negative") return "border-red-300/45 bg-red-950/40 text-red-200";
+  if (tone === "warning") return "border-yellow-300/45 bg-yellow-950/40 text-yellow-200";
+  return "border-sky-300/40 bg-sky-950/35 text-sky-200";
+}
+
+function changedFlowToneClass(tone: OfficeRecentChange["tone"]): string {
+  if (tone === "positive") return "text-emerald-100 drop-shadow-[0_0_6px_rgba(110,231,183,0.8)]";
+  if (tone === "negative") return "text-red-100 drop-shadow-[0_0_6px_rgba(252,165,165,0.8)]";
+  if (tone === "warning") return "text-yellow-100 drop-shadow-[0_0_6px_rgba(253,224,71,0.85)]";
+  return "text-sky-100 drop-shadow-[0_0_6px_rgba(125,211,252,0.75)]";
+}
+
+function routeToneClass(tone: ReturnType<typeof buildOfficeCharacterRoutes>[number]["tone"]): string {
+  if (tone === "danger") return "office-route-hint--danger";
+  if (tone === "warning") return "office-route-hint--warning";
+  return "office-route-hint--normal";
+}
+
+function routeMotionClass(motion: ReturnType<typeof buildOfficeCharacterRoutes>[number]["motion"]): string {
+  return motion === "alert" ? "office-route-hint--alert" : "office-route-hint--route";
+}
+
 function SceneObjectMarker({ object }: { object: OfficeSceneObject }) {
   const view = buildOfficeSceneObjectView(object);
+  const motion = buildOfficeSceneMotionTrack(object);
   return (
     <div
-      className={`pointer-events-none absolute z-20 flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center border text-[10px] font-bold shadow-md ring-1 ring-black/50 ${view.toneClass}`}
-      style={{ left: `${object.x}%`, top: `${object.y}%` }}
-      title={view.title}
+      className={`pointer-events-none absolute z-20 flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center border text-[10px] font-bold shadow-md ring-1 ring-black/50 ${motion.className} ${view.toneClass}`}
+      style={{ left: `${object.x}%`, top: `${object.y}%`, ...motion.style } as React.CSSProperties}
+      title={`${view.title} · ${motion.ariaLabel}`}
       aria-hidden={view.ariaHidden}
       data-office-scene-marker="true"
+      data-office-motion-label={motion.ariaLabel}
     >
       {view.glyph}
     </div>
+  );
+}
+
+function activityToneClass(tone: ReturnType<typeof buildOfficeCharacterActivity>["tone"]): string {
+  if (tone === "success") return "office-character__activity--success";
+  if (tone === "warning") return "office-character__activity--warning";
+  if (tone === "danger") return "office-character__activity--danger";
+  if (tone === "muted") return "office-character__activity--muted";
+  return "office-character__activity--normal";
+}
+
+function CharacterMarker({ character, latestDelta, onInspect }: { character: OfficeCharacter; latestDelta: OfficeStateDelta; onInspect: () => void }) {
+  const view = buildOfficeCharacterView(character);
+  const activity = buildOfficeCharacterActivity(character, latestDelta);
+  const inspector = buildOfficeCharacterInspector(character, latestDelta);
+  const object = buildOfficeCharacterSceneObjects([character])[0];
+  const motion = buildOfficeSceneMotionTrack(object);
+  return (
+    <button
+      type="button"
+      className={`office-character-inspect absolute z-[35] flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-0.5 ${motion.className}`}
+      style={{ left: `${character.x}%`, top: `${character.y}%`, ...motion.style } as React.CSSProperties}
+      title={`${view.safeTitle} · ${activity.label} · ${activity.reducedMotionLabel} · ${motion.ariaLabel}`}
+      aria-label={inspector.ariaLabel}
+      onClick={onInspect}
+      data-office-scene-marker="true"
+      data-office-character-role={character.role}
+      data-office-character-status={character.status}
+      data-office-character-activity={activity.id}
+      data-office-character-inspect="true"
+      data-office-motion-label={motion.ariaLabel}
+    >
+      <span className={view.bodyClassName} aria-hidden="true">
+        <span className="office-character__head" />
+        <span className="office-character__body" />
+        <span className={view.accessoryClassName}>{view.glyph}</span>
+        <span className="office-character__status-light" />
+      </span>
+      <span className="office-character__nameplate" aria-hidden="true">
+        <span>{view.nameplate}</span>
+        <span className="office-character__status-text">{view.statusLabel}</span>
+      </span>
+      <span className={`office-character__activity ${activityToneClass(activity.tone)}`} aria-hidden="true">{activity.label}</span>
+    </button>
   );
 }
 
@@ -247,14 +363,36 @@ const OFFICE_ZONE_PANELS: Array<{ id: OfficeMapNode["id"]; label: string; classN
 function OfficeMap({
   nodes,
   flows,
+  characters,
   sceneObjects,
+  latestDelta,
+  recentChanges,
+  usabilitySummary,
+  densityMode,
+  densityPlan,
+  jumpTargets,
+  onDensityModeChange,
   onInspect,
+  onInspectCharacter,
 }: {
   nodes: OfficeMapNode[];
   flows: OfficeMapFlow[];
+  characters: OfficeCharacter[];
   sceneObjects: OfficeSceneObject[];
+  latestDelta: OfficeStateDelta;
+  recentChanges: OfficeRecentChange[];
+  usabilitySummary: ReturnType<typeof buildOfficeUsabilitySummary>;
+  densityMode: OfficeMapDensityMode;
+  densityPlan: ReturnType<typeof buildOfficeMapDensityPlan>;
+  jumpTargets: ReturnType<typeof buildOfficeMapJumpTargets>;
+  onDensityModeChange: (mode: OfficeMapDensityMode) => void;
   onInspect: (node: OfficeMapNode) => void;
+  onInspectCharacter: (character: OfficeCharacter) => void;
 }) {
+  const changedFlowById = new Map(latestDelta.changedFlows.map((flow) => [`${flow.from}->${flow.to}`, flow]));
+  const characterRoutes = buildOfficeCharacterRoutes(latestDelta);
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+
   return (
     <Card>
       <CardHeader>
@@ -262,11 +400,49 @@ function OfficeMap({
           <MapPinned className="h-4 w-4" /> 오피스 맵
         </CardTitle>
         <div className="text-xs text-midground/55">
-          가려진 DTO 개수만으로 브라우저 안에서 그리는 CSS/SVG 평면도입니다. 픽셀 엔진, 새 의존성, 변경 제어는 없습니다.
+          모델/에이전트가 역할별 캐릭터로 배치되는 RPG 오피스 맵입니다. 캐릭터 움직임, 액션 칩, 방 사이 흐름 표식은 안전 DTO의 상태/개수/흐름만 반영하며, 캐릭터 살펴보기도 생성된 안전 필드만 보여줍니다.
         </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs" data-office-density-controls="true">
+          <span className="mr-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-midground/45">Stage 10-G 밀도</span>
+          {(["summary", "standard", "detail"] as const).map((mode) => {
+            const plan = buildOfficeMapDensityPlan(mode, characters);
+            return (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => onDensityModeChange(mode)}
+                className={`border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${densityMode === mode ? "border-emerald-300/60 text-emerald-200" : "border-current/20 text-midground/65 hover:text-foreground"}`}
+                aria-pressed={densityMode === mode}
+                data-office-density-mode={mode}
+              >
+                {plan.label}
+              </button>
+            );
+          })}
+          <span className="text-[10px] text-midground/50">{densityPlan.detail}</span>
+        </div>
+        <nav className="mt-2 flex flex-wrap items-center gap-2 text-xs" aria-label="오피스 맵 빠른 이동" data-office-jump-targets="true">
+          <span className="mr-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-midground/45">Stage 10-H 이동</span>
+          {jumpTargets.map((target) => (
+            <a
+              key={target.id}
+              href={`#${target.targetId}`}
+              className={`border px-2 py-1 text-[10px] font-semibold tracking-[0.12em] ${target.enabled ? "border-current/20 text-midground/70 hover:text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-200/70" : "pointer-events-none border-current/10 text-midground/35"}`}
+              aria-disabled={!target.enabled}
+              aria-label={`${target.label} 이동, ${target.detail}`}
+              data-office-jump-target={target.id}
+            >
+              {target.label}
+            </a>
+          ))}
+        </nav>
       </CardHeader>
       <CardContent>
-        <div className="relative min-h-[560px] overflow-hidden border border-current/20 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.16),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.055),rgba(0,0,0,0.20))] p-4 sm:min-h-[510px]">
+        <div
+          id="office-map-canvas"
+          tabIndex={-1}
+          className="relative min-h-[560px] scroll-mt-24 overflow-hidden border border-current/20 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.16),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.055),rgba(0,0,0,0.20))] p-4 focus:outline-none focus:ring-2 focus:ring-emerald-200/70 sm:min-h-[510px]"
+        >
           <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full text-midground/20" role="img" aria-label="읽기 전용 오피스 흐름 연결" viewBox="0 0 100 100" preserveAspectRatio="none">
             <defs>
               <marker id="office-map-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
@@ -278,6 +454,7 @@ function OfficeMap({
             {flows.map((flow) => {
               const from = nodes.find((node) => node.id === flow.from);
               const to = nodes.find((node) => node.id === flow.to);
+              const changedFlow = changedFlowById.get(`${flow.from}->${flow.to}`);
               if (!from || !to) return null;
               return (
                 <path
@@ -286,9 +463,10 @@ function OfficeMap({
                   fill="none"
                   stroke="currentColor"
                   strokeDasharray={flow.health === "ok" ? "" : "2 2"}
-                  strokeWidth="0.55"
+                  strokeWidth={changedFlow ? "0.95" : "0.55"}
                   markerEnd="url(#office-map-arrow)"
-                  className={mapFlowTone(flow.health)}
+                  aria-label={changedFlow ? `${flow.label} 최근 흐름 변경` : flow.label}
+                  className={`${mapFlowTone(flow.health)} ${changedFlow ? `${changedFlowToneClass(changedFlow.tone)} motion-safe:animate-pulse` : ""}`}
                 />
               );
             })}
@@ -299,36 +477,129 @@ function OfficeMap({
               <div className="absolute bottom-2 right-2 border border-current/10 bg-black/35 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.18em] text-midground/70">{zone.label}</div>
             </div>
           ))}
-          {sceneObjects.map((object) => (
-            <SceneObjectMarker key={object.id} object={object} />
-          ))}
-          {nodes.map((node) => (
-            <button
-              key={node.id}
-              type="button"
-              onClick={() => onInspect(node)}
-              aria-label={`${node.label} 오피스 맵 방, 안전 항목 ${node.count}개, 상태 ${HEALTH_LABEL[node.health]}`}
-              className={`absolute z-30 w-[min(9.25rem,42vw)] -translate-x-1/2 -translate-y-1/2 border p-2 text-left shadow-xl ring-1 ring-black/40 backdrop-blur-md transition hover:scale-[1.02] hover:border-current/70 focus:outline-none focus:ring-2 focus:ring-emerald-200/70 ${mapNodeTone(node.health)}`}
-              style={{ left: `${node.x}%`, top: `${node.y}%` }}
-            >
-              <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-current/70">{ZONE_LABEL[node.zone]}</div>
-              <div className="mt-1 flex items-center justify-between gap-3">
-                <span className="text-[13px] font-bold uppercase tracking-[0.14em]">{node.label}</span>
-                <span className="text-2xl font-bold">{node.count}</span>
+          {characterRoutes.map((route) => {
+            const from = nodeById.get(route.fromRoomId);
+            const to = nodeById.get(route.toRoomId);
+            if (!from || !to) return null;
+            return (
+              <div
+                key={route.id}
+                className={`office-route-hint ${routeToneClass(route.tone)} ${routeMotionClass(route.motion)}`}
+                style={{ left: `${(from.x + to.x) / 2}%`, top: `${(from.y + to.y) / 2}%` }}
+                title={`${route.detail} · ${route.reducedMotionLabel}`}
+                aria-hidden="true"
+                data-office-character-route={route.id}
+              >
+                <span className="office-route-hint__dot" />
+                <span className="office-route-hint__dot" />
+                <span className="office-route-hint__dot" />
+                <span className="office-route-hint__label">{route.label}</span>
               </div>
-              <div className="mt-2 text-[11px] leading-4 text-current/85">{node.detail}</div>
-              <div className="mt-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-current/75">{HEALTH_LABEL[node.health]}</div>
-            </button>
-          ))}
+            );
+          })}
+          {densityPlan.visibleCharacters.length > 0
+            ? densityPlan.visibleCharacters.map((character) => <CharacterMarker key={character.id} character={character} latestDelta={latestDelta} onInspect={() => onInspectCharacter(character)} />)
+            : sceneObjects.map((object) => <SceneObjectMarker key={object.id} object={object} />)}
+          {nodes.map((node) => {
+            const badges = latestDelta.nodeBadges[node.id] ?? [];
+            return (
+              <button
+                key={node.id}
+                type="button"
+                onClick={() => onInspect(node)}
+                aria-label={`${node.label} 오피스 맵 방, 안전 항목 ${node.count}개, 상태 ${HEALTH_LABEL[node.health]}${badges.length ? `, 최근 변화 ${badges.map((badge) => badge.label).join(" ")}` : ""}`}
+                className={`absolute z-30 w-[min(9.25rem,42vw)] -translate-x-1/2 -translate-y-1/2 border p-2 text-left shadow-xl ring-1 ring-black/40 backdrop-blur-md transition hover:scale-[1.02] hover:border-current/70 focus:outline-none focus:ring-2 focus:ring-emerald-200/70 ${mapNodeTone(node.health)}`}
+                style={{ left: `${node.x}%`, top: `${node.y}%` }}
+              >
+                <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-current/70">{ZONE_LABEL[node.zone]}</div>
+                <div className="mt-1 flex items-center justify-between gap-3">
+                  <span className="text-[13px] font-bold uppercase tracking-[0.14em]">{node.label}</span>
+                  <span className="text-2xl font-bold">{node.count}</span>
+                </div>
+                {badges.length ? (
+                  <div className="mt-2 flex flex-wrap gap-1" aria-label={`${node.label} 최근 변화 badge`}>
+                    {badges.map((badge) => (
+                      <span key={`${node.id}-${badge.label}-${badge.tone}`} className={`border px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.12em] ${changeToneClass(badge.tone)}`}>
+                        {badge.label}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="mt-2 text-[11px] leading-4 text-current/85">{node.detail}</div>
+                <div className="mt-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-current/75">{HEALTH_LABEL[node.health]}</div>
+              </button>
+            );
+          })}
           <div className="absolute bottom-4 left-4 right-4 z-40 border border-current/15 bg-black/50 p-3 text-xs leading-5 text-midground/80 shadow-lg backdrop-blur-sm">
             <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] uppercase tracking-[0.16em]">
-              {flows.map((flow) => (
-                <span key={`${flow.from}-${flow.to}`} className={mapFlowTone(flow.health)}>{flow.label} · {HEALTH_LABEL[flow.health]}</span>
-              ))}
+              {flows.map((flow) => {
+                const changedFlow = changedFlowById.get(`${flow.from}->${flow.to}`);
+                return (
+                  <span key={`${flow.from}-${flow.to}`} className={changedFlow ? changedFlowToneClass(changedFlow.tone) : mapFlowTone(flow.health)}>
+                    {flow.label} · {HEALTH_LABEL[flow.health]}{changedFlow ? " · 방금 변경" : ""}
+                  </span>
+                );
+              })}
             </div>
-            이 지도는 시각 인덱스입니다. 원문 프롬프트, 대화 기록, cron 스크립트, 작업 본문, 로그, 인증 정보, 비밀값은 브라우저 DTO 밖에 둡니다.
+            <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-semibold tracking-[0.14em] text-midground/75" aria-label="RPG 역할 범례">
+              <span>캐릭터 역할 투영</span>
+              <span>모델 ◇</span>
+              <span>작업자 ▤</span>
+              <span>검토자 ◎</span>
+              <span>자동화 ▣</span>
+              <span>전달 ✉</span>
+              <span>감시 ◈</span>
+              <span>경보 !</span>
+              <span>액션 칩: 작업 중/확인 필요</span>
+              <span>흐름 표식: 방금 변경</span>
+              <span>캐릭터 Enter: 안전 정보</span>
+            </div>
+            이 지도는 시각 인덱스입니다. 움직이는 캐릭터, 액션 칩, 방 사이 흐름 표식, 캐릭터 살펴보기는 안전 개수/상태/변화의 표시일 뿐이며 원문 프롬프트, 대화 기록, cron 스크립트, 작업 본문, 로그, 인증 정보, 비밀값은 브라우저 DTO 밖에 둡니다.
+            {densityPlan.hiddenCharacterCount > 0 ? <span className="ml-2 text-sky-200">현재 {densityPlan.label} 모드에서 캐릭터 {densityPlan.hiddenCharacterCount}개는 접혀 있습니다.</span> : null}
           </div>
         </div>
+        {densityPlan.showUsabilityRail ? (
+          <div id="office-map-usability" tabIndex={-1} className="mt-4 scroll-mt-24 border border-current/15 bg-black/15 p-3 focus:outline-none focus:ring-2 focus:ring-emerald-200/70" data-office-usability="true">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-midground/70">Stage 10-F 사용성 점검</div>
+            <div className="text-[10px] uppercase tracking-[0.16em] text-midground/45">안전 DTO · 로컬 표시</div>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+            {usabilitySummary.items.map((item) => (
+              <div key={item.id} className={`border p-2 text-xs ${changeToneClass(item.tone)}`} data-office-usability-item={item.id}>
+                <div className="font-semibold text-current">{item.label}</div>
+                <div className="mt-1 text-current/70">{item.detail}</div>
+              </div>
+            ))}
+          </div>
+          </div>
+        ) : null}
+        {densityPlan.showRecentRail ? (
+          <div id="office-map-recent" tabIndex={-1} className="mt-4 scroll-mt-24 border border-current/15 bg-black/15 p-3 focus:outline-none focus:ring-2 focus:ring-emerald-200/70">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-midground/70">최근 변화</div>
+            <div className="text-[10px] uppercase tracking-[0.16em] text-midground/45">브라우저 메모리 · 안전 delta</div>
+          </div>
+          {recentChanges.length === 0 ? (
+            <div className="border border-dashed border-current/15 bg-black/10 p-3 text-xs text-midground/60">
+              아직 비교할 이전 스냅샷이 없습니다. 새로고침 후 안전 개수와 상태 변화만 여기에 표시됩니다.
+            </div>
+          ) : (
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3" aria-live="polite">
+              {recentChanges.map((change) => (
+                <div key={change.id} className={`border p-2 text-xs ${changeToneClass(change.tone)}`}>
+                  <div className="font-semibold text-current">{change.label}</div>
+                  <div className="mt-1 text-current/70">{change.detail}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          </div>
+        ) : (
+          <div id="office-map-recent-collapsed" tabIndex={-1} className="mt-4 scroll-mt-24 border border-current/15 bg-black/10 p-3 text-xs text-midground/60 focus:outline-none focus:ring-2 focus:ring-emerald-200/70" data-office-recent-collapsed="true">
+            요약 모드에서는 최근 변화 rail을 접습니다. 안전 delta는 브라우저 메모리에만 유지되며 표준/상세 모드에서 다시 보입니다.
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -378,7 +649,7 @@ function LimitedRows<T>({
 
 function InspectorPanel({ selection }: { selection: InspectorSelection | null }) {
   return (
-    <Card>
+    <Card id="office-safe-inspector" tabIndex={-1} className="scroll-mt-24 focus:outline-none focus:ring-2 focus:ring-emerald-200/70">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <Eye className="h-4 w-4" /> 안전 정보 살펴보기
@@ -420,27 +691,47 @@ export default function OfficePage() {
   const [error, setError] = useState<string | null>(null);
   const [focus, setFocus] = useState<FocusOption>("overview");
   const [selection, setSelection] = useState<InspectorSelection | null>(null);
+  const [latestDelta, setLatestDelta] = useState<OfficeStateDelta>(EMPTY_STATE_DELTA);
+  const [recentChanges, setRecentChanges] = useState<OfficeRecentChange[]>([]);
+  const [liveTracking, setLiveTracking] = useState(false);
+  const [densityMode, setDensityMode] = useState<OfficeMapDensityMode>("standard");
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState<number | undefined>(undefined);
+  const previousStateRef = useRef<OfficeState | null>(null);
+  const liveFailureCountRef = useRef(0);
+
+  const applyNextState = useCallback((next: OfficeState) => {
+    const delta = buildOfficeStateDelta(previousStateRef.current, next);
+    setLatestDelta(delta);
+    if (delta.hasChanges) {
+      setRecentChanges((current) => mergeOfficeRecentChanges(delta.recentChanges, current, CHANGE_LIMIT));
+    }
+    previousStateRef.current = next;
+    setState(next);
+  }, []);
 
   const load = useCallback(async () => {
     setRefreshing(true);
     setError(null);
     try {
       const next = await api.getOfficeState();
-      setState(next);
+      applyNextState(next);
+      return true;
     } catch (err) {
       setError(String(err));
+      return false;
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [applyNextState]);
 
   useEffect(() => {
     let cancelled = false;
     api
       .getOfficeState()
       .then((next) => {
-        if (!cancelled) setState(next);
+        if (!cancelled) applyNextState(next);
       })
       .catch((err) => {
         if (!cancelled) setError(String(err));
@@ -451,7 +742,56 @@ export default function OfficePage() {
     return () => {
       cancelled = true;
     };
+  }, [applyNextState]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const updateMotion = () => setPrefersReducedMotion(media.matches);
+    const updateViewport = () => setViewportWidth(window.innerWidth);
+    updateMotion();
+    updateViewport();
+    media.addEventListener("change", updateMotion);
+    window.addEventListener("resize", updateViewport);
+    return () => {
+      media.removeEventListener("change", updateMotion);
+      window.removeEventListener("resize", updateViewport);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!liveTracking) return undefined;
+    let cancelled = false;
+    let timeoutId: number | undefined;
+
+    const schedule = () => {
+      if (cancelled) return;
+      const isVisible = typeof document === "undefined" ? true : !document.hidden;
+      const delay = resolveOfficeLiveTrackingInterval({
+        isVisible,
+        consecutiveFailures: liveFailureCountRef.current,
+      });
+      timeoutId = window.setTimeout(() => {
+        void load().then((ok) => {
+          liveFailureCountRef.current = ok ? 0 : liveFailureCountRef.current + 1;
+          schedule();
+        });
+      }, delay);
+    };
+
+    const reschedule = () => {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      schedule();
+    };
+
+    schedule();
+    document.addEventListener("visibilitychange", reschedule);
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      document.removeEventListener("visibilitychange", reschedule);
+    };
+  }, [liveTracking, load]);
 
   const inspectRecord = useCallback((kind: string, title: string, fields: Array<[string, string]>) => {
     setSelection({ kind, title, fields });
@@ -460,18 +800,22 @@ export default function OfficePage() {
   const needsAttention = useMemo(() => (state ? buildOfficeAttentionItems(state) : []), [state]);
   const mapNodes = useMemo(() => (state ? buildOfficeMapNodes(state) : []), [state]);
   const mapFlows = useMemo(() => buildOfficeMapFlows(mapNodes), [mapNodes]);
-  const sceneObjects = useMemo(() => (state ? buildOfficeSceneObjects(state, mapNodes) : []), [state, mapNodes]);
+  const officeCharacters = useMemo(() => (state ? buildOfficeCharacters(state, mapNodes) : []), [state, mapNodes]);
+  const densityPlan = useMemo(() => buildOfficeMapDensityPlan(densityMode, officeCharacters), [densityMode, officeCharacters]);
+  const jumpTargets = useMemo(() => buildOfficeMapJumpTargets(densityPlan), [densityPlan]);
+  const fallbackSceneObjects = useMemo(() => (state ? buildOfficeSceneObjects(state, mapNodes) : []), [state, mapNodes]);
+  const sceneObjects = useMemo(() => {
+    const characterSceneObjects = buildOfficeCharacterSceneObjects(officeCharacters);
+    return characterSceneObjects.length > 0 ? characterSceneObjects : fallbackSceneObjects;
+  }, [fallbackSceneObjects, officeCharacters]);
+  const sourceHealth = useMemo(() => (state ? buildOfficeSourceHealthSummary(state) : buildOfficeSourceHealthSummary({ ...EMPTY_OFFICE_STATE })), [state]);
+  const usabilitySummary = useMemo(
+    () => (state ? buildOfficeUsabilitySummary(state, officeCharacters, { reducedMotion: prefersReducedMotion, viewportWidth }) : buildOfficeUsabilitySummary({ ...EMPTY_OFFICE_STATE }, [], { reducedMotion: prefersReducedMotion, viewportWidth })),
+    [officeCharacters, prefersReducedMotion, state, viewportWidth],
+  );
+  const emptyHints = useMemo(() => buildOfficeEmptyStateHints(), []);
 
-  const sourceCounts = useMemo(() => {
-    if (!state) return { ok: 0, partial: 0, missing: 0, unavailable: 0, error: 0 };
-    return state.data_sources.reduce<Record<OfficeSourceStatus, number>>(
-      (acc, source) => {
-        acc[source.status] += 1;
-        return acc;
-      },
-      { ok: 0, partial: 0, missing: 0, unavailable: 0, error: 0 },
-    );
-  }, [state]);
+  const sourceCounts = sourceHealth.counts;
 
   const workGroups = useMemo(() => (state ? groupByText(state.work_items, "status", "unknown") : {}), [state]);
   const automationGroups = useMemo(() => (state ? groupByText(state.automations, "state", "unknown") : {}), [state]);
@@ -547,6 +891,21 @@ export default function OfficePage() {
             <Button onClick={load} className="mt-4 w-full gap-2 uppercase" disabled={refreshing}>
               <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} /> 새로고침
             </Button>
+            <button
+              type="button"
+              onClick={() => {
+                liveFailureCountRef.current = 0;
+                setLiveTracking((value) => !value);
+              }}
+              className="mt-2 flex w-full items-center justify-center gap-2 border border-current/20 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-midground/80 hover:text-foreground"
+            >
+              <Activity className={`h-4 w-4 ${liveTracking ? "text-emerald-300" : "text-midground/60"}`} /> {liveTracking ? "실시간 추적 일시정지" : "실시간 추적 켜기"}
+            </button>
+            <div className="mt-2 text-[10px] leading-4 text-midground/50">
+              {liveTracking
+                ? `브라우저에서만 ${OFFICE_LIVE_TRACKING_BASE_INTERVAL_MS / 1000}초마다 안전 DTO를 다시 읽습니다. 탭이 숨겨지거나 실패가 반복되면 60–120초로 늦춥니다. cron/gateway/backend 작업은 건드리지 않습니다.`
+                : "기본은 수동 새로고침입니다. 실시간 추적은 이 브라우저 탭에서만 켜집니다."}
+            </div>
           </div>
         </div>
       </div>
@@ -562,7 +921,15 @@ export default function OfficePage() {
         <OfficeMap
           nodes={mapNodes}
           flows={mapFlows}
+          characters={officeCharacters}
           sceneObjects={sceneObjects}
+          latestDelta={latestDelta}
+          recentChanges={recentChanges}
+          usabilitySummary={usabilitySummary}
+          densityMode={densityMode}
+          densityPlan={densityPlan}
+          jumpTargets={jumpTargets}
+          onDensityModeChange={setDensityMode}
           onInspect={(node) => inspectRecord("오피스 맵 방", node.label, [
             ["방", node.id],
             ["구역", node.zone],
@@ -570,6 +937,10 @@ export default function OfficePage() {
             ["상태", node.health],
             ["설명", node.detail],
           ])}
+          onInspectCharacter={(character) => {
+            const inspector = buildOfficeCharacterInspector(character, latestDelta);
+            inspectRecord(inspector.kind, inspector.title, inspector.fields);
+          }}
         />
       ) : null}
 
@@ -582,9 +953,16 @@ export default function OfficePage() {
           </CardHeader>
           <CardContent>
             <div className="mb-4 flex flex-wrap gap-2 text-xs">
+              <span className={`border px-2 py-1 ${changeToneClass(sourceHealth.tone)}`}>{sourceHealth.label} · {sourceHealth.detail}</span>
+              {sourceHealth.missingSourceIds.length > 0 ? (
+                <span className="border border-sky-400/25 px-2 py-1 text-sky-200">미보고 소스 {sourceHealth.missingSourceIds.join(" · ")}</span>
+              ) : null}
+            </div>
+            <div className="mb-4 flex flex-wrap gap-2 text-xs">
               <span className="border border-emerald-400/30 px-2 py-1 text-emerald-300">정상 {sourceCounts.ok}</span>
               <span className="border border-yellow-400/30 px-2 py-1 text-yellow-300">부분 연결 {sourceCounts.partial}</span>
               <span className="border border-sky-400/30 px-2 py-1 text-sky-300">미연결 {sourceCounts.missing}</span>
+              <span className="border border-zinc-400/30 px-2 py-1 text-zinc-300">사용 불가 {sourceCounts.unavailable}</span>
               <span className="border border-red-400/30 px-2 py-1 text-red-300">오류 {sourceCounts.error}</span>
             </div>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -638,7 +1016,7 @@ export default function OfficePage() {
             <div className="grid gap-6 xl:grid-cols-2">
               <MiniList title="방 / 작업 흐름" icon={<Building2 className="h-4 w-4" />} meta="묶어서 보기 위한 화면일 뿐, 방이 원본 데이터는 아닙니다.">
                 {state.rooms.length === 0 ? (
-                  <EmptyLine label="방" hint="아직 칸반/토픽/시스템 방 투영이 없습니다. 방이 없다는 것이 작업이 비었다는 뜻은 아닙니다." />
+                  <EmptyLine label="방" hint={emptyHints.rooms} />
                 ) : (
                   <LimitedRows rows={state.rooms} label="방">
                     {(room) => (
@@ -660,7 +1038,7 @@ export default function OfficePage() {
 
               <MiniList title="세션 / 에이전트" icon={<Bot className="h-4 w-4" />} meta="세션 제목과 미리보기는 별도 허용 전까지 가립니다.">
                 {state.agents.length === 0 ? (
-                  <EmptyLine label="세션 메타데이터" hint="이번 스냅샷에서 세션 어댑터가 안전 메타데이터를 제공하지 않았습니다." />
+                  <EmptyLine label="세션 메타데이터" hint={emptyHints.agents} />
                 ) : (
                   <LimitedRows rows={state.agents} label="세션">
                     {(agent) => (
@@ -686,7 +1064,7 @@ export default function OfficePage() {
           {showWork ? (
             <MiniList title="작업 항목" icon={<MapPinned className="h-4 w-4" />} meta="안전 상태별로 묶어 보여줍니다. 본문/결과/댓글/로그는 제외합니다.">
               {state.work_items.length === 0 ? (
-                <EmptyLine label="작업 항목" hint="승인된 어댑터가 작업 카드를 보고하지 않았습니다. 외부 보드가 모두 비었다는 뜻은 아닙니다." />
+                <EmptyLine label="작업 항목" hint={emptyHints.workItems} />
               ) : Object.entries(workGroups).map(([status, items]) => (
                 <GroupBlock key={status} title={status} count={items.length}>
                   <LimitedRows rows={items} label="작업 항목">
@@ -713,7 +1091,7 @@ export default function OfficePage() {
           {showAutomation ? (
             <MiniList title="자동화" icon={<Clock className="h-4 w-4" />} meta="작업 상태별로 묶어 보여줍니다. 실행/일시정지/재개/삭제 제어는 없습니다.">
               {state.automations.length === 0 ? (
-                <EmptyLine label="자동화" hint="이번 스냅샷에서 읽기 전용 어댑터가 cron 스타일 작업을 제공하지 않았습니다." />
+                <EmptyLine label="자동화" hint={emptyHints.automations} />
               ) : Object.entries(automationGroups).map(([jobState, jobs]) => (
                 <GroupBlock key={jobState} title={jobState} count={jobs.length}>
                   <LimitedRows rows={jobs} label="자동화">
@@ -743,7 +1121,7 @@ export default function OfficePage() {
             <div className="grid gap-6 xl:grid-cols-2">
               <MiniList title="토픽 라우팅" icon={<Route className="h-4 w-4" />} meta="읽기 전용 라우팅 투영입니다. 모르는 출처는 그대로 명시합니다.">
                 {state.topics.length === 0 ? (
-                  <EmptyLine label="토픽 라우팅 기록" hint="승인된 토픽 레지스트리/투영이 연결되어 있지 않습니다. UI 오류가 아니라 알려진 소스 공백입니다." />
+                  <EmptyLine label="토픽 라우팅 기록" hint={emptyHints.topics} />
                 ) : (
                   <LimitedRows rows={state.topics} label="토픽">
                     {(topic) => (
@@ -806,7 +1184,7 @@ export default function OfficePage() {
               </CardHeader>
               <CardContent>
                 {state.events.length === 0 ? (
-                  <EmptyLine label="이벤트" hint="이번 스냅샷에서 안전 시간표가 생성되지 않았습니다. 원문 로그와 대화 기록은 설계상 숨깁니다." />
+                  <EmptyLine label="이벤트" hint={emptyHints.events} />
                 ) : (
                   <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                     <LimitedRows rows={state.events} limit={EVENT_LIMIT} label="events">

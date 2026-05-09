@@ -75,6 +75,7 @@ export const en: Translations = {
       keys: "Keys",
       logs: "Logs",
       models: "Models",
+      office: "Office",
       profiles: "profiles : multi agents",
       plugins: "Plugins",
       sessions: "Sessions",

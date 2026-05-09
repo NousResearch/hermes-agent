@@ -1,19 +1,21 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
-import { en } from "./en";
+import { ko } from "./ko";
 import { zh } from "./zh";
 
-const TRANSLATIONS: Record<Locale, Translations> = { en, zh };
+const TRANSLATIONS: Record<Locale, Translations> = { ko, zh };
 const STORAGE_KEY = "hermes-locale";
 
 function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "en" || stored === "zh") return stored;
+    if (stored === "zh") return "zh";
+    // Migrate older English/default locale to Korean-first chrome.
+    if (stored === "en" || stored === "ko") return "ko";
   } catch {
     // SSR or privacy mode
   }
-  return "en";
+  return "ko";
 }
 
 interface I18nContextValue {
@@ -23,9 +25,9 @@ interface I18nContextValue {
 }
 
 const I18nContext = createContext<I18nContextValue>({
-  locale: "en",
+  locale: "ko",
   setLocale: () => {},
-  t: en,
+  t: ko,
 });
 
 export function I18nProvider({ children }: { children: ReactNode }) {

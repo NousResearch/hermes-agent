@@ -1,6 +1,6 @@
 # Hermes AI Office — NEXT
 
-Last updated: 2026-05-09 08:45 KST
+Last updated: 2026-05-09 12:15 KST
 
 ## Start here after `/new`
 
@@ -64,7 +64,7 @@ When not to rely on `/goal` alone:
 
 ## Current next stage
 
-Stage 9-E Korean-first readability pass is in progress on top of Stage 9-D and the Stage 8 read-only dashboard. Stage 8-A/B/C and Stage 9-A/B/C/D remain completed and verified.
+Stage 9-E Korean-first readability pass, Stage 9-F browser-local dynamic tracking through Stage 9-F4, Stage 9-G fixture/source-health hardening, Stage 9-I DeskRPG-like CSS marker motion, Stage 10-A RPG character projection, Stage 10-B CSS/SVG character presentation, Stage 10-C safe role action chips, Stage 10-D room-to-room RPG route choreography, Stage 10-E safe character inspector, Stage 10-F usability hardening, Stage 10-G density/readability modes, and Stage 10-H keyboard jump targets are implemented on top of Stage 9-D and the Stage 8 read-only dashboard. Stage 8-A/B/C and Stage 9-A/B/C/D remain completed and verified.
 
 
 Stage 9-E current implementation:
@@ -73,7 +73,29 @@ Stage 9-E current implementation:
 - Technical identifiers remain visible where useful: DTO, OfficeState, source IDs, cron, IDs, and adapter-emitted status strings.
 - Planning note for the next dynamic/tracking pass: `docs/ai-office/plans/2026-05-09-koreanization-and-dynamic-map.md`.
 
-Recommended next implementation stage: Stage 9-F dynamic office-map tracking. Start with a pure helper test for safe deltas, then add room change chips and a `최근 변화` rail. Keep it read-only/browser-local and never diff raw records.
+Stage 9-F current implementation:
+
+- `buildOfficeStateDelta(previous, next)` compares only safe browser-local counts/statuses and attention count.
+- Office-map room cards now show last-refresh `+N`, `-N`, and `상태 변경` badges.
+- The map card now has a compact `최근 변화` rail backed by a small duplicate-collapsed in-memory ring buffer.
+- Stage 9-F3 adds safe flow-level change hints plus `방금 변경` text in the flow legend.
+- Stage 9-F3 adds explicit browser-tab-local live controls: `실시간 추적 켜기` and `실시간 추적 일시정지`, polling the same read-only OfficeState endpoint every 30 seconds only while enabled.
+- Stage 9-F4 adds automation next-run timing buckets (`overdue`, `<15m`, `<1h`, `today`, `later`, `unknown`) and emits safe `일정 변경` / `자동화 다음 실행 ...` deltas.
+- Stage 9-F4 changes live tracking from fixed interval to browser-local adaptive timeouts: visible/no failures 30 seconds, hidden or one failure 60 seconds, repeated failures 120 seconds.
+- Stage 9-G adds source-health summary and centralized empty-state hints, including explicit `사용 불가` source counts and safe missing-source labels.
+- Stage 9-I adds DeskRPG-like CSS marker motion: safe scene markers now walk/idle/blink with reduced-motion fallback, no renderer dependency, no sprite assets, and no DeskRPG code/assets.
+- Stage 10-A adds RPG character projection: `OfficeCharacter`, `buildOfficeCharacters(state, nodes)`, and `buildOfficeCharacterSceneObjects(characters)` turn safe DTO counts/status/source health into generic Korean role characters (`모델 캐릭터`, `작업자`, `자동화 관리인`, `전달자`, `감시자`, `경보 담당`) before rendering markers.
+- Stage 10-B adds original CSS/SVG-like character presentation: `OfficeCharacterView` and `buildOfficeCharacterView(character)` produce safe role glyphs, Korean nameplates/status labels, and CSS classes; `OfficeCharacterMarker` renders layered head/body/accessory/status-light shapes with `data-office-character-role` smoke hooks.
+- Stage 10-C adds safe action chips: `OfficeCharacterActivity` and `buildOfficeCharacterActivity(character, delta)` derive Korean labels such as `생각 중`, `예약 대기`, `확인 필요`, and `막힘` from role/status plus room/flow deltas only; `OfficeCharacterMarker` exposes `data-office-character-activity` for smoke testing.
+- Stage 10-D adds room-to-room RPG route choreography: `OfficeCharacterRoute` and `buildOfficeCharacterRoutes(delta)` derive only from `OfficeStateDelta.changedFlows`, render decorative route hints with static `흐름 변경` labels, and disable route animations under reduced motion.
+- Stage 10-E adds safe character inspection: `OfficeCharacterInspector` and `buildOfficeCharacterInspector(character, delta)` generate keyboard/ARIA-friendly inspector fields (`캐릭터`, `역할`, `방`, `상태`, `액션`, `최근 안전 변화`, `가림`) from role/status/safe delta only; character buttons expose `data-office-character-inspect`.
+- Stage 10-F adds usability hardening: `OfficeUsabilitySummary` and `buildOfficeUsabilitySummary(state, characters, options)` surface dense-state aggregation, missing/partial source fallback, reduced-motion static meaning, responsive layout posture, and Korean-first copy in a safe map rail with `data-office-usability` smoke hooks.
+- Stage 10-G adds local density/readability modes: `OfficeMapDensityMode`, `OfficeMapDensityPlan`, and `buildOfficeMapDensityPlan(mode, characters)` derive 요약/표준/상세 display plans, cap visible generated characters, expose `data-office-density-controls`, and fold the recent-change rail only in 요약 mode.
+- Stage 10-H adds safe keyboard jump targets: `OfficeMapJumpTarget` and `buildOfficeMapJumpTargets(densityPlan)` expose 지도/사용성/최근 변화/안전 정보 quick links with stable focusable section anchors and summary-mode collapsed recent rail targeting.
+- First snapshots produce no fabricated history; manual refresh remains the default.
+- Planning note expanded: `docs/ai-office/plans/2026-05-09-koreanization-and-dynamic-map.md`.
+
+Recommended next implementation/design stage: Stage 11 decision planning, or a very small responsive smoke documentation pass, should decide whether the current CSS/SVG RPG office is enough before opening the separate renderer decision gate. Do not expose individual task identity, generate content-like speech bubbles, add character mutation targets, or add Phaser, PixiJS, canvas, sprite assets, DeskRPG code/assets, backend/schema/API changes, mutation controls, persistent storage, or raw record projection. Stage 11 remains the separate renderer decision gate.
 
 Stage 9-D completed:
 
@@ -111,11 +133,11 @@ Browser smoke: http://127.0.0.1:8765/office
 
 Immediate next action should remain a product/UX decision point, not a control-plane expansion:
 
-1. Stage 8-D hardening: add frontend fixtures for empty/error/loading/source-health states and consider lightweight visual regression/screenshot smoke for `/office`.
-2. Stage 9-D follow-up fixtures: add small-screen/responsive fixtures and partial/error/missing scene-object examples if needed.
-3. Stage 9-E optional UX polish: only if desired, refine zone labels or add reduced-motion/a11y notes without changing DTOs or adding dependencies.
-4. Renderer research: only after separate dependency/licensing/security/accessibility review, decide whether Phaser/PixiJS is worth the bundle/maintenance cost.
-5. Do not add mutation controls, expose dashboard remotely, add Pixi/Phaser, copy DeskRPG assets/code, create/edit topic registry data, or create/modify Kanban/Cron state without separate approval.
+1. Stage 11 decision planning: decide whether CSS/SVG remains enough or whether the separate renderer gate is worth opening.
+2. Visual smoke documentation: optionally capture desktop/small-screen office-map smoke notes now that density controls, jump targets, usability rail, and inspector affordance are visible.
+3. Test-harness review: consider React DOM coverage for polling cleanup/pause behavior only if adding/standardizing that harness is separately approved.
+4. Renderer research: only after Stage 10-D/E/F prove CSS/SVG is insufficient and after separate dependency/licensing/security/accessibility review, decide whether Phaser/PixiJS is worth the bundle/maintenance cost.
+5. Do not add mutation controls, expose dashboard remotely, add Pixi/Phaser/canvas, copy DeskRPG assets/code, create/edit topic registry data, or create/modify Kanban/Cron state without separate approval.
 
 Completed Stage 6 files:
 

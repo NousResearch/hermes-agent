@@ -1,4 +1,4 @@
-export type Locale = "en" | "zh";
+export type Locale = "ko" | "zh";
 
 export interface Translations {
   // ── Common ──
@@ -75,6 +75,7 @@ export interface Translations {
       keys: string;
       logs: string;
       models: string;
+      office: string;
       profiles: string;
       plugins: string;
       sessions: string;

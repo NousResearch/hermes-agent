@@ -1,22 +1,584 @@
 # Hermes AI Office — STATUS
 
-Last updated: 2026-05-09 08:45 KST
+Last updated: 2026-05-09 12:25 KST
 
 ## Current phase
 
-Stage 9-E Korean-first readability pass is in progress on top of the Stage 9-D polished CSS/SVG 2D office map. Stage 8-A/B/C and Stage 9-A/B/C/D remain completed and verified.
+Stage 9-E Korean-first readability pass, Stage 9-F browser-local dynamic tracking through Stage 9-F4, Stage 9-G fixture/source-health hardening, Stage 9-I DeskRPG-like CSS marker motion, Stage 10-A RPG character projection, Stage 10-B CSS/SVG character presentation, Stage 10-C safe role action chips, Stage 10-D room-to-room RPG route choreography, Stage 10-E safe character inspector, Stage 10-F usability hardening, Stage 10-G density/readability modes, and Stage 10-H keyboard jump targets are implemented on top of the Stage 9-D polished CSS/SVG 2D office map. Stage 8-A/B/C and Stage 9-A/B/C/D remain completed and verified.
 
 Current Stage 9-E result: the `/office` page now uses Korean for primary headings, buttons, helper text, safety copy, status labels, inspector field labels, and office-map room/zone labels while keeping stable technical identifiers such as DTO, OfficeState, source IDs, cron, and enum-like adapter values visible for debugging.
 
-Next phase: Stage 9-F dynamic office-map tracking should compare only safe browser-local counts/status deltas, then render room change chips and a compact recent-change rail. A renderer dependency review remains separate and unapproved.
+Current Stage 9-F result: `buildOfficeStateDelta(previous, next)` now compares only browser-local safe counts/statuses and produces room `+N`/`-N`/`상태 변경`/`일정 변경` badges, safe flow-level change hints, automation next-run timing-bucket deltas, duplicate-collapsed compact `최근 변화` rail entries, and an explicit browser-local `실시간 추적 켜기` / `실시간 추적 일시정지` toggle with visibility/failure backoff. First snapshots produce no fabricated history; the ring buffer stays in browser memory only; default remains manual refresh.
+
+Current Stage 9-G hardening result: source-health summary and empty-state hint helpers now make source gaps explicit without reading raw adapter errors; the `/office` page shows a compact Korean source-health summary, counts `사용 불가`, and uses central safe empty-state copy for rooms, sessions, work, automations, topics, and events. Empty office-map fixtures remain resilient with four stable rooms, missing flows, and decorative safe scene objects.
+
+Current Stage 9-I motion result: the 2D office map now has dependency-free CSS marker motion so it no longer feels like a static snapshot. Safe scene markers get deterministic walk/idle/blink tracks via `buildOfficeSceneMotionTrack(object)`, normal-motion browsers animate the decorative markers, and `prefers-reduced-motion` disables the animation. Markers remain non-interactive and pointer-events disabled; room buttons remain the accessible interaction targets.
+
+Current Stage 10-A result: `/office` now projects safe DTO counts/statuses into RPG-style role characters before rendering scene markers. `OfficeCharacter`, `buildOfficeCharacters(state, nodes)`, and `buildOfficeCharacterSceneObjects(characters)` turn models/agents into generic Korean characters such as `모델 캐릭터 1`, work into `작업자`, automations into `자동화 관리인`, routing gaps into `전달자`, source issues into `감시자`, and blocked/error attention into `경보 담당`. The map now prefers character scene objects when available, keeps markers decorative/non-interactive, and includes Korean RPG role legend/copy.
+
+Current Stage 10-B result: `/office` now renders those characters as original CSS/SVG-like layered silhouettes instead of simple glyph boxes. `OfficeCharacterView` and `buildOfficeCharacterView(character)` produce safe role glyphs, Korean nameplates/status labels, CSS classes, and titles; `OfficeCharacterMarker` renders head/body/accessory/status-light/nameplate layers with `data-office-character-role` smoke hooks. This remains CSS-only, asset-free, decorative, and non-interactive.
+
+Current Stage 10-C result: `/office` now adds safe role action chips to each character. `OfficeCharacterActivity` and `buildOfficeCharacterActivity(character, delta)` map safe role/status and room/flow deltas into action labels such as `생각 중`, `예약 대기`, `확인 필요`, `막힘`, and `확인 불가`; `OfficeCharacterMarker` renders the chip and exposes `data-office-character-activity`. The chips are not speech bubbles and do not imply hidden thoughts or raw work content.
+
+Current Stage 10-D result: `/office` now adds safe room-to-room route choreography when `OfficeStateDelta.changedFlows` is present. `OfficeCharacterRoute` and `buildOfficeCharacterRoutes(delta)` produce generated Korean `흐름 변경` route hints/details from known room IDs only; decorative route dots animate in normal motion and stop under `prefers-reduced-motion` while the static label remains visible.
+
+Current Stage 10-E result: `/office` character markers are now keyboard/click inspect affordances. `OfficeCharacterInspector` and `buildOfficeCharacterInspector(character, delta)` generate safe inspector fields (`캐릭터`, `역할`, `방`, `상태`, `액션`, `최근 안전 변화`, `가림`) from generated role/status/action labels and safe room/flow delta only. Character buttons expose Korean ARIA labels and `data-office-character-inspect` for smoke tests.
+
+Current Stage 10-F result: `/office` now includes a safe usability hardening rail below the map. `OfficeUsabilitySummary` and `buildOfficeUsabilitySummary(state, characters, options)` summarize dense character aggregation, missing/partial source fallback, reduced-motion state, responsive layout posture, and Korean-first copy using only safe DTO counts/statuses plus browser-local viewport/motion preferences. The map renders `data-office-usability` and per-item smoke hooks without raw record projection.
+
+Current Stage 10-G result: `/office` now has local map-density/readability modes. `OfficeMapDensityMode`, `OfficeMapDensityPlan`, and `buildOfficeMapDensityPlan(mode, characters)` derive 요약/표준/상세 display plans from generated safe characters only. The UI exposes `data-office-density-controls`/`data-office-density-mode`, caps visible characters in 요약/표준 modes, shows a safe folded-character count, and folds the recent-change rail in 요약 mode without persistent storage.
+
+Current Stage 10-H result: `/office` now exposes safe keyboard jump targets for the RPG office map. `OfficeMapJumpTarget` and `buildOfficeMapJumpTargets(densityPlan)` generate Korean anchors for 지도/사용성/최근 변화/안전 정보, with the recent target adapting to 요약 mode's collapsed rail. The UI renders `data-office-jump-targets` / `data-office-jump-target`, adds stable focusable section anchors, and keeps all jumps read-only/browser-local.
+
+Next phase: proceed to Stage 11 decision planning or stop at the current CSS/SVG RPG dashboard unless further readability gaps appear. Still no individual task identity, generated content-like speech bubbles, sprite assets, Phaser, PixiJS, canvas renderer, backend/API changes, mutation controls, persistent storage, or raw record projection. Stage 11 remains the separate renderer decision gate.
 
 Stage 6 slices were approved by the user, including proceeding through the recommended remaining slices. Stage 7 was approved with testing deferred until the end. Stage 8-A was approved as the next safe step by the user saying to proceed in order, and the user then requested items 1 through 3 to run automatically in sequence. The user also approved installing missing test/runtime extras as needed in earlier setup. No gateway restart, cron change, Kanban mutation, NAS/Obsidian write, service/config mutation, memory/skill update, pixel dependency, or mutation-control implementation has been performed. The local dashboard process was restarted only to smoke-test the newly built local frontend bundle.
 
+## Stage 10-H keyboard jump targets implemented
 
+Implemented files/changes:
 
+- `web/src/pages/officeView.ts`
+  - Added `OfficeMapJumpTarget`.
+  - Added `buildOfficeMapJumpTargets(densityPlan)` for safe 지도/사용성/최근 변화/안전 정보 jump targets.
+  - Recent-change target adapts to 요약 mode by pointing to the collapsed recent rail.
+- `web/src/pages/OfficePage.tsx`
+  - Added `Stage 10-H 이동` quick links with `data-office-jump-targets` and per-target smoke hooks.
+  - Added stable focusable anchors: `office-map-canvas`, `office-map-usability`, `office-map-recent`, `office-map-recent-collapsed`, and `office-safe-inspector`.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN coverage for keyboard jump target labels, target IDs, density-aware recent rail behavior, and raw-term exclusion.
 
+Safety notes:
 
-## Stage 9-E Korean-first readability pass in progress
+- Stage 10-H does not add backend/API/schema changes, mutation controls, browser persistence, renderer dependencies, sprite assets, or DeskRPG code/assets.
+- It does not inspect raw prompts, transcripts, task bodies, cron scripts, logs, auth fields, secrets, or individual task identities.
+
+Verification 2026-05-09 12:25 KST:
+
+- RED verified first: Stage 10-H test failed because `buildOfficeMapJumpTargets` did not exist.
+- Focused frontend tests/lint/build passed: `OfficePage.test.ts` 26 passed; existing Vite large chunk warning remains.
+- Backend focused office tests passed: `18 passed in 1.06s`; `git diff --check` passed.
+- Browser smoke `/office?stage10h=jumps`: `data-office-jump-targets=true`, 4 jump targets, stable focus anchors present, raw leak regex false, 요약 mode switches recent target to `#office-map-recent-collapsed` and shows 6 character buttons, console JS errors none.
+
+## Stage 10-G density/readability modes implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeMapDensityMode` / `OfficeMapDensityPlan`.
+  - Added `buildOfficeMapDensityPlan(mode, characters)` for safe 요약/표준/상세 display plans.
+  - The helper caps visible generated characters at 6/12/all and reports folded-character counts without inspecting raw records.
+- `web/src/pages/OfficePage.tsx`
+  - Added browser-local density mode state; no storage persistence.
+  - Added `Stage 10-G 밀도` controls with `data-office-density-controls` and per-mode smoke hooks.
+  - 요약 mode folds the recent-change rail and shows a safe collapsed notice; 표준/상세 keep the rail visible.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN coverage for density plans, safe character caps, rail visibility policy, and raw-term exclusion.
+
+Safety notes:
+
+- Stage 10-G does not add backend/API/schema changes, mutation controls, browser persistence, renderer dependencies, sprite assets, or DeskRPG code/assets.
+- It does not inspect raw prompts, transcripts, task bodies, cron scripts, logs, auth fields, secrets, or individual task identities.
+
+Verification 2026-05-09 12:15 KST:
+
+- RED verified first: Stage 10-G test failed because `buildOfficeMapDensityPlan` did not exist.
+- Focused frontend tests/lint/build passed: `OfficePage.test.ts` 25 passed; existing Vite large chunk warning remains.
+- Backend focused office tests passed: `18 passed in 0.99s`; `git diff --check` passed.
+- Browser smoke `/office?stage10g=density`: density controls visible, 표준 mode shows 12 character inspect buttons, 요약 mode switches to 6 visible character inspect buttons and folds the recent-change rail, `data-office-usability=true`, raw leak regex false, console JS errors none.
+
+## Stage 10-F RPG office usability hardening implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeUsabilityItem` / `OfficeUsabilitySummary`.
+  - Added `buildOfficeUsabilitySummary(state, characters, options)` for dense-state, source fallback, reduced-motion, responsive, and Korean-first summary items.
+  - The helper uses safe DTO counts/status/source-health plus browser-local motion/viewport options only.
+- `web/src/pages/OfficePage.tsx`
+  - Added browser-local `prefers-reduced-motion` and viewport-width observation.
+  - Added a Korean `Stage 10-F 사용성 점검` rail under the office map with `data-office-usability` and per-item smoke hooks.
+  - The rail makes dense aggregation, missing-source fallback, static reduced-motion meaning, and narrow-screen vertical reading explicit.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN coverage for Stage 10-F usability summary and raw-term exclusion.
+
+Safety notes:
+
+- Stage 10-F does not add backend/API/schema changes, mutation controls, browser persistence, renderer dependencies, sprite assets, or DeskRPG code/assets.
+- It does not inspect raw prompts, transcripts, task bodies, cron scripts, logs, auth fields, secrets, or individual task identities.
+
+Verification 2026-05-09 12:01 KST:
+
+- RED verified first: Stage 10-F test failed because `buildOfficeUsabilitySummary` did not exist.
+- Focused frontend tests/lint/build passed: `OfficePage.test.ts` 24 passed; existing Vite large chunk warning remains.
+- Backend focused office tests passed: `18 passed in 1.02s`; `git diff --check` passed.
+- Browser smoke `/office?stage10f=usability`: `data-office-usability=true`, 5 usability items, 12 character inspect buttons, Korean usability rail visible, raw leak regex false, console JS errors none.
+
+## Stage 10-E safe character inspector implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeCharacterInspector`.
+  - Added `buildOfficeCharacterInspector(character, delta)`.
+  - Inspector title, ARIA label, and fields are generated from safe role/status/room/action labels and `OfficeStateDelta.nodeBadges` / `changedFlows` only.
+- `web/src/pages/OfficePage.tsx`
+  - Character markers are now `<button>` inspect affordances with Korean `aria-label` text.
+  - Visual character body/nameplate/action chip spans remain `aria-hidden` inside the accessible button.
+  - Clicking/keyboard-activating a character populates the existing safe inspector panel.
+  - Map copy now documents that character inspection shows generated safe fields only.
+- `web/src/index.css`
+  - Added `office-character-inspect` reset/focus/hover styles.
+- `web/src/pages/OfficePage.test.ts`
+  - Added TDD coverage for safe inspector fields, ARIA label content, recent safe delta summary, and raw-term exclusion.
+
+Safety notes:
+
+- Stage 10-E does not read raw record fields, raw flow labels, prompt/transcript/body/script/log/auth/secret fields, or individual task identities.
+- It does not add mutation controls, backend/API/schema changes, persistent browser storage, renderer dependencies, sprite assets, or DeskRPG code/assets.
+- Room cards/buttons remain accessible inspection targets; character inspection is an additional safe affordance.
+
+Verification 2026-05-09 11:45 KST:
+
+- RED verified first: Stage 10-E test failed because `buildOfficeCharacterInspector` did not exist.
+- Focused frontend tests/lint/build passed: `OfficePage.test.ts` 23 passed; existing Vite large chunk warning remains.
+- Backend focused office tests passed: `18 passed in 0.99s`; `git diff --check` passed before docs finalization.
+- Browser smoke `/office?stage10e=character-inspector`: 12 `data-office-character-inspect` buttons, Korean ARIA labels such as `모델 캐릭터 살펴보기, 방 세션, 상태 활성, 액션 생각 중`, clicking a character populates the safe inspector, no raw leak regex match, console JS errors none.
+
+## Stage 10-D room-to-room RPG route choreography implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeCharacterRoute`.
+  - Added `buildOfficeCharacterRoutes(delta)` to project only `OfficeStateDelta.changedFlows` into safe route hints.
+  - Route labels/details are generated from known room IDs and ignore raw-looking flow labels.
+- `web/src/pages/OfficePage.tsx`
+  - Office map now renders decorative route hints with `data-office-character-route` when a changed flow exists.
+  - Updated map copy/legend to explain route choreography as safe DTO decoration.
+- `web/src/index.css`
+  - Added route hint/dot styling and CSS-only motion.
+  - Reduced-motion disables route animations while preserving static text.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN coverage for safe route ids, labels, details, tones, motion, and raw-term avoidance.
+  - Focused helper suite is now 22 tests.
+
+Safety notes:
+
+- Stage 10-D derives only from safe `changedFlows` already produced by `buildOfficeStateDelta`.
+- It does not expose individual task identity, prompt/transcript/body/script/log/auth/secret fields, or adapter raw records.
+- No new dependency, Phaser/Pixi/canvas/sprite asset, DeskRPG code/asset copy, backend/schema/API change, browser storage, cron/gateway/service mutation, Kanban/topic-registry write, NAS/Obsidian write, or mutation-control implementation was added.
+
+Verification performed:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 22 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed
+
+npm run build
+# passed: tsc -b && vite build
+# non-blocking existing Vite chunk-size warning remains
+
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 1.00s
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office?stage10d=routes
+# Korean shell/body visible; 12 character markers still present; route legend copy visible; no route raw leak; no JS console errors. Current first/live snapshot had no changedFlows, so 0 route hint nodes was expected.
+```
+
+## Stage 10-C safe role action chips implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeCharacterActivityId` and `OfficeCharacterActivity`.
+  - Added `buildOfficeCharacterActivity(character, delta)` for safe action labels/motion/tone/reduced-motion copy.
+  - The helper uses only character role/status plus safe room/flow delta metadata.
+- `web/src/pages/OfficePage.tsx`
+  - `OfficeCharacterMarker` now renders a small action chip below the character nameplate.
+  - Added `data-office-character-activity` smoke hook.
+  - Updated map helper copy and legend to explain action chips are safe DTO decorations.
+- `web/src/index.css`
+  - Added action-chip styling and tone classes: normal/success/warning/danger/muted.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN coverage for safe action ids/labels/tones/motion and raw-term avoidance.
+  - Focused helper suite is now 21 tests.
+
+Safety notes:
+
+- Stage 10-C chips are not speech bubbles and do not imply real hidden thoughts, prompts, or work contents.
+- Action labels are limited to a safe vocabulary such as `생각 중`, `작업 중`, `검토 중`, `전달 중`, `예약 대기`, `곧 실행`, `확인 필요`, `막힘`, `대기`, and `확인 불가`.
+- No new dependency, Phaser/Pixi/canvas/sprite asset, DeskRPG code/asset copy, backend/schema/API change, browser storage, cron/gateway/service mutation, Kanban/topic-registry write, NAS/Obsidian write, or mutation-control implementation was added.
+
+Verification performed:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 21 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed
+
+npm run build
+# passed: tsc -b && vite build
+# non-blocking existing Vite chunk-size warning remains
+
+Browser smoke: http://127.0.0.1:8765/office?stage10c=action-loops
+# Korean shell/body visible; 12 character markers with data-office-character-activity; action ids include thinking/unknown/warning/scheduled/blocked; first marker title safe; no marker raw leak; action-chip legend visible; no JS console errors
+# Visual smoke after scrolling main: Korean action chips visible near character markers; no severe overlap with room buttons, flow legend, or recent rail
+```
+
+## Stage 10-B CSS/SVG character presentation implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeCharacterView`.
+  - Added `buildOfficeCharacterView(character)` for safe role glyphs, Korean nameplates/status labels, CSS class names, and safe titles.
+  - The helper deliberately ignores `character.label`/`detail` raw-looking strings for title construction and derives presentation from role/status/room only.
+- `web/src/pages/OfficePage.tsx`
+  - Added `OfficeCharacterMarker` with layered character markup: head, body, accessory, status light, and nameplate.
+  - Added `data-office-character-role` and `data-office-character-status` hooks for smoke testing.
+  - Room buttons remain the accessible/interactive targets; character markers stay `aria-hidden="true"` and `pointer-events: none`.
+  - Updated role legend to `캐릭터 역할 투영` and original glyphs: `◇`, `▤`, `◎`, `▣`, `✉`, `◈`, `!`.
+- `web/src/index.css`
+  - Added CSS-only character silhouette/nameplate styling with role/status accent tokens.
+  - No image import, sprite asset, canvas, Phaser, or PixiJS.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN coverage for all Stage 10 role views and raw-term avoidance.
+  - Focused helper suite is now 20 tests.
+
+Safety notes:
+
+- Stage 10-B only changes presentation on top of the Stage 10-A safe character projection.
+- Character presentation remains decorative/non-interactive and does not expose prompts, transcripts, task bodies, cron scripts, logs, auth fields, secret-like fields, model/provider identity strings, or hidden record text.
+- No new dependency, Phaser/Pixi/canvas/sprite asset, DeskRPG code/asset copy, backend/schema/API change, browser storage, cron/gateway/service mutation, Kanban/topic-registry write, NAS/Obsidian write, or mutation-control implementation was added.
+
+Verification performed:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 20 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed
+
+npm run build
+# passed: tsc -b && vite build
+# non-blocking existing Vite chunk-size warning remains
+
+Browser smoke: http://127.0.0.1:8765/office?stage10b=character-style-2
+# Korean shell/body visible; 12 character markers with data-office-character-role; first marker title safe; marker aria-hidden=true and pointer-events=none; role legend visible; no marker raw leak; console has no JS errors
+# Visual smoke after scrolling main: CSS character markers/nameplates visible; no severe overlap with room buttons, flow legend, or recent rail
+```
+
+## Stage 10-A RPG character projection implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeCharacterRole`, `OfficeCharacterStatus`, and `OfficeCharacter`.
+  - Added `buildOfficeCharacters(state, nodes)` to project only safe DTO counts/statuses into Korean-first RPG role characters.
+  - Added `buildOfficeCharacterSceneObjects(characters)` to adapt characters into the existing safe scene marker layer.
+  - Character labels are generic role labels, not model/provider/task/prompt names.
+  - Dense roles cap visible characters at 3 plus a safe `+N` aggregate.
+- `web/src/pages/OfficePage.tsx`
+  - The map now builds character scene objects first and falls back to previous scene objects only when no characters can be projected.
+  - Added Korean RPG copy and role legend: `모델`, `작업자`, `검토자`, `자동화`, `전달`, `경보`.
+  - Character markers remain decorative: `aria-hidden="true"`, `pointer-events: none`; room cards/buttons remain the interaction targets.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN coverage for safe RPG character projection, raw-field avoidance, deterministic coordinates, and scene-object adapter compatibility.
+  - Focused helper suite is now 19 tests.
+
+Safety notes:
+
+- Stage 10-A reads only safe browser-facing `OfficeState` DTO arrays/counts/statuses/source health.
+- Character labels/details/redaction notes do not project raw prompts, transcripts, task bodies, cron scripts, logs, auth fields, secret-like fields, model/provider identity strings, or hidden record text.
+- No new dependency, Phaser/Pixi/canvas/sprite asset, DeskRPG code/asset copy, backend/schema/API change, browser storage, cron/gateway/service mutation, Kanban/topic-registry write, NAS/Obsidian write, or mutation-control implementation was added.
+
+Verification performed:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 19 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed
+
+npm run build
+# passed: tsc -b && vite build
+# non-blocking existing Vite chunk-size warning remains
+
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 0.99s
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office?stage10a=characters
+# Korean shell/body visible; 12 character markers found; RPG copy/legend visible; first marker animationName=office-scene-walk; marker aria-hidden=true and pointer-events=none; no marker raw leak detected; console has no JS errors
+```
+
+## Stage 9-I DeskRPG-like CSS motion layer implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeSceneMotionStyle`, `OfficeSceneMotionTrack`, and `buildOfficeSceneMotionTrack(object)`.
+  - Produces safe deterministic motion classes and CSS variables from scene-object kind/id only.
+  - Motion labels are safe Korean metadata such as `세션 표시 1 이동 표시 · 안전 DTO 기반`.
+- `web/src/pages/OfficePage.tsx`
+  - `SceneObjectMarker` now applies walk/idle/blink motion metadata while staying decorative and non-interactive.
+  - Markers still have `aria-hidden="true"`, `pointer-events: none`, and `data-office-scene-marker="true"`.
+  - Office-map copy now states that CSS marker motion stops under reduced-motion.
+- `web/src/index.css`
+  - Added `office-scene-walk`, `office-scene-idle`, and `office-scene-blink` keyframes.
+  - Added `.office-scene-marker-motion` classes and a `prefers-reduced-motion: reduce` media gate.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN helper coverage for CSS motion track classes, style variables, safe labels, and raw-field avoidance.
+  - Focused helper suite is now 17 tests.
+
+Safety notes:
+
+- Motion is decorative; the room cards/buttons remain the accessible interaction targets.
+- The motion helper never reads raw prompt/transcript/body/script/log/auth/secret-like fields.
+- No new dependency, Phaser/Pixi/canvas/sprite asset, DeskRPG code/asset copy, backend/schema/API change, browser storage, cron/gateway/service mutation, Kanban/topic-registry write, or NAS/Obsidian write was added.
+
+Verification performed:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 17 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts src/index.css
+# Office TS/TSX files passed; src/index.css ignored by current eslint config with a warning only
+
+npm run build
+# passed: tsc -b && vite build
+# non-blocking existing Vite chunk-size warning remains
+
+Browser smoke: http://127.0.0.1:8765/office?stage9i=motion
+# Korean Office dashboard visible; marker motion metadata present; 11 scene markers found; 11 animated in normal-motion mode; first marker animationName=office-scene-walk; marker aria-hidden=true and pointer-events=none; visual smoke confirmed map markers/cards visible and no severe bottom-legend overlap; console has no JS errors
+```
+
+## Stage 9-G fixture/source-health hardening implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeSourceHealthSummary` and `buildOfficeSourceHealthSummary(state)`.
+  - Counts `ok`, `partial`, `missing`, `unavailable`, and `error` consistently, including expected-but-unreported safe source IDs.
+  - Summarizes only safe status/warning counts and missing source IDs; it does not read adapter error bodies beyond already-redacted source metadata.
+  - Added `OfficeEmptyStateHints` and `buildOfficeEmptyStateHints()` to centralize Korean empty-state copy for rooms, agents, work items, automations, topics, and events.
+- `web/src/pages/OfficePage.tsx`
+  - Source-status card now renders a compact Korean health summary such as `주의 필요 · 정상 1 · 주의 2 · 공백/미연결 2 · 경고 3`.
+  - Source-status counters now include `사용 불가` explicitly.
+  - Empty-state copy now comes from the safe centralized helper, preserving the no-raw-prompt/log/script/body boundary.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN helper coverage for source-health summary, missing source IDs, safe empty-state hints, and empty-map resilience.
+  - Restored marker-presentation coverage while growing the hardening suite to 16 tests.
+
+Safety notes:
+
+- New helpers operate only on the browser-facing OfficeState DTO and stable safe source IDs/counts.
+- The source-health summary intentionally ignores raw adapter error content for its aggregate labels/details.
+- No backend/schema/API, cron/gateway/service, Kanban/topic-registry, NAS/Obsidian, browser storage, renderer dependency, or mutation-control expansion was added.
+
+Verification performed:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 16 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed
+
+npm run build
+# passed: tsc -b && vite build
+# non-blocking existing Vite chunk-size warning remains
+
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 1.08s
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office?stage9g=hardening
+# Korean Office dashboard visible; source-health summary and 사용 불가 count visible; safe empty-state copy visible; live toggle still works; console has no JS errors
+```
+
+## Stage 9-F4 timing buckets and live backoff implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeAutomationTimingBucketId`, `OfficeAutomationTimingBucket`, and `OfficeAutomationTimingSummary`.
+  - Added `buildOfficeAutomationTimingSummary(state, now)` to bucket only safe `next_run_at` values into `overdue`, `<15m`, `<1h`, `today`, `later`, and `unknown`.
+  - Extended `buildOfficeStateDelta(previous, next, { now })` so automation primary timing-bucket changes add an `일정 변경` badge and a safe `최근 변화` entry such as `자동화 다음 실행 오늘 → <1h`.
+  - Added `OFFICE_LIVE_TRACKING_BASE_INTERVAL_MS` and `resolveOfficeLiveTrackingInterval({ isVisible, consecutiveFailures })`.
+- `web/src/pages/OfficePage.tsx`
+  - Replaced fixed live interval scheduling with recursive browser-local timeouts that adapt to tab visibility and repeated read failures.
+  - Live mode remains opt-in and starts from a 30-second visible/no-failure cadence, slowing to 60 seconds for hidden tabs or one read failure and 120 seconds after repeated failures.
+  - Updated Korean safety copy to state that hidden tabs or repeated failures slow polling and that cron/gateway/backend work is untouched.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN helper coverage for timing-bucket counts, timing-bucket deltas, and live interval resolution.
+- `docs/ai-office/plans/2026-05-09-koreanization-and-dynamic-map.md`
+  - Marked Stage 9-F4 implemented and moved next work to fixture/visual hardening or test-harness review.
+
+Safety notes:
+
+- Timing bucket comparison reads only `next_run_at` timestamps from already-redacted OfficeState automation DTOs.
+- It does not inspect cron prompts, scripts, outputs, task bodies, logs, auth fields, or secret-like fields.
+- Live backoff changes only browser polling cadence; it does not start/stop cron jobs, gateway processes, services, Kanban state, topic registry entries, NAS/Obsidian notes, or backend state.
+- No new dependency, browser storage, backend schema/API, renderer, or mutation control was added.
+
+Verification performed:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 14 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed
+
+npm run build
+# passed: tsc -b && vite build
+# non-blocking existing Vite chunk-size warning remains
+
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 0.99s
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office?stage9f4=timing
+# Korean Office dashboard visible; live toggle changes to 실시간 추적 일시정지; adaptive 30초/60–120초 safety copy visible; console has no JS errors
+```
+
+## Stage 9-F3 local live tracking and flow-level hints implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Extended `OfficeStateDelta` with `changedFlows`.
+  - Added safe flow-change detection using existing office-map flow endpoints, room counts, and health only.
+  - Added `mergeOfficeRecentChanges(incoming, current, limit)` for duplicate collapse before applying the in-memory ring-buffer limit.
+- `web/src/pages/OfficePage.tsx`
+  - Renders changed SVG flows with subtle `motion-safe:animate-pulse` highlighting.
+  - Adds text equivalent `방금 변경` in the flow legend.
+  - Adds explicit browser-local live controls: `실시간 추적 켜기` and `실시간 추적 일시정지`.
+  - Live mode polls the same read-only OfficeState endpoint every 30 seconds only while this browser tab has the toggle enabled.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN helper coverage for changed flow hints, first-snapshot empty `changedFlows`, and duplicate recent-change collapse.
+- `docs/ai-office/plans/2026-05-09-koreanization-and-dynamic-map.md`
+  - Marked Stage 9-F3 implemented and moved future work to optional Stage 9-F4-style hardening/design.
+
+Verification performed:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 11 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed
+
+npm run build
+# passed: tsc -b && vite build
+# non-blocking existing Vite chunk-size warning remains
+
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 1.22s
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office?stage9f3=live
+# Korean Office map visible; live toggle changes between 실시간 추적 켜기 and 실시간 추적 일시정지; browser-local 30-second safety copy visible; recent-change rail visible; console has no JS errors
+```
+
+Safety notes:
+
+- Default tracking remains manual refresh; live tracking is explicit and browser-tab-local.
+- Live tracking does not start/stop cron jobs, gateway processes, services, Kanban state, topic registry entries, NAS/Obsidian notes, or backend state.
+- Flow hints do not inspect raw prompts, transcripts, task bodies, cron scripts, logs, auth, or secret-like fields.
+- No new renderer dependency, PixiJS, Phaser, canvas engine, sprite assets, or copied DeskRPG assets/code.
+
+## Stage 9-F browser-local dynamic tracking first slice implemented
+
+Implemented files/changes:
+
+- `web/src/pages/officeView.ts`
+  - Added `OfficeDeltaBadge`, `OfficeRecentChange`, `OfficeStateDelta`, and `buildOfficeStateDelta(previous, next)`.
+  - Delta helper compares only safe office-map room counts, room health, and attention counts.
+  - First snapshot returns no badges/rail entries so the UI does not fabricate a timeline.
+- `web/src/pages/OfficePage.tsx`
+  - Tracks the previous successful browser snapshot in a React ref.
+  - Renders last-refresh room badges: `+N`, `-N`, and `상태 변경`.
+  - Adds a compact `최근 변화` rail under the 2D office map with an in-memory ring buffer.
+  - Keeps manual refresh only; no live polling, mutation control, backend schema, or dependency was added.
+- `web/src/pages/OfficePage.test.ts`
+  - Added RED/GREEN coverage for safe deltas, node badges, recent-change labels, first-snapshot behavior, and raw-field avoidance.
+- `docs/ai-office/plans/2026-05-09-koreanization-and-dynamic-map.md`
+  - Expanded the dynamic-map design with implementation boundary and next design gates.
+
+Verification performed:
+
+```text
+cd /Users/lidises/dev/hermes-agent/web
+npm test -- --run OfficePage.test.ts
+# 1 test file passed, 9 tests passed
+
+./node_modules/.bin/eslint src/pages/OfficePage.tsx src/pages/officeView.ts src/pages/OfficePage.test.ts
+# passed
+
+npm run build
+# passed: tsc -b && vite build
+# non-blocking existing Vite chunk-size warning remains
+
+cd /Users/lidises/dev/hermes-agent
+source .venv/bin/activate
+scripts/run_tests.sh tests/hermes_cli/test_office_redaction.py tests/hermes_cli/test_office_state_adapters.py tests/hermes_cli/test_office_api.py -q --tb=short
+# 18 passed in 0.99s
+
+git diff --check
+# passed
+
+Browser smoke: http://127.0.0.1:8765/office?stage9f=dynamic
+# Korean Office map visible; recent-change rail visible with first-snapshot empty state; room buttons have safe aria labels; refresh works; console has no JS errors
+```
+
+Safety notes:
+
+- Delta generation does not read raw prompts, transcripts, task bodies, cron scripts, logs, auth, or secret-like fixture fields.
+- Recent-change rail is browser-memory only; no localStorage/sessionStorage persistence.
+- No PixiJS, Phaser, canvas engine, sprite assets, copied DeskRPG code/assets, or new dependency.
+- No mutation controls, backend API/schema changes, Kanban/Cron/topic-registry writes, service restarts, NAS/Obsidian writes, or gateway changes.
+
+## Stage 9-E Korean-first readability pass implemented
 
 Implemented so far:
 

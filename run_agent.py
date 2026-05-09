@@ -1665,10 +1665,15 @@ class AIAgent:
                             _fb_entries = [fallback_model]
                         _fb_resolved = False
                         for _fb in _fb_entries:
+                            _fb_explicit_key = (_fb.get("api_key") or "").strip() or None
+                            if not _fb_explicit_key:
+                                _fb_key_env = (_fb.get("key_env") or _fb.get("api_key_env") or "").strip()
+                                if _fb_key_env:
+                                    _fb_explicit_key = os.getenv(_fb_key_env, "").strip() or None
                             _fb_client, _fb_model = resolve_provider_client(
                                 _fb["provider"], model=_fb["model"], raw_codex=True,
                                 explicit_base_url=_fb.get("base_url"),
-                                explicit_api_key=_fb.get("api_key"),
+                                explicit_api_key=_fb_explicit_key,
                             )
                             if _fb_client is not None:
                                 self.provider = _fb["provider"]
@@ -8116,7 +8121,9 @@ class AIAgent:
             fb_base_url_hint = (fb.get("base_url") or "").strip() or None
             fb_api_key_hint = (fb.get("api_key") or "").strip() or None
             if not fb_api_key_hint:
-                fb_key_env = (fb.get("key_env") or "").strip()
+                # key_env and api_key_env are both documented aliases (see
+                # _normalize_custom_provider_entry in hermes_cli/config.py).
+                fb_key_env = (fb.get("key_env") or fb.get("api_key_env") or "").strip()
                 if fb_key_env:
                     fb_api_key_hint = os.getenv(fb_key_env, "").strip() or None
             # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env

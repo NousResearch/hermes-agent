@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -79,6 +80,27 @@ def is_safe_path(path: Path) -> bool:
     if len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("hermes-"):
         return True
     return False
+
+
+def is_inside_git_worktree(path: Path) -> bool:
+    """Return True when *path* lives inside a Git working tree.
+
+    Auto-cleanup must not delete source files from repositories/worktrees,
+    even if an agent created a new file named ``test_*.py`` during a coding
+    task. Manual ``/disk-cleanup track`` still allows explicit cleanup.
+    """
+    anchor = path if path.is_dir() else path.parent
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=anchor,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout.strip().lower() == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +489,8 @@ def guess_category(path: Path) -> Optional[str]:
     Used by the ``post_tool_call`` hook to auto-track ephemeral files.
     """
     if not is_safe_path(path):
+        return None
+    if is_inside_git_worktree(path):
         return None
 
     # Skip the state dir itself, logs, memory files, sessions, config.

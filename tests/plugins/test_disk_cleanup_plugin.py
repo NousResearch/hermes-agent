@@ -14,6 +14,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 
 import importlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -139,6 +140,16 @@ class TestGuessCategory:
         dg = _load_lib()
         p = _isolate_env / "notes.md"
         p.write_text("x")
+        assert dg.guess_category(p) is None
+
+    def test_test_file_inside_git_worktree_returns_none(self, _isolate_env):
+        dg = _load_lib()
+        repo = _isolate_env / "worktrees" / "repo"
+        tests_dir = repo / "tests"
+        tests_dir.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        p = tests_dir / "test_keep_me.py"
+        p.write_text("def test_keep_me():\n    assert True\n")
         assert dg.guess_category(p) is None
 
 

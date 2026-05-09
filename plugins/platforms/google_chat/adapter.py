@@ -1018,6 +1018,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # impersonate any allowlisted user without ever being marked
             # as a bot. Default to "HUMAN" for backward compatibility when
             # the relay does not provide the field.
+            #
+            # Operator contract: the relay MUST forward sender.type from
+            # the upstream Chat event as ``sender_type``. Relays that
+            # forward bot replies as HUMAN (or omit the field) cannot be
+            # distinguished from genuine humans here.
             sender_type_raw = (envelope.get("sender_type") or "HUMAN")
             sender_type = str(sender_type_raw).strip().upper() or "HUMAN"
             if sender_type not in {"HUMAN", "BOT"}:

@@ -374,6 +374,37 @@ class HermesAutomationInstrumentedTest {
         assertFalse(deniedCommand.getBoolean("handled"))
         assertEquals("not_allowed", deniedCommand.getString("status"))
         assertEquals(1, deniedCommand.getJSONObject("access").getInt("user_allowlist_size"))
+
+        val unmatchedDispatch = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_remote_dispatch",
+                JSONObject()
+                    .put("executionId", 99)
+                    .put("taskId", 404)
+                    .put("taskName", "OpenGUI missing dispatch")
+                    .put("automation_id", "missing-automation")
+                    .put("dispatch_source", "opengui_standby")
+                    .put("dispatch_channel", "rest"),
+            )
+        )
+        assertFalse(unmatchedDispatch.toString(), unmatchedDispatch.getBoolean("success"))
+        assertEquals("failed", unmatchedDispatch.getString("status"))
+        assertEquals(0, unmatchedDispatch.getInt("matched_count"))
+        assertFalse(unmatchedDispatch.getJSONObject("execution").getBoolean("success"))
+        assertTrue(unmatchedDispatch.getString("error").contains("No Android automation matched"))
+
+        val failedStatus = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "operator_execution_status",
+                JSONObject().put("executionId", 99),
+            )
+        )
+        assertTrue(failedStatus.toString(), failedStatus.getBoolean("success"))
+        assertEquals("failed", failedStatus.getString("status"))
+        assertEquals("99", failedStatus.getJSONObject("execution").getString("execution_id"))
+        assertEquals("rest", failedStatus.getJSONObject("execution").getString("channel"))
     }
 
     @Test

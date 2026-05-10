@@ -285,6 +285,10 @@ def test_android_automation_exposes_operator_standby_history_for_remote_dispatch
     assert 'submit_standby_dispatch' in bridge
     assert 'TRIGGER_REMOTE_DISPATCH' in bridge
     assert 'dispatchPayloadFromArguments' in bridge
+    assert 'recordRemoteDispatchFailure' in bridge
+    assert 'REMOTE_DISPATCH_FAILURE_AUTOMATION_ID' in bridge
+    assert 'remoteDispatchFailureJson' in bridge
+    assert 'No Android automation matched remote dispatch' in bridge
     assert 'standby:register' in bridge
     assert 'standby:heartbeat' in bridge
     assert 'standby:dispatch' in bridge

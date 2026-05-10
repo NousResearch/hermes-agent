@@ -1702,6 +1702,7 @@ object HermesAutomationBridge {
     fun runRemoteDispatchJson(context: Context, arguments: JSONObject): String {
         val payload = dispatchPayloadFromArguments(arguments)
         val store = HermesAutomationStore(context)
+        val dispatch = dispatchContextFromPayload(payload)
         val automationId = stringArgument(payload, "automation_id", "automationId", "id").orEmpty().trim()
         val taskName = stringArgument(payload, "task_name", "taskName", "remote_task_name", "label", "name").orEmpty().trim()
         val allowDisabled = booleanArgument(payload, "allow_disabled", "allowDisabled") ?: false
@@ -1714,22 +1715,29 @@ object HermesAutomationBridge {
             else -> records.filter { record -> record.triggerType == TRIGGER_REMOTE_DISPATCH }
         }
         if (matchedRecords.isEmpty()) {
-            return errorJson(
-                "No Android automation matched remote dispatch. Pass automation_id or taskName, or create an enabled automation with trigger remote_dispatch.",
-            )
+            val message =
+                "No Android automation matched remote dispatch. Pass automation_id or taskName, or create an enabled automation with trigger remote_dispatch."
+            val event = recordRemoteDispatchFailure(store, dispatch, message)
+            return remoteDispatchFailureJson(dispatch, event, message, matchedRecords.size).toString()
         }
         val runnableRecords = if (allowDisabled) matchedRecords else matchedRecords.filter { it.enabled }
         if (runnableRecords.isEmpty()) {
-            return errorJson("Remote dispatch matched only disabled automations; enable one or pass allow_disabled=true from a trusted local caller.")
+            val message = "Remote dispatch matched only disabled automations; enable one or pass allow_disabled=true from a trusted local caller."
+            val event = recordRemoteDispatchFailure(store, dispatch, message)
+            return remoteDispatchFailureJson(dispatch, event, message, matchedRecords.size).toString()
         }
-        val dispatch = dispatchContextFromPayload(payload)
         setRemoteDispatchVariables(store, dispatch)
         val results = JSONArray()
         runnableRecords.forEach { record ->
             results.put(runRecordJson(context, store, record, TRIGGER_REMOTE_DISPATCH, dispatch))
         }
+        val allSucceeded = (0 until results.length()).all { index ->
+            results.optJSONObject(index)?.optBoolean("success", false) == true
+        }
         return JSONObject()
             .put("success", true)
+            .put("status", if (allSucceeded) "completed" else "failed")
+            .put("terminal", true)
             .put("trigger", TRIGGER_REMOTE_DISPATCH)
             .put("dispatch_source", dispatch.source)
             .put("dispatch_channel", dispatch.channel)
@@ -1739,6 +1747,59 @@ object HermesAutomationBridge {
             .put("matched_count", runnableRecords.size)
             .put("results", results)
             .toString()
+    }
+
+    private fun recordRemoteDispatchFailure(
+        store: HermesAutomationStore,
+        dispatch: HermesAutomationDispatchContext,
+        message: String,
+    ): HermesAutomationRunEvent {
+        val now = System.currentTimeMillis()
+        val label = dispatch.taskName
+            .ifBlank { dispatch.taskId }
+            .ifBlank { dispatch.executionId }
+            .ifBlank { "Remote dispatch" }
+            .take(MAX_EVENT_VALUE_CHARS)
+        val event = HermesAutomationRunEvent(
+            id = UUID.randomUUID().toString(),
+            automationId = REMOTE_DISPATCH_FAILURE_AUTOMATION_ID,
+            automationLabel = label,
+            actionType = TRIGGER_REMOTE_DISPATCH,
+            trigger = TRIGGER_REMOTE_DISPATCH,
+            success = false,
+            exitCode = -1,
+            result = message.take(MAX_RESULT_CHARS),
+            startedAtEpochMs = now,
+            finishedAtEpochMs = now,
+            dispatchSource = dispatch.source,
+            dispatchChannel = dispatch.channel,
+            remoteExecutionId = dispatch.executionId,
+            remoteTaskId = dispatch.taskId,
+            remoteTaskName = dispatch.taskName,
+        )
+        store.addRunEvent(event)
+        return event
+    }
+
+    private fun remoteDispatchFailureJson(
+        dispatch: HermesAutomationDispatchContext,
+        event: HermesAutomationRunEvent,
+        message: String,
+        matchedCount: Int,
+    ): JSONObject {
+        return JSONObject()
+            .put("success", false)
+            .put("status", "failed")
+            .put("terminal", true)
+            .put("trigger", TRIGGER_REMOTE_DISPATCH)
+            .put("dispatch_source", dispatch.source)
+            .put("dispatch_channel", dispatch.channel)
+            .put("remote_execution_id", dispatch.executionId)
+            .put("remote_task_id", dispatch.taskId)
+            .put("remote_task_name", dispatch.taskName)
+            .put("matched_count", matchedCount)
+            .put("error", message)
+            .put("execution", event.toJson())
     }
 
     private data class HermesAutomationDispatchContext(
@@ -5438,6 +5499,7 @@ object HermesAutomationBridge {
     private const val VARIABLE_ACTION_REPLACE = "replace"
     private const val CLIPBOARD_ACTION_SET = "set"
     private const val VIBRATION_ACTION_VIBRATE = "vibrate"
+    private const val REMOTE_DISPATCH_FAILURE_AUTOMATION_ID = "remote_dispatch_failure"
     private const val AUTOMATION_TIMEOUT_SECONDS = 30
     private const val MAX_WAIT_DURATION_MS = 60_000L
     private const val MAX_VIBRATION_TOTAL_MS = 60_000L

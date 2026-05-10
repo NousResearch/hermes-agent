@@ -8454,7 +8454,10 @@ class GatewayRunner:
                     tag = " (current)" if p["is_current"] else ""
                     lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")
                     if p["models"]:
-                        model_strs = ", ".join(f"`{m}`" for m in p["models"])
+                        model_labels = p.get("model_labels") or {}
+                        model_strs = ", ".join(
+                            f"`{model_labels.get(m, m)}`" for m in p["models"]
+                        )
                         extra = f" (+{p['total_models'] - len(p['models'])} more)" if p["total_models"] > len(p["models"]) else ""
                         lines.append(f"  {model_strs}{extra}")
                     elif p.get("api_url"):

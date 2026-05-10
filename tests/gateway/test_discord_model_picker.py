@@ -80,3 +80,35 @@ async def test_model_picker_clears_controls_before_running_switch_callback():
     interaction.response.edit_message.assert_awaited_once()
     interaction.response.defer.assert_not_called()
     interaction.edit_original_response.assert_awaited_once()
+
+
+def test_model_picker_uses_friendly_model_labels_but_preserves_raw_values():
+    async def on_model_selected(chat_id: str, model_id: str, provider_slug: str) -> str:
+        return "Model switched"
+
+    view = ModelPickerView(
+        providers=[
+            {
+                "slug": "fireworks-firepass",
+                "name": "Fireworks Firepass",
+                "models": ["accounts/fireworks/routers/kimi-k2p5-turbo"],
+                "model_labels": {
+                    "accounts/fireworks/routers/kimi-k2p5-turbo": "kimi-k2p5-turbo",
+                },
+                "total_models": 1,
+                "is_current": True,
+            }
+        ],
+        current_model="accounts/fireworks/routers/kimi-k2p5-turbo",
+        current_provider="fireworks-firepass",
+        session_key="session-1",
+        on_model_selected=on_model_selected,
+        allowed_user_ids=set(),
+    )
+
+    view._build_model_select("fireworks-firepass")
+
+    select = next(child for child in view.children if child.custom_id == "model_model_select")
+    option = select.options[0]
+    assert option.label == "kimi-k2p5-turbo"
+    assert option.value == "accounts/fireworks/routers/kimi-k2p5-turbo"

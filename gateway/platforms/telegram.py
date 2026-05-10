@@ -1908,12 +1908,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
     _MODEL_PAGE_SIZE = 8
 
-    def _build_model_keyboard(self, models: list, page: int) -> tuple:
+    def _build_model_keyboard(
+        self,
+        models: list,
+        page: int,
+        model_labels: Optional[Dict[str, str]] = None,
+    ) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
         page_size = self._MODEL_PAGE_SIZE
         total = len(models)
         total_pages = max(1, (total + page_size - 1) // page_size)
         page = max(0, min(page, total_pages - 1))
+        model_labels = model_labels or {}
 
         start = page * page_size
         end = min(start + page_size, total)
@@ -1922,7 +1928,8 @@ class TelegramAdapter(BasePlatformAdapter):
         buttons: list = []
         for i, model_id in enumerate(page_models):
             abs_idx = start + i
-            short = model_id.split("/")[-1] if "/" in model_id else model_id
+            label = model_labels.get(model_id) or model_id
+            short = label.split("/")[-1] if "/" in label else label
             if len(short) > 38:
                 short = short[:35] + "..."
             buttons.append(
@@ -1979,9 +1986,11 @@ class TelegramAdapter(BasePlatformAdapter):
             state["selected_provider"] = provider_slug
             state["selected_provider_name"] = provider.get("name", provider_slug)
             state["model_list"] = models
+            model_labels = provider.get("model_labels", {}) or {}
+            state["model_labels"] = model_labels
             state["model_page"] = 0
 
-            keyboard, page_info = self._build_model_keyboard(models, 0)
+            keyboard, page_info = self._build_model_keyboard(models, 0, model_labels)
 
             pname = provider.get("name", provider_slug)
             total = provider.get("total_models", len(models))
@@ -2010,7 +2019,8 @@ class TelegramAdapter(BasePlatformAdapter):
             models = state.get("model_list", [])
             state["model_page"] = page
 
-            keyboard, page_info = self._build_model_keyboard(models, page)
+            model_labels = state.get("model_labels", {}) or {}
+            keyboard, page_info = self._build_model_keyboard(models, page, model_labels)
 
             pname = state.get("selected_provider_name", "")
             provider_slug = state.get("selected_provider", "")

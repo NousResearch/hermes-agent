@@ -89,6 +89,34 @@ def test_openrouter_empty_live_catalog_drops_row(monkeypatch):
     assert result == []
 
 
+def test_user_defined_openrouter_keeps_configured_models(monkeypatch):
+    """Configured OpenRouter endpoints should not be live-expanded.
+
+    This covers ``providers.only_configured`` paths where a user explicitly
+    configures an ``openrouter`` row and expects the picker to show only the
+    models listed in config.yaml.
+    """
+    base = [
+        _make_provider(
+            "openrouter",
+            models=["configured/model"],
+            is_user_defined=True,
+            source="user-config",
+            api_url="https://openrouter.ai/api/v1",
+        ),
+    ]
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: pytest.fail("should not be called"))
+
+    result = model_switch.list_picker_providers(max_models=50)
+
+    assert len(result) == 1
+    assert result[0]["models"] == ["configured/model"]
+
+
 def test_non_openrouter_rows_passed_through_unchanged(monkeypatch):
     """Non-OpenRouter providers keep their curated ``models`` as-is."""
     base = [

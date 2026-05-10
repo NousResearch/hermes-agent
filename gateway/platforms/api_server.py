@@ -25,6 +25,7 @@ Requires:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -35,6 +36,7 @@ import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -43,6 +45,14 @@ try:
 except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+    CRYPTOGRAPHY_AVAILABLE = True
+except ImportError:
+    CRYPTOGRAPHY_AVAILABLE = False
+    Fernet = None  # type: ignore[assignment,misc]
+    InvalidToken = Exception  # type: ignore[assignment,misc]
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -61,6 +71,10 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+RESPONSE_STORE_ENCRYPTED_PREFIX = "enc:v1:"
+RESPONSE_STORE_MIN_SECRET_LENGTH = 16
+_RESPONSE_STORE_KEY_CONTEXT = b"hermes-response-store-v1\0"
+_RESPONSE_STORE_KID_CONTEXT = b"hermes-response-store-kid-v1\0"
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -288,6 +302,123 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+class ResponseStoreCryptoError(RuntimeError):
+    """Raised when encrypted ResponseStore data cannot be read or written."""
+
+
+def _normalize_response_store_encryption_mode(value: Any) -> str:
+    """Normalize ResponseStore encryption mode from config/env-shaped values."""
+    if isinstance(value, bool):
+        return "required" if value else "off"
+    mode = str(value or "auto").strip().lower()
+    if mode in {"", "auto"}:
+        return "auto"
+    if mode in {"off", "false", "no", "0", "plain", "plaintext", "disabled", "disable"}:
+        return "off"
+    if mode in {"required", "require", "on", "true", "yes", "1", "encrypted", "encrypt"}:
+        return "required"
+    logger.warning(
+        "Unknown API response store encryption mode %r; using auto",
+        value,
+    )
+    return "auto"
+
+
+def _has_usable_response_store_secret(value: Optional[str]) -> bool:
+    """Return True when a response-store key is non-placeholder and long enough."""
+    if not isinstance(value, str):
+        return False
+    try:
+        from hermes_cli.auth import has_usable_secret
+        return has_usable_secret(value, min_length=RESPONSE_STORE_MIN_SECRET_LENGTH)
+    except Exception:
+        cleaned = value.strip()
+        if len(cleaned) < RESPONSE_STORE_MIN_SECRET_LENGTH:
+            return False
+        return cleaned.lower() not in {
+            "changeme",
+            "change-me",
+            "change-me-local-dev",
+            "your_api_key_here",
+            "your-api-key",
+            "password",
+            "placeholder",
+            "example",
+            "dummy",
+            "secret",
+            "token",
+            "none",
+            "null",
+        }
+
+
+class _ResponseStoreCrypto:
+    """Small Fernet wrapper for encrypted response-store payloads."""
+
+    def __init__(self, secret: str):
+        if not CRYPTOGRAPHY_AVAILABLE or Fernet is None:
+            raise ResponseStoreCryptoError("cryptography is not installed")
+        if not _has_usable_response_store_secret(secret):
+            raise ResponseStoreCryptoError("response store encryption key is missing or unusable")
+
+        material = secret.strip().encode("utf-8")
+        fernet_key = base64.urlsafe_b64encode(
+            hashlib.sha256(_RESPONSE_STORE_KEY_CONTEXT + material).digest()
+        )
+        self.key_id = hashlib.sha256(
+            _RESPONSE_STORE_KID_CONTEXT + material
+        ).hexdigest()[:12]
+        self._fernet = Fernet(fernet_key)
+
+    def encrypt(self, response_id: str, plaintext_json: str) -> str:
+        envelope = json.dumps(
+            {"response_id": response_id, "data": plaintext_json},
+            separators=(",", ":"),
+        )
+        try:
+            token = self._fernet.encrypt(envelope.encode("utf-8")).decode("ascii")
+        except Exception as exc:
+            raise ResponseStoreCryptoError(
+                f"failed to encrypt response store row {response_id}"
+            ) from exc
+        return f"{RESPONSE_STORE_ENCRYPTED_PREFIX}{self.key_id}:{token}"
+
+    def decrypt(self, response_id: str, raw: str) -> str:
+        rest = raw[len(RESPONSE_STORE_ENCRYPTED_PREFIX):]
+        key_id, separator, token = rest.partition(":")
+        if not separator or not key_id or not token:
+            raise ResponseStoreCryptoError(
+                f"malformed encrypted response store row {response_id}"
+            )
+        if key_id != self.key_id:
+            raise ResponseStoreCryptoError(
+                f"failed to decrypt response store row {response_id} with key {self.key_id}"
+            )
+        try:
+            envelope = json.loads(self._fernet.decrypt(token.encode("ascii")).decode("utf-8"))
+            plaintext_json = envelope.get("data")
+            if envelope.get("response_id") != response_id or not isinstance(plaintext_json, str):
+                raise ValueError("encrypted response store row is bound to a different response_id")
+            return plaintext_json
+        except (InvalidToken, json.JSONDecodeError, UnicodeError, ValueError) as exc:
+            raise ResponseStoreCryptoError(
+                f"failed to decrypt response store row {response_id} with key {self.key_id}"
+            ) from exc
+
+
+def _response_store_crypto_error_response(exc: Exception) -> "web.Response":
+    """Return a safe OpenAI-style error for encrypted response-store failures."""
+    logger.warning("Response store crypto failure: %s", exc)
+    return web.json_response(
+        _openai_error(
+            "Stored response could not be decrypted with the configured response store key.",
+            err_type="server_error",
+            code="response_store_decryption_failed",
+        ),
+        status=500,
+    )
+
+
 class ResponseStore:
     """
     SQLite-backed LRU store for Responses API state.
@@ -300,17 +431,32 @@ class ResponseStore:
     if the on-disk path is unavailable.
     """
 
-    def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None):
+    def __init__(
+        self,
+        max_size: int = MAX_STORED_RESPONSES,
+        db_path: str = None,
+        *,
+        encryption_mode: str = "auto",
+        encryption_key: Optional[str] = None,
+    ):
         self._max_size = max_size
+        self._db_path: Optional[Path] = None
+        self._encryption_mode = _normalize_response_store_encryption_mode(encryption_mode)
+        self._crypto: Optional[_ResponseStoreCrypto] = None
+        self._init_crypto(encryption_key)
+
         if db_path is None:
             try:
                 from hermes_cli.config import get_hermes_home
                 db_path = str(get_hermes_home() / "response_store.db")
             except Exception:
                 db_path = ":memory:"
+        db_path = str(db_path)
         try:
+            self._db_path = self._prepare_db_path(db_path)
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
         except Exception:
+            self._db_path = None
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
         # Use shared WAL-fallback helper so response_store.db degrades
         # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
@@ -318,6 +464,7 @@ class ResponseStore:
         # hermes_state._WAL_INCOMPAT_MARKERS).
         from hermes_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="response_store.db")
+        self._conn.execute("PRAGMA secure_delete=ON")
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS responses (
                 response_id TEXT PRIMARY KEY,
@@ -332,6 +479,136 @@ class ResponseStore:
             )"""
         )
         self._conn.commit()
+        self._secure_db_files()
+        if self._crypto is not None:
+            self._migrate_plaintext_rows()
+
+    @property
+    def encryption_enabled(self) -> bool:
+        return self._crypto is not None
+
+    def _init_crypto(self, encryption_key: Optional[str]) -> None:
+        if self._encryption_mode == "off":
+            return
+        if not encryption_key:
+            if self._encryption_mode == "required":
+                raise ResponseStoreCryptoError(
+                    "response store encryption requires API_SERVER_RESPONSE_STORE_KEY or API_SERVER_KEY"
+                )
+            logger.warning(
+                "API response store encryption is in auto mode, but no usable key is configured; "
+                "response_store.db will remain plaintext. Set API_SERVER_RESPONSE_STORE_KEY "
+                "or API_SERVER_KEY to encrypt stored Responses API state."
+            )
+            return
+        try:
+            self._crypto = _ResponseStoreCrypto(encryption_key)
+            logger.info(
+                "API response store encryption enabled (key id: %s)",
+                self._crypto.key_id,
+            )
+        except ResponseStoreCryptoError:
+            if self._encryption_mode == "required":
+                raise
+            logger.warning(
+                "API response store encryption is in auto mode, but the configured key is unusable "
+                "or cryptography is unavailable; response_store.db will remain plaintext.",
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _chmod_allowed() -> bool:
+        if os.environ.get("HERMES_SKIP_CHMOD"):
+            return False
+        try:
+            from hermes_cli.config import is_managed
+            if is_managed():
+                return False
+        except Exception:
+            pass
+        return os.name != "nt"
+
+    def _prepare_db_path(self, db_path: str) -> Optional[Path]:
+        if db_path == ":memory:" or db_path.startswith("file:"):
+            return None
+        path = Path(db_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+        os.close(fd)
+        self._chmod_path(path)
+        return path
+
+    def _chmod_path(self, path: Path) -> None:
+        if not self._chmod_allowed():
+            return
+        try:
+            path.chmod(0o600)
+        except (OSError, NotImplementedError):
+            pass
+
+    def _secure_db_files(self) -> None:
+        if self._db_path is None:
+            return
+        self._chmod_path(self._db_path)
+        self._chmod_path(Path(f"{self._db_path}-wal"))
+        self._chmod_path(Path(f"{self._db_path}-shm"))
+
+    def _decode_response_data(self, response_id: str, raw: str) -> tuple[Dict[str, Any], bool]:
+        if raw.startswith(RESPONSE_STORE_ENCRYPTED_PREFIX):
+            if self._crypto is None:
+                raise ResponseStoreCryptoError(
+                    f"response store row {response_id} is encrypted, but encryption is not configured"
+                )
+            raw = self._crypto.decrypt(response_id, raw)
+            return json.loads(raw), False
+        return json.loads(raw), True
+
+    def _encode_response_data(self, response_id: str, data: Dict[str, Any]) -> str:
+        raw = json.dumps(data, default=str)
+        if self._crypto is None:
+            return raw
+        return self._crypto.encrypt(response_id, raw)
+
+    def _rewrite_response_data(self, response_id: str, data: Dict[str, Any]) -> None:
+        encoded = self._encode_response_data(response_id, data)
+        self._conn.execute(
+            "UPDATE responses SET data = ? WHERE response_id = ?",
+            (encoded, response_id),
+        )
+        self._conn.commit()
+        self._secure_db_files()
+
+    def _migrate_plaintext_rows(self) -> None:
+        rows = self._conn.execute("SELECT response_id, data FROM responses").fetchall()
+        migrated = 0
+        for response_id, raw in rows:
+            if not isinstance(raw, str) or raw.startswith(RESPONSE_STORE_ENCRYPTED_PREFIX):
+                continue
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed plaintext response store row %s during encryption migration", response_id)
+                continue
+            encoded = self._encode_response_data(response_id, data)
+            self._conn.execute(
+                "UPDATE responses SET data = ? WHERE response_id = ?",
+                (encoded, response_id),
+            )
+            migrated += 1
+        if migrated:
+            self._conn.commit()
+            logger.info("Encrypted %d existing response_store.db row(s)", migrated)
+            self._post_migration_cleanup()
+        self._secure_db_files()
+
+    def _post_migration_cleanup(self) -> None:
+        if self._db_path is None:
+            return
+        for statement in ("PRAGMA wal_checkpoint(TRUNCATE)", "VACUUM"):
+            try:
+                self._conn.execute(statement)
+            except sqlite3.DatabaseError as exc:
+                logger.debug("response_store.db cleanup statement %s failed: %s", statement, exc)
 
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
@@ -345,13 +622,17 @@ class ResponseStore:
             (time.time(), response_id),
         )
         self._conn.commit()
-        return json.loads(row[0])
+        data, was_plaintext = self._decode_response_data(response_id, row[0])
+        if was_plaintext and self._crypto is not None:
+            self._rewrite_response_data(response_id, data)
+        self._secure_db_files()
+        return data
 
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
-            (response_id, json.dumps(data, default=str), time.time()),
+            (response_id, self._encode_response_data(response_id, data), time.time()),
         )
         # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
@@ -362,6 +643,7 @@ class ResponseStore:
                 (count - self._max_size,),
             )
         self._conn.commit()
+        self._secure_db_files()
 
     def delete(self, response_id: str) -> bool:
         """Remove a response from the store. Returns True if found and deleted."""
@@ -369,6 +651,7 @@ class ResponseStore:
             "DELETE FROM responses WHERE response_id = ?", (response_id,)
         )
         self._conn.commit()
+        self._secure_db_files()
         return cursor.rowcount > 0
 
     def get_conversation(self, name: str) -> Optional[str]:
@@ -385,6 +668,7 @@ class ResponseStore:
             (name, response_id),
         )
         self._conn.commit()
+        self._secure_db_files()
 
     def close(self) -> None:
         """Close the database connection."""
@@ -601,7 +885,18 @@ class APIServerAdapter(BasePlatformAdapter):
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
-        self._response_store = ResponseStore()
+        response_store_key = os.getenv("API_SERVER_RESPONSE_STORE_KEY", "").strip() or self._api_key
+        self._response_store_init_error: Optional[ResponseStoreCryptoError] = None
+        try:
+            self._response_store = ResponseStore(
+                encryption_mode=extra.get("response_store_encryption", "auto"),
+                encryption_key=response_store_key,
+            )
+        except ResponseStoreCryptoError as exc:
+            self._response_store_init_error = exc
+            # Keep construction non-fatal so gateway startup can report the
+            # platform as failed through the normal connect() path.
+            self._response_store = ResponseStore(db_path=":memory:", encryption_mode="off")
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -2117,7 +2412,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stored_session_id = None
         if not conversation_history and previous_response_id:
-            stored = self._response_store.get(previous_response_id)
+            try:
+                stored = self._response_store.get(previous_response_id)
+            except ResponseStoreCryptoError as exc:
+                return _response_store_crypto_error_response(exc)
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
             conversation_history = list(stored.get("conversation_history", []))
@@ -2294,12 +2592,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Store the complete response object for future chaining / GET retrieval
         if store:
-            self._response_store.put(response_id, {
-                "response": response_data,
-                "conversation_history": full_history,
-                "instructions": instructions,
-                "session_id": session_id,
-            })
+            try:
+                self._response_store.put(response_id, {
+                    "response": response_data,
+                    "conversation_history": full_history,
+                    "instructions": instructions,
+                    "session_id": session_id,
+                })
+            except ResponseStoreCryptoError as exc:
+                return _response_store_crypto_error_response(exc)
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
@@ -2321,7 +2622,10 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         response_id = request.match_info["response_id"]
-        stored = self._response_store.get(response_id)
+        try:
+            stored = self._response_store.get(response_id)
+        except ResponseStoreCryptoError as exc:
+            return _response_store_crypto_error_response(exc)
         if stored is None:
             return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
 
@@ -2856,7 +3160,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stored_session_id = None
         if not conversation_history and previous_response_id:
-            stored = self._response_store.get(previous_response_id)
+            try:
+                stored = self._response_store.get(previous_response_id)
+            except ResponseStoreCryptoError as exc:
+                return _response_store_crypto_error_response(exc)
             if stored:
                 conversation_history = list(stored.get("conversation_history", []))
                 stored_session_id = stored.get("session_id")
@@ -3329,6 +3636,13 @@ class APIServerAdapter(BasePlatformAdapter):
         """Start the aiohttp web server."""
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
+            return False
+        if self._response_store_init_error is not None:
+            logger.error(
+                "[%s] Refusing to start: response store encryption is required but unavailable: %s",
+                self.name,
+                self._response_store_init_error,
+            )
             return False
 
         try:

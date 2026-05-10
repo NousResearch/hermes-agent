@@ -14,6 +14,8 @@ Tests cover:
 
 import asyncio
 import json
+import os
+import sqlite3
 import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +28,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
+    ResponseStoreCryptoError,
     _IdempotencyCache,
     _CORS_HEADERS,
     _derive_chat_session_id,
@@ -55,6 +58,18 @@ class TestCheckRequirements:
 
 
 class TestResponseStore:
+    @staticmethod
+    def _raw_response_data(db_path, response_id="resp_1"):
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT data FROM responses WHERE response_id = ?",
+                (response_id,),
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
     def test_put_and_get(self):
         store = ResponseStore(max_size=10)
         store.put("resp_1", {"output": "hello"})
@@ -104,6 +119,201 @@ class TestResponseStore:
     def test_delete_missing(self):
         store = ResponseStore(max_size=10)
         assert store.delete("resp_missing") is False
+
+    def test_auto_without_key_stores_plaintext_and_warns(self, tmp_path, caplog):
+        db_path = tmp_path / "response_store.db"
+        with caplog.at_level("WARNING"):
+            store = ResponseStore(max_size=10, db_path=str(db_path))
+        store.put("resp_1", {"output": "plain sentinel"})
+        assert store.get("resp_1") == {"output": "plain sentinel"}
+        assert "plain sentinel" in self._raw_response_data(db_path)
+        assert "response_store.db will remain plaintext" in caplog.text
+
+    def test_required_without_key_raises(self, tmp_path):
+        with pytest.raises(ResponseStoreCryptoError):
+            ResponseStore(
+                max_size=10,
+                db_path=str(tmp_path / "response_store.db"),
+                encryption_mode="required",
+            )
+
+    def test_required_with_short_key_raises(self, tmp_path):
+        with pytest.raises(ResponseStoreCryptoError):
+            ResponseStore(
+                max_size=10,
+                db_path=str(tmp_path / "response_store.db"),
+                encryption_mode="required",
+                encryption_key="too-short",
+            )
+
+    def test_off_with_key_stores_plaintext(self, tmp_path):
+        db_path = tmp_path / "response_store.db"
+        store = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="off",
+            encryption_key="very-secret-response-store-key",
+        )
+        store.put("resp_1", {"output": "plaintext despite key"})
+        assert store.get("resp_1") == {"output": "plaintext despite key"}
+        assert "plaintext despite key" in self._raw_response_data(db_path)
+
+    def test_encrypted_store_hides_raw_payload_and_round_trips(self, tmp_path):
+        db_path = tmp_path / "response_store.db"
+        store = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="very-secret-response-store-key",
+        )
+        store.put("resp_1", {"output": "secret sentinel"})
+
+        raw = self._raw_response_data(db_path)
+        assert raw.startswith("enc:v1:")
+        assert "secret sentinel" not in raw
+        assert store.get("resp_1") == {"output": "secret sentinel"}
+
+    def test_encrypted_store_reopens_with_same_key(self, tmp_path):
+        db_path = tmp_path / "response_store.db"
+        key = "very-secret-response-store-key"
+        store = ResponseStore(max_size=10, db_path=str(db_path), encryption_mode="required", encryption_key=key)
+        store.put("resp_1", {"output": "persistent secret"})
+        store.close()
+
+        reopened = ResponseStore(max_size=10, db_path=str(db_path), encryption_mode="required", encryption_key=key)
+        assert reopened.get("resp_1") == {"output": "persistent secret"}
+
+    def test_encrypted_store_wrong_key_raises(self, tmp_path):
+        db_path = tmp_path / "response_store.db"
+        store = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="very-secret-response-store-key",
+        )
+        store.put("resp_1", {"output": "persistent secret"})
+        store.close()
+
+        wrong = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="different-secret-response-store-key",
+        )
+        with pytest.raises(ResponseStoreCryptoError):
+            wrong.get("resp_1")
+
+    def test_encrypted_store_rejects_replayed_row(self, tmp_path):
+        db_path = tmp_path / "response_store.db"
+        store = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="very-secret-response-store-key",
+        )
+        store.put("resp_1", {"output": "first secret"})
+        store.put("resp_2", {"output": "second secret"})
+        store.close()
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            resp_1_raw = conn.execute(
+                "SELECT data FROM responses WHERE response_id = ?",
+                ("resp_1",),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE responses SET data = ? WHERE response_id = ?",
+                (resp_1_raw, "resp_2"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        reopened = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="very-secret-response-store-key",
+        )
+        assert reopened.get("resp_1") == {"output": "first secret"}
+        with pytest.raises(ResponseStoreCryptoError):
+            reopened.get("resp_2")
+
+    def test_malformed_encrypted_row_raises(self, tmp_path):
+        db_path = tmp_path / "response_store.db"
+        store = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="very-secret-response-store-key",
+        )
+        store.put("resp_1", {"output": "persistent secret"})
+        store.close()
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "UPDATE responses SET data = ? WHERE response_id = ?",
+                ("enc:v1:missing-token", "resp_1"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        reopened = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="very-secret-response-store-key",
+        )
+        with pytest.raises(ResponseStoreCryptoError):
+            reopened.get("resp_1")
+
+    def test_plaintext_rows_migrate_when_encryption_enabled(self, tmp_path):
+        db_path = tmp_path / "response_store.db"
+        plaintext = ResponseStore(max_size=10, db_path=str(db_path), encryption_mode="off")
+        plaintext.put("resp_1", {"output": "legacy plaintext sentinel"})
+        plaintext.close()
+        assert "legacy plaintext sentinel" in self._raw_response_data(db_path)
+
+        encrypted = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="very-secret-response-store-key",
+        )
+        assert encrypted.get("resp_1") == {"output": "legacy plaintext sentinel"}
+        raw = self._raw_response_data(db_path)
+        assert raw.startswith("enc:v1:")
+        assert "legacy plaintext sentinel" not in raw
+
+    def test_delete_encrypted_row_does_not_require_decrypt(self, tmp_path):
+        db_path = tmp_path / "response_store.db"
+        store = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="very-secret-response-store-key",
+        )
+        store.put("resp_1", {"output": "delete without decrypt"})
+        store.close()
+
+        wrong = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="different-secret-response-store-key",
+        )
+        assert wrong.delete("resp_1") is True
+        assert self._raw_response_data(db_path) is None
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode assertions do not apply on Windows")
+    def test_on_disk_db_created_owner_only(self, tmp_path):
+        db_path = tmp_path / "response_store.db"
+        store = ResponseStore(max_size=10, db_path=str(db_path), encryption_mode="off")
+        store.put("resp_1", {"output": "hello"})
+        mode = db_path.stat().st_mode & 0o777
+        assert mode == 0o600
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +456,17 @@ class TestAdapterInit:
         adapter = APIServerAdapter(config)
         assert adapter._port == 8642
 
+    @pytest.mark.asyncio
+    async def test_required_response_store_encryption_blocks_connect_without_key(self):
+        adapter = APIServerAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"response_store_encryption": "required"},
+            )
+        )
+        assert adapter._response_store_init_error is not None
+        assert await adapter.connect() is False
+
     def test_create_agent_forwards_config_reasoning_effort(self, monkeypatch):
         captured = {}
 
@@ -336,9 +557,9 @@ class TestAuth:
 # ---------------------------------------------------------------------------
 
 
-def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
+def _make_adapter(api_key: str = "", cors_origins=None, extra=None) -> APIServerAdapter:
     """Create an adapter with optional API key."""
-    extra = {}
+    extra = dict(extra or {})
     if api_key:
         extra["key"] = api_key
     if cors_origins is not None:
@@ -1363,6 +1584,103 @@ class TestResponsesEndpoint:
             call_kwargs = mock_run.call_args.kwargs
             assert len(call_kwargs["conversation_history"]) > 0
             assert call_kwargs["user_message"] == "Now add 1 more"
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_chaining_with_encrypted_store(self):
+        """Encrypted response rows still support previous_response_id chaining."""
+        api_key = "very-secret-api-server-key"
+        adapter = _make_adapter(api_key=api_key)
+        first_history = [
+            {"role": "user", "content": "secret sentinel question"},
+            {"role": "assistant", "content": "secret sentinel answer"},
+        ]
+
+        app = _create_app(adapter)
+        headers = {"Authorization": f"Bearer {api_key}"}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "secret sentinel answer", "messages": list(first_history), "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp1 = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "secret sentinel question"},
+                    headers=headers,
+                )
+
+            assert resp1.status == 200
+            data1 = await resp1.json()
+            raw = TestResponseStore._raw_response_data(adapter._response_store._db_path, data1["id"])
+            assert raw.startswith("enc:v1:")
+            assert "secret sentinel" not in raw
+
+            second_history = first_history + [
+                {"role": "user", "content": "follow up"},
+                {"role": "assistant", "content": "done"},
+            ]
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "done", "messages": list(second_history), "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": data1["id"],
+                    },
+                    headers=headers,
+                )
+
+            assert resp2.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == first_history
+            assert call_kwargs["user_message"] == "follow up"
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_wrong_store_key_returns_500(self, tmp_path):
+        """Wrong at-rest key is reported as a store error, not as a missing response."""
+        db_path = tmp_path / "response_store.db"
+        writer = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="very-secret-response-store-key",
+        )
+        writer.put("resp_prev", {
+            "response": {"id": "resp_prev", "status": "completed"},
+            "conversation_history": [{"role": "user", "content": "secret"}],
+            "session_id": "api-test-session",
+        })
+        writer.close()
+
+        api_key = "very-secret-api-server-key"
+        adapter = _make_adapter(api_key=api_key)
+        adapter._response_store.close()
+        adapter._response_store = ResponseStore(
+            max_size=10,
+            db_path=str(db_path),
+            encryption_mode="required",
+            encryption_key="different-secret-response-store-key",
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "follow up",
+                    "previous_response_id": "resp_prev",
+                },
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            assert resp.status == 500
+            data = await resp.json()
+
+        assert data["error"]["code"] == "response_store_decryption_failed"
 
     @pytest.mark.asyncio
     async def test_previous_response_id_stores_full_agent_transcript_once(self, adapter):
@@ -3061,4 +3379,3 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
-

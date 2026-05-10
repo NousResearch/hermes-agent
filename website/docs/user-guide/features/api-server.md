@@ -338,15 +338,33 @@ The default bind address (`127.0.0.1`) is for local-only use. Browser access is 
 | `API_SERVER_PORT` | `8642` | HTTP server port |
 | `API_SERVER_HOST` | `127.0.0.1` | Bind address (localhost only by default) |
 | `API_SERVER_KEY` | _(none)_ | Bearer token for auth |
+| `API_SERVER_RESPONSE_STORE_KEY` | `API_SERVER_KEY` fallback | Dedicated key for encrypting stored Responses API state at rest |
 | `API_SERVER_CORS_ORIGINS` | _(none)_ | Comma-separated allowed browser origins |
 | `API_SERVER_MODEL_NAME` | _(profile name)_ | Model name on `/v1/models`. Defaults to profile name, or `hermes-agent` for default profile. |
 
 ### config.yaml
 
 ```yaml
-# Not yet supported — use environment variables.
-# config.yaml support coming in a future release.
+platforms:
+  api_server:
+    extra:
+      # auto: encrypt response_store.db when API_SERVER_RESPONSE_STORE_KEY
+      # or API_SERVER_KEY is configured; otherwise keep plaintext for
+      # loopback-only local compatibility.
+      # required: refuse to start unless encryption is active.
+      # off: keep legacy plaintext storage.
+      response_store_encryption: auto
 ```
+
+### Responses API storage
+
+When `store` is `true` (the default), `/v1/responses` stores response state in `~/.hermes/response_store.db` so `previous_response_id`, `conversation`, and `GET /v1/responses/{id}` can work across requests and gateway restarts.
+
+By default, Hermes encrypts the sensitive `responses.data` payload when a usable `API_SERVER_RESPONSE_STORE_KEY` or `API_SERVER_KEY` is configured. For shared, remote, or non-loopback deployments, set a dedicated long, high-entropy `API_SERVER_RESPONSE_STORE_KEY` and `response_store_encryption: required`.
+
+Changing the response-store key can make existing encrypted stored responses unreadable. Field-level encryption protects the response payload, but SQLite metadata such as response IDs, row counts, access timestamps, and conversation names may remain visible. Migrating old plaintext rows is best-effort for the live database and is not a forensic wipe of backups, snapshots, or previously copied files.
+
+Set `store: false` on a request if you do not want that response persisted for future chaining.
 
 ## Security Headers
 

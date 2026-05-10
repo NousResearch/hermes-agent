@@ -2411,6 +2411,14 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
+    "API_SERVER_RESPONSE_STORE_KEY": {
+        "description": "Dedicated long, high-entropy encryption key for API server response_store.db at-rest encryption. If unset, API_SERVER_KEY is used as a fallback when available.",
+        "prompt": "API response store encryption key",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
+    },
     "API_SERVER_PORT": {
         "description": "Port for the API server (default: 8642).",
         "prompt": "API server port",

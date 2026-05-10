@@ -74,6 +74,7 @@ The following scenarios are **not** considered security breaches:
 ### Credential Storage
 - API keys and tokens belong exclusively in `~/.hermes/.env` — never in `config.yaml` or checked into version control.
 - The credential pool system (`agent/credential_pool.py`) handles key rotation and fallback. Credentials are resolved from environment variables, not stored in plaintext databases.
+- The API server's Responses API stores chaining state in `~/.hermes/response_store.db` when requests use `store: true` (the default). Sensitive response payloads are encrypted at rest when a long, high-entropy `API_SERVER_RESPONSE_STORE_KEY` or `API_SERVER_KEY` is configured; use `response_store_encryption: required` for shared or remote deployments. SQLite metadata such as response IDs, row counts, timestamps, and conversation names may remain visible.
 
 ---
 

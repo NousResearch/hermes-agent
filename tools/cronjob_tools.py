@@ -31,6 +31,7 @@ from cron.jobs import (
     trigger_job,
     update_job,
 )
+from cron.scheduler import run_job as _run_cron_job, save_job_output as _save_cron_output
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +584,39 @@ def cronjob(
 
         if normalized in {"run", "run_now", "trigger"}:
             updated = trigger_job(job_id)
+            if not updated:
+                return tool_error(f"Failed to trigger job '{job_id}'", success=False)
+
+            # For explicit "run" / "run_now", execute the job immediately
+            # instead of waiting for the next scheduler tick (#21867).
+            if normalized in {"run", "run_now"}:
+                try:
+                    job = get_job(job_id)
+                    if job:
+                        success, output, final_response, error = _run_cron_job(job)
+                        _save_cron_output(job_id, output)
+                        from cron.jobs import mark_job_run
+                        mark_job_run(job_id, success, error)
+                        return json.dumps(
+                            {
+                                "success": success,
+                                "job": _format_job(updated),
+                                "output": final_response,
+                                "error": error,
+                            },
+                            indent=2,
+                        )
+                except Exception as exc:
+                    logger.exception("Cron immediate run failed for job %s", job_id)
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "job": _format_job(updated),
+                            "error": str(exc),
+                        },
+                        indent=2,
+                    )
+
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized == "update":

@@ -221,6 +221,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/context-engine-plugin',
             'developer-guide/model-provider-plugin',
             'developer-guide/image-gen-provider-plugin',
+            'developer-guide/plugin-llm-access',
             'developer-guide/creating-skills',
             'developer-guide/extending-the-cli',
           ],

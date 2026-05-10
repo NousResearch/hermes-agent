@@ -92,6 +92,7 @@ class GatewayStreamConsumer:
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
         on_new_message: Optional[callable] = None,
+        initial_reply_to_id: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
@@ -105,6 +106,7 @@ class GatewayStreamConsumer:
         # the content, not edit the old bubble above it.
         # Called with no arguments. Exceptions are swallowed.
         self._on_new_message = on_new_message
+        self._initial_reply_to_id = initial_reply_to_id
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
@@ -1004,10 +1006,12 @@ class GatewayStreamConsumer:
                     # The final response will be sent by the fallback path.
                     return False
             else:
-                # First message — send new
+                # First message — send new, threaded to the original user message
+                # so it lands in the correct topic/thread.
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
+                    reply_to=self._initial_reply_to_id,
                     metadata=self.metadata,
                 )
                 if result.success:

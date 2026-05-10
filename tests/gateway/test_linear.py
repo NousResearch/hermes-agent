@@ -1495,10 +1495,10 @@ async def test_connect_releases_platform_lock_when_port_is_busy(monkeypatch):
 def test_platform_registries_include_linear():
     from hermes_cli.platforms import PLATFORMS as SHARED_PLATFORMS
     from hermes_cli.gateway import _PLATFORMS as GATEWAY_PLATFORMS
-    from hermes_cli.setup import _GATEWAY_PLATFORMS as SETUP_GATEWAY_PLATFORMS
+    from hermes_cli.gateway import _all_platforms as setup_platforms
 
     assert "linear" in SHARED_PLATFORMS
     assert SHARED_PLATFORMS["linear"].default_toolset == "hermes-linear"
     assert get_toolset("hermes-linear") is not None
     assert any(p["key"] == "linear" for p in GATEWAY_PLATFORMS)
-    assert any(name == "Linear Agent Sessions" for name, _env, _func in SETUP_GATEWAY_PLATFORMS)
+    assert any(p["key"] == "linear" for p in setup_platforms())

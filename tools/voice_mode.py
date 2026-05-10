@@ -15,6 +15,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -63,11 +64,6 @@ def _termux_microphone_command() -> Optional[str]:
     return shutil.which("termux-microphone-record")
 
 
-def _termux_media_player_command() -> Optional[str]:
-    if not _is_termux_environment():
-        return None
-    return shutil.which("termux-media-player")
-
 
 def _termux_api_app_installed() -> bool:
     if not _is_termux_environment():
@@ -106,8 +102,9 @@ def detect_audio_environment() -> dict:
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
         warnings.append("Running over SSH -- no audio devices available")
 
-    # Docker detection
-    if os.path.exists('/.dockerenv'):
+    # Docker/Podman container detection
+    from hermes_constants import is_container
+    if is_container():
         warnings.append("Running inside Docker container -- no audio devices")
 
     # WSL detection — PulseAudio bridge makes audio work in WSL.
@@ -428,6 +425,11 @@ class AudioRecorder:
         """Current audio input RMS level (0-32767). Updated each audio chunk."""
         return self._current_rms
 
+    @property
+    def is_recording(self) -> bool:
+        """Whether audio recording is currently active."""
+        return self._recording
+
     # -- public methods ------------------------------------------------------
 
     def _ensure_stream(self) -> None:
@@ -581,8 +583,7 @@ class AudioRecorder:
         except (ImportError, OSError) as e:
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
-                "Install with: pip install sounddevice numpy\n"
-                "Or: pip install hermes-agent[voice]"
+                f"Install with: {sys.executable} -m pip install sounddevice numpy"
             ) from e
 
         with self._lock:

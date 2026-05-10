@@ -9,6 +9,28 @@ description: "Step-by-step guide to building a complete Hermes plugin with tools
 
 This guide walks through building a complete Hermes plugin from scratch. By the end you'll have a working plugin with multiple tools, lifecycle hooks, shipped data files, and a bundled skill — everything the plugin system supports.
 
+:::info Not sure which guide you need?
+Hermes has several distinct pluggable interfaces — some use Python `register_*` APIs, others are config-driven or drop-in directories. Use this map first:
+
+| If you want to add… | Read |
+|---|---|
+| Custom tools, hooks, slash commands, skills, or CLI subcommands | **This guide** (the general plugin surface) |
+| An **LLM / inference backend** (new provider) | [Model Provider Plugins](/docs/developer-guide/model-provider-plugin) |
+| A **gateway channel** (Discord/Telegram/IRC/Teams/etc.) | [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) |
+| A **memory backend** (Honcho/Mem0/Supermemory/etc.) | [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) |
+| A **context-compression engine** | [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) |
+| An **image-generation backend** | [Image Generation Provider Plugins](/docs/developer-guide/image-gen-provider-plugin) |
+| A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](/docs/user-guide/features/tts#custom-command-providers) — config-driven, no Python needed |
+| An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](/docs/user-guide/features/tts#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to a shell template |
+| **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](/docs/user-guide/features/mcp) — declare `mcp_servers.<name>` in `config.yaml` |
+| **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](/docs/user-guide/features/hooks#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` |
+| **Shell hooks** (run a shell command on events) | [Shell Hooks](/docs/user-guide/features/hooks#shell-hooks) — declare under `hooks:` in `config.yaml` |
+| **Additional skill sources** (custom GitHub repos, private skill indexes) | [Skills](/docs/user-guide/features/skills) — `hermes skills tap add <repo>` · [Publishing a tap](/docs/user-guide/features/skills#publishing-a-custom-skill-tap) |
+| A first-class **core** inference provider (not a plugin) | [Adding Providers](/docs/developer-guide/adding-providers) |
+
+See the full [Pluggable interfaces table](/docs/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each) for a consolidated view of every extension surface including config-driven (TTS, STT, MCP, shell hooks) and drop-in directory (gateway hooks) styles.
+:::
+
 ## What you're building
 
 A **calculator** plugin with two tools:
@@ -242,7 +264,23 @@ def register(ctx):
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
+- `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
+- `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - If this function crashes, the plugin is disabled but Hermes continues fine
+
+**`dispatch_tool` example — a slash command that runs a tool:**
+
+```python
+def handle_scan(ctx, argstr):
+    """Implement /scan by invoking the terminal tool through the registry."""
+    result = ctx.dispatch_tool("terminal", {"command": f"find . -name '{argstr}'"})
+    return result  # returned to the caller's chat UI
+
+def register(ctx):
+    ctx.register_command("scan", handle_scan, help="Find files matching a glob")
+```
+
+The dispatched tool goes through the normal approval, redaction, and budget pipelines — it's a real tool invocation, not a shortcut around them.
 
 ## Step 6: Test it
 
@@ -306,34 +344,48 @@ with open(_DATA_FILE) as f:
     _DATA = yaml.safe_load(f)
 ```
 
-### Bundle a skill
+### Bundle skills
 
-Include a `skill.md` file and install it during registration:
+Plugins can ship skill files that the agent loads via `skill_view("plugin:skill")`. Register them in your `__init__.py`:
+
+```
+~/.hermes/plugins/my-plugin/
+├── __init__.py
+├── plugin.yaml
+└── skills/
+    ├── my-workflow/
+    │   └── SKILL.md
+    └── my-checklist/
+        └── SKILL.md
+```
 
 ```python
-import shutil
 from pathlib import Path
 
-def _install_skill():
-    """Copy our skill to ~/.hermes/skills/ on first load."""
-    try:
-        from hermes_cli.config import get_hermes_home
-        dest = get_hermes_home() / "skills" / "my-plugin" / "SKILL.md"
-    except Exception:
-        dest = Path.home() / ".hermes" / "skills" / "my-plugin" / "SKILL.md"
-
-    if dest.exists():
-        return  # don't overwrite user edits
-
-    source = Path(__file__).parent / "skill.md"
-    if source.exists():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, dest)
-
 def register(ctx):
-    ctx.register_tool(...)
-    _install_skill()
+    skills_dir = Path(__file__).parent / "skills"
+    for child in sorted(skills_dir.iterdir()):
+        skill_md = child / "SKILL.md"
+        if child.is_dir() and skill_md.exists():
+            ctx.register_skill(child.name, skill_md)
 ```
+
+The agent can now load your skills with their namespaced name:
+
+```python
+skill_view("my-plugin:my-workflow")   # → plugin's version
+skill_view("my-workflow")              # → built-in version (unchanged)
+```
+
+**Key properties:**
+- Plugin skills are **read-only** — they don't enter `~/.hermes/skills/` and can't be edited via `skill_manage`.
+- Plugin skills are **not** listed in the system prompt's `<available_skills>` index — they're opt-in explicit loads.
+- Bare skill names are unaffected — the namespace prevents collisions with built-in skills.
+- When the agent loads a plugin skill, a bundle context banner is prepended listing sibling skills from the same plugin.
+
+:::tip Legacy pattern
+The old `shutil.copy2` pattern (copying a skill into `~/.hermes/skills/`) still works but creates name collision risk with built-in skills. Prefer `ctx.register_skill()` for new plugins.
+:::
 
 ### Gate on environment variables
 
@@ -400,13 +452,13 @@ Each hook is documented in full on the **[Event Hooks reference](/docs/user-guid
 | Hook | Fires when | Callback signature | Returns |
 |------|-----------|-------------------|---------|
 | [`pre_tool_call`](/docs/user-guide/features/hooks#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | ignored |
-| [`post_tool_call`](/docs/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str` | ignored |
+| [`post_tool_call`](/docs/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](/docs/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
 | [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
 | [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
 | [`on_session_end`](/docs/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
-| [`pre_api_request`](/docs/user-guide/features/hooks#pre_api_request) | Before each HTTP request to the LLM provider | `method: str, url: str, headers: dict, body: dict` | ignored |
-| [`post_api_request`](/docs/user-guide/features/hooks#post_api_request) | After each HTTP response from the LLM provider | `method: str, url: str, status_code: int, response: dict` | ignored |
+| [`on_session_finalize`](/docs/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
+| [`on_session_reset`](/docs/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
 
 Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
 
@@ -547,13 +599,382 @@ After registration, users can run `hermes my-plugin status`, `hermes my-plugin c
 
 **Active-provider gating:** Memory plugin CLI commands only appear when their provider is the active `memory.provider` in config. If a user hasn't set up your provider, your CLI commands won't clutter the help output.
 
+### Register slash commands
+
+Plugins can register in-session slash commands — commands users type during a conversation (like `/lcm status` or `/ping`). These work in both CLI and gateway (Telegram, Discord, etc.).
+
+```python
+def _handle_status(raw_args: str) -> str:
+    """Handler for /mystatus — called with everything after the command name."""
+    if raw_args.strip() == "help":
+        return "Usage: /mystatus [help|check]"
+    return "Plugin status: all systems nominal"
+
+def register(ctx):
+    ctx.register_command(
+        "mystatus",
+        handler=_handle_status,
+        description="Show plugin status",
+    )
+```
+
+After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
+
+**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "")`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
+| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
+| `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+
+**Key differences from `register_cli_command()`:**
+
+| | `register_command()` | `register_cli_command()` |
+|---|---|---|
+| Invoked as | `/name` in a session | `hermes name` in a terminal |
+| Where it works | CLI sessions, Telegram, Discord, etc. | Terminal only |
+| Handler receives | Raw args string | argparse `Namespace` |
+| Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
+
+**Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
+
+**Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
+
+```python
+async def _handle_check(raw_args: str) -> str:
+    result = await some_async_operation()
+    return f"Check result: {result}"
+
+def register(ctx):
+    ctx.register_command("check", handler=_handle_check, description="Run async check")
+```
+
+### Dispatch tools from slash commands
+
+Slash command handlers that need to orchestrate tools (spawn a subagent via `delegate_task`, call `file_edit`, etc.) should use `ctx.dispatch_tool()` instead of reaching into framework internals. The parent-agent context (workspace hints, spinner, model inheritance) is wired up automatically.
+
+```python
+def register(ctx):
+    def _handle_deliver(raw_args: str):
+        result = ctx.dispatch_tool(
+            "delegate_task",
+            {
+                "goal": raw_args,
+                "toolsets": ["terminal", "file", "web"],
+            },
+        )
+        return result
+
+    ctx.register_command(
+        "deliver",
+        handler=_handle_deliver,
+        description="Delegate a goal to a subagent",
+    )
+```
+
+**Signature:** `ctx.dispatch_tool(name: str, args: dict, *, parent_agent=None) -> str`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Tool name as registered in the tool registry (e.g. `"delegate_task"`, `"file_edit"`) |
+| `args` | `dict` | Tool arguments, same shape the model would send |
+| `parent_agent` | `Agent \| None` | Optional override. When omitted, resolves from the current CLI agent (or degrades gracefully in gateway mode) |
+
+**Runtime behavior:**
+
+- **CLI mode:** `parent_agent` is resolved from the active CLI agent so workspace hints, spinner, and model selection inherit as expected.
+- **Gateway mode:** There is no CLI agent, so tools degrade gracefully — workspace is read from `TERMINAL_CWD` and no spinner is shown.
+- **Explicit override:** If the caller passes `parent_agent=` explicitly, it is respected and not overwritten.
+
+This is the public, stable interface for tool dispatch from plugin commands. Plugins should not reach into `ctx._cli_ref.agent` or similar private state.
+
 :::tip
-This guide covers **general plugins** (tools, hooks, CLI commands). For specialized plugin types, see:
-- [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — cross-session knowledge backends
-- [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) — alternative context management strategies
+This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::
 
-### Distribute via pip
+## Specialized plugin types
+
+Hermes has five specialized plugin types beyond the general surface. Each ships as a directory under `plugins/<category>/<name>/` (bundled) or `~/.hermes/plugins/<category>/<name>/` (user). The contract differs by category — pick the one you need, then read its full guide.
+
+### Model provider plugins — add an LLM backend
+
+Drop a profile into `plugins/model-providers/<name>/`:
+
+```python
+# plugins/model-providers/acme/__init__.py
+from providers import register_provider
+from providers.base import ProviderProfile
+
+register_provider(ProviderProfile(
+    name="acme",
+    aliases=("acme-inference",),
+    display_name="Acme Inference",
+    env_vars=("ACME_API_KEY", "ACME_BASE_URL"),
+    base_url="https://api.acme.example.com/v1",
+    auth_type="api_key",
+    default_aux_model="acme-small-fast",
+    fallback_models=("acme-large-v3", "acme-medium-v3"),
+))
+```
+
+```yaml
+# plugins/model-providers/acme/plugin.yaml
+name: acme-provider
+kind: model-provider
+version: 1.0.0
+description: Acme Inference — OpenAI-compatible direct API
+```
+
+Lazy-discovered the first time anything calls `get_provider_profile()` or `list_providers()` — `auth.py`, `config.py`, `doctor.py`, `models.py`, `runtime_provider.py`, and the chat_completions transport auto-wire to it. User plugins override bundled ones by name.
+
+**Full guide:** [Model Provider Plugins](/docs/developer-guide/model-provider-plugin) — field reference, overridable hooks (`prepare_messages`, `build_extra_body`, `build_api_kwargs_extras`, `fetch_models`), api_mode selection, auth types, testing.
+
+### Platform plugins — add a gateway channel
+
+Drop an adapter into `plugins/platforms/<name>/`:
+
+```python
+# plugins/platforms/myplatform/adapter.py
+from gateway.platforms.base import BasePlatformAdapter
+
+class MyPlatformAdapter(BasePlatformAdapter):
+    async def connect(self): ...
+    async def send(self, chat_id, text): ...
+    async def disconnect(self): ...
+
+def check_requirements():
+    import os
+    return bool(os.environ.get("MYPLATFORM_TOKEN"))
+
+def _env_enablement():
+    import os
+    tok = os.getenv("MYPLATFORM_TOKEN", "").strip()
+    if not tok:
+        return None
+    return {"token": tok}
+
+def register(ctx):
+    ctx.register_platform(
+        name="myplatform",
+        label="MyPlatform",
+        adapter_factory=lambda cfg: MyPlatformAdapter(cfg),
+        check_fn=check_requirements,
+        required_env=["MYPLATFORM_TOKEN"],
+        # Auto-populate PlatformConfig.extra from env so env-only setups
+        # show up in `hermes gateway status` without SDK instantiation.
+        env_enablement_fn=_env_enablement,
+        # Opt in to cron delivery: `deliver=myplatform` routes to this var.
+        cron_deliver_env_var="MYPLATFORM_HOME_CHANNEL",
+        emoji="💬",
+        platform_hint="You are chatting via MyPlatform. Keep responses concise.",
+    )
+```
+
+```yaml
+# plugins/platforms/myplatform/plugin.yaml
+name: myplatform-platform
+label: MyPlatform
+kind: platform
+version: 1.0.0
+description: MyPlatform gateway adapter
+requires_env:
+  - name: MYPLATFORM_TOKEN
+    description: "Bot token from the MyPlatform console"
+    password: true
+optional_env:
+  - name: MYPLATFORM_HOME_CHANNEL
+    description: "Default channel for cron delivery"
+    password: false
+```
+
+**Full guide:** [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) — complete `BasePlatformAdapter` contract, message routing, auth gating, setup wizard integration. Look at `plugins/platforms/irc/` for a stdlib-only working example.
+
+### Memory provider plugins — add a cross-session knowledge backend
+
+Drop an implementation of `MemoryProvider` into `plugins/memory/<name>/`:
+
+```python
+# plugins/memory/my-memory/__init__.py
+from agent.memory_provider import MemoryProvider
+
+class MyMemoryProvider(MemoryProvider):
+    @property
+    def name(self) -> str:
+        return "my-memory"
+
+    def is_available(self) -> bool:
+        import os
+        return bool(os.environ.get("MY_MEMORY_API_KEY"))
+
+    def initialize(self, session_id: str, **kwargs) -> None:
+        self._session_id = session_id
+
+    def sync_turn(self, user_message, assistant_response, **kwargs) -> None:
+        ...
+
+    def prefetch(self, query: str, **kwargs) -> str | None:
+        ...
+
+def register(ctx):
+    ctx.register_memory_provider(MyMemoryProvider())
+```
+
+Memory providers are single-select — only one is active at a time, chosen via `memory.provider` in `config.yaml`.
+
+**Full guide:** [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — full `MemoryProvider` ABC, threading contract, profile isolation, CLI command registration via `cli.py`.
+
+### Context engine plugins — replace the context compressor
+
+```python
+# plugins/context_engine/my-engine/__init__.py
+from agent.context_engine import ContextEngine
+
+class MyContextEngine(ContextEngine):
+    @property
+    def name(self) -> str:
+        return "my-engine"
+
+    def should_compress(self, messages, model) -> bool: ...
+    def compress(self, messages, model) -> list[dict]: ...
+
+def register(ctx):
+    ctx.register_context_engine(MyContextEngine())
+```
+
+Context engines are single-select — chosen via `context.engine` in `config.yaml`.
+
+**Full guide:** [Context Engine Plugins](/docs/developer-guide/context-engine-plugin).
+
+### Image-generation backends
+
+Drop a provider into `plugins/image_gen/<name>/`:
+
+```python
+# plugins/image_gen/my-imggen/__init__.py
+from agent.image_gen_provider import ImageGenProvider
+
+class MyImageGenProvider(ImageGenProvider):
+    @property
+    def name(self) -> str:
+        return "my-imggen"
+
+    def is_available(self) -> bool: ...
+    def generate(self, prompt: str, **kwargs) -> str: ...   # returns image path
+
+def register(ctx):
+    ctx.register_image_gen_provider(MyImageGenProvider())
+```
+
+```yaml
+# plugins/image_gen/my-imggen/plugin.yaml
+name: my-imggen
+kind: backend
+version: 1.0.0
+description: Custom image generation backend
+```
+
+**Full guide:** [Image Generation Provider Plugins](/docs/developer-guide/image-gen-provider-plugin) — full `ImageGenProvider` ABC, `list_models()` / `get_setup_schema()` metadata, `success_response()`/`error_response()` helpers, base64 vs URL output, user overrides, pip distribution.
+
+**Reference examples:** `plugins/image_gen/openai/` (DALL-E / GPT-Image via OpenAI SDK), `plugins/image_gen/openai-codex/`, `plugins/image_gen/xai/` (Grok image gen).
+
+## Non-Python extension surfaces
+
+Hermes also accepts extensions that aren't Python plugins at all. These are shown in the [Pluggable interfaces table](/docs/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each); the sections below sketch each authoring style briefly.
+
+### MCP servers — register external tools
+
+Model Context Protocol (MCP) servers register their own tools into Hermes without any Python plugin. Declare them in `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  filesystem:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+    timeout: 120
+
+  linear:
+    url: "https://mcp.linear.app/sse"
+    auth:
+      type: "oauth"
+```
+
+Hermes connects to each server at startup, lists its tools, and registers them alongside built-ins. The LLM sees them exactly like any other tool. **Full guide:** [MCP](/docs/user-guide/features/mcp).
+
+### Gateway event hooks — fire on lifecycle events
+
+Drop a manifest + handler into `~/.hermes/hooks/<name>/`:
+
+```yaml
+# ~/.hermes/hooks/long-task-alert/HOOK.yaml
+name: long-task-alert
+description: Send a push notification when a long task finishes
+events:
+  - agent:end
+```
+
+```python
+# ~/.hermes/hooks/long-task-alert/handler.py
+async def handle(event_type: str, context: dict) -> None:
+    if context.get("duration_seconds", 0) > 120:
+        # send notification …
+        pass
+```
+
+Events include `gateway:startup`, `session:start`, `session:end`, `session:reset`, `agent:start`, `agent:step`, `agent:end`, and wildcard `command:*`. Errors in hooks are caught and logged — they never block the main pipeline.
+
+**Full guide:** [Gateway Event Hooks](/docs/user-guide/features/hooks#gateway-event-hooks).
+
+### Shell hooks — run a shell command on tool calls
+
+If you just want to run a script when a tool fires (notifications, audit logs, desktop alerts, auto-formatters), use shell hooks in `config.yaml` — no Python required:
+
+```yaml
+hooks:
+  - event: post_tool_call
+    command: "notify-send 'Tool ran: {tool_name}'"
+    when:
+      tools: [terminal, patch, write_file]
+```
+
+Supports all the same events as Python plugin hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`, `pre_gateway_dispatch`) plus structured JSON output for `pre_tool_call` blocking decisions.
+
+**Full guide:** [Shell Hooks](/docs/user-guide/features/hooks#shell-hooks).
+
+### Skill sources — add a custom skill registry
+
+If you maintain a GitHub repo of skills (or want to pull from a community index beyond the built-in sources), add it as a **tap**:
+
+```bash
+hermes skills tap add myorg/skills-repo
+hermes skills search my-workflow --source myorg/skills-repo
+hermes skills install myorg/skills-repo/my-workflow
+```
+
+Publishing your own tap is just a GitHub repo with `skills/<skill-name>/SKILL.md` directories — no server or registry signup needed.
+
+**Full guides:** [Skills Hub](/docs/user-guide/features/skills#skills-hub) · [Publishing a custom tap](/docs/user-guide/features/skills#publishing-a-custom-skill-tap) (repo layout, minimal example, non-default paths, trust levels).
+
+### TTS / STT via command templates
+
+Any CLI that reads/writes audio or text can be plugged in through `config.yaml` — no Python code:
+
+```yaml
+tts:
+  provider: voxcpm
+  providers:
+    voxcpm:
+      type: command
+      command: "voxcpm --ref ~/voice.wav --text-file {input_path} --out {output_path}"
+      output_format: mp3
+      voice_compatible: true
+```
+
+For STT, point `HERMES_LOCAL_STT_COMMAND` at a shell template. Supported placeholders: `{input_path}`, `{output_path}`, `{format}`, `{voice}`, `{model}`, `{speed}` (TTS); `{input_path}`, `{output_dir}`, `{language}`, `{model}` (STT). Any path-interacting CLI is automatically a plugin.
+
+**Full guides:** [TTS custom command providers](/docs/user-guide/features/tts#custom-command-providers) · [STT](/docs/user-guide/features/tts#voice-message-transcription-stt).
+
+## Distribute via pip
 
 For sharing plugins publicly, add an entry point to your Python package:
 
@@ -567,6 +988,43 @@ my-plugin = "my_plugin_package"
 pip install hermes-plugin-calculator
 # Plugin auto-discovered on next hermes startup
 ```
+
+## Distribute for NixOS
+
+NixOS users can install your plugin declaratively if you provide a `pyproject.toml` with entry points:
+
+**Entry-point plugins** (recommended for distribution):
+```nix
+# User's configuration.nix
+services.hermes-agent.extraPythonPackages = [
+  (pkgs.python312Packages.buildPythonPackage {
+    pname = "my-plugin";
+    version = "1.0.0";
+    src = pkgs.fetchFromGitHub {
+      owner = "you";
+      repo = "hermes-my-plugin";
+      rev = "v1.0.0";
+      hash = "sha256-...";  # nix-prefetch-url --unpack
+    };
+    format = "pyproject";
+    build-system = [ pkgs.python312Packages.setuptools ];
+  })
+];
+```
+
+**Directory plugins** (no `pyproject.toml` needed):
+```nix
+services.hermes-agent.extraPlugins = [
+  (pkgs.fetchFromGitHub {
+    owner = "you";
+    repo = "hermes-my-plugin";
+    rev = "v1.0.0";
+    hash = "sha256-...";
+  })
+];
+```
+
+See the [Nix Setup guide](/docs/getting-started/nix-setup#plugins) for complete documentation including overlay usage and collision checking.
 
 ## Common mistakes
 

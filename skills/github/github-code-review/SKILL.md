@@ -1,6 +1,6 @@
 ---
 name: github-code-review
-description: Review code changes by analyzing git diffs, leaving inline comments on PRs, and performing thorough pre-push review. Works with gh CLI or falls back to git + GitHub REST API via curl.
+description: "Review PRs: diffs, inline comments via gh or REST."
 version: 1.1.0
 author: Hermes Agent
 license: MIT
@@ -334,7 +334,7 @@ When the user asks you to "review PR #N", "look at this PR", or gives you a PR U
 ### Step 1: Set up environment
 
 ```bash
-source ~/.hermes/skills/github/github-auth/scripts/gh-env.sh
+source "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
 # Or run the inline setup block from the top of this skill
 ```
 

@@ -68,6 +68,37 @@ class TestNonFileInputs:
         """A directory path should not be treated as a file drop."""
         assert _detect_file_drop(str(tmp_path)) is None
 
+    def test_long_slash_command_does_not_raise(self):
+        """Regression: long pasted slash commands like `/goal <long prose>`
+        used to raise OSError(ENAMETOOLONG, errno 63 macOS / 36 Linux)
+        from `Path.exists()` inside `_resolve_attachment_path`, which
+        propagated up to `process_loop`'s catch-all and silently lost
+        the user's input. The fix wraps the stat call in a try/except
+        OSError and returns None, letting the slash-command dispatch
+        path handle the input downstream.
+
+        Reproducer: paste a `/goal` followed by ~430 chars of prose.
+        Without the fix this triggers ENAMETOOLONG; with the fix it
+        cleanly returns None (file-drop = no), so `_looks_like_slash_command`
+        gets a chance to dispatch it.
+        """
+        # 430-char `/goal` payload — well above NAME_MAX (255 bytes) on
+        # all common filesystems.
+        long_goal = (
+            "/goal " + ("Drive the board: triage triage-status items, "
+                        "unblock spillover tasks where work is shipped, "
+                        "advance P1 items by decomposing where needed. ") * 4
+        )
+        assert len(long_goal) > 255  # confirms it would have triggered ENAMETOOLONG
+        assert _detect_file_drop(long_goal) is None
+
+    def test_path_longer_than_namemax_does_not_raise(self):
+        """Defensive: a single token longer than NAME_MAX should return
+        None, not raise. Could happen with absurdly long synthetic inputs
+        from prompt-injection attempts or fuzzers."""
+        very_long_path = "/" + ("a" * 300)
+        assert _detect_file_drop(very_long_path) is None
+
 
 # ---------------------------------------------------------------------------
 # Tests: image file detection
@@ -146,6 +177,37 @@ class TestEscapedSpaces:
         assert result is not None
         assert result["path"] == tmp_image_with_spaces
         assert result["remainder"] == "what is this?"
+
+    def test_unquoted_spaces_in_path(self, tmp_image_with_spaces):
+        result = _detect_file_drop(str(tmp_image_with_spaces))
+        assert result is not None
+        assert result["path"] == tmp_image_with_spaces
+        assert result["is_image"] is True
+        assert result["remainder"] == ""
+
+    def test_unquoted_spaces_with_trailing_text(self, tmp_image_with_spaces):
+        user_input = f"{tmp_image_with_spaces} what is this?"
+        result = _detect_file_drop(user_input)
+        assert result is not None
+        assert result["path"] == tmp_image_with_spaces
+        assert result["remainder"] == "what is this?"
+
+    def test_mixed_escaped_and_literal_spaces_in_path(self, tmp_path):
+        img = tmp_path / "Screenshot 2026-04-21 at 1.04.43 PM.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        mixed = str(img).replace("Screenshot ", "Screenshot\\ ").replace("2026-04-21 ", "2026-04-21\\ ").replace("at ", "at\\ ")
+        result = _detect_file_drop(mixed)
+        assert result is not None
+        assert result["path"] == img
+        assert result["is_image"] is True
+        assert result["remainder"] == ""
+
+    def test_file_uri_image_path(self, tmp_image_with_spaces):
+        uri = tmp_image_with_spaces.as_uri()
+        result = _detect_file_drop(uri)
+        assert result is not None
+        assert result["path"] == tmp_image_with_spaces
+        assert result["is_image"] is True
 
     def test_tilde_prefixed_path(self, tmp_path, monkeypatch):
         home = tmp_path / "home"

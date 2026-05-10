@@ -8,10 +8,19 @@ from agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
+    get_cute_tool_message,
+    set_tool_preview_max_len,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_tool_preview_max_len():
+    set_tool_preview_max_len(0)
+    yield
+    set_tool_preview_max_len(0)
 
 
 class TestBuildToolPreview:
@@ -83,6 +92,13 @@ class TestBuildToolPreview:
         assert result is not None
         assert "user" in result
 
+    def test_memory_replace_missing_old_text_marked(self):
+        # Avoid empty quotes "" in the preview when old_text is missing/None.
+        result = build_tool_preview("memory", {"action": "replace", "target": "memory"})
+        assert result == '~memory: "<missing old_text>"'
+        result = build_tool_preview("memory", {"action": "remove", "target": "memory", "old_text": None})
+        assert result == '-memory: "<missing old_text>"'
+
     def test_session_search_preview(self):
         result = build_tool_preview("session_search", {"query": "find something"})
         assert result is not None
@@ -93,6 +109,45 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+
+class TestCuteToolMessagePreviewLength:
+    def test_terminal_preview_unlimited_when_config_is_zero(self):
+        set_tool_preview_max_len(0)
+        command = "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")' | head -5"
+
+        line = get_cute_tool_message("terminal", {"command": command}, 0.1)
+
+        assert command in line
+        assert "..." not in line
+
+    def test_terminal_preview_uses_positive_configured_limit(self):
+        set_tool_preview_max_len(80)
+        command = "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")' | head -5"
+
+        line = get_cute_tool_message("terminal", {"command": command}, 0.1)
+
+        assert command[:77] in line
+        assert "..." in line
+        assert "head -5" not in line
+
+    def test_search_files_preview_uses_positive_configured_limit_not_default(self):
+        set_tool_preview_max_len(80)
+        pattern = "function.formatToolCall.context.preview.compactPreview.maxLength.truncate"
+
+        line = get_cute_tool_message("search_files", {"pattern": pattern}, 0.1)
+
+        assert pattern in line
+        assert "..." not in line
+
+    def test_path_preview_uses_positive_configured_limit_not_default(self):
+        set_tool_preview_max_len(80)
+        path = "/tmp/hermes-test-preview-length/deeply/nested/path/test-output.txt"
+
+        line = get_cute_tool_message("read_file", {"path": path}, 0.1)
+
+        assert path in line
+        assert "..." not in line
 
 
 class TestEditDiffPreview:

@@ -3,17 +3,26 @@ name: Docker Build and Publish
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+    paths:
+      - '**/*.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - 'docker/**'
+      - '.github/workflows/docker-publish.yml'
   release:
     types: [published]
 
 permissions:
   contents: read
 
+# Top-level concurrency: do NOT cancel in-flight builds when a new push lands.
+# Every commit deserves its own SHA-tagged image in the registry, and we guard
+# the :latest tag in a separate job below (with its own concurrency group) so
+# a slow run can't clobber :latest with older bits.
 concurrency:
   group: docker-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-and-push:
@@ -21,23 +30,30 @@ jobs:
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      pushed_sha_tag: ${{ steps.mark_pushed.outputs.pushed }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           submodules: recursive
+          # Fetch enough history to run `git merge-base --is-ancestor` in the
+          # move-latest job.  That job reuses this checkout via its own
+          # actions/checkout call, but commits reachable from main up to ~1000
+          # back are plenty for any realistic race window.
+          fetch-depth: 1000
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
       # Build amd64 only so we can `load` the image for smoke testing.
       # `load: true` cannot export a multi-arch manifest to the local daemon.
       # The multi-arch build follows on push to main / release.
       - name: Build image (amd64, smoke test)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
           context: .
           file: Dockerfile
@@ -49,33 +65,65 @@ jobs:
 
       - name: Test image starts
         run: |
+          mkdir -p /tmp/hermes-test
+          sudo chown -R 10000:10000 /tmp/hermes-test
+          # The image runs as the hermes user (UID 10000).  GitHub Actions
+          # creates /tmp/hermes-test root-owned by default, which hermes
+          # can't write to — chown it to match the in-container UID before
+          # bind-mounting.  Real users doing `docker run -v ~/.hermes:...`
+          # with their own UID hit the same issue and have their own
+          # remediations (HERMES_UID env var, or chown locally).
           docker run --rm \
             -v /tmp/hermes-test:/opt/data \
             --entrypoint /opt/hermes/docker/entrypoint.sh \
             nousresearch/hermes-agent:test --help
 
+      - name: Test dashboard subcommand
+        run: |
+          mkdir -p /tmp/hermes-test
+          sudo chown -R 10000:10000 /tmp/hermes-test
+          # Verify the dashboard subcommand is included in the Docker image.
+          # This prevents regressions like #9153 where the dashboard command
+          # was present in source but missing from the published image.
+          docker run --rm \
+            -v /tmp/hermes-test:/opt/data \
+            --entrypoint /opt/hermes/docker/entrypoint.sh \
+            nousresearch/hermes-agent:test dashboard --help
+
       - name: Log in to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Push multi-arch image (main branch)
+      # Always push a per-commit SHA tag on main.  This is race-free because
+      # every commit has a unique SHA — concurrent runs can't clobber each
+      # other here.  We also embed the git SHA as an OCI label so the
+      # move-latest job (below) can read it back off the registry's `:latest`.
+      - name: Push multi-arch image with SHA tag (main branch)
+        id: push_sha
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
           context: .
           file: Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: nousresearch/hermes-agent:latest
+          tags: nousresearch/hermes-agent:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Mark SHA tag pushed
+        id: mark_pushed
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: echo "pushed=true" >> "$GITHUB_OUTPUT"
+
       - name: Push multi-arch image (release)
         if: github.event_name == 'release'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
           context: .
           file: Dockerfile
@@ -84,3 +132,119 @@ jobs:
           tags: nousresearch/hermes-agent:${{ github.event.release.tag_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Second job: moves `:latest` to point at the SHA tag the first job pushed.
+  #
+  # Has its own concurrency group with `cancel-in-progress: true`, which
+  # gives us the serialization we need: if a newer push arrives while an
+  # older run is mid-way through this job, the older run is cancelled
+  # before it can clobber `:latest`.  Combined with the ancestor check
+  # below, this means `:latest` only ever moves forward in git history.
+  move-latest:
+    if: |
+      github.repository == 'NousResearch/hermes-agent'
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && needs.build-and-push.outputs.pushed_sha_tag == 'true'
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: docker-move-latest-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 1000
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Read the git revision label off the current `:latest` manifest, then
+      # use `git merge-base --is-ancestor` to check whether our commit is a
+      # descendant of it.  If `:latest` doesn't exist yet, or its label is
+      # missing, we treat that as "safe to publish".  If another run already
+      # advanced `:latest` past us (or diverged), we skip and leave it alone.
+      - name: Decide whether to move :latest
+        id: latest_check
+        run: |
+          set -euo pipefail
+          image=nousresearch/hermes-agent
+
+          # Pull the JSON for the linux/amd64 sub-manifest's config and extract
+          # the OCI revision label with jq — Go template field access can't
+          # handle dots in map keys, so using json+jq is the robust route.
+          image_json=$(
+            docker buildx imagetools inspect "${image}:latest" \
+              --format '{{ json (index .Image "linux/amd64") }}' \
+              2>/dev/null || true
+          )
+
+          if [ -z "${image_json}" ]; then
+            echo "No existing :latest (or inspect failed) — safe to publish."
+            echo "push_latest=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          current_sha=$(
+            printf '%s' "${image_json}" \
+              | jq -r '.config.Labels."org.opencontainers.image.revision" // ""'
+          )
+
+          if [ -z "${current_sha}" ]; then
+            echo "Registry :latest has no revision label — safe to publish."
+            echo "push_latest=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Registry :latest is at ${current_sha}"
+          echo "This run is at      ${GITHUB_SHA}"
+
+          if [ "${current_sha}" = "${GITHUB_SHA}" ]; then
+            echo ":latest already points at our SHA — nothing to do."
+            echo "push_latest=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Make sure we have the :latest commit locally for merge-base.
+          if ! git cat-file -e "${current_sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --prune origin \
+              "+refs/heads/main:refs/remotes/origin/main" \
+              || true
+          fi
+
+          if ! git cat-file -e "${current_sha}^{commit}" 2>/dev/null; then
+            echo "Registry :latest points at an unknown commit (${current_sha}); refusing to overwrite."
+            echo "push_latest=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Our SHA must be a descendant of the current :latest to be safe.
+          if git merge-base --is-ancestor "${current_sha}" "${GITHUB_SHA}"; then
+            echo "Our commit is a descendant of :latest — safe to advance."
+            echo "push_latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Another run advanced :latest past us (or diverged) — leaving it alone."
+            echo "push_latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Retag the already-pushed SHA manifest as :latest.  This is a registry-
+      # side operation — no rebuild, no layer re-push — so it's quick and
+      # atomic per-tag.  The ancestor check above plus the cancel-in-progress
+      # concurrency on this job together guarantee we only ever move :latest
+      # forward in git history.
+      - name: Move :latest to this SHA
+        if: steps.latest_check.outputs.push_latest == 'true'
+        run: |
+          set -euo pipefail
+          image=nousresearch/hermes-agent
+          docker buildx imagetools create \
+            --tag "${image}:latest" \
+            "${image}:sha-${GITHUB_SHA}"

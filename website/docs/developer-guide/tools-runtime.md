@@ -42,36 +42,22 @@ registry.register(
 
 Each call creates a `ToolEntry` stored in the singleton `ToolRegistry._tools` dict keyed by tool name. If a name collision occurs across toolsets, a warning is logged and the later registration wins.
 
-### Discovery: `_discover_tools()`
+### Discovery: `discover_builtin_tools()`
 
-When `model_tools.py` is imported, it calls `_discover_tools()` which imports every tool module in order:
+When `model_tools.py` is imported, it calls `discover_builtin_tools()` from `tools/registry.py`. This function scans every `tools/*.py` file using AST parsing to find modules that contain top-level `registry.register()` calls, then imports them:
 
 ```python
-_modules = [
-    "tools.web_tools",
-    "tools.terminal_tool",
-    "tools.file_tools",
-    "tools.vision_tools",
-    "tools.mixture_of_agents_tool",
-    "tools.image_generation_tool",
-    "tools.skills_tool",
-    "tools.skill_manager_tool",
-    "tools.browser_tool",
-    "tools.cronjob_tools",
-    "tools.rl_training_tool",
-    "tools.tts_tool",
-    "tools.todo_tool",
-    "tools.memory_tool",
-    "tools.session_search_tool",
-    "tools.clarify_tool",
-    "tools.code_execution_tool",
-    "tools.delegate_tool",
-    "tools.process_registry",
-    "tools.send_message_tool",
-    # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
-    "tools.homeassistant_tool",
-]
+# tools/registry.py (simplified)
+def discover_builtin_tools(tools_dir=None):
+    tools_path = Path(tools_dir) if tools_dir else Path(__file__).parent
+    for path in sorted(tools_path.glob("*.py")):
+        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+            continue
+        if _module_registers_tools(path):  # AST check for top-level registry.register()
+            importlib.import_module(f"tools.{path.stem}")
 ```
+
+This auto-discovery means new tool files are picked up automatically — no manual list to maintain. The AST check only matches top-level `registry.register()` calls (not calls inside functions), so helper modules in `tools/` are not imported.
 
 Each import triggers the module's `registry.register()` calls. Errors in optional tools (e.g., missing `fal_client` for image generation) are caught and logged — they don't prevent other tools from loading.
 
@@ -227,6 +213,7 @@ The terminal system supports multiple backends:
 - singularity
 - modal
 - daytona
+- vercel_sandbox
 
 It also supports:
 

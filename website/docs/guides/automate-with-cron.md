@@ -14,6 +14,10 @@ For the full feature reference, see [Scheduled Tasks (Cron)](/docs/user-guide/fe
 Cron jobs run in fresh agent sessions with no memory of your current chat. Prompts must be **completely self-contained** — include everything the agent needs to know.
 :::
 
+:::tip Don't need the LLM? Use no-agent mode.
+For recurring watchdogs where the script already produces the exact message you want to send (memory alerts, disk alerts, CI pings, heartbeats), skip the LLM entirely with [script-only cron jobs](/docs/guides/cron-script-only). Zero tokens, same scheduler. You can ask Hermes to set one up for you in chat — the `cronjob` tool knows when to pick `no_agent=True` and writes the script for you.
+:::
+
 ---
 
 ## Pattern 1: Website Change Monitor
@@ -254,7 +258,7 @@ The `--deliver` flag controls where results go:
 
 **Test with `/cron run`.** Before waiting for the schedule to trigger, use `/cron run <job_id>` to execute immediately and verify the output looks right.
 
-**Schedule expressions.** Human-readable formats like `every 2h`, `30m`, and `daily at 9am` all work alongside standard cron expressions like `0 9 * * *`.
+**Schedule expressions.** Supported formats: relative delays (`30m`), intervals (`every 2h`), standard cron expressions (`0 9 * * *`), and ISO timestamps (`2025-06-15T09:00:00`). Natural language like `daily at 9am` is not supported — use `0 9 * * *` instead.
 
 ---
 

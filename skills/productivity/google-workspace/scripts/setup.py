@@ -21,6 +21,8 @@ Agent workflow:
   6. Run --check to verify. Done.
 """
 
+from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
+
 import argparse
 import json
 import os
@@ -28,13 +30,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    from hermes_constants import display_hermes_home, get_hermes_home
-except ModuleNotFoundError:
-    HERMES_AGENT_ROOT = Path(__file__).resolve().parents[4]
-    if HERMES_AGENT_ROOT.exists():
-        sys.path.insert(0, str(HERMES_AGENT_ROOT))
-    from hermes_constants import display_hermes_home, get_hermes_home
+# Ensure sibling modules (_hermes_home) are importable when run standalone.
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from _hermes_home import display_hermes_home, get_hermes_home
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
@@ -58,6 +59,13 @@ REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
 # copy the code from the browser's URL bar (or the page body).
 REDIRECT_URI = "http://localhost:1"
+
+
+def _normalize_authorized_user_payload(payload: dict) -> dict:
+    normalized = dict(payload)
+    if not normalized.get("type"):
+        normalized["type"] = "authorized_user"
+    return normalized
 
 
 def _load_token_payload(path: Path = TOKEN_PATH) -> dict:
@@ -104,7 +112,11 @@ def install_deps():
         return True
     except subprocess.CalledProcessError as e:
         print(f"ERROR: Failed to install dependencies: {e}")
-        print(f"Try manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
+        print(
+            "On environments without pip (e.g. Nix), install the optional extra instead:"
+        )
+        print("  pip install 'hermes-agent[google]'")
+        print(f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
         return False
 
 
@@ -151,7 +163,12 @@ def check_auth():
     if creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            TOKEN_PATH.write_text(creds.to_json())
+            TOKEN_PATH.write_text(
+                json.dumps(
+                    _normalize_authorized_user_payload(json.loads(creds.to_json())),
+                    indent=2,
+                )
+            )
             missing_scopes = _missing_scopes_from_payload(_load_token_payload(TOKEN_PATH))
             if missing_scopes:
                 print(f"AUTHENTICATED (partial): Token refreshed but missing {len(missing_scopes)} scopes:")
@@ -272,6 +289,7 @@ def exchange_auth_code(code: str):
         sys.exit(1)
 
     pending_auth = _load_pending_auth()
+    raw_callback = code
     code, returned_state = _extract_code_and_state(code)
     if returned_state and returned_state != pending_auth["state"]:
         print("ERROR: OAuth state mismatch. Run --auth-url again to start a fresh session.")
@@ -281,19 +299,13 @@ def exchange_auth_code(code: str):
     from google_auth_oauthlib.flow import Flow
     from urllib.parse import parse_qs, urlparse
 
-    # Extract granted scopes from the callback URL if present
-    if returned_state and "scope" in parse_qs(urlparse(code).query if isinstance(code, str) and code.startswith("http") else {}):
-        granted_scopes = parse_qs(urlparse(code).query)["scope"][0].split()
-    else:
-        # Try to extract from code_or_url parameter
-        if isinstance(code, str) and code.startswith("http"):
-            params = parse_qs(urlparse(code).query)
-            if "scope" in params:
-                granted_scopes = params["scope"][0].split()
-            else:
-                granted_scopes = SCOPES
-        else:
-            granted_scopes = SCOPES
+    # Extract granted scopes from the callback URL if the user pasted the full redirect URL.
+    granted_scopes = list(SCOPES)
+    if isinstance(raw_callback, str) and raw_callback.startswith("http"):
+        params = parse_qs(urlparse(raw_callback).query)
+        scope_val = (params.get("scope") or [""])[0].strip()
+        if scope_val:
+            granted_scopes = scope_val.split()
 
     flow = Flow.from_client_secrets_file(
         str(CLIENT_SECRET_PATH),
@@ -313,7 +325,7 @@ def exchange_auth_code(code: str):
         sys.exit(1)
 
     creds = flow.credentials
-    token_payload = json.loads(creds.to_json())
+    token_payload = _normalize_authorized_user_payload(json.loads(creds.to_json()))
 
     # Store only the scopes actually granted by the user, not what was requested.
     # creds.to_json() writes the requested scopes, which causes refresh to fail

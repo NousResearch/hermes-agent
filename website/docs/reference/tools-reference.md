@@ -6,9 +6,9 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 # Built-in Tools Reference
 
-This page documents all 47 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
+This page documents all 68 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts:** 10 browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, and 15 standalone tools across other toolsets.
+**Quick counts:** 10 browser tools (core) + 2 browser-cdp tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools, 5 Yuanbao tools, 2 Discord tools, and 15 standalone tools across other toolsets.
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with a server-name prefix (e.g., `github_create_issue` for the `github` MCP server). See [MCP Integration](/docs/user-guide/features/mcp) for configuration.
@@ -28,6 +28,15 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | `browser_snapshot` | Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: comp… | — |
 | `browser_type` | Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first. | — |
 | `browser_vision` | Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snaps… | — |
+
+## `browser-cdp` toolset
+
+Registered only when a Chrome DevTools Protocol endpoint is reachable at session start — via `/browser connect`, `browser.cdp_url` config, a Browserbase session, or Camofox.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `browser_cdp` | Send a raw Chrome DevTools Protocol command. Escape hatch for browser operations not covered by the higher-level `browser_*` tools. See https://chromedevtools.github.io/devtools-protocol/ | CDP endpoint |
+| `browser_dialog` | Respond to a native JavaScript dialog (alert / confirm / prompt / beforeunload). Call `browser_snapshot` first — pending dialogs appear in its `pending_dialogs` field. Then call `browser_dialog(action='accept'\|'dismiss')`. | CDP endpoint |
 
 ## `clarify` toolset
 
@@ -53,6 +62,25 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 |------|-------------|----------------------|
 | `delegate_task` | Spawn one or more subagents to work on tasks in isolated contexts. Each subagent gets its own conversation, terminal session, and toolset. Only the final summary is returned -- intermediate tool results never enter your context window. TWO… | — |
 
+## `feishu_doc` toolset
+
+Scoped to the Feishu document-comment intelligent-reply handler (`gateway/platforms/feishu_comment.py`). Not exposed on `hermes-cli` or the regular Feishu chat adapter.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `feishu_doc_read` | Read the full text content of a Feishu/Lark document (Docx, Doc, or Sheet) given its file_type and token. | Feishu app credentials |
+
+## `feishu_drive` toolset
+
+Scoped to the Feishu document-comment handler. Drives comment read/write operations on drive files.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `feishu_drive_add_comment` | Add a top-level comment on a Feishu/Lark document or file. | Feishu app credentials |
+| `feishu_drive_list_comments` | List whole-document comments on a Feishu/Lark file, most recent first. | Feishu app credentials |
+| `feishu_drive_list_comment_replies` | List replies on a specific Feishu comment thread (whole-doc or local-selection). | Feishu app credentials |
+| `feishu_drive_reply_comment` | Post a reply on a Feishu comment thread, with optional `@`-mention. | Feishu app credentials |
+
 ## `file` toolset
 
 | Tool | Description | Requires environment |
@@ -72,14 +100,14 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | `ha_list_services` | List available Home Assistant services (actions) for device control. Shows what actions can be performed on each device type and what parameters they accept. Use this to discover how to control devices found via ha_list_entities. | — |
 
 :::note
-**Honcho tools** (`honcho_conclude`, `honcho_context`, `honcho_profile`, `honcho_search`) are no longer built-in. They are available via the Honcho memory provider plugin at `plugins/memory/honcho/`. See [Plugins](../user-guide/features/plugins.md) for installation and usage.
+**Honcho tools** (`honcho_profile`, `honcho_search`, `honcho_context`, `honcho_reasoning`, `honcho_conclude`) are no longer built-in. They are available via the Honcho memory provider plugin at `plugins/memory/honcho/`. See [Memory Providers](../user-guide/features/memory-providers.md) for installation and usage.
 :::
 
 ## `image_gen` toolset
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `image_generate` | Generate high-quality images from text prompts using FLUX 2 Pro model with automatic 2x upscaling. Creates detailed, artistic images that are automatically upscaled for hi-rez results. Returns a single upscaled image URL. Display it using… | FAL_KEY |
+| `image_generate` | Generate high-quality images from text prompts using FAL.ai. The underlying model is user-configured (default: FLUX 2 Klein 9B, sub-1s generation) and is not selectable by the agent. Returns a single image URL. Display it using… | FAL_KEY |
 
 ## `memory` toolset
 
@@ -151,7 +179,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `web_search` | Search the web for information on any topic. Returns up to 5 relevant results with titles, URLs, and descriptions. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
+| `web_search` | Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. Accepts an optional `limit` (1-100, default 5). The query is passed through to the configured backend, so operators such as `site:domain`, `filetype:pdf`, `intitle:word`, `-term`, and `"exact phrase"` may work when the backend supports them. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
 | `web_extract` | Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
 
 ## `tts` toolset
@@ -159,5 +187,47 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `text_to_speech` | Convert text to speech audio. Returns a MEDIA: path that the platform delivers as a voice message. On Telegram it plays as a voice bubble, on Discord/WhatsApp as an audio attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider… | — |
+
+## `discord` toolset
+
+Registered on the `hermes-discord` platform toolset (gateway only). Uses the same bot token as the messaging adapter.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `discord` | Read and participate in a Discord server. Actions include `search_members`, `fetch_messages`, `send_message`, `react`, `fetch_channel`, `list_channels`, and more. | `DISCORD_BOT_TOKEN` |
+
+## `discord_admin` toolset
+
+Registered on the `hermes-discord` platform toolset. Moderation actions require the bot to hold the matching Discord permissions.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `discord_admin` | Manage a Discord server via the REST API: list guilds/channels/roles, create/edit/delete channels, manage role grants, timeouts, kicks, and bans. | `DISCORD_BOT_TOKEN` + bot permissions |
+
+## `spotify` toolset
+
+Registered by the bundled `spotify` plugin. Requires an OAuth token — run `hermes spotify setup` once to authorize.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `spotify_playback` | Control Spotify playback, inspect the active playback state, or fetch recently played tracks. | Spotify OAuth |
+| `spotify_devices` | List Spotify Connect devices or transfer playback to a different device. | Spotify OAuth |
+| `spotify_queue` | Inspect the user's Spotify queue or add an item to it. | Spotify OAuth |
+| `spotify_search` | Search the Spotify catalog for tracks, albums, artists, playlists, shows, or episodes. | Spotify OAuth |
+| `spotify_playlists` | List, inspect, create, update, and modify Spotify playlists. | Spotify OAuth |
+| `spotify_albums` | Fetch Spotify album metadata or album tracks. | Spotify OAuth |
+| `spotify_library` | List, save, or remove the user's saved Spotify tracks or albums. | Spotify OAuth |
+
+## `hermes-yuanbao` toolset
+
+Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's chat app; these tools drive its DM/group/sticker APIs.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `yb_query_group_info` | Query basic info about a group (called "派/Pai" in the app): name, owner, member count. | Yuanbao credentials |
+| `yb_query_group_members` | Query members of a group (for `@`-mentions, finding a user by name, listing bots). | Yuanbao credentials |
+| `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
+| `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
+| `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
 
 

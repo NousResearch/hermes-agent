@@ -37,9 +37,12 @@ import json
 import logging
 import os
 import re
+import secrets
 import socket
+import stat
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -52,19 +55,24 @@ logger = logging.getLogger(__name__)
 # Lazy imports -- MCP SDK with OAuth support is optional
 # ---------------------------------------------------------------------------
 
-_OAUTH_AVAILABLE = False
+_OAUTH_AVAILABLE=False
 try:
     from mcp.client.auth import OAuthClientProvider
     from mcp.shared.auth import (
         OAuthClientInformationFull,
         OAuthClientMetadata,
+        OAuthMetadata,
         OAuthToken,
     )
-    from pydantic import AnyUrl
 
-    _OAUTH_AVAILABLE = True
+    _OAUTH_AVAILABLE=True
 except ImportError:
     logger.debug("MCP OAuth types not available -- OAuth MCP auth disabled")
+
+try:
+    from pydantic import AnyUrl
+except ImportError:
+    AnyUrl = None  # type: ignore[assignment, misc]
 
 
 # ---------------------------------------------------------------------------
@@ -155,15 +163,41 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _write_json(path: Path, data: dict) -> None:
-    """Write a dict as JSON with restricted permissions (0o600)."""
+    """Write a dict as JSON with restricted permissions (0o600).
+
+    Uses ``os.open`` with ``O_EXCL`` and an explicit mode so the file is
+    created atomically at 0o600. The previous ``write_text`` + post-write
+    ``chmod`` opened a TOCTOU window where the temp file briefly inherited
+    the process umask (commonly 0o644 = world-readable), exposing OAuth
+    tokens to other local users between create and chmod. Mirrors the fix
+    in ``agent/google_oauth.py`` (#19673).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    # Tighten parent dir to 0o700 so siblings can't traverse to the creds.
+    # No-op on Windows (POSIX mode bits aren't enforced); ignore failures.
     try:
-        tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        tmp.rename(path)
+        os.chmod(path.parent, 0o700)
     except OSError:
-        tmp.unlink(missing_ok=True)
+        pass
+    # Per-process random suffix avoids collisions between concurrent
+    # writers and stale leftovers from a prior crashed write.
+    tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+    try:
+        fd = os.open(
+            str(tmp),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, default=str)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
 
 
@@ -179,6 +213,7 @@ class HermesTokenStorage:
 
         HERMES_HOME/mcp-tokens/<server_name>.json         -- tokens
         HERMES_HOME/mcp-tokens/<server_name>.client.json   -- client info
+        HERMES_HOME/mcp-tokens/<server_name>.meta.json     -- oauth server metadata
     """
 
     def __init__(self, server_name: str):
@@ -190,12 +225,44 @@ class HermesTokenStorage:
     def _client_info_path(self) -> Path:
         return _get_token_dir() / f"{self._server_name}.client.json"
 
+    def _meta_path(self) -> Path:
+        return _get_token_dir() / f"{self._server_name}.meta.json"
+
     # -- tokens ------------------------------------------------------------
 
     async def get_tokens(self) -> "OAuthToken | None":
         data = _read_json(self._tokens_path())
         if data is None:
             return None
+        # Hermes records an absolute wall-clock ``expires_at`` alongside the
+        # SDK's serialized token (see ``set_tokens``). On read we rewrite
+        # ``expires_in`` to the remaining seconds so the SDK's downstream
+        # ``update_token_expiry`` computes the correct absolute time and
+        # ``is_token_valid()`` correctly reports False for tokens that
+        # expired while the process was down.
+        #
+        # Legacy token files (pre-Fix-A) have ``expires_in`` but no
+        # ``expires_at``. We fall back to the file's mtime as a best-effort
+        # wall-clock proxy for when the token was written: if (mtime +
+        # expires_in) is in the past, clamp ``expires_in`` to zero so the
+        # SDK refreshes before the first request. This self-heals one-time
+        # on the next successful ``set_tokens``, which writes the new
+        # ``expires_at`` field. The stored ``expires_at`` is stripped before
+        # model_validate because it's not part of the SDK's OAuthToken schema.
+        absolute_expiry = data.pop("expires_at", None)
+        if absolute_expiry is not None:
+            data["expires_in"] = int(max(absolute_expiry - time.time(), 0))
+        elif data.get("expires_in") is not None:
+            try:
+                file_mtime = self._tokens_path().stat().st_mtime
+            except OSError:
+                file_mtime = None
+            if file_mtime is not None:
+                try:
+                    implied_expiry = file_mtime + int(data["expires_in"])
+                    data["expires_in"] = int(max(implied_expiry - time.time(), 0))
+                except (TypeError, ValueError):
+                    pass
         try:
             return OAuthToken.model_validate(data)
         except (ValueError, TypeError, KeyError) as exc:
@@ -203,7 +270,23 @@ class HermesTokenStorage:
             return None
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
-        _write_json(self._tokens_path(), tokens.model_dump(exclude_none=True))
+        payload = tokens.model_dump(mode="json", exclude_none=True)
+        # Persist an absolute ``expires_at`` so a process restart can
+        # reconstruct the correct remaining TTL. Without this the MCP SDK's
+        # ``_initialize`` reloads a relative ``expires_in`` which has no
+        # wall-clock reference, leaving ``context.token_expiry_time=None``
+        # and ``is_token_valid()`` falsely reporting True. See Fix A in
+        # ``mcp-oauth-token-diagnosis`` skill + Claude Code's
+        # ``OAuthTokens.expiresAt`` persistence (auth.ts ~180).
+        expires_in = payload.get("expires_in")
+        if expires_in is not None:
+            try:
+                payload["expires_at"] = time.time() + int(expires_in)
+            except (TypeError, ValueError):
+                # Mock tokens or unusual shapes: skip the expires_at write
+                # rather than fail persistence.
+                pass
+        _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
     # -- client info -------------------------------------------------------
@@ -219,14 +302,36 @@ class HermesTokenStorage:
             return None
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
-        _write_json(self._client_info_path(), client_info.model_dump(exclude_none=True))
+        _write_json(self._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
         logger.debug("OAuth client info saved for %s", self._server_name)
+
+    # -- oauth server metadata --------------------------------------------
+    # The MCP SDK keeps discovered ``OAuthMetadata`` (token endpoint URL,
+    # etc.) in memory only. Persisting it here lets a restarted process
+    # refresh tokens without re-running metadata discovery. Without this,
+    # cold-start refresh requests fall back to the SDK's guessed
+    # ``{server_url}/token`` which returns 404 on most real providers and
+    # forces a full browser re-authorization.
+
+    def save_oauth_metadata(self, metadata: "OAuthMetadata") -> None:
+        _write_json(self._meta_path(), metadata.model_dump(exclude_none=True, mode="json"))
+        logger.debug("OAuth metadata saved for %s", self._server_name)
+
+    def load_oauth_metadata(self) -> "OAuthMetadata | None":
+        data = _read_json(self._meta_path())
+        if data is None:
+            return None
+        try:
+            return OAuthMetadata.model_validate(data)
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("Corrupt OAuth metadata at %s -- ignoring: %s", self._meta_path(), exc)
+            return None
 
     # -- cleanup -----------------------------------------------------------
 
     def remove(self) -> None:
         """Delete all stored OAuth state for this server."""
-        for p in (self._tokens_path(), self._client_info_path()):
+        for p in (self._tokens_path(), self._client_info_path(), self._meta_path()):
             p.unlink(missing_ok=True)
 
     def has_cached_tokens(self) -> bool:
@@ -319,8 +424,15 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     Raises:
         OAuthNonInteractiveError: If the callback times out (no user present
             to complete the browser auth).
+        RuntimeError: If ``_oauth_port`` has not been set, which would indicate
+            that ``build_oauth_auth`` was skipped — the asserting form below
+            was a silent bug when running Python with ``-O``/``-OO``.
     """
-    assert _oauth_port is not None, "OAuth callback port not set"
+    if _oauth_port is None:
+        raise RuntimeError(
+            "OAuth callback port not set — build_oauth_auth must be called "
+            "before _wait_for_oauth_callback"
+        )
 
     # The callback server is already running (started in build_oauth_auth).
     # We just need to poll for the result.
@@ -375,6 +487,97 @@ def remove_oauth_tokens(server_name: str) -> None:
     logger.info("OAuth tokens removed for '%s'", server_name)
 
 
+# ---------------------------------------------------------------------------
+# Extracted helpers (Task 3 of MCP OAuth consolidation)
+#
+# These compose into ``build_oauth_auth`` below, and are also used by
+# ``tools.mcp_oauth_manager.MCPOAuthManager._build_provider`` so the two
+# construction paths share one implementation.
+# ---------------------------------------------------------------------------
+
+
+def _configure_callback_port(cfg: dict) -> int:
+    """Pick or validate the OAuth callback port.
+
+    Stores the resolved port into ``cfg['_resolved_port']`` so sibling
+    helpers (and the manager) can read it from the same dict. Returns the
+    resolved port.
+
+    NOTE: also sets the legacy module-level ``_oauth_port`` so existing
+    calls to ``_wait_for_callback`` keep working. The legacy global is
+    the root cause of issue #5344 (port collision on concurrent OAuth
+    flows); replacing it with a ContextVar is out of scope for this
+    consolidation PR.
+    """
+    global _oauth_port
+    requested = int(cfg.get("redirect_port", 0))
+    port = _find_free_port() if requested == 0 else requested
+    cfg["_resolved_port"] = port
+    _oauth_port = port  # legacy consumer: _wait_for_callback reads this
+    return port
+
+
+def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
+    """Build OAuthClientMetadata from the oauth config dict.
+
+    Requires ``cfg['_resolved_port']`` to have been populated by
+    :func:`_configure_callback_port` first.
+    """
+    port = cfg.get("_resolved_port")
+    if port is None:
+        raise ValueError(
+            "_configure_callback_port() must be called before _build_client_metadata()"
+        )
+    client_name = cfg.get("client_name", "Hermes Agent")
+    scope = cfg.get("scope")
+    redirect_uri = f"http://127.0.0.1:{port}/callback"
+
+    metadata_kwargs: dict[str, Any] = {
+        "client_name": client_name,
+        "redirect_uris": [AnyUrl(redirect_uri)],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+    }
+    if scope:
+        metadata_kwargs["scope"] = scope
+    if cfg.get("client_secret"):
+        metadata_kwargs["token_endpoint_auth_method"] = "client_secret_post"
+
+    return OAuthClientMetadata.model_validate(metadata_kwargs)
+
+
+def _maybe_preregister_client(
+    storage: "HermesTokenStorage",
+    cfg: dict,
+    client_metadata: "OAuthClientMetadata",
+) -> None:
+    """If cfg has a pre-registered client_id, persist it to storage."""
+    client_id = cfg.get("client_id")
+    if not client_id:
+        return
+    port = cfg["_resolved_port"]
+    redirect_uri = f"http://127.0.0.1:{port}/callback"
+
+    info_dict: dict[str, Any] = {
+        "client_id": client_id,
+        "redirect_uris": [redirect_uri],
+        "grant_types": client_metadata.grant_types,
+        "response_types": client_metadata.response_types,
+        "token_endpoint_auth_method": client_metadata.token_endpoint_auth_method,
+    }
+    if cfg.get("client_secret"):
+        info_dict["client_secret"] = cfg["client_secret"]
+    if cfg.get("client_name"):
+        info_dict["client_name"] = cfg["client_name"]
+    if cfg.get("scope"):
+        info_dict["scope"] = cfg["scope"]
+
+    client_info = OAuthClientInformationFull.model_validate(info_dict)
+    _write_json(storage._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
+    logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
+
+
 def build_oauth_auth(
     server_name: str,
     server_url: str,
@@ -382,7 +585,9 @@ def build_oauth_auth(
 ) -> "OAuthClientProvider | None":
     """Build an ``httpx.Auth``-compatible OAuth handler for an MCP server.
 
-    Called from ``mcp_tool.py`` when a server has ``auth: oauth`` in config.
+    Public API preserved for backwards compatibility. New code should use
+    :func:`tools.mcp_oauth_manager.get_manager` so OAuth state is shared
+    across config-time, runtime, and reconnect paths.
 
     Args:
         server_name: Server key in mcp_servers config (used for storage).
@@ -396,87 +601,32 @@ def build_oauth_auth(
     if not _OAUTH_AVAILABLE:
         logger.warning(
             "MCP OAuth requested for '%s' but SDK auth types are not available. "
-            "Install with: pip install 'mcp>=1.10.0'",
+            "Install with: pip install 'mcp>=1.26.0'",
             server_name,
         )
         return None
 
-    global _oauth_port
-
-    cfg = oauth_config or {}
-
-    # --- Storage ---
+    cfg = dict(oauth_config or {})  # copy — we mutate _resolved_port
     storage = HermesTokenStorage(server_name)
 
-    # --- Non-interactive warning ---
     if not _is_interactive() and not storage.has_cached_tokens():
         logger.warning(
-            "MCP OAuth for '%s': non-interactive environment and no cached tokens found. "
-            "The OAuth flow requires browser authorization. Run interactively first "
-            "to complete the initial authorization, then cached tokens will be reused.",
+            "MCP OAuth for '%s': non-interactive environment and no cached tokens "
+            "found. The OAuth flow requires browser authorization. Run "
+            "interactively first to complete the initial authorization, then "
+            "cached tokens will be reused.",
             server_name,
         )
 
-    # --- Pick callback port ---
-    redirect_port = int(cfg.get("redirect_port", 0))
-    if redirect_port == 0:
-        redirect_port = _find_free_port()
-    _oauth_port = redirect_port
+    _configure_callback_port(cfg)
+    client_metadata = _build_client_metadata(cfg)
+    _maybe_preregister_client(storage, cfg, client_metadata)
 
-    # --- Client metadata ---
-    client_name = cfg.get("client_name", "Hermes Agent")
-    scope = cfg.get("scope")
-    redirect_uri = f"http://127.0.0.1:{redirect_port}/callback"
-
-    metadata_kwargs: dict[str, Any] = {
-        "client_name": client_name,
-        "redirect_uris": [AnyUrl(redirect_uri)],
-        "grant_types": ["authorization_code", "refresh_token"],
-        "response_types": ["code"],
-        "token_endpoint_auth_method": "none",
-    }
-    if scope:
-        metadata_kwargs["scope"] = scope
-
-    client_secret = cfg.get("client_secret")
-    if client_secret:
-        metadata_kwargs["token_endpoint_auth_method"] = "client_secret_post"
-
-    client_metadata = OAuthClientMetadata.model_validate(metadata_kwargs)
-
-    # --- Pre-registered client ---
-    client_id = cfg.get("client_id")
-    if client_id:
-        info_dict: dict[str, Any] = {
-            "client_id": client_id,
-            "redirect_uris": [redirect_uri],
-            "grant_types": client_metadata.grant_types,
-            "response_types": client_metadata.response_types,
-            "token_endpoint_auth_method": client_metadata.token_endpoint_auth_method,
-        }
-        if client_secret:
-            info_dict["client_secret"] = client_secret
-        if client_name:
-            info_dict["client_name"] = client_name
-        if scope:
-            info_dict["scope"] = scope
-
-        client_info = OAuthClientInformationFull.model_validate(info_dict)
-        _write_json(storage._client_info_path(), client_info.model_dump(exclude_none=True))
-        logger.debug("Pre-registered client_id=%s for '%s'", client_id, server_name)
-
-    # --- Base URL for discovery ---
-    parsed = urlparse(server_url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}"
-
-    # --- Build provider ---
-    provider = OAuthClientProvider(
-        server_url=base_url,
+    return OAuthClientProvider(
+        server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,
         redirect_handler=_redirect_handler,
         callback_handler=_wait_for_callback,
         timeout=float(cfg.get("timeout", 300)),
     )
-
-    return provider

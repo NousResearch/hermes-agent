@@ -1,46 +1,54 @@
-"""Shared slash command helpers for skills and built-in prompt-style modes.
+"""Shared slash command helpers for skills.
 
 Shared between CLI (cli.py) and gateway (gateway/run.py) so both surfaces
-can invoke skills via /skill-name commands and prompt-only built-ins like
-/plan.
+can invoke skills via /skill-name commands.
 """
 
 import json
 import logging
+import os
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from hermes_constants import display_hermes_home
+from agent.skill_preprocessing import (
+    expand_inline_shell as _expand_inline_shell,
+    load_skills_config as _load_skills_config,
+    substitute_template_vars as _substitute_template_vars,
+)
 
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
-_PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
+_skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 
-def build_plan_path(
-    user_instruction: str = "",
-    *,
-    now: datetime | None = None,
-) -> Path:
-    """Return the default workspace-relative markdown path for a /plan invocation.
+def _resolve_skill_commands_platform() -> Optional[str]:
+    """Return the current platform scope used for disabled-skill filtering.
 
-    Relative paths are intentional: file tools are task/backend-aware and resolve
-    them against the active working directory for local, docker, ssh, modal,
-    daytona, and similar terminal backends. That keeps the plan with the active
-    workspace instead of the Hermes host's global home directory.
+    Used to detect when the active platform has shifted so
+    :func:`get_skill_commands` can drop a stale cache that was populated
+    for a different platform's ``skills.platform_disabled`` view (#14536).
+
+    Resolves from (in order) ``HERMES_PLATFORM`` env var and
+    ``HERMES_SESSION_PLATFORM`` from the gateway session context. Returns
+    ``None`` when no platform scope is active (e.g. classic CLI, RL
+    rollouts, standalone scripts).
     """
-    slug_source = (user_instruction or "").strip().splitlines()[0] if user_instruction else ""
-    slug = _PLAN_SLUG_RE.sub("-", slug_source.lower()).strip("-")
-    if slug:
-        slug = "-".join(part for part in slug.split("-")[:8] if part)[:48].strip("-")
-    slug = slug or "conversation-plan"
-    timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
-    return Path(".hermes") / "plans" / f"{timestamp}-{slug}.md"
+    try:
+        from gateway.session_context import get_session_env
 
+        resolved_platform = (
+            os.getenv("HERMES_PLATFORM")
+            or get_session_env("HERMES_SESSION_PLATFORM")
+        )
+    except Exception:
+        resolved_platform = os.getenv("HERMES_PLATFORM")
+    return resolved_platform or None
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
@@ -60,7 +68,9 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         else:
             normalized = raw_identifier.lstrip("/")
 
-        loaded_skill = json.loads(skill_view(normalized, task_id=task_id))
+        loaded_skill = json.loads(
+            skill_view(normalized, task_id=task_id, preprocess=False)
+        )
     except Exception:
         return None
 
@@ -70,7 +80,14 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     skill_name = str(loaded_skill.get("name") or normalized)
     skill_path = str(loaded_skill.get("path") or "")
     skill_dir = None
-    if skill_path:
+    # Prefer the absolute skill_dir returned by skill_view() — this is
+    # correct for both local and external skills.  Fall back to the old
+    # SKILLS_DIR-relative reconstruction only when skill_dir is absent
+    # (e.g. legacy skill_view responses).
+    abs_skill_dir = loaded_skill.get("skill_dir")
+    if abs_skill_dir:
+        skill_dir = Path(abs_skill_dir)
+    elif skill_path:
         try:
             skill_dir = SKILLS_DIR / Path(skill_path).parent
         except Exception:
@@ -108,7 +125,7 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         if not resolved:
             return
 
-        lines = ["", "[Skill config (from ~/.hermes/config.yaml):"]
+        lines = ["", f"[Skill config (from {display_hermes_home()}/config.yaml):"]
         for key, value in resolved.items():
             display_val = str(value) if value else "(not set)"
             lines.append(f"  {key} = {display_val}")
@@ -124,13 +141,35 @@ def _build_skill_message(
     activation_note: str,
     user_instruction: str = "",
     runtime_note: str = "",
+    session_id: str | None = None,
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import SKILLS_DIR
 
     content = str(loaded_skill.get("content") or "")
 
+    # ── Template substitution and inline-shell expansion ──
+    # Done before anything else so downstream blocks (setup notes,
+    # supporting-file hints) see the expanded content.
+    skills_cfg = _load_skills_config()
+    if skills_cfg.get("template_vars", True):
+        content = _substitute_template_vars(content, skill_dir, session_id)
+    if skills_cfg.get("inline_shell", False):
+        timeout = int(skills_cfg.get("inline_shell_timeout", 10) or 10)
+        content = _expand_inline_shell(content, skill_dir, timeout)
+
     parts = [activation_note, "", content.strip()]
+
+    # ── Inject the absolute skill directory so the agent can reference
+    #    bundled scripts without an extra skill_view() round-trip. ──
+    if skill_dir:
+        parts.append("")
+        parts.append(f"[Skill directory: {skill_dir}]")
+        parts.append(
+            "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
+            "`templates/config.yaml`) against that directory, then run them "
+            "with the terminal tool using the absolute path."
+        )
 
     # ── Inject resolved skill config values ──
     _inject_skill_config(loaded_skill, parts)
@@ -179,11 +218,13 @@ def _build_skill_message(
             # Skill is from an external dir — use the skill name instead
             skill_view_target = skill_dir.name
         parts.append("")
-        parts.append("[This skill has supporting files you can load with the skill_view tool:]")
+        parts.append("[This skill has supporting files:]")
         for sf in supporting:
-            parts.append(f"- {sf}")
+            parts.append(f"- {sf}  ->  {skill_dir / sf}")
         parts.append(
-            f'\nTo view any of these, use: skill_view(name="{skill_view_target}", file_path="<path>")'
+            f'\nLoad any of these with skill_view(name="{skill_view_target}", '
+            f'file_path="<path>"), or run scripts directly by absolute path '
+            f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 
     if user_instruction:
@@ -203,11 +244,12 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands
+    global _skill_commands, _skill_commands_platform
+    _skill_commands_platform = _resolve_skill_commands_platform()
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
@@ -218,8 +260,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         dirs_to_scan.extend(get_external_skills_dirs())
 
         for scan_dir in dirs_to_scan:
-            for skill_md in scan_dir.rglob("SKILL.md"):
-                if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+            for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+                if any(part in ('.git', '.github', '.hub', '.archive') for part in skill_md.parts):
                     continue
                 try:
                     content = skill_md.read_text(encoding='utf-8')
@@ -263,10 +305,83 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Return the current skill commands mapping (scan first if empty)."""
-    if not _skill_commands:
+    """Return the current skill commands mapping (scan first if empty).
+
+    Rescans when the active platform scope changes (e.g. a gateway
+    process serving Telegram and Discord concurrently) so each platform
+    sees its own ``skills.platform_disabled`` view (#14536).
+    """
+    if (
+        not _skill_commands
+        or _skill_commands_platform != _resolve_skill_commands_platform()
+    ):
         scan_skill_commands()
     return _skill_commands
+
+
+def reload_skills() -> Dict[str, Any]:
+    """Re-scan the skills directory and return a diff of what changed.
+
+    Rescans ``~/.hermes/skills/`` and any ``skills.external_dirs`` so the
+    slash-command map (``agent.skill_commands._skill_commands``) reflects
+    skills added or removed on disk.
+
+    This does NOT invalidate the skills system-prompt cache. Skills are
+    called by name via ``/skill-name``, ``skills_list``, or ``skill_view``
+    — they don't need to be in the system prompt for the model to use them.
+    Keeping the prompt cache intact preserves prefix caching across the
+    reload, so a user invoking ``/reload-skills`` pays no cache-reset cost.
+
+    Returns:
+        Dict with keys::
+
+            {
+              "added":      [{"name": str, "description": str}, ...],
+              "removed":    [{"name": str, "description": str}, ...],
+              "unchanged":  [skill names present before and after],
+              "total":      total skill count after rescan,
+              "commands":   total /slash-skill count after rescan,
+            }
+
+        ``description`` is the skill's full SKILL.md frontmatter
+        ``description:`` field — the same string the system prompt renders
+        as ``    - name: description`` for pre-existing skills.
+    """
+    # Snapshot pre-reload state (name -> description) from the current
+    # slash-command cache. Using dicts lets the post-rescan diff carry
+    # descriptions for newly-visible or just-removed skills without a
+    # second disk walk.
+    def _snapshot(cmds: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+        out: Dict[str, str] = {}
+        for slash_key, info in cmds.items():
+            bare = slash_key.lstrip("/")
+            out[bare] = (info or {}).get("description") or ""
+        return out
+
+    before = _snapshot(_skill_commands)
+
+    # Rescan the skills dir. ``scan_skill_commands`` resets
+    # ``_skill_commands = {}`` internally and repopulates it.
+    new_commands = scan_skill_commands()
+
+    after = _snapshot(new_commands)
+
+    added_names = sorted(set(after) - set(before))
+    removed_names = sorted(set(before) - set(after))
+    unchanged = sorted(set(after) & set(before))
+
+    added = [{"name": n, "description": after[n]} for n in added_names]
+    # For removed skills, use the description we had cached pre-rescan
+    # (the skill file is gone so we can't re-read it).
+    removed = [{"name": n, "description": before[n]} for n in removed_names]
+
+    return {
+        "added": added,
+        "removed": removed,
+        "unchanged": unchanged,
+        "total": len(after),
+        "commands": len(new_commands),
+    }
 
 
 def resolve_skill_command_key(command: str) -> Optional[str]:
@@ -313,8 +428,16 @@ def build_skill_invocation_message(
         return f"[Failed to load skill: {skill_info['name']}]"
 
     loaded_skill, skill_dir, skill_name = loaded
+
+    # Track active usage for Curator lifecycle management (#17782)
+    try:
+        from tools.skill_usage import bump_use
+        bump_use(skill_name)
+    except Exception:
+        pass  # Non-critical — skill invocation proceeds regardless
+
     activation_note = (
-        f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want '
+        f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
         "you to follow its instructions. The full skill content is loaded below.]"
     )
     return _build_skill_message(
@@ -323,6 +446,7 @@ def build_skill_invocation_message(
         activation_note,
         user_instruction=user_instruction,
         runtime_note=runtime_note,
+        session_id=task_id,
     )
 
 
@@ -351,8 +475,16 @@ def build_preloaded_skills_prompt(
             continue
 
         loaded_skill, skill_dir, skill_name = loaded
+
+        # Track active usage for Curator lifecycle management (#17782)
+        try:
+            from tools.skill_usage import bump_use
+            bump_use(skill_name)
+        except Exception:
+            pass  # Non-critical
+
         activation_note = (
-            f'[SYSTEM: The user launched this CLI session with the "{skill_name}" skill '
+            f'[IMPORTANT: The user launched this CLI session with the "{skill_name}" skill '
             "preloaded. Treat its instructions as active guidance for the duration of this "
             "session unless the user overrides them.]"
         )
@@ -361,6 +493,7 @@ def build_preloaded_skills_prompt(
                 loaded_skill,
                 skill_dir,
                 activation_note,
+                session_id=task_id,
             )
         )
         loaded_names.append(skill_name)

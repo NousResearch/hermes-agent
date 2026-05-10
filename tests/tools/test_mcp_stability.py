@@ -77,71 +77,98 @@ class TestStdioPidTracking:
         from tools.mcp_tool import _stdio_pids, _lock
         with _lock:
             # Might have residual state from other tests, just check type
-            assert isinstance(_stdio_pids, set)
+            assert isinstance(_stdio_pids, dict)
 
     def test_kill_orphaned_noop_when_empty(self):
         """_kill_orphaned_mcp_children does nothing when no PIDs tracked."""
-        from tools.mcp_tool import _kill_orphaned_mcp_children, _stdio_pids, _lock
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _stdio_pids,
+            _lock,
+        )
 
         with _lock:
             _stdio_pids.clear()
+            _orphan_stdio_pids.clear()
 
         # Should not raise
         _kill_orphaned_mcp_children()
 
     def test_kill_orphaned_handles_dead_pids(self):
         """_kill_orphaned_mcp_children gracefully handles already-dead PIDs."""
-        from tools.mcp_tool import _kill_orphaned_mcp_children, _stdio_pids, _lock
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _lock,
+        )
 
         # Use a PID that definitely doesn't exist
         fake_pid = 999999999
         with _lock:
-            _stdio_pids.add(fake_pid)
+            _orphan_stdio_pids.add(fake_pid)
 
         # Should not raise (ProcessLookupError is caught)
         _kill_orphaned_mcp_children()
 
         with _lock:
-            assert fake_pid not in _stdio_pids
+            assert fake_pid not in _orphan_stdio_pids
 
     def test_kill_orphaned_uses_sigkill_when_available(self, monkeypatch):
-        """Unix-like platforms should keep using SIGKILL for orphan cleanup."""
-        from tools.mcp_tool import _kill_orphaned_mcp_children, _stdio_pids, _lock
+        """SIGTERM-first then SIGKILL after 2s for orphan cleanup."""
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _lock,
+        )
 
         fake_pid = 424242
         with _lock:
-            _stdio_pids.clear()
-            _stdio_pids.add(fake_pid)
+            _orphan_stdio_pids.clear()
+            _orphan_stdio_pids.add(fake_pid)
 
         fake_sigkill = 9
         monkeypatch.setattr(signal, "SIGKILL", fake_sigkill, raising=False)
 
-        with patch("tools.mcp_tool.os.kill") as mock_kill:
+        with patch("tools.mcp_tool.os.kill") as mock_kill, \
+             patch("time.sleep") as mock_sleep:
             _kill_orphaned_mcp_children()
 
-        mock_kill.assert_called_once_with(fake_pid, fake_sigkill)
+        # SIGTERM, then alive-check (signal 0), then SIGKILL
+        mock_kill.assert_any_call(fake_pid, signal.SIGTERM)
+        mock_kill.assert_any_call(fake_pid, 0)  # alive check
+        mock_kill.assert_any_call(fake_pid, fake_sigkill)
+        assert mock_kill.call_count == 3
+        mock_sleep.assert_called_once_with(2)
 
         with _lock:
-            assert fake_pid not in _stdio_pids
+            assert fake_pid not in _orphan_stdio_pids
 
     def test_kill_orphaned_falls_back_without_sigkill(self, monkeypatch):
-        """Windows-like signal modules without SIGKILL should fall back to SIGTERM."""
-        from tools.mcp_tool import _kill_orphaned_mcp_children, _stdio_pids, _lock
+        """Without SIGKILL, SIGTERM is used for both phases."""
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _lock,
+        )
 
         fake_pid = 434343
         with _lock:
-            _stdio_pids.clear()
-            _stdio_pids.add(fake_pid)
+            _orphan_stdio_pids.clear()
+            _orphan_stdio_pids.add(fake_pid)
 
         monkeypatch.delattr(signal, "SIGKILL", raising=False)
 
-        with patch("tools.mcp_tool.os.kill") as mock_kill:
+        with patch("tools.mcp_tool.os.kill") as mock_kill, \
+             patch("time.sleep") as mock_sleep:
             _kill_orphaned_mcp_children()
 
-        mock_kill.assert_called_once_with(fake_pid, signal.SIGTERM)
+        # SIGTERM phase, alive check raises (process gone), no escalation
+        mock_kill.assert_any_call(fake_pid, signal.SIGTERM)
+        assert mock_sleep.called
 
         with _lock:
-            assert fake_pid not in _stdio_pids
+            assert fake_pid not in _orphan_stdio_pids
 
 
 # ---------------------------------------------------------------------------
@@ -180,3 +207,113 @@ class TestMCPReloadTimeout:
         # The fix adds threading.Thread for _reload_mcp
         assert "Thread" in source or "thread" in source.lower(), \
             "_check_config_mcp_changes should use a thread for _reload_mcp"
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: MCP initial connection retry with backoff
+# (Ported from Kilo Code's MCP resilience fix)
+# ---------------------------------------------------------------------------
+
+class TestMCPInitialConnectionRetry:
+    """MCPServerTask.run() retries initial connection failures instead of giving up."""
+
+    def test_initial_connect_retries_constant_exists(self):
+        """_MAX_INITIAL_CONNECT_RETRIES should be defined."""
+        from tools.mcp_tool import _MAX_INITIAL_CONNECT_RETRIES
+        assert _MAX_INITIAL_CONNECT_RETRIES >= 1
+
+    def test_initial_connect_retry_succeeds_on_second_attempt(self):
+        """Server succeeds after one transient initial failure."""
+        from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
+
+        call_count = 0
+
+        async def _run():
+            nonlocal call_count
+            server = MCPServerTask("test-retry")
+
+            # Track calls via patching the method on the class
+            original_run_stdio = MCPServerTask._run_stdio
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise ConnectionError("DNS resolution failed")
+                # Second attempt: success — set ready and "run" until shutdown
+                self_inner._ready.set()
+                await self_inner._shutdown_event.wait()
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await server._ready.wait()
+
+                # It should have succeeded (no error) after retrying
+                assert server._error is None, f"Expected no error, got: {server._error}"
+                assert call_count == 2, f"Expected 2 attempts, got {call_count}"
+
+                # Clean shutdown
+                server._shutdown_event.set()
+                await task
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_initial_connect_gives_up_after_max_retries(self):
+        """Server gives up after _MAX_INITIAL_CONNECT_RETRIES failures."""
+        from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
+
+        call_count = 0
+
+        async def _run():
+            nonlocal call_count
+            server = MCPServerTask("test-exhaust")
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal call_count
+                call_count += 1
+                raise ConnectionError("DNS resolution failed")
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await server._ready.wait()
+
+                # Should have an error after exhausting retries
+                assert server._error is not None
+                assert "DNS resolution failed" in str(server._error)
+                # 1 initial + N retries = _MAX_INITIAL_CONNECT_RETRIES + 1 total attempts
+                assert call_count == _MAX_INITIAL_CONNECT_RETRIES + 1
+
+                await task
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_initial_connect_retry_respects_shutdown(self):
+        """Shutdown during initial retry backoff aborts cleanly."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _run():
+            server = MCPServerTask("test-shutdown")
+            attempt = 0
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal attempt
+                attempt += 1
+                if attempt == 1:
+                    raise ConnectionError("transient failure")
+                # Should not reach here because shutdown fires during sleep
+                raise AssertionError("Should not attempt after shutdown")
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+
+                # Give the first attempt time to fail, then set shutdown
+                # during the backoff sleep
+                await asyncio.sleep(0.1)
+                server._shutdown_event.set()
+                await server._ready.wait()
+
+                # Should have the error set and be done
+                assert server._error is not None
+                await task
+
+        asyncio.get_event_loop().run_until_complete(_run())

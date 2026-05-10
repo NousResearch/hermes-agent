@@ -114,13 +114,29 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def json_parse(", src)
         self.assertIn("def shell_quote(", src)
         self.assertIn("def retry(", src)
-        self.assertIn("import json, os, socket, shlex, time", src)
+        self.assertIn("import json, os, socket, shlex, threading, time", src)
 
     def test_file_transport_uses_tempfile_fallback_for_rpc_dir(self):
         src = generate_hermes_tools_module(["terminal"], transport="file")
-        self.assertIn("import json, os, shlex, tempfile, time", src)
+        self.assertIn("import json, os, shlex, tempfile, threading, time", src)
         self.assertIn("os.path.join(tempfile.gettempdir(), \"hermes_rpc\")", src)
         self.assertNotIn('os.environ.get("HERMES_RPC_DIR", "/tmp/hermes_rpc")', src)
+
+    def test_uds_transport_serializes_concurrent_calls(self):
+        """Regression: UDS _call() must hold a lock across send+recv so that
+        concurrent tool calls from multiple threads don't interleave on the
+        shared socket and receive each other's responses."""
+        src = generate_hermes_tools_module(["terminal"], transport="uds")
+        self.assertIn("_call_lock = threading.Lock()", src)
+        self.assertIn("with _call_lock:", src)
+
+    def test_file_transport_serializes_seq_allocation(self):
+        """Regression: file transport _call() must allocate `_seq` under a
+        lock, otherwise concurrent threads can pick the same seq and clobber
+        each other's request files."""
+        src = generate_hermes_tools_module(["terminal"], transport="file")
+        self.assertIn("_seq_lock = threading.Lock()", src)
+        self.assertIn("with _seq_lock:", src)
 
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
@@ -226,6 +242,64 @@ print(f"file lines: {r2['total_lines']}")
         result = self._run("raise ValueError('test error')")
         self.assertEqual(result["status"], "error")
 
+    def test_concurrent_tool_calls_match_responses(self):
+        """Regression for the UDS RPC race: multiple threads inside the
+        sandbox calling terminal() concurrently must each receive their own
+        response, not another thread's.
+
+        Before the fix, `_sock` and the recv-loop were shared without a
+        lock, so responses (written FIFO by the single-threaded server)
+        got delivered to whichever client thread happened to win the
+        recv() race. That surfaced as each thread seeing another thread's
+        output.
+
+        The mock dispatcher sleeps briefly to guarantee the requests
+        overlap on the socket.
+        """
+        code = '''
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from hermes_tools import terminal
+
+N = 10
+
+def call(i):
+    r = terminal(f"echo TAG-{i}")
+    return i, r.get("output", "")
+
+with ThreadPoolExecutor(max_workers=N) as ex:
+    results = list(ex.map(call, range(N)))
+
+mismatches = [(i, out) for i, out in results if f"TAG-{i}" not in out]
+if mismatches:
+    print(f"MISMATCH {len(mismatches)}/{N}: {mismatches[:3]}")
+else:
+    print(f"OK {N}/{N}")
+'''
+
+        def slow_mock(function_name, function_args, task_id=None, user_task=None):
+            import time as _t
+            if function_name == "terminal":
+                _t.sleep(0.05)  # ensure requests overlap on the socket
+                cmd = function_args.get("command", "")
+                # Echo semantics: strip leading "echo " and return the rest
+                out = cmd[5:] if cmd.startswith("echo ") else f"mock: {cmd}"
+                return json.dumps({"output": out, "exit_code": 0})
+            return _mock_handle_function_call(
+                function_name, function_args, task_id=task_id, user_task=user_task
+            )
+
+        with patch("model_tools.handle_function_call", side_effect=slow_mock):
+            raw = execute_code(
+                code=code,
+                task_id="test-concurrent",
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+            )
+        result = json.loads(raw)
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("OK 10/10", result["output"],
+                      msg=f"Concurrent tool calls mismatched: {result['output']!r}")
+
     def test_excluded_tool_returns_error(self):
         """Script calling a tool not in the allow-list gets an error from RPC."""
         code = """
@@ -279,6 +353,10 @@ raise RuntimeError("deliberate crash")
                 ))
         self.assertEqual(result["status"], "timeout")
         self.assertIn("timed out", result.get("error", ""))
+        # The timeout message must also appear in output so the LLM always
+        # surfaces it to the user (#10807).
+        self.assertIn("timed out", result.get("output", ""))
+        self.assertIn("\u23f0", result.get("output", ""))
 
     def test_web_search_tool(self):
         """Script calls web_search and processes results."""
@@ -380,7 +458,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify_on_complete"}
+    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the
@@ -766,11 +844,19 @@ class TestLoadConfig(unittest.TestCase):
 
     def test_returns_code_execution_section(self):
         from tools.code_execution_tool import _load_config
-        mock_cli = MagicMock()
-        mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 120, "max_tool_calls": 10}}
-        with patch.dict("sys.modules", {"cli": mock_cli}):
+        with patch("hermes_cli.config.read_raw_config",
+                   return_value={"code_execution": {"timeout": 120, "max_tool_calls": 10}}):
             result = _load_config()
-        self.assertIsInstance(result, dict)
+        self.assertEqual(result, {"timeout": 120, "max_tool_calls": 10})
+
+    def test_does_not_import_interactive_cli(self):
+        from tools.code_execution_tool import _load_config
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
+        with patch.dict("sys.modules", {"cli": mock_cli}), \
+             patch("hermes_cli.config.read_raw_config", return_value={}):
+            result = _load_config()
+        self.assertEqual(result, {})
 
 
 # ---------------------------------------------------------------------------

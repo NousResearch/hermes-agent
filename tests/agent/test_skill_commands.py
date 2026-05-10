@@ -1,13 +1,11 @@
 """Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
 import os
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
-    build_plan_path,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
     resolve_skill_command_key,
@@ -36,6 +34,18 @@ description: Description for {name}.
 """
     (skill_dir / "SKILL.md").write_text(content)
     return skill_dir
+
+
+def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Path:
+    """Create a category symlink under skills_dir pointing outside the tree."""
+    external_category = linked_root / category
+    external_category.mkdir(parents=True, exist_ok=True)
+    symlink_path = skills_dir / category
+    try:
+        symlink_path.symlink_to(external_category, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable in test environment: {exc}")
+    return external_category
 
 
 class TestScanSkillCommands:
@@ -100,6 +110,203 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
+
+    def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            result = scan_skill_commands()
+
+        assert "/knowledge-brain" in result
+        assert result["/knowledge-brain"]["name"] == "knowledge-brain"
+
+    def test_get_skill_commands_rescans_when_platform_scope_changes(self, tmp_path):
+        """Platform-specific disabled-skill caches must not leak across platforms.
+
+        Regression test for #14536: a gateway process serving Telegram
+        and Discord concurrently would seed the process-global cache
+        with whichever platform scanned first, and subsequent
+        ``get_skill_commands()`` calls from the other platform silently
+        inherited that filter.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+
+        def _disabled_skills():
+            platform = os.getenv("HERMES_PLATFORM")
+            if platform == "telegram":
+                return {"telegram-only"}
+            if platform == "discord":
+                return {"discord-only"}
+            return set()
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+        ):
+            _make_skill(tmp_path, "shared")
+            _make_skill(tmp_path, "telegram-only")
+            _make_skill(tmp_path, "discord-only")
+
+            with patch.dict(os.environ, {"HERMES_PLATFORM": "telegram"}):
+                telegram_commands = dict(get_skill_commands())
+
+            assert "/shared" in telegram_commands
+            assert "/discord-only" in telegram_commands
+            assert "/telegram-only" not in telegram_commands
+
+            with patch.dict(os.environ, {"HERMES_PLATFORM": "discord"}):
+                discord_commands = dict(get_skill_commands())
+
+            assert "/shared" in discord_commands
+            assert "/telegram-only" in discord_commands
+            assert "/discord-only" not in discord_commands
+
+            # Switching back to telegram must also rescan — not re-serve
+            # the discord view that was just cached.
+            with patch.dict(os.environ, {"HERMES_PLATFORM": "telegram"}):
+                telegram_again = dict(get_skill_commands())
+
+            assert "/telegram-only" not in telegram_again
+            assert "/discord-only" in telegram_again
+
+    def test_get_skill_commands_rescans_when_session_platform_changes(self, tmp_path):
+        """``HERMES_SESSION_PLATFORM`` from the gateway session context must
+        also trigger a rescan, not just ``HERMES_PLATFORM`` (#14536).
+
+        Exercises the real ContextVar path: the gateway sets the active
+        adapter via ``set_session_vars(platform=...)`` and the resolver
+        reads it via ``get_session_env``. Setting ``HERMES_SESSION_PLATFORM``
+        in ``os.environ`` would only test ``get_session_env``'s legacy
+        env-var fallback — a regression that swapped ``get_session_env``
+        for plain ``os.getenv`` would still pass while breaking concurrent
+        gateway sessions, which is the bug the ContextVar plumbing exists
+        to prevent in the first place.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+        from gateway.session_context import (
+            clear_session_vars,
+            get_session_env,
+            set_session_vars,
+        )
+
+        def _disabled_skills():
+            platform = (
+                os.getenv("HERMES_PLATFORM")
+                or get_session_env("HERMES_SESSION_PLATFORM")
+            )
+            if platform == "telegram":
+                return {"telegram-only"}
+            if platform == "discord":
+                return {"discord-only"}
+            return set()
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+        ):
+            _make_skill(tmp_path, "shared")
+            _make_skill(tmp_path, "telegram-only")
+            _make_skill(tmp_path, "discord-only")
+
+            # First simulated gateway request: telegram handler.
+            tokens = set_session_vars(platform="telegram")
+            try:
+                telegram_commands = dict(get_skill_commands())
+            finally:
+                clear_session_vars(tokens)
+
+            assert "/shared" in telegram_commands
+            assert "/discord-only" in telegram_commands
+            assert "/telegram-only" not in telegram_commands
+
+            # Second simulated gateway request: discord handler. The cache
+            # was just populated for telegram; the rescan trigger must fire
+            # off the ContextVar change, not just an env-var change.
+            tokens = set_session_vars(platform="discord")
+            try:
+                discord_commands = dict(get_skill_commands())
+            finally:
+                clear_session_vars(tokens)
+
+            assert "/shared" in discord_commands
+            assert "/telegram-only" in discord_commands
+            assert "/discord-only" not in discord_commands
+
+    def test_get_skill_commands_rescans_when_leaving_platform_scope(self, tmp_path, monkeypatch):
+        """Returning to no-platform-scope (CLI / cron / RL) after a gateway
+        session must rescan so the unfiltered view is repopulated (#14536).
+
+        A long-lived process running both gateway sessions and bare CLI
+        invocations would otherwise stay stuck on whichever platform's
+        filter was last applied.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+
+        def _disabled_skills():
+            if os.getenv("HERMES_PLATFORM") == "telegram":
+                return {"telegram-only"}
+            return set()
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+        ):
+            _make_skill(tmp_path, "shared")
+            _make_skill(tmp_path, "telegram-only")
+
+            monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+            telegram_commands = dict(get_skill_commands())
+            assert "/telegram-only" not in telegram_commands
+
+            # Drop back to no platform scope — bare CLI / cron / RL rollouts.
+            monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+            bare_commands = dict(get_skill_commands())
+
+            assert "/telegram-only" in bare_commands
+            assert sc_mod._skill_commands_platform is None
+
+    def test_get_skill_commands_does_not_rescan_when_platform_unchanged(self, tmp_path):
+        """Same-platform back-to-back calls must hit the cache, not rescan.
+
+        The rescan trigger is *change* in platform scope, not "always
+        re-resolve." A gateway serving consecutive telegram requests must
+        not pay the scan cost for each one.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.dict(os.environ, {"HERMES_PLATFORM": "telegram"}),
+        ):
+            _make_skill(tmp_path, "shared")
+            # Prime the cache.
+            get_skill_commands()
+            # Spy on rescans during the subsequent same-platform calls.
+            with patch(
+                "agent.skill_commands.scan_skill_commands",
+                wraps=sc_mod.scan_skill_commands,
+            ) as scan_spy:
+                get_skill_commands()
+                get_skill_commands()
+                get_skill_commands()
+            assert scan_spy.call_count == 0
 
 
     def test_special_chars_stripped_from_cmd_key(self, tmp_path):
@@ -373,35 +580,189 @@ Generate some audio.
         assert 'file_path="<path>"' in msg
 
 
-class TestPlanSkillHelpers:
-    def test_build_plan_path_uses_workspace_relative_dir_and_slugifies_request(self):
-        path = build_plan_path(
-            "Implement OAuth login + refresh tokens!",
-            now=datetime(2026, 3, 15, 9, 30, 45),
-        )
+class TestSkillDirectoryHeader:
+    """The activation message must expose the absolute skill directory and
+    explain how to resolve relative paths, so skills with bundled scripts
+    don't force the agent into a second ``skill_view()`` round-trip."""
 
-        assert path == Path(".hermes") / "plans" / "2026-03-15_093045-implement-oauth-login-refresh-tokens.md"
+    def test_header_contains_absolute_skill_dir(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "abs-dir-skill")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/abs-dir-skill", "go")
 
-    def test_plan_skill_message_can_include_runtime_save_path_note(self, tmp_path):
+        assert msg is not None
+        assert f"[Skill directory: {skill_dir}]" in msg
+        assert "Resolve any relative paths" in msg
+
+    def test_supporting_files_shown_with_absolute_paths(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "scripted-skill")
+            (skill_dir / "scripts").mkdir()
+            (skill_dir / "scripts" / "run.js").write_text("console.log('hi')")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/scripted-skill")
+
+        assert msg is not None
+        # The supporting-files block must emit both the relative form (so the
+        # agent can call skill_view on it) and the absolute form (so it can
+        # run the script directly via terminal).
+        assert "scripts/run.js" in msg
+        assert str(skill_dir / "scripts" / "run.js") in msg
+        assert f"node {skill_dir}/scripts/foo.js" in msg
+
+
+class TestTemplateVarSubstitution:
+    """``${HERMES_SKILL_DIR}`` and ``${HERMES_SESSION_ID}`` in SKILL.md body
+    are replaced before the agent sees the content."""
+
+    def test_substitutes_skill_dir(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(
+                tmp_path,
+                "templated",
+                body="Run: node ${HERMES_SKILL_DIR}/scripts/foo.js",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/templated")
+
+        assert msg is not None
+        assert f"node {skill_dir}/scripts/foo.js" in msg
+        # The literal template token must not leak through.
+        assert "${HERMES_SKILL_DIR}" not in msg.split("[Skill directory:")[0]
+
+    def test_substitutes_session_id_when_available(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
-                "plan",
-                body="Save plans under .hermes/plans in the active workspace and do not execute the work.",
+                "sess-templated",
+                body="Session: ${HERMES_SESSION_ID}",
             )
             scan_skill_commands()
             msg = build_skill_invocation_message(
-                "/plan",
-                "Add a /plan command",
-                runtime_note=(
-                    "Save the markdown plan with write_file to this exact relative path inside "
-                    "the active workspace/backend cwd: .hermes/plans/plan.md"
-                ),
+                "/sess-templated", task_id="abc-123"
             )
 
         assert msg is not None
-        assert "Save plans under $HERMES_HOME/plans" not in msg
-        assert ".hermes/plans" in msg
-        assert "Add a /plan command" in msg
-        assert ".hermes/plans/plan.md" in msg
-        assert "Runtime note:" in msg
+        assert "Session: abc-123" in msg
+
+    def test_leaves_session_id_token_when_missing(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "sess-missing",
+                body="Session: ${HERMES_SESSION_ID}",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/sess-missing", task_id=None)
+
+        assert msg is not None
+        # No session — token left intact so the author can spot it.
+        assert "Session: ${HERMES_SESSION_ID}" in msg
+
+    def test_disable_template_vars_via_config(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands._load_skills_config",
+                return_value={"template_vars": False},
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "no-sub",
+                body="Run: node ${HERMES_SKILL_DIR}/scripts/foo.js",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/no-sub")
+
+        assert msg is not None
+        # Template token must survive when substitution is disabled.
+        assert "${HERMES_SKILL_DIR}/scripts/foo.js" in msg
+
+
+class TestInlineShellExpansion:
+    """Inline ``!`cmd`` snippets in SKILL.md run before the agent sees the
+    content — but only when the user has opted in via config."""
+
+    def test_inline_shell_is_off_by_default(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "dyn-default-off",
+                body="Today is !`echo INLINE_RAN`.",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/dyn-default-off")
+
+        assert msg is not None
+        # Default config has inline_shell=False — snippet must stay literal.
+        assert "!`echo INLINE_RAN`" in msg
+        assert "Today is INLINE_RAN." not in msg
+
+    def test_inline_shell_runs_when_enabled(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands._load_skills_config",
+                return_value={"template_vars": True, "inline_shell": True,
+                              "inline_shell_timeout": 5},
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "dyn-on",
+                body="Marker: !`echo INLINE_RAN`.",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/dyn-on")
+
+        assert msg is not None
+        assert "Marker: INLINE_RAN." in msg
+        assert "!`echo INLINE_RAN`" not in msg
+
+    def test_inline_shell_runs_in_skill_directory(self, tmp_path):
+        """Inline snippets get the skill dir as CWD so relative paths work."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands._load_skills_config",
+                return_value={"template_vars": True, "inline_shell": True,
+                              "inline_shell_timeout": 5},
+            ),
+        ):
+            skill_dir = _make_skill(
+                tmp_path,
+                "dyn-cwd",
+                body="Here: !`pwd`",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/dyn-cwd")
+
+        assert msg is not None
+        assert f"Here: {skill_dir}" in msg
+
+    def test_inline_shell_timeout_does_not_break_message(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands._load_skills_config",
+                return_value={"template_vars": True, "inline_shell": True,
+                              "inline_shell_timeout": 1},
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "dyn-slow",
+                body="Slow: !`sleep 5 && printf DYN_MARKER`",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/dyn-slow")
+
+        assert msg is not None
+        # Timeout is surfaced as a marker instead of propagating as an error,
+        # and the rest of the skill message still renders.
+        assert "inline-shell timeout" in msg
+        # The command's intended stdout never made it through — only the
+        # timeout marker (which echoes the command text) survives.
+        assert "DYN_MARKER" not in msg.replace("sleep 5 && printf DYN_MARKER", "")

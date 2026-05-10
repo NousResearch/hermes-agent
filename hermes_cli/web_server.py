@@ -11187,6 +11187,74 @@ async def get_session_latest_descendant(
         "changed": bool(path and latest != path[0]),
     }
 
+# One vision pre-analysis block emitted by `_enrich_with_attached_images`
+# (tui_gateway/server.py). Success form is
+#   [The user attached an image:\n{desc}]\n[You can examine it with vision_analyze using image_url: {p}]
+# and the failure form replaces the first line with
+#   [The user attached an image but analysis failed.]
+# The `]\n[You can examine it with vision_analyze using image_url:` boundary
+# anchors the (possibly multi-line) description so `.*?` can't overrun it.
+_VISION_PREANALYSIS_BLOCK = (
+    r"\[The user attached an image"
+    r"(?::\n.*?\]| but analysis failed\.\])"
+    r"\n\[You can examine it with vision_analyze using image_url: .*?\]"
+)
+# One or more blocks (multiple attachments are joined with a blank line), taken
+# from the start of the message; whatever follows is the user's own text.
+_VISION_PREANALYSIS_RE = re.compile(
+    rf"^{_VISION_PREANALYSIS_BLOCK}(?:\n\n{_VISION_PREANALYSIS_BLOCK})*",
+    re.DOTALL,
+)
+
+
+def _normalize_dashboard_message_roles(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return dashboard-only message copies that split synthetic vision pre-analysis.
+
+    Gateway image *text-mode* routing (``_enrich_with_attached_images`` in
+    ``tui_gateway/server.py``) pre-analyzes each attachment with
+    ``vision_analyze`` and prepends the description — plus a
+    ``[You can examine it with vision_analyze ...]`` hint — to the next user
+    turn, then appends the user's own text. That whole blob is persisted as a
+    single ``user`` row so the model replays the context, but the Dashboard
+    should not attribute the vision model's output to the user.
+
+    Each matching user row is projected into two rows: a synthetic
+    ``vision_analyze`` *tool* result carrying only the pre-analysis block(s),
+    and — when the user actually typed something after it — a ``user`` row
+    carrying just that trailing text. Non-matching rows pass through as shallow
+    copies. SessionDB's stored rows are never mutated.
+    """
+    normalized: List[Dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        match = (
+            _VISION_PREANALYSIS_RE.match(content)
+            if msg.get("role") == "user" and isinstance(content, str)
+            else None
+        )
+        if not match:
+            normalized.append(dict(msg))
+            continue
+
+        synthetic = content[: match.end()]
+        trailing = content[match.end() :].lstrip("\n")
+
+        tool_row = dict(msg)
+        tool_row["role"] = "tool"
+        tool_row["content"] = synthetic
+        if not tool_row.get("tool_name"):
+            tool_row["tool_name"] = "vision_analyze"
+        normalized.append(tool_row)
+
+        if trailing:
+            user_row = dict(msg)
+            user_row["content"] = trailing
+            normalized.append(user_row)
+    return normalized
+
+
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
     session_id: str,
@@ -11203,21 +11271,25 @@ async def get_session_messages(
             sid = db.resolve_resume_session_id(sid)
             # Clamp limit to prevent abuse (max 500 per page)
             _limit = min(limit, 500) if limit is not None else None
-            return sid, _limit, db.get_messages(sid, limit=_limit, offset=offset)
+            rows = db.get_messages(sid, limit=_limit, offset=offset)
+            # Dashboard-only projection: splitting a vision pre-analysis row can
+            # emit more messages than were stored, so report the stored-row
+            # count for `returned` — that's what pagination cursors advance over.
+            return sid, _limit, len(rows), _normalize_dashboard_message_roles(rows)
         finally:
             db.close()
 
     result = await asyncio.to_thread(_read)
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    sid, _limit, messages = result
+    sid, _limit, stored_count, messages = result
     return {
         "session_id": sid,
         "messages": messages,
         "pagination": {
             "limit": _limit,
             "offset": offset,
-            "returned": len(messages),
+            "returned": stored_count,
         },
     }
 

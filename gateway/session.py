@@ -995,7 +995,7 @@ class SessionStore:
         Unlike ``suspend_session()``, this preserves the existing
         ``session_id`` and the transcript.  The next call to
         ``get_or_create_session()`` for this key returns the same entry
-        so the user auto-resumes on the same conversation lane.
+        so the user auto-resumes the same conversation.
 
         Returns True if the session existed and was marked.
         """

@@ -120,6 +120,35 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
+### WhatsApp sessions
+
+WhatsApp chats are flat, so Hermes can expose Hermes sessions as lightweight WhatsApp workstreams by mapping replies to synthetic thread IDs. Each workstream is still a normal Hermes session; the WhatsApp adapter only decides which session an incoming message belongs to. This keeps side topics from contaminating the main chat context while reusing Hermes' existing per-thread session storage.
+
+Session routing behavior:
+
+- Unquoted messages continue in the current session.
+- Replying to a known Hermes message routes your reply back to that message's session.
+- Replying to an unknown older message starts a fresh session.
+- Internal updates, such as background-process notifications, preserve their originating session.
+
+Commands:
+
+```text
+/sessions              # list active WhatsApp sessions
+/sessions new          # make the next unquoted message use a fresh session
+/sessions new <message># create a fresh session and send <message> there now
+/sessions <number>     # switch the current unquoted-message focus
+```
+
+Optional session-routing settings:
+
+```yaml
+whatsapp:
+  enable_sessions: true            # default: true; enables WhatsApp session routing
+  session_idle_minutes: 60         # expire inactive WhatsApp session routes after this many minutes
+  session_max_live_per_chat: 5     # cap remembered WhatsApp session routes per chat
+```
+
 Then start the gateway:
 
 ```bash

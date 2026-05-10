@@ -129,6 +129,27 @@ def test_config_bridges_whatsapp_group_settings(monkeypatch, tmp_path):
     assert json.loads(__import__("os").environ["WHATSAPP_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
 
 
+def test_config_bridges_whatsapp_session_settings(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "whatsapp:\n"
+        "  enable_sessions: true\n"
+        "  session_idle_minutes: 30\n"
+        "  session_max_live_per_chat: 3\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    config = load_gateway_config()
+
+    extra = config.platforms[Platform.WHATSAPP].extra
+    assert extra["enable_sessions"] is True
+    assert extra["session_idle_minutes"] == 30
+    assert extra["session_max_live_per_chat"] == 3
+
+
 def test_free_response_chats_bypass_mention_gating():
     adapter = _make_adapter(
         require_mention=True,

@@ -14846,6 +14846,12 @@ class GatewayRunner:
                     "Session split detected: %s → %s (compression)",
                     session_id, agent.session_id,
                 )
+                try:
+                    from hermes_cli.goals import migrate_active_goal
+
+                    migrate_active_goal(session_id, agent.session_id)
+                except Exception as exc:
+                    logger.debug("goal migration after session split failed: %s", exc)
                 entry = self.session_store._entries.get(session_key)
                 if entry:
                     entry.session_id = agent.session_id

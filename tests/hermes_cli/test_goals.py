@@ -252,6 +252,67 @@ class TestGoalManager:
         assert mgr2.state.goal == "do the thing"
         assert mgr2.is_active()
 
+    def test_migrate_active_goal_moves_state_to_new_session(self, hermes_home):
+        """Compression-created session splits must not strand active goals on
+        the old session id."""
+        from hermes_cli.goals import GoalManager, load_goal, migrate_active_goal, save_goal
+
+        old_mgr = GoalManager(session_id="old-sid", default_max_turns=9)
+        state = old_mgr.set("finish the roadmap")
+        state.turns_used = 7
+        state.last_verdict = "continue"
+        state.last_reason = "not done"
+        save_goal("old-sid", state)
+
+        assert migrate_active_goal("old-sid", "new-sid") is True
+
+        assert load_goal("old-sid") is None
+        migrated = load_goal("new-sid")
+        assert migrated is not None
+        assert migrated.goal == "finish the roadmap"
+        assert migrated.status == "active"
+        assert migrated.turns_used == 7
+        assert migrated.max_turns == 9
+        assert migrated.last_verdict == "continue"
+        assert migrated.last_reason == "not done"
+
+    def test_migrate_active_goal_does_not_overwrite_destination_active_goal(self, hermes_home):
+        from hermes_cli.goals import GoalManager, load_goal, migrate_active_goal
+
+        GoalManager(session_id="old-active").set("old goal")
+        GoalManager(session_id="new-active").set("new goal")
+
+        assert migrate_active_goal("old-active", "new-active") is False
+
+        assert load_goal("old-active").goal == "old goal"
+        assert load_goal("new-active").goal == "new goal"
+
+    def test_migrate_active_goal_overwrites_destination_inactive_goal(self, hermes_home):
+        from hermes_cli.goals import GoalManager, load_goal, migrate_active_goal, save_goal
+
+        GoalManager(session_id="old-active-2").set("active goal")
+        done_mgr = GoalManager(session_id="new-done")
+        done_state = done_mgr.set("done goal")
+        done_state.status = "done"
+        save_goal("new-done", done_state)
+
+        assert migrate_active_goal("old-active-2", "new-done") is True
+
+        assert load_goal("old-active-2") is None
+        assert load_goal("new-done").goal == "active goal"
+        assert load_goal("new-done").status == "active"
+
+    def test_migrate_active_goal_ignores_inactive_source(self, hermes_home):
+        from hermes_cli.goals import GoalManager, load_goal, migrate_active_goal
+
+        old_mgr = GoalManager(session_id="old-paused")
+        old_mgr.set("paused goal")
+        old_mgr.pause("user paused")
+
+        assert migrate_active_goal("old-paused", "new-from-paused") is False
+        assert load_goal("old-paused").status == "paused"
+        assert load_goal("new-from-paused") is None
+
     def test_evaluate_after_turn_done(self, hermes_home):
         """Judge says done → status=done, no continuation."""
         from hermes_cli import goals

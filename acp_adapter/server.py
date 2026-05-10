@@ -641,6 +641,20 @@ class HermesACPAgent(acp.Agent):
         target_provider = current_provider
         new_model = raw_model.strip()
 
+        # Check DIRECT_ALIASES first — these are user-defined aliases from
+        # --model-config / config.yaml model_aliases (e.g. qwen-vision, mm27hs).
+        # Without this, alias names like "qwen-vision" fall through to
+        # parse_model_input() which treats them as raw model names and
+        # routes them to the default provider (deepseek), causing silent failures.
+        try:
+            from hermes_cli.model_switch import _ensure_direct_aliases, DIRECT_ALIASES
+            _ensure_direct_aliases()
+            alias = DIRECT_ALIASES.get(new_model.lower())
+            if alias:
+                return (alias.provider, alias.model)
+        except Exception:
+            pass
+
         # If raw_model contains a colon, check whether the left part is a
         # custom provider defined in config.yaml's ``providers:`` section.
         # This catches names like ``manbu``, ``manbu2``, ``azure-cn`` etc.

@@ -37,6 +37,12 @@ def _send_update(
         )
         future.result(timeout=5)
     except Exception:
+        # Cancel the future if it's still pending to avoid "never awaited" warnings
+        try:
+            if hasattr(future, 'cancel') and not future.done():
+                future.cancel()
+        except Exception:
+            pass
         logger.debug("Failed to send ACP update", exc_info=True)
 
 

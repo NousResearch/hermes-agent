@@ -173,7 +173,7 @@ def todo_tool(
         return tool_error("TodoStore not initialized")
 
     if todos is not None:
-        items = store.write(todos, merge)
+        items = store.write(_normalize_todos(todos), merge)
     else:
         items = store.read()
 
@@ -193,6 +193,51 @@ def todo_tool(
             "cancelled": cancelled,
         },
     }, ensure_ascii=False)
+
+
+def _normalize_todos(todos: Any) -> List[Dict[str, Any]]:
+    """
+    Defensively normalize the `todos` parameter.
+
+    LLMs occasionally emit the todos field as a JSON-encoded string
+    (e.g. after a tool-call rejection and self-correction) or include
+    non-dict items in the list.  This helper coerces the input into a
+    clean list of dicts without mutating the caller's data.
+
+    Supported patterns:
+      - list[dict]          → returned as-is (after filtering non-dicts)
+      - str (JSON array)    → json.loads → list[dict]
+      - list[str]           → attempt json.loads on each element
+      - anything else       → empty list
+    """
+    if todos is None:
+        return []
+
+    # Pattern A: double-JSON-encoded string
+    if isinstance(todos, str):
+        try:
+            parsed = json.loads(todos)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(parsed, list):
+            return []
+        todos = parsed
+
+    if not isinstance(todos, list):
+        return []
+
+    result: List[Dict[str, Any]] = []
+    for item in todos:
+        # Pattern B: item is a JSON-encoded dict string
+        if isinstance(item, str):
+            try:
+                item = json.loads(item)
+            except (json.JSONDecodeError, TypeError):
+                continue
+        if isinstance(item, dict):
+            result.append(item)
+        # Non-dict items (int, None, etc.) are silently skipped
+    return result
 
 
 def check_todo_requirements() -> bool:

@@ -1463,7 +1463,16 @@ def _read_main_model() -> str:
 
     config.yaml model.default is the single source of truth for the active
     model. Environment variables are no longer consulted.
+
+    Runtime override: when an AIAgent is active with a CLI/gateway-provided
+    model that differs from config.yaml, ``set_runtime_main()`` records the
+    override in a process-local global. This is consulted FIRST so tools
+    that gate on "the active main model" (e.g. ``vision_analyze``'s native
+    fast path) see the live runtime, not the persisted config default.
     """
+    override = _RUNTIME_MAIN_MODEL
+    if isinstance(override, str) and override.strip():
+        return override.strip()
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -1484,7 +1493,13 @@ def _read_main_provider() -> str:
 
     Returns the lowercase provider id (e.g. "alibaba", "openrouter") or ""
     if not configured.
+
+    Runtime override: see ``_read_main_model`` — same mechanism for the
+    provider half of the runtime tuple.
     """
+    override = _RUNTIME_MAIN_PROVIDER
+    if isinstance(override, str) and override.strip():
+        return override.strip().lower()
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -1496,6 +1511,32 @@ def _read_main_provider() -> str:
     except Exception:
         pass
     return ""
+
+
+# Process-local override set by AIAgent at session/turn start. Single-threaded
+# per turn — no lock needed. Cleared by ``clear_runtime_main()``.
+_RUNTIME_MAIN_PROVIDER: str = ""
+_RUNTIME_MAIN_MODEL: str = ""
+
+
+def set_runtime_main(provider: str, model: str) -> None:
+    """Record the live runtime provider/model for the current AIAgent.
+
+    Called by ``run_agent.AIAgent._sync_runtime_main_for_aux_routing`` (or
+    equivalent setter) at the top of each turn so that
+    ``_read_main_provider`` / ``_read_main_model`` reflect CLI/gateway
+    overrides instead of the stale config.yaml default.
+    """
+    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
+    _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
+    _RUNTIME_MAIN_MODEL = (model or "").strip()
+
+
+def clear_runtime_main() -> None:
+    """Clear the runtime override (e.g. on session end)."""
+    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
+    _RUNTIME_MAIN_PROVIDER = ""
+    _RUNTIME_MAIN_MODEL = ""
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:

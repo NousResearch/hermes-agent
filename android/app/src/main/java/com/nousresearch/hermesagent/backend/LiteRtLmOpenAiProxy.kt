@@ -269,35 +269,45 @@ object LiteRtLmOpenAiProxy {
                 else -> "cpu"
             }
             for ((backend, label) in backends) {
-                var candidate: Engine? = null
-                try {
-                    ExperimentalFlags.enableSpeculativeDecoding = speculativeDecoding.enabled
-                    candidate = Engine(
-                        EngineConfig(
-                            modelPath = modelPath,
-                            backend = backend,
-                            visionBackend = visionBackend,
-                            audioBackend = if (supportAudio) Backend.CPU() else null,
-                            maxNumImages = if (supportImage) 1 else null,
-                            maxNumTokens = maxTokens.takeIf { it > 0 },
-                            cacheDir = context.cacheDir.absolutePath,
+                val attempts = if (speculativeDecoding.enabled) {
+                    listOf(
+                        true to speculativeDecoding.policy,
+                        false to "disabled: Gemma 4 MTP failed during $label engine initialization; retried without MTP",
+                    )
+                } else {
+                    listOf(false to speculativeDecoding.policy)
+                }
+                for ((enableMtp, mtpPolicy) in attempts) {
+                    var candidate: Engine? = null
+                    try {
+                        ExperimentalFlags.enableSpeculativeDecoding = enableMtp
+                        candidate = Engine(
+                            EngineConfig(
+                                modelPath = modelPath,
+                                backend = backend,
+                                visionBackend = visionBackend,
+                                audioBackend = if (supportAudio) Backend.CPU() else null,
+                                maxNumImages = if (supportImage) 1 else null,
+                                maxNumTokens = maxTokens.takeIf { it > 0 },
+                                cacheDir = context.cacheDir.absolutePath,
+                            )
                         )
-                    )
-                    candidate.initialize()
-                    ExperimentalFlags.enableSpeculativeDecoding = false
-                    return EngineInitResult(
-                        engine = candidate,
-                        backend = label,
-                        visionBackend = visionBackendLabel,
-                        audioBackend = if (supportAudio) "cpu" else "none",
-                        speculativeDecoding = speculativeDecoding.enabled,
-                        speculativeDecodingSupported = speculativeDecoding.supported,
-                        speculativeDecodingPolicy = speculativeDecoding.policy,
-                    )
-                } catch (error: Throwable) {
-                    lastError = error
-                    ExperimentalFlags.enableSpeculativeDecoding = false
-                    kotlin.runCatching { candidate?.close() }
+                        candidate.initialize()
+                        ExperimentalFlags.enableSpeculativeDecoding = false
+                        return EngineInitResult(
+                            engine = candidate,
+                            backend = label,
+                            visionBackend = visionBackendLabel,
+                            audioBackend = if (supportAudio) "cpu" else "none",
+                            speculativeDecoding = enableMtp,
+                            speculativeDecodingSupported = speculativeDecoding.supported,
+                            speculativeDecodingPolicy = mtpPolicy,
+                        )
+                    } catch (error: Throwable) {
+                        lastError = error
+                        ExperimentalFlags.enableSpeculativeDecoding = false
+                        kotlin.runCatching { candidate?.close() }
+                    }
                 }
             }
             throw lastError ?: IllegalStateException("LiteRT-LM engine initialization failed")

@@ -196,6 +196,64 @@ class HermesAutomationInstrumentedTest {
     }
 
     @Test
+    fun openGuiStyleRemoteDispatchRunsMatchingEnabledAutomation() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val target = File(workspace, "hermes-remote-dispatch.txt").apply { delete() }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_shell_task",
+                JSONObject()
+                    .put("label", "OpenGUI dispatch smoke")
+                    .put("command", "printf '%DISPATCH_EXECUTION_ID|%DISPATCH_TASK_ID|%DISPATCH_TASK_NAME' > \"\$HOME/hermes-remote-dispatch.txt\"")
+                    .put("trigger", "remote_dispatch"),
+            )
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+
+        val dispatched = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_remote_dispatch",
+                JSONObject()
+                    .put("executionId", 42)
+                    .put("taskId", 7)
+                    .put("taskName", "OpenGUI dispatch smoke")
+                    .put("dispatch_source", "opengui_standby")
+                    .put("dispatch_channel", "discord"),
+            )
+        )
+        assertTrue(dispatched.toString(), dispatched.getBoolean("success"))
+        assertEquals(1, dispatched.getInt("matched_count"))
+        assertEquals("remote_dispatch", dispatched.getString("trigger"))
+        assertTrue("Expected ${target.absolutePath}", target.isFile)
+        assertEquals("42|7|OpenGUI dispatch smoke", target.readText())
+
+        val history = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_history",
+                JSONObject().put("limit", 1),
+            )
+        )
+        val latestRun = history.getJSONArray("runs").getJSONObject(0)
+        assertEquals("remote_dispatch", latestRun.getString("trigger"))
+        assertEquals("opengui_standby", latestRun.getString("dispatch_source"))
+        assertEquals("discord", latestRun.getString("dispatch_channel"))
+        assertEquals("42", latestRun.getString("remote_execution_id"))
+        assertEquals("7", latestRun.getString("remote_task_id"))
+        assertEquals("OpenGUI dispatch smoke", latestRun.getString("remote_task_name"))
+
+        val standby = JSONObject(HermesAutomationBridge.performActionJson(app, "operator_standby_status"))
+            .getJSONObject("standby_dispatch")
+        assertEquals(1, standby.getInt("remote_dispatch_count"))
+        assertEquals("OpenGUI dispatch smoke", standby.getString("last_dispatch_task_name"))
+        assertTrue(standby.getJSONArray("compatible_dispatch_payloads").toString().contains("OpenGUI standby:dispatch"))
+    }
+
+    @Test
     fun fileAutomationWritesAndDeletesWorkspaceFile() {
         val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
         val workspace = File(linuxState.getString("home_path"))

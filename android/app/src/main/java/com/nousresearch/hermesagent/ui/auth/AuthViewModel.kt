@@ -151,6 +151,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             ).toString(),
         )
         val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(pendingRequest.startUrl)).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 

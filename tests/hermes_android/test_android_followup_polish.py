@@ -36,6 +36,8 @@ def test_localization_layer_covers_visible_chat_auth_portal_device_and_settings_
         'operatorStandbyTitle',
         'operatorStandbyStatus',
         'operatorStandbyRunHistory',
+        'operatorStandbyRemoteDispatch',
+        'operatorStandbyLastDispatch',
         'operatorStandbyLastRun',
     ]:
         assert key in strings
@@ -49,6 +51,8 @@ def test_localization_layer_covers_visible_chat_auth_portal_device_and_settings_
     assert 'OperatorStandbyCard' in device
     assert 'strings.operatorStandbyTitle()' in device
     assert 'strings.operatorStandbyStatus(' in device
+    assert 'strings.operatorStandbyRemoteDispatch(' in device
+    assert 'strings.operatorStandbyLastDispatch(' in device
     assert 'strings.toolProfileTitle' in tool_profile
     assert 'strings.providerLabel' in settings
     assert 'strings.localDownloadsExampleGuidance()' in downloads_section
@@ -116,7 +120,8 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     assert 'ExperimentalFlags.enableSpeculativeDecoding' in litert_proxy
     assert 'speculativeDecodingDecision(modelPath)' in litert_proxy
     assert 'ExperimentalFlags.enableSpeculativeDecoding = false' in litert_proxy
-    assert litert_proxy.index('ExperimentalFlags.enableSpeculativeDecoding = speculativeDecoding.enabled') < litert_proxy.index('candidate = Engine(')
+    assert litert_proxy.index('ExperimentalFlags.enableSpeculativeDecoding = enableMtp') < litert_proxy.index('candidate = Engine(')
+    assert 'disabled: Gemma 4 MTP failed during $label engine initialization; retried without MTP' in litert_proxy
     assert 'Build.SUPPORTED_ABIS.any { it.startsWith("x86") }' in litert_proxy
     assert 'Capabilities(modelPath).use' in litert_proxy
     assert 'capabilities.hasSpeculativeDecodingSupport()' in litert_proxy
@@ -227,11 +232,22 @@ def test_android_automation_exposes_operator_standby_history_for_remote_dispatch
     assert 'listRunEvents' in store
     assert 'operator_standby_status' in bridge
     assert 'run_history' in bridge
+    assert 'run_remote_dispatch' in bridge
+    assert 'submit_standby_dispatch' in bridge
+    assert 'TRIGGER_REMOTE_DISPATCH' in bridge
+    assert 'dispatchPayloadFromArguments' in bridge
+    assert 'DISPATCH_EXECUTION_ID' in bridge
     assert 'standby_dispatch' in bridge
     assert 'supported_dispatch_channels' in bridge
     assert 'external_broadcast' in bridge
+    assert 'OpenGUI standby payload' in bridge
+    assert 'compatible_dispatch_payloads' in bridge
+    assert 'remote_dispatch_count' in bridge
+    assert 'last_dispatch_task_name' in bridge
     assert 'Tasker plugin' in bridge
     assert 'automationStandbyStatus' in view_model
     assert 'operatorStandbyReady' in view_model
     assert 'externalTriggerCount' in view_model
+    assert 'remoteDispatchCount' in view_model
+    assert 'lastDispatchTaskName' in view_model
     assert 'OperatorStandbyCard(uiState = uiState)' in device

@@ -432,6 +432,56 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Recent runs: $count"
     }
 
+    fun operatorStandbyRemoteDispatch(count: Int): String = when (language) {
+        AppLanguage.CHINESE -> "远程待命自动化：$count"
+        AppLanguage.SPANISH -> "Automatizaciones de espera remota: $count"
+        AppLanguage.GERMAN -> "Remote-Standby-Automationen: $count"
+        AppLanguage.PORTUGUESE -> "Automações de espera remota: $count"
+        AppLanguage.FRENCH -> "Automatisations de veille distante : $count"
+        AppLanguage.ENGLISH -> "Remote standby automations: $count"
+    }
+
+    fun operatorStandbyLastDispatch(taskName: String, source: String, channel: String): String {
+        val cleanTask = taskName.ifBlank {
+            when (language) {
+                AppLanguage.CHINESE -> "远程任务"
+                AppLanguage.SPANISH -> "tarea remota"
+                AppLanguage.GERMAN -> "Remote-Aufgabe"
+                AppLanguage.PORTUGUESE -> "tarefa remota"
+                AppLanguage.FRENCH -> "tâche distante"
+                AppLanguage.ENGLISH -> "remote task"
+            }
+        }
+        val cleanSource = source.ifBlank {
+            when (language) {
+                AppLanguage.CHINESE -> "远程"
+                AppLanguage.SPANISH -> "remoto"
+                AppLanguage.GERMAN -> "remote"
+                AppLanguage.PORTUGUESE -> "remoto"
+                AppLanguage.FRENCH -> "distant"
+                AppLanguage.ENGLISH -> "remote"
+            }
+        }
+        val cleanChannel = channel.ifBlank {
+            when (language) {
+                AppLanguage.CHINESE -> "待命"
+                AppLanguage.SPANISH -> "espera"
+                AppLanguage.GERMAN -> "Standby"
+                AppLanguage.PORTUGUESE -> "espera"
+                AppLanguage.FRENCH -> "veille"
+                AppLanguage.ENGLISH -> "standby"
+            }
+        }
+        return when (language) {
+            AppLanguage.CHINESE -> "上次远程调度：$cleanTask，经由 $cleanSource/$cleanChannel"
+            AppLanguage.SPANISH -> "Último despacho remoto: $cleanTask por $cleanSource/$cleanChannel"
+            AppLanguage.GERMAN -> "Letzte Remote-Dispatch: $cleanTask über $cleanSource/$cleanChannel"
+            AppLanguage.PORTUGUESE -> "Último despacho remoto: $cleanTask por $cleanSource/$cleanChannel"
+            AppLanguage.FRENCH -> "Dernier dispatch distant : $cleanTask via $cleanSource/$cleanChannel"
+            AppLanguage.ENGLISH -> "Last remote dispatch: $cleanTask via $cleanSource/$cleanChannel"
+        }
+    }
+
     fun operatorStandbyLastRun(label: String, success: Boolean?, result: String): String {
         val status = when (success) {
             true -> when (language) {

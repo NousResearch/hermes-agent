@@ -83,6 +83,11 @@ data class HermesAutomationRunEvent(
     val result: String,
     val startedAtEpochMs: Long,
     val finishedAtEpochMs: Long,
+    val dispatchSource: String = "",
+    val dispatchChannel: String = "",
+    val remoteExecutionId: String = "",
+    val remoteTaskId: String = "",
+    val remoteTaskName: String = "",
 ) {
     fun toJson(): JSONObject {
         return JSONObject()
@@ -97,6 +102,11 @@ data class HermesAutomationRunEvent(
             .put("started_at_epoch_ms", startedAtEpochMs)
             .put("finished_at_epoch_ms", finishedAtEpochMs)
             .put("duration_ms", (finishedAtEpochMs - startedAtEpochMs).coerceAtLeast(0L))
+            .put("dispatch_source", dispatchSource)
+            .put("dispatch_channel", dispatchChannel)
+            .put("remote_execution_id", remoteExecutionId)
+            .put("remote_task_id", remoteTaskId)
+            .put("remote_task_name", remoteTaskName)
     }
 
     companion object {
@@ -112,6 +122,11 @@ data class HermesAutomationRunEvent(
                 result = json.optString("result"),
                 startedAtEpochMs = json.optLong("started_at_epoch_ms", 0L),
                 finishedAtEpochMs = json.optLong("finished_at_epoch_ms", 0L),
+                dispatchSource = json.optString("dispatch_source"),
+                dispatchChannel = json.optString("dispatch_channel"),
+                remoteExecutionId = json.optString("remote_execution_id"),
+                remoteTaskId = json.optString("remote_task_id"),
+                remoteTaskName = json.optString("remote_task_name"),
             )
         }
     }
@@ -315,6 +330,7 @@ const val TRIGGER_CALENDAR_EVENT = "calendar_event"
 const val TRIGGER_LOCATION = "location"
 const val TRIGGER_SENSOR = "sensor"
 const val TRIGGER_LOGCAT_ENTRY = "logcat_entry"
+const val TRIGGER_REMOTE_DISPATCH = "remote_dispatch"
 const val TRIGGER_SHIZUKU_AVAILABLE = "shizuku_available"
 const val TRIGGER_SHIZUKU_UNAVAILABLE = "shizuku_unavailable"
 const val TRIGGER_EXTERNAL = "external_trigger"

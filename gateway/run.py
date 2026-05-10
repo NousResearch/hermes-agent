@@ -3206,6 +3206,28 @@ class GatewayRunner:
         except RuntimeError:
             self._gateway_loop = None
         logger.info("Session storage: %s", self.config.sessions_dir)
+
+        # Sanity-check that systemd's TimeoutStopSec covers our drain
+        # window.  When the user upgraded hermes-agent without re-running
+        # ``hermes setup``, their unit file may still encode the old
+        # default — in which case SIGKILL hits mid-drain and looks like
+        # a phantom kill in the journal.  Best-effort, never raises.
+        try:
+            from gateway.shutdown_forensics import check_systemd_timing_alignment
+            _alignment = check_systemd_timing_alignment(self._restart_drain_timeout)
+            if _alignment is not None and _alignment.get("mismatch"):
+                logger.warning(
+                    "Stale systemd unit detected: %s has TimeoutStopSec=%.0fs but "
+                    "drain_timeout=%.0fs (expected >=%.0fs). systemd may SIGKILL the "
+                    "gateway mid-drain. Run `hermes gateway service install --replace` "
+                    "to regenerate the unit, or shorten agent.restart_drain_timeout.",
+                    _alignment.get("unit", "(unknown)"),
+                    _alignment["timeout_stop_sec"],
+                    _alignment["drain_timeout"],
+                    _alignment["expected_min"],
+                )
+        except Exception as _e:
+            logger.debug("check_systemd_timing_alignment failed: %s", _e)
         # Log the resolved max_iterations budget so operators can verify the
         # config.yaml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
@@ -4498,15 +4520,34 @@ class GatewayRunner:
                 "Stopping gateway%s...",
                 " for restart" if self._restart_requested else "",
             )
+            _stop_started_at = time.monotonic()
+
+            def _phase_elapsed() -> float:
+                return time.monotonic() - _stop_started_at
+
             self._running = False
             self._draining = True
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
             await self._notify_active_sessions_of_shutdown()
+            logger.info(
+                "Shutdown phase: notify_active_sessions done at +%.2fs",
+                _phase_elapsed(),
+            )
 
             timeout = self._restart_drain_timeout
+            _drain_started_at = time.monotonic()
             active_agents, timed_out = await self._drain_active_agents(timeout)
+            logger.info(
+                "Shutdown phase: drain done at +%.2fs (drain took %.2fs, "
+                "timed_out=%s, active_at_start=%d, active_now=%d)",
+                _phase_elapsed(),
+                time.monotonic() - _drain_started_at,
+                timed_out,
+                len(active_agents),
+                self._running_agent_count(),
+            )
             if timed_out:
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
@@ -4564,6 +4605,10 @@ class GatewayRunner:
                 # killed by systemd instead of us (issue #8202).  The final
                 # catch-all cleanup below still runs for the graceful path.
                 _kill_tool_subprocesses("post-interrupt")
+                logger.info(
+                    "Shutdown phase: post-interrupt tool kill done at +%.2fs",
+                    _phase_elapsed(),
+                )
 
             if self._restart_requested and self._restart_detached:
                 try:
@@ -4591,15 +4636,29 @@ class GatewayRunner:
                     self._cleanup_agent_resources(_agent)
 
             for platform, adapter in list(self.adapters.items()):
+                _adapter_started_at = time.monotonic()
                 try:
                     await adapter.cancel_background_tasks()
                 except Exception as e:
                     logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
                 try:
                     await adapter.disconnect()
-                    logger.info("✓ %s disconnected", platform.value)
+                    logger.info(
+                        "✓ %s disconnected (%.2fs)",
+                        platform.value,
+                        time.monotonic() - _adapter_started_at,
+                    )
                 except Exception as e:
-                    logger.error("✗ %s disconnect error: %s", platform.value, e)
+                    logger.error(
+                        "✗ %s disconnect error after %.2fs: %s",
+                        platform.value,
+                        time.monotonic() - _adapter_started_at,
+                        e,
+                    )
+            logger.info(
+                "Shutdown phase: all adapters disconnected at +%.2fs",
+                _phase_elapsed(),
+            )
 
             for _task in list(self._background_tasks):
                 if _task is self._stop_task:
@@ -4624,6 +4683,10 @@ class GatewayRunner:
             # that got respawned between the earlier call and adapter
             # disconnect (defense in depth; safe to call repeatedly).
             _kill_tool_subprocesses("final-cleanup")
+            logger.info(
+                "Shutdown phase: final-cleanup tool kill done at +%.2fs",
+                _phase_elapsed(),
+            )
 
             # Reap the process-global auxiliary-client cache once at the very
             # end of teardown.  Per-turn cleanup runs in _cleanup_agent_resources
@@ -4651,6 +4714,10 @@ class GatewayRunner:
                     _db.close()
                 except Exception as _e:
                     logger.debug("SessionDB close error: %s", _e)
+            logger.info(
+                "Shutdown phase: SessionDB close done at +%.2fs",
+                _phase_elapsed(),
+            )
 
             from gateway.status import remove_pid_file, release_gateway_runtime_lock
             remove_pid_file()
@@ -4690,7 +4757,7 @@ class GatewayRunner:
 
             self._draining = False
             self._update_runtime_status("stopped", self._exit_reason)
-            logger.info("Gateway stopped")
+            logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())
         await self._stop_task
@@ -15762,40 +15829,62 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             except Exception as e:
                 logger.debug("Planned stop marker check failed: %s", e)
 
+        # Fast (<10ms) snapshot of who's asking us to shut down — runs
+        # synchronously inside the asyncio signal handler, so we keep it
+        # purely stdlib + /proc reads, no subprocesses.  See PR #15826
+        # (May 2026): the previous implementation called `ps aux` here
+        # synchronously, blocking the event loop for up to 3s while
+        # adapter teardown couldn't begin.
+        try:
+            from gateway.shutdown_forensics import (
+                format_context_for_log,
+                snapshot_shutdown_context,
+                spawn_async_diagnostic,
+            )
+            _shutdown_ctx = snapshot_shutdown_context(received_signal)
+        except Exception as _e:
+            _shutdown_ctx = None
+            logger.debug("snapshot_shutdown_context failed: %s", _e)
+
         if planned_takeover:
             logger.info(
-                "Received SIGTERM as a planned --replace takeover — exiting cleanly"
+                "Received %s as a planned --replace takeover — exiting cleanly",
+                _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM",
             )
         elif planned_stop:
             logger.info(
-                "Received SIGTERM/SIGINT as a planned gateway stop — exiting cleanly"
+                "Received %s as a planned gateway stop — exiting cleanly",
+                _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",
             )
         else:
             _signal_initiated_shutdown = True
-            logger.info("Received SIGTERM/SIGINT — initiating shutdown")
-        # Diagnostic: log all hermes-related processes so we can identify
-        # what triggered the signal (hermes update, hermes gateway restart,
-        # a stale detached subprocess, etc.).
-        try:
-            import subprocess as _sp
-            _ps = _sp.run(
-                ["ps", "aux"],
-                capture_output=True, text=True, timeout=3,
+            logger.info(
+                "Received %s — initiating shutdown",
+                _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",
             )
-            _hermes_procs = [
-                line for line in _ps.stdout.splitlines()
-                if ("hermes" in line.lower() or "gateway" in line.lower())
-                and str(os.getpid()) not in line.split()[1:2]  # exclude self
-            ]
-            if _hermes_procs:
+
+        # Always log who/what triggered the signal — most useful single
+        # line when diagnosing "the gateway keeps dying" tickets.  Format
+        # is one line, key=value, parent_cmdline last (often long).
+        if _shutdown_ctx is not None:
+            try:
                 logger.warning(
-                    "Shutdown diagnostic — other hermes processes running:\n  %s",
-                    "\n  ".join(_hermes_procs),
+                    "Shutdown context: %s", format_context_for_log(_shutdown_ctx)
                 )
-            else:
-                logger.info("Shutdown diagnostic — no other hermes processes found")
-        except Exception:
-            pass
+            except Exception as _e:
+                logger.debug("format_context_for_log failed: %s", _e)
+
+            # Spawn the heavyweight diagnostic (ps auxf, pstree, dmesg) in
+            # a detached subprocess so it can finish writing to disk even
+            # if our cgroup is being torn down.  Bounded by an internal
+            # timeout; never blocks the event loop here.
+            try:
+                _diag_log = _hermes_home / "logs" / "gateway-shutdown-diag.log"
+                spawn_async_diagnostic(
+                    _diag_log, _shutdown_ctx["signal"], timeout_seconds=5.0
+                )
+            except Exception as _e:
+                logger.debug("spawn_async_diagnostic failed: %s", _e)
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():

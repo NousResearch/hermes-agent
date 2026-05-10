@@ -96,6 +96,10 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    provider: Optional[str] = None,
+    credential_label: Optional[str] = None,
+    fallback_used: bool = False,
+    fallback_reason: Optional[str] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -108,6 +112,12 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "provider":
+            if provider:
+                parts.append(str(provider))
+        elif field in {"credential", "credential_label"}:
+            if credential_label:
+                parts.append(str(credential_label))
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
@@ -120,7 +130,13 @@ def format_runtime_footer(
 
     if not parts:
         return ""
-    return _SEP.join(parts)
+    line = _SEP.join(parts)
+    if fallback_used:
+        reason = str(fallback_reason or "").strip()
+        if reason:
+            reason = f" · {reason}"
+        return f"⚠ fallback: {line}{reason}"
+    return line
 
 
 def build_footer_line(
@@ -131,6 +147,10 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    provider: Optional[str] = None,
+    credential_label: Optional[str] = None,
+    fallback_used: bool = False,
+    fallback_reason: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -147,4 +167,8 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        provider=provider,
+        credential_label=credential_label,
+        fallback_used=fallback_used,
+        fallback_reason=fallback_reason,
     )

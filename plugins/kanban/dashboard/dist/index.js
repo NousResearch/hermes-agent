@@ -441,6 +441,9 @@
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());
+    const [draggingTaskId, setDraggingTaskId] = useState(null);
+    const handleDragStart = useCallback(function (taskId) { setDraggingTaskId(taskId); }, []);
+    const handleDragEnd = useCallback(function () { setDraggingTaskId(null); }, []);
     // Per-task event counter incremented whenever the WS stream reports
     // a new event for that task id. TaskDrawer useEffect-depends on its
     // own task's counter so it reloads itself on live events instead of
@@ -911,6 +914,9 @@
           laneByProfile,
           selectedIds,
           failedIds,
+          draggingTaskId,
+          onDragStart: handleDragStart,
+          onDragEnd: handleDragEnd,
           toggleSelected,
           toggleRange,
           selectAllInColumn,
@@ -1762,7 +1768,16 @@
   // -------------------------------------------------------------------------
 
   function BoardColumns(props) {
-    return h("div", { className: "hermes-kanban-columns" },
+    const handleDragStart = useCallback(function (e) {
+      const card = e.target.closest && e.target.closest(".hermes-kanban-card");
+      if (!card) return;
+      const taskId = card.getAttribute("data-task-id");
+      if (taskId && props.onDragStart) props.onDragStart(taskId);
+    }, [props.onDragStart]);
+    const handleDragEnd = useCallback(function () {
+      if (props.onDragEnd) props.onDragEnd();
+    }, [props.onDragEnd]);
+    return h("div", { className: "hermes-kanban-columns", onDragStart: handleDragStart, onDragEnd: handleDragEnd },
       props.board.columns.map(function (col) {
         return h(Column, {
           key: col.name,
@@ -1770,6 +1785,7 @@
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
           failedIds: props.failedIds,
+          draggingTaskId: props.draggingTaskId,
           toggleSelected: props.toggleSelected,
           toggleRange: props.toggleRange,
           selectAllInColumn: props.selectAllInColumn,
@@ -1903,6 +1919,8 @@
                       key: t.id, task: t,
                       selected: props.selectedIds.has(t.id),
                       failed: props.failedIds && props.failedIds.has(t.id),
+                      draggingTaskId: props.draggingTaskId,
+                      draggingSource: props.draggingTaskId && props.selectedIds.has(props.draggingTaskId) && props.selectedIds.size > 1 && props.selectedIds.has(t.id),
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
                       onOpen: props.onOpen,
@@ -1915,6 +1933,8 @@
                   key: t.id, task: t,
                   selected: props.selectedIds.has(t.id),
                   failed: props.failedIds && props.failedIds.has(t.id),
+                  draggingTaskId: props.draggingTaskId,
+                  draggingSource: props.draggingTaskId && props.selectedIds.has(props.draggingTaskId) && props.selectedIds.size > 1 && props.selectedIds.has(t.id),
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
                   onOpen: props.onOpen,
@@ -1961,6 +1981,17 @@
     const handleDragStart = function (e) {
       e.dataTransfer.setData(MIME_TASK, t.id);
       e.dataTransfer.effectAllowed = "move";
+      const selectedCards = document.querySelectorAll(".hermes-kanban-card--selected");
+      if (selectedCards.length > 1 && props.selected) {
+        const ghost = document.createElement("div");
+        ghost.className = "hermes-kanban-drag-ghost";
+        ghost.textContent = selectedCards.length + " cards";
+        document.body.appendChild(ghost);
+        e.dataTransfer.setDragImage(ghost, 0, 0);
+        requestAnimationFrame(function () {
+          if (ghost.parentNode) document.body.removeChild(ghost);
+        });
+      }
     };
     const handleClick = function (e) {
       if (e.shiftKey) {
@@ -1995,10 +2026,12 @@
 
     return h("div", {
       ref: cardRef,
+      "data-task-id": t.id,
       className: cn(
         "hermes-kanban-card",
         props.selected ? "hermes-kanban-card--selected" : "",
         props.failed ? "hermes-kanban-card--failed" : "",
+        props.draggingSource ? "hermes-kanban-card--dragging-source" : "",
         stalenessClass(t),
       ),
       draggable: true,

@@ -145,6 +145,7 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
 def test_settings_opens_official_provider_key_pages():
     settings_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
     settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    provider_presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
     strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
     assert "providerPreset?.apiKeyUrl" in settings_screen
@@ -153,3 +154,13 @@ def test_settings_opens_official_provider_key_pages():
     assert "Uri.parse(target)" in settings_view_model
     assert "openProviderKeyPage(providerLabel)" in settings_screen
     assert "Open $providerLabel key page" in strings
+    assert "ProviderPresets.androidSettingsDefaults.forEach" in settings_screen
+    assert 'androidSettingsDefaults = defaults.filterNot { it.id == "qwen-oauth" }' in provider_presets
+
+
+def test_settings_provider_switch_applies_selected_provider_defaults():
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+
+    assert "val providerChanged = provider != it.provider" in settings_view_model
+    assert 'baseUrl = if (providerChanged && provider != "custom") preset?.baseUrl.orEmpty() else it.baseUrl' in settings_view_model
+    assert 'model = if (providerChanged && provider != "custom") preset?.modelHint.orEmpty() else it.model' in settings_view_model

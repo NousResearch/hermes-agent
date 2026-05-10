@@ -175,7 +175,7 @@ private fun RemoteFallbackCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                ProviderPresets.defaults.forEach { preset ->
+                ProviderPresets.androidSettingsDefaults.forEach { preset ->
                     Button(
                         onClick = { onSelectProvider(preset.id) },
                         enabled = preset.id != providerId,

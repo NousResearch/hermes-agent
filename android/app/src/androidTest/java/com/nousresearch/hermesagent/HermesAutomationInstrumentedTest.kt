@@ -795,6 +795,43 @@ class HermesAutomationInstrumentedTest {
     }
 
     @Test
+    fun intentAutomationCanOpenGeneratedHermesHtmlFileWhenBrowserIsAvailable() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val htmlFile = File(workspace, "hermes-flappy-browser-smoke.html").apply {
+            writeText(
+                "<!doctype html><html><head><title>Hermes Flappy Smoke</title></head>" +
+                    "<body><canvas id=\"game\" width=\"240\" height=\"160\"></canvas>" +
+                    "<script>document.body.dataset.hermes='flappy-smoke';</script></body></html>",
+            )
+        }
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_open_uri_task",
+                JSONObject()
+                    .put("label", "Open generated HTML smoke")
+                    .put("data_uri", htmlFile.absolutePath)
+                    .put("enabled", false),
+            )
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+
+        val run = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run",
+                JSONObject().put("id", created.getJSONObject("automation").getString("id")),
+            )
+        )
+        assertTrue(run.toString(), run.getBoolean("success"))
+        val result = run.getJSONObject("result")
+        assertEquals("open_uri", result.getString("action"))
+        assertEquals(htmlFile.absolutePath, result.getString("data_uri"))
+    }
+
+    @Test
     fun intentAutomationRejectsUnsafeDefinitions() {
         val missingUri = JSONObject(
             HermesAutomationBridge.performActionJson(

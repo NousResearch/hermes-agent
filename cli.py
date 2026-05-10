@@ -8579,19 +8579,19 @@ class HermesCLI:
 
         # Render warning + prompt — single-line composer prompt, mirrors
         # ``_confirm_and_reload_mcp``.
-        print()
-        print(f"⚠️  /{command} — destroys conversation state")
-        print()
+        _cprint("")
+        _cprint(f"⚠️  /{command} — destroys conversation state")
+        _cprint("")
         for line in detail.splitlines():
-            print(f"  {line}")
-        print()
-        print("  [1] Approve Once   — proceed this time only")
-        print("  [2] Always Approve — proceed and silence this prompt permanently")
-        print("  [3] Cancel         — keep current conversation")
-        print()
+            _cprint(f"  {line}")
+        _cprint("")
+        _cprint("  [1] Approve Once   — proceed this time only")
+        _cprint("  [2] Always Approve — proceed and silence this prompt permanently")
+        _cprint("  [3] Cancel         — keep current conversation")
+        _cprint("")
         raw = self._prompt_text_input("Choice [1/2/3]: ")
         if raw is None:
-            print(f"🟡 /{command} cancelled (no input).")
+            _cprint(f"🟡 /{command} cancelled (no input).")
             return None
         choice_raw = raw.strip().lower()
         if choice_raw in ("1", "once", "approve", "yes", "y", "ok"):
@@ -8601,19 +8601,19 @@ class HermesCLI:
         elif choice_raw in ("3", "cancel", "nevermind", "no", "n", ""):
             choice = "cancel"
         else:
-            print(f"🟡 Unrecognized choice '{raw}'. /{command} cancelled.")
+            _cprint(f"🟡 Unrecognized choice '{raw}'. /{command} cancelled.")
             return None
 
         if choice == "cancel":
-            print(f"🟡 /{command} cancelled. Conversation unchanged.")
+            _cprint(f"🟡 /{command} cancelled. Conversation unchanged.")
             return None
 
         if choice == "always":
             if save_config_value("approvals.destructive_slash_confirm", False):
-                print("🔒 Future /clear, /new, /reset, and /undo will run without confirmation.")
-                print("   Re-enable via `approvals.destructive_slash_confirm: true` in config.yaml.")
+                _cprint("🔒 Future /clear, /new, /reset, and /undo will run without confirmation.")
+                _cprint("   Re-enable via `approvals.destructive_slash_confirm: true` in config.yaml.")
             else:
-                print("⚠️  Couldn't persist opt-out — proceeding once.")
+                _cprint("⚠️  Couldn't persist opt-out — proceeding once.")
 
         return choice
 

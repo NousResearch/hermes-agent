@@ -1757,7 +1757,20 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
 
 
 def _check_send_message():
-    """Gate send_message on gateway running (always available on messaging platforms)."""
+    """Gate send_message on gateway running (always available on messaging platforms).
+
+    Also passes for kanban workers — the dispatcher sets ``HERMES_KANBAN_TASK``
+    on every spawned worker, but those workers run with the assignee profile's
+    ``HERMES_HOME`` which has no ``gateway.pid``, so the gateway-running check
+    would fail even though the parent gateway is alive. Honoring the env var
+    lets workers call ``send_message`` to deliver rich content directly to the
+    originating chat (paired with ``kanban_complete`` for the short notifier
+    summary), which is the canonical pattern for any worker that needs to
+    reply with more than the ~200-char first-line truncation the kanban
+    notifier applies.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return True
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
     if platform and platform != "local":

@@ -330,6 +330,106 @@ def test_complete_rejects_non_dict_metadata(worker_env):
     assert json.loads(out).get("error")
 
 
+def test_complete_phantom_card_message_advertises_retry(worker_env):
+    """A phantom-card rejection must surface a tool_error that explicitly
+    tells the worker the task is still in-flight and how to retry — the
+    worker has no other channel to discover that. Regression for #22923,
+    where the previous wording read like a terminal failure and workers
+    routinely abandoned the run instead of trying again.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "oops claimed a phantom",
+        "created_cards": ["t_phantomdeadbeef"],
+    })
+    err = json.loads(out).get("error", "")
+    assert err, f"expected an error, got {out!r}"
+    # Phantom id surfaced verbatim.
+    assert "t_phantomdeadbeef" in err
+    # The retry-is-supported phrasing — these are the literal cues a
+    # worker reads to decide whether to retry vs block/abandon. If a
+    # future change rewords the message, these checks will catch the
+    # regression. See #22923 for the failure mode.
+    assert "still in-flight" in err
+    assert "Retry kanban_complete" in err
+    assert "created_cards=[]" in err
+
+    # Critically: the task is genuinely still in-flight — the gate
+    # rejection did not mutate state, so the worker's retry can land.
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "running"
+    finally:
+        conn.close()
+
+
+def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
+    """After a phantom rejection, retrying kanban_complete with
+    created_cards=[] (the documented escape hatch) must complete the
+    task. Regression for #22923."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Hit the gate first.
+    rejected = json.loads(kt._handle_complete({
+        "summary": "oops",
+        "created_cards": ["t_phantomdeadbeef"],
+    }))
+    assert rejected.get("error")
+
+    # Retry with the escape hatch.
+    ok = json.loads(kt._handle_complete({
+        "summary": "retry without claims",
+        "created_cards": [],
+    }))
+    assert ok.get("ok") is True
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "done"
+    finally:
+        conn.close()
+
+
+def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
+    """After a phantom rejection, retrying kanban_complete with a
+    corrected created_cards list (phantom ids removed) must complete the
+    task. Regression for #22923."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Create a real child via the tool so it gets the worker-profile
+    # attribution the gate trusts.
+    child = json.loads(kt._handle_create({
+        "title": "real child", "assignee": "peer",
+    }))
+    assert child["ok"]
+    real_id = child["task_id"]
+
+    # First attempt mixes real + phantom — gate rejects.
+    rejected = json.loads(kt._handle_complete({
+        "summary": "oops",
+        "created_cards": [real_id, "t_phantomdeadbeef"],
+    }))
+    assert rejected.get("error")
+    assert "t_phantomdeadbeef" in rejected["error"]
+
+    # Retry with corrected list.
+    ok = json.loads(kt._handle_complete({
+        "summary": "retry with corrected list",
+        "created_cards": [real_id],
+    }))
+    assert ok.get("ok") is True
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "done"
+    finally:
+        conn.close()
+
+
 def test_block_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_block({"reason": "need clarification"})

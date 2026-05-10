@@ -623,6 +623,14 @@ class TestSubcommands:
         assert "list" in SUBCOMMANDS["/cron"]
         assert "add" in SUBCOMMANDS["/cron"]
 
+    def test_curator_has_full_subcommands(self):
+        assert "/curator" in SUBCOMMANDS
+        subs = SUBCOMMANDS["/curator"]
+        assert "archive" in subs
+        assert "prune" in subs
+        assert "backup" in subs
+        assert "rollback" in subs
+
     def test_commands_without_subcommands_not_in_dict(self):
         """Plain commands should not appear in SUBCOMMANDS."""
         assert "/help" not in SUBCOMMANDS
@@ -647,6 +655,14 @@ class TestSubcommandCompletion:
         assert "fast" in texts
         assert "normal" in texts
 
+    def test_curator_subcommand_completion_after_space(self):
+        completions = _completions(SlashCommandCompleter(), "/curator ")
+        texts = {c.text for c in completions}
+        assert "archive" in texts
+        assert "prune" in texts
+        assert "backup" in texts
+        assert "rollback" in texts
+
     def test_fast_command_filtered_out_when_unavailable(self):
         completions = _completions(
             SlashCommandCompleter(command_filter=lambda cmd: cmd != "/fast"),
@@ -660,6 +676,11 @@ class TestSubcommandCompletion:
         completions = _completions(SlashCommandCompleter(), "/reasoning sh")
         texts = {c.text for c in completions}
         assert texts == {"show"}
+
+    def test_curator_subcommand_prefix_filters(self):
+        completions = _completions(SlashCommandCompleter(), "/curator ar")
+        texts = {c.text for c in completions}
+        assert texts == {"archive"}
 
     def test_subcommand_exact_match_suppressed(self):
         """Typing the full subcommand shouldn't re-suggest it."""

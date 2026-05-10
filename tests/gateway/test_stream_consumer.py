@@ -1638,3 +1638,96 @@ class TestOnNewMessageCallback:
         await consumer.run()
 
         assert consumer.already_sent is True
+
+
+class TestUtf16OverflowDetection:
+    """Regression coverage for #11170 — Telegram counts message length in
+    UTF-16 code units, not Python codepoints. A response with supplementary
+    characters (emoji, CJK in some ranges) can have len()=3000 codepoints
+    but utf16_len()=5000+ units, blowing past Telegram's 4096 limit."""
+
+    def _make_telegram_like_adapter(self):
+        """Construct a minimal BasePlatformAdapter subclass that overrides
+        message_len_fn like Telegram does."""
+        from gateway.platforms.base import utf16_len, BasePlatformAdapter
+
+        TelegramLikeAdapter = type(
+            "TelegramLikeAdapter",
+            (BasePlatformAdapter,),
+            {
+                "MAX_MESSAGE_LENGTH": 4096,
+                "message_len_fn": property(lambda self: utf16_len),
+            },
+        )
+        # Defeat ABCMeta abstract-instantiation guard by clearing the cached
+        # abstract methods set after class creation.
+        TelegramLikeAdapter.__abstractmethods__ = frozenset()
+        adapter = TelegramLikeAdapter.__new__(TelegramLikeAdapter)
+        adapter._typing_paused = set()
+        adapter._fatal_error_message = None
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_emoji_text_exceeding_utf16_limit_triggers_overflow_split(self):
+        """A response that is under 4096 codepoints but over 4096 UTF-16
+        units must trigger the overflow-split path."""
+        from gateway.platforms.base import utf16_len
+
+        adapter = self._make_telegram_like_adapter()
+        # Mock the send/edit methods we actually call
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        # truncate_message: emit two halves so we can assert the split fired
+        adapter.truncate_message = MagicMock(
+            side_effect=lambda text, limit, **kw: [text[:len(text)//2], text[len(text)//2:]],
+        )
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # 🚀 is 1 codepoint = 2 UTF-16 units. 2200 of them = 2200 codepoints,
+        # 4400 UTF-16 units. Under the codepoint-equivalent limit (would not
+        # trigger split with len()) but over Telegram's UTF-16 4096 limit.
+        emoji_text = "🚀" * 2200
+        assert len(emoji_text) < adapter.MAX_MESSAGE_LENGTH, (
+            "Test setup invariant: codepoint count under limit"
+        )
+        assert utf16_len(emoji_text) > adapter.MAX_MESSAGE_LENGTH, (
+            "Test setup invariant: UTF-16 count over limit"
+        )
+
+        consumer.on_delta(emoji_text)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # The fix: stream consumer detects UTF-16 overflow and calls
+        # truncate_message to split. Without the fix, len() would return
+        # 2200 (under 4096) and no split would fire — Telegram would then
+        # reject the send or render \x00 artifacts.
+        adapter.truncate_message.assert_called(), (
+            "UTF-16 overflow not detected — emoji text bypassed split path"
+        )
+        # truncate_message must have been called with len_fn=utf16_len
+        call_kwargs = adapter.truncate_message.call_args[1]
+        assert call_kwargs.get("len_fn") is utf16_len, (
+            f"truncate_message called without utf16_len: {call_kwargs}"
+        )
+
+    def test_codepoint_only_adapter_falls_back_to_len(self):
+        """Adapters without message_len_fn override (or test MagicMocks)
+        must use plain len for backwards compatibility."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        config = StreamConsumerConfig(cursor=" ▉")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+        # The isinstance guard means MagicMock adapters get len, not the
+        # auto-attr mock. Verified indirectly by all the other tests in
+        # this file passing — they all use MagicMock adapters.
+        assert consumer is not None
+

@@ -124,7 +124,7 @@ class TestJudgeGoal:
         assert verdict == "continue"
 
     def test_api_error_continues(self):
-        """Judge exception → fail-open continue (don't wedge progress on judge bugs)."""
+        """Generic judge exceptions still fail-open so judge bugs don't wedge progress."""
         from hermes_cli import goals
 
         fake_client = MagicMock()
@@ -137,11 +137,48 @@ class TestJudgeGoal:
         assert verdict == "continue"
         assert "judge error" in reason.lower()
 
+    def test_rate_limit_uses_auxiliary_fallback(self):
+        """Judge calls go through the central auxiliary caller, including fallback support."""
+        from hermes_cli import goals
+
+        fake_response = MagicMock(
+            choices=[
+                MagicMock(
+                    message=MagicMock(content='{"done": true, "reason": "fallback judged it"}')
+                )
+            ]
+        )
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_response,
+        ) as call_llm:
+            verdict, reason = goals.judge_goal("goal", "agent response")
+
+        assert verdict == "done"
+        assert reason == "fallback judged it"
+        call_llm.assert_called_once()
+        assert call_llm.call_args.kwargs["task"] == "goal_judge"
+
+    def test_rate_limit_after_fallback_is_skipped_not_continue(self):
+        """If the fallback-capable judge is still rate-limited, don't continue the loop."""
+        from hermes_cli import goals
+
+        class RateLimitError(Exception):
+            pass
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            side_effect=RateLimitError("rate limit"),
+        ):
+            verdict, reason = goals.judge_goal("goal", "agent response")
+
+        assert verdict == "skipped"
+        assert "rate limit" in reason.lower()
+
     def test_judge_says_done(self):
         from hermes_cli import goals
 
-        fake_client = MagicMock()
-        fake_client.chat.completions.create.return_value = MagicMock(
+        fake_response = MagicMock(
             choices=[
                 MagicMock(
                     message=MagicMock(content='{"done": true, "reason": "achieved"}')
@@ -149,8 +186,8 @@ class TestJudgeGoal:
             ]
         )
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "judge-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_response,
         ):
             verdict, reason = goals.judge_goal("goal", "agent response")
         assert verdict == "done"
@@ -159,8 +196,7 @@ class TestJudgeGoal:
     def test_judge_says_continue(self):
         from hermes_cli import goals
 
-        fake_client = MagicMock()
-        fake_client.chat.completions.create.return_value = MagicMock(
+        fake_response = MagicMock(
             choices=[
                 MagicMock(
                     message=MagicMock(content='{"done": false, "reason": "not yet"}')
@@ -168,8 +204,8 @@ class TestJudgeGoal:
             ]
         )
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "judge-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_response,
         ):
             verdict, reason = goals.judge_goal("goal", "agent response")
         assert verdict == "continue"
@@ -306,6 +342,24 @@ class TestGoalManager:
             assert mgr.state.status == "paused"
             assert mgr.state.turns_used == 2
             assert "budget" in (mgr.state.paused_reason or "").lower()
+
+    def test_evaluate_after_turn_judge_skipped_pauses(self, hermes_home):
+        """Judge unavailability pauses instead of firing another continuation prompt."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-sid-judge-skipped", default_max_turns=5)
+        mgr.set("hard goal")
+
+        with patch.object(goals, "judge_goal", return_value=("skipped", "judge rate limited")):
+            decision = mgr.evaluate_after_turn("step 1")
+
+        assert decision["verdict"] == "skipped"
+        assert decision["should_continue"] is False
+        assert decision["continuation_prompt"] is None
+        assert mgr.state.status == "paused"
+        assert mgr.state.turns_used == 1
+        assert "judge unavailable" in (mgr.state.paused_reason or "").lower()
 
     def test_evaluate_after_turn_inactive(self, hermes_home):
         """evaluate_after_turn is a no-op when goal isn't active."""

@@ -287,37 +287,35 @@ def judge_goal(
         return "continue", "empty response (nothing to evaluate)"
 
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client
+        from agent.auxiliary_client import call_llm, _is_connection_error, _is_rate_limit_error
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
         return "continue", "auxiliary client unavailable"
-
-    try:
-        client, model = get_text_auxiliary_client("goal_judge")
-    except Exception as exc:
-        logger.debug("goal judge: get_text_auxiliary_client failed: %s", exc)
-        return "continue", "auxiliary client unavailable"
-
-    if client is None or not model:
-        return "continue", "no auxiliary client configured"
 
     prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
         goal=_truncate(goal, 2000),
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
     )
+    messages = [
+        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
 
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
+        resp = call_llm(
+            task="goal_judge",
+            messages=messages,
             temperature=0,
             max_tokens=200,
             timeout=timeout,
         )
     except Exception as exc:
+        if _is_rate_limit_error(exc):
+            logger.info("goal judge: rate-limited after fallback (%s) — pausing goal", exc)
+            return "skipped", f"judge unavailable: rate limit ({type(exc).__name__})"
+        if _is_connection_error(exc):
+            logger.info("goal judge: connection failure after fallback (%s) — pausing goal", exc)
+            return "skipped", f"judge unavailable: connection error ({type(exc).__name__})"
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
         return "continue", f"judge error: {type(exc).__name__}"
 
@@ -487,6 +485,22 @@ class GoalManager:
                 "verdict": "done",
                 "reason": reason,
                 "message": f"✓ Goal achieved: {reason}",
+            }
+
+        if verdict == "skipped":
+            state.status = "paused"
+            state.paused_reason = f"judge unavailable: {reason}"
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "skipped",
+                "reason": reason,
+                "message": (
+                    f"⏸ Goal paused — judge unavailable ({reason}). "
+                    "Use /goal resume to keep going, or /goal clear to stop."
+                ),
             }
 
         if state.turns_used >= state.max_turns:

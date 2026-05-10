@@ -152,6 +152,13 @@ class TestHandleVisionAnalyzeFastPath:
         """Main model supports native vision → fast path returns multimodal."""
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "agent": {"image_input_mode": "auto"},
+                "auxiliary": {"vision": {"provider": "auto"}},
+            },
+        )
 
         # Set runtime override so the handler thinks we're on opus@openrouter
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main

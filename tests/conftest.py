@@ -485,6 +485,23 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # --- agent.i18n / hermes_cli.config — cached config and catalog state ---
+    # Tests swap HERMES_HOME and sometimes monkeypatch the locale directory.
+    # Clear these caches so a previous worker-local test cannot leave a fake
+    # catalog/config visible to unrelated gateway or tool tests.
+    try:
+        from agent import i18n as _i18n_mod
+        _i18n_mod.reset_language_cache()
+    except Exception:
+        pass
+    try:
+        from hermes_cli import config as _config_mod
+        _config_mod._LOAD_CONFIG_CACHE.clear()
+        _config_mod._RAW_CONFIG_CACHE.clear()
+        _config_mod._LAST_EXPANDED_CONFIG_BY_PATH.clear()
+    except Exception:
+        pass
+
     # --- tools.file_tools — per-task read history + file-ops cache ---
     # _read_tracker accumulates per-task_id read history for loop detection,
     # capped by _READ_HISTORY_CAP. If entries from a prior test persist, the

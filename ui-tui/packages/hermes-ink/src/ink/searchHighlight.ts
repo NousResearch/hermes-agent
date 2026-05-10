@@ -1,3 +1,4 @@
+import { buildRowText } from './text-builder.js'
 import { cellAtIndex, CellWidth, type Screen, setCellStyleId, type StylePool } from './screen.js'
 
 /**
@@ -33,40 +34,7 @@ export function applySearchHighlight(screen: Screen, query: string, stylePool: S
 
   for (let row = 0; row < height; row++) {
     const rowOff = row * w
-    // Build row text (already lowercased) + code-unit→cell-index map.
-    // Three skip conditions, all aligned with setCellStyleId /
-    // extractRowText (selection.ts):
-    //   - SpacerTail: 2nd cell of a wide char, no char of its own
-    //   - SpacerHead: end-of-line padding when a wide char wraps
-    //   - noSelect: gutters (⎿, line numbers) — same exclusion as
-    //     applySelectionOverlay. "Highlight what you see" still holds for
-    //     content; gutters aren't search targets.
-    // Lowercasing per-char (not on the joined string at the end) means
-    // codeUnitToCell maps positions in the LOWERCASED text — U+0130
-    // (Turkish İ) lowercases to 2 code units, so lowering the joined
-    // string would desync indexOf positions from the map.
-    let text = ''
-    const colOf: number[] = []
-    const codeUnitToCell: number[] = []
-
-    for (let col = 0; col < w; col++) {
-      const idx = rowOff + col
-      const cell = cellAtIndex(screen, idx)
-
-      if (cell.width === CellWidth.SpacerTail || cell.width === CellWidth.SpacerHead || noSelect[idx] === 1) {
-        continue
-      }
-
-      const lc = cell.char.toLowerCase()
-      const cellIdx = colOf.length
-
-      for (let i = 0; i < lc.length; i++) {
-        codeUnitToCell.push(cellIdx)
-      }
-
-      text += lc
-      colOf.push(col)
-    }
+    const { text, colOf, codeUnitToCell } = buildRowText(screen, row)
 
     let pos = text.indexOf(lq)
 

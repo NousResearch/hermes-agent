@@ -383,7 +383,8 @@ class EventBridge:
             if not session_id:
                 continue
 
-            last_seen = self._last_poll_timestamps.get(session_key, 0.0)
+            with self._lock:
+                last_seen = self._last_poll_timestamps.get(session_key, 0.0)
 
             try:
                 messages = db.get_messages(session_id)
@@ -440,7 +441,8 @@ class EventBridge:
             if all_ts:
                 latest = max(all_ts)
                 if latest > last_seen:
-                    self._last_poll_timestamps[session_key] = latest
+                    with self._lock:
+                        self._last_poll_timestamps[session_key] = latest
 
 
 # ---------------------------------------------------------------------------

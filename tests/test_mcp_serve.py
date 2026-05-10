@@ -491,6 +491,101 @@ class TestEventBridge:
         r = EventBridge().respond_to_approval("nope", "deny")
         assert "error" in r
 
+    def test_poll_once_holds_lock_around_last_poll_timestamps(self, tmp_path, monkeypatch):
+        """_poll_once must read/write _last_poll_timestamps under self._lock.
+
+        Regression for issue #23096: the dict was accessed without the lock
+        while every other shared-state access in EventBridge holds it.
+        """
+        import mcp_serve
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        session_id = "20260510_lock_test"
+        sessions_data = {
+            "agent:main:telegram:dm:lock": {
+                "session_key": "agent:main:telegram:dm:lock",
+                "session_id": session_id,
+                "platform": "telegram",
+                "updated_at": "2026-05-10T09:00:05",
+                "origin": {"platform": "telegram", "chat_id": "lock"},
+            }
+        }
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+        db_path = tmp_path / "state.db"
+        _create_test_db(db_path, session_id, [
+            {"role": "user", "content": "hi", "timestamp": "2026-05-10T09:00:01"},
+        ])
+
+        class TestDB:
+            def get_messages(self, sid):
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                    (sid,),
+                ).fetchall()
+                conn.close()
+                return [dict(r) for r in rows]
+
+        bridge = mcp_serve.EventBridge()
+
+        # Wrap the dict so every read/write asserts the lock is currently held.
+        held = {"count": 0}
+        real_lock = bridge._lock
+
+        class TrackingLock:
+            def __enter__(self_inner):
+                real_lock.acquire()
+                held["count"] += 1
+                return self_inner
+
+            def __exit__(self_inner, *args):
+                held["count"] -= 1
+                real_lock.release()
+
+            def acquire(self_inner, *a, **kw):
+                acquired = real_lock.acquire(*a, **kw)
+                if acquired:
+                    held["count"] += 1
+                return acquired
+
+            def release(self_inner):
+                held["count"] -= 1
+                real_lock.release()
+
+        bridge._lock = TrackingLock()
+
+        observed_unlocked = []
+
+        class LockedDict(dict):
+            def __getitem__(self_inner, key):
+                if held["count"] == 0:
+                    observed_unlocked.append(("get", key))
+                return super().__getitem__(key)
+
+            def get(self_inner, key, default=None):
+                if held["count"] == 0:
+                    observed_unlocked.append(("get", key))
+                return super().get(key, default)
+
+            def __setitem__(self_inner, key, value):
+                if held["count"] == 0:
+                    observed_unlocked.append(("set", key))
+                return super().__setitem__(key, value)
+
+        bridge._last_poll_timestamps = LockedDict()
+
+        bridge._poll_once(TestDB())
+
+        assert observed_unlocked == [], (
+            f"_last_poll_timestamps accessed without holding self._lock: {observed_unlocked}"
+        )
+        # Sanity: the poll should still have recorded a timestamp.
+        assert "agent:main:telegram:dm:lock" in bridge._last_poll_timestamps
+
 
 # ---------------------------------------------------------------------------
 # 3. END-TO-END TESTS — call MCP tools through FastMCP server

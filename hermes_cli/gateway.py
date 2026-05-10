@@ -5,6 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import importlib.util
 import os
 import shutil
 import signal
@@ -3649,6 +3650,32 @@ _PLATFORMS = [
         ],
     },
 ]
+
+_BUILTIN_PLATFORM_PYTHON_DEPENDENCIES = {
+    "telegram": ("telegram", "python-telegram-bot[webhooks]"),
+    "discord": ("discord", "discord.py[voice]"),
+    "slack": ("slack_bolt", "slack-bolt"),
+}
+
+
+def _missing_builtin_platform_dependency(platform: dict) -> str | None:
+    """Return the missing pip requirement for a configured built-in platform.
+
+    Setup summaries used after OpenClaw migration only looked at env vars, so
+    an imported TELEGRAM_BOT_TOKEN made Telegram appear fully configured even
+    when the install had fallen back to base dependencies and the adapter could
+    not import. Keep this lightweight: only check importable Python adapter
+    modules for platforms whose token/env sentinel is present.
+    """
+    dep = _BUILTIN_PLATFORM_PYTHON_DEPENDENCIES.get(platform.get("key"))
+    if dep is None:
+        return None
+    module_name, requirement = dep
+    if importlib.util.find_spec(module_name) is None:
+        return requirement
+    return None
+
+
 def _all_platforms() -> list[dict]:
     """Return the full list of platforms for setup menus.
 
@@ -3762,6 +3789,8 @@ def _platform_status(platform: dict) -> str:
             return "partially configured"
         return "not configured"
     if val:
+        if missing := _missing_builtin_platform_dependency(platform):
+            return f"configured, missing dependency: {missing}"
         return "configured"
     return "not configured"
 

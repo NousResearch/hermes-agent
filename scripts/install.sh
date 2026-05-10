@@ -1072,6 +1072,9 @@ install_deps() {
             log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
             exit 1
         fi
+        log_warn "Base install completed, but optional extras were not installed."
+        log_warn "Messaging gateways may be missing adapter dependencies until you install the full profile."
+        log_info "To restore optional extras, run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
     else
         rm -f "$ALL_INSTALL_LOG"
     fi

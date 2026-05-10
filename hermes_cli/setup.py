@@ -2720,11 +2720,16 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         # platforms like WhatsApp ("enabled, not paired"), Matrix ("configured
         # + E2EE"), and Signal ("partially configured") all indicate the user
         # has already started setup and we shouldn't force the section to rerun.
-        configured = [
-            _gateway_platform_short_label(plat["label"])
-            for plat in _all_platforms()
-            if _platform_status(plat) and _platform_status(plat) != "not configured"
-        ]
+        configured = []
+        for plat in _all_platforms():
+            status = _platform_status(plat)
+            if not status or status == "not configured":
+                continue
+            label = _gateway_platform_short_label(plat["label"])
+            if "missing dependency" in status:
+                configured.append(f"{label} ({status})")
+            else:
+                configured.append(label)
         if configured:
             return ", ".join(configured)
         return None  # No platforms configured — section must run

@@ -429,6 +429,28 @@ class TestGetSectionConfigSummary:
         assert "Telegram" in result
         assert "Discord" in result
 
+    def test_gateway_summary_marks_configured_platform_with_missing_dependency(self):
+        """Imported platform tokens should not hide missing adapter packages.
+
+        OpenClaw migration can bring over TELEGRAM_BOT_TOKEN into an install
+        whose venv only has base dependencies. The setup summary should still
+        flag that Telegram cannot start until its optional adapter dependency
+        is installed, instead of presenting it as fully configured.
+        """
+        def env_side(key):
+            return "tok123" if key == "TELEGRAM_BOT_TOKEN" else ""
+
+        import hermes_cli.gateway as gateway_mod
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
+             patch.object(gateway_mod, "get_env_value", side_effect=env_side), \
+             patch("importlib.util.find_spec", return_value=None):
+            result = setup_mod._get_section_config_summary({}, "gateway")
+
+        assert result is not None
+        assert "Telegram" in result
+        assert "missing dependency" in result
+        assert "python-telegram-bot" in result
+
     def test_tools_returns_none_without_keys(self):
         with patch.object(setup_mod, "get_env_value", return_value=""):
             result = setup_mod._get_section_config_summary({}, "tools")

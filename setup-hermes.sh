@@ -188,11 +188,21 @@ else
         UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --all-extras --locked 2>/dev/null && \
             echo -e "${GREEN}✓${NC} Dependencies installed (lockfile verified)" || {
             echo -e "${YELLOW}⚠${NC} Lockfile install failed (may be outdated), falling back to pip install..."
-            $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
+            if ! $UV_CMD pip install -e ".[all]"; then
+                $UV_CMD pip install -e "."
+                echo -e "${YELLOW}⚠${NC} Base install completed, but optional extras were not installed."
+                echo -e "${YELLOW}⚠${NC} Messaging gateways may be missing adapter dependencies until you install the full profile."
+                echo "    To restore optional extras: cd $SCRIPT_DIR && uv pip install -e '.[all]'"
+            fi
             echo -e "${GREEN}✓${NC} Dependencies installed"
         }
     else
-        $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
+        if ! $UV_CMD pip install -e ".[all]"; then
+            $UV_CMD pip install -e "."
+            echo -e "${YELLOW}⚠${NC} Base install completed, but optional extras were not installed."
+            echo -e "${YELLOW}⚠${NC} Messaging gateways may be missing adapter dependencies until you install the full profile."
+            echo "    To restore optional extras: cd $SCRIPT_DIR && uv pip install -e '.[all]'"
+        fi
         echo -e "${GREEN}✓${NC} Dependencies installed"
     fi
 fi

@@ -34,7 +34,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Literal
+from typing import List, Dict, Any, Optional
 
 import fire
 from dotenv import load_dotenv

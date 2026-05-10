@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_diagnostics as kd
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,16 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
+
+
+@pytest.fixture(autouse=True)
+def profiles_resolve_by_default(monkeypatch):
+    """Keep dashboard diagnostics tests focused on their target signal.
+
+    New profile-existence diagnostics should not implicitly pollute older
+    dashboard expectations unless a test explicitly opts into that path.
+    """
+    monkeypatch.setattr(kd, "_profile_exists_safe", lambda _name: True)
 
 
 @pytest.fixture

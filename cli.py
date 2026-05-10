@@ -5393,6 +5393,21 @@ class HermesCLI:
             # First session or empty history — still finalize the old session
             self._notify_session_boundary("on_session_finalize")
 
+        # Reload default model from config when the user hasn't pinned one
+        # explicitly via -m, so /reset and /new revert to the current default
+        # instead of carrying over a previously switched model (issue #23131).
+        if getattr(self, "_model_is_default", True):
+            try:
+                cfg = load_cli_config()
+                _model_cfg = cfg.get("model", {})
+                _default = (
+                    _model_cfg.get("default") or _model_cfg.get("model") or ""
+                ) if isinstance(_model_cfg, dict) else (_model_cfg or "")
+                if _default:
+                    self.model = _default
+            except Exception:
+                pass
+
         old_session_id = self.session_id
         if self._session_db and old_session_id:
             try:

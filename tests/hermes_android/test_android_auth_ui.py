@@ -27,6 +27,8 @@ def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
     assert 'strings.authRefreshDescription()' in auth_screen
     assert 'strings.authCancelPendingDescription()' in auth_screen
     assert 'strings.authWaitingCallbackFor(uiState.pendingMethodLabel)' in auth_screen
+    assert 'viewModel::copyPendingSignInUrl' in auth_screen
+    assert 'strings.copyAuthSignInUrl()' in auth_screen
     assert 'LaunchedEffect(strings.language)' in auth_screen
     assert 'secure callback' in auth_screen
     assert 'Sign in' in auth_screen
@@ -95,12 +97,22 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'if (!option.browserSignInSupported && option.scope == AuthScope.RuntimeProvider)' in auth_view_model
     assert 'authApiKeySetupReady(option.label)' in auth_view_model
     assert 'currentStrings().authOpenedCorr3xt(option.label)' in auth_view_model
+    assert 'Intent.createChooser(browserIntent, "Open Corr3xt sign-in")' in auth_view_model
+    assert 'copyAuthStartUrl(pendingRequest.startUrl, updateStatus = false)' in auth_view_model
+    assert 'fun copyPendingSignInUrl()' in auth_view_model
+    assert 'ClipData.newPlainText("Hermes Corr3xt sign-in URL", target)' in auth_view_model
     assert 'currentStrings().authNoBrowser()' in auth_view_model
     assert 'addCategory(Intent.CATEGORY_BROWSABLE)' in auth_view_model
+    assert 'pendingStartUrl = pending?.startUrl.orEmpty()' in auth_view_model
     assert 'authBaseUrlMustBeValid' in strings
     assert 'authConfigureCorr3xtFirst' in strings
     assert 'Configure a reachable Corr3xt URL to enable app sign-in' in strings
     assert 'authOpenedCorr3xt' in strings
+    assert 'copyAuthSignInUrl' in strings
+    assert 'authCopiedSignInUrl' in strings
+    assert 'Copy sign-in URL' in strings
+    assert 'Copied sign-in URL.' in strings
+    assert 'If your browser stalls, copy the sign-in URL' in strings
     assert 'authCheckingCorr3xt' in strings
     assert 'authHostCouldNotBeResolved' in strings
     assert 'authPageCouldNotBeReached' in strings

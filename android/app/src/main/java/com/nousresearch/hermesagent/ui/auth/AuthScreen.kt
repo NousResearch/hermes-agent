@@ -127,8 +127,17 @@ fun AuthScreen(
                                 strings.authWaitingCallbackFor(uiState.pendingMethodLabel),
                                 style = MaterialTheme.typography.bodySmall,
                             )
-                            Button(onClick = viewModel::cancelPendingRequest) {
-                                Text(strings.cancelPendingSignIn())
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Button(onClick = viewModel::copyPendingSignInUrl) {
+                                    Text(strings.copyAuthSignInUrl())
+                                }
+                                Button(onClick = viewModel::cancelPendingRequest) {
+                                    Text(strings.cancelPendingSignIn())
+                                }
                             }
                         }
                     }

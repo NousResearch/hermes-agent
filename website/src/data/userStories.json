@@ -1285,5 +1285,49 @@
     "quote": "Of the 95% of people who use AI, only 5% see real results. Hype's VP of AI, @glitch_, on why the gap isn't the models, but the architecture. Read his deep dive on building with Hermes Agent, @NousResearch, agent swarms, experiment loops, and what actually compounds.",
     "size": "md",
     "id": "x-hypepartners-why-of"
+  },
+  {
+    "id": "captain-awesome-life-changing",
+    "source": "x",
+    "author": "@emmagine79",
+    "url": "https://x.com/emmagine79/status/2053360898501468362",
+    "date": "2026-05-10",
+    "category": "personal-assistant",
+    "headline": "Hermes + Discord with GPT-5.5 / DeepSeek v4 has been life changing",
+    "quote": "hermes + discord with gpt 5.5/deepseek v4 has genuinely been life changing! here are some of what it did for me this week.",
+    "size": "md"
+  },
+  {
+    "id": "captain-awesome-google-me-deploy",
+    "source": "x",
+    "author": "@emmagine79",
+    "url": "https://x.com/emmagine79/status/2053360898501468362",
+    "date": "2026-05-10",
+    "category": "personal-assistant",
+    "headline": "Told it to Google me and ship a landing page to my VPS",
+    "quote": "told it to Google me and then build a landing page based on what it found and that was genuinely mind blowing because it ran the searches, found kinks, created the page, SSH'd into my VPS, uploaded the page, then texted me when it was done. what?!",
+    "size": "lg"
+  },
+  {
+    "id": "captain-awesome-news-discord-cron",
+    "source": "x",
+    "author": "@emmagine79",
+    "url": "https://x.com/emmagine79/status/2053360898501468362",
+    "date": "2026-05-10",
+    "category": "content-creation",
+    "headline": "Cron jobs that triage tech news into Discord channels by urgency",
+    "quote": "It set up cron jobs that search for news/leaks/rumors in the tech space, then created channels on Discord by importance/urgency. It auto-contextualizes each news item to my vault and the actual work I have across video projects — I get up-to-date insights and tweak videos to stay super relevant. Updates 3x a day, always learning and adapting.",
+    "size": "md"
+  },
+  {
+    "id": "captain-awesome-pm-standups-adhd",
+    "source": "x",
+    "author": "@emmagine79",
+    "url": "https://x.com/emmagine79/status/2053360898501468362",
+    "date": "2026-05-10",
+    "category": "personal-assistant",
+    "headline": "PM agent runs morning + evening standups for my ADHD",
+    "quote": "I have hermes act as the manager to several paperclip agents, one of them a Project Manager agent. This agent has full knowledge of me (ADHD), my vault and projects, so I get a morning and evening standup that dumps all work we did across different chats, projects I'm working on, actual output, info from past standups, and suggestions/prioritizing based on all of the above. And it's self-learning.",
+    "size": "md"
   }
 ]

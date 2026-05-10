@@ -7776,6 +7776,7 @@ class GatewayRunner:
         """
         import asyncio
         import re
+        import shlex
         from hermes_cli.kanban import run_slash
 
         text = (event.text or "").strip()
@@ -7785,7 +7786,26 @@ class GatewayRunner:
         if text.startswith("kanban"):
             text = text[len("kanban"):].lstrip()
 
-        is_create = text.split(None, 1)[:1] == ["create"]
+        tokens = shlex.split(text) if text else []
+        requested_board = None
+        action = None
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok == "--board":
+                if i + 1 >= len(tokens):
+                    break
+                requested_board = tokens[i + 1]
+                i += 2
+                continue
+            if tok.startswith("--board="):
+                requested_board = tok.split("=", 1)[1]
+                i += 1
+                continue
+            action = tok
+            break
+
+        is_create = action == "create"
 
         try:
             output = await asyncio.to_thread(run_slash, text)
@@ -7812,7 +7832,7 @@ class GatewayRunner:
                     if platform_str and chat_id:
                         def _sub():
                             from hermes_cli import kanban_db as _kb
-                            conn = _kb.connect()
+                            conn = _kb.connect(board=requested_board)
                             try:
                                 _kb.add_notify_sub(
                                     conn, task_id=task_id,

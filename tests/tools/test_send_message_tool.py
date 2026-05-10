@@ -20,6 +20,17 @@ def _reset_signal_scheduler():
     yield
     _reset_scheduler()
 
+
+@pytest.fixture(autouse=True)
+def _reset_discord_send_caches():
+    from tools import send_message_tool as smt
+
+    smt._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
+    smt._DISCORD_DM_CHANNEL_CACHE.clear()
+    yield
+    smt._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
+    smt._DISCORD_DM_CHANNEL_CACHE.clear()
+
 from gateway.config import Platform
 from tools.send_message_tool import (
     _derive_forum_thread_name,
@@ -843,6 +854,13 @@ class TestParseTargetRefDiscord:
         assert thread_id == "789"
         assert is_explicit is True
 
+    def test_discord_dm_target_is_explicit(self):
+        """discord:dm:USER_ID uses the dedicated DM target path."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("discord", "dm:1173534822736597085")
+        assert chat_id == "dm:1173534822736597085"
+        assert thread_id is None
+        assert is_explicit is True
+
 
 class TestParseTargetRefMatrix:
     """_parse_target_ref correctly handles Matrix room IDs and user MXIDs."""
@@ -1014,6 +1032,44 @@ class TestSendDiscordThreadId:
             result = self._run("tok", "111", "hi")
         assert "error" in result
         assert "403" in result["error"]
+
+    def test_discord_dm_opens_channel_before_send(self):
+        """discord:dm:USER_ID first opens a DM channel, then sends to that channel."""
+        open_dm_resp = MagicMock()
+        open_dm_resp.status = 200
+        open_dm_resp.json = AsyncMock(return_value={"id": "dm-channel-42"})
+        open_dm_resp.text = AsyncMock(return_value="")
+        open_dm_resp.__aenter__ = AsyncMock(return_value=open_dm_resp)
+        open_dm_resp.__aexit__ = AsyncMock(return_value=None)
+
+        send_resp = MagicMock()
+        send_resp.status = 200
+        send_resp.json = AsyncMock(return_value={"id": "msg-99"})
+        send_resp.text = AsyncMock(return_value="")
+        send_resp.__aenter__ = AsyncMock(return_value=send_resp)
+        send_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(side_effect=[open_dm_resp, send_resp])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = self._run("tok", "dm:1173534822736597085", "hello dm")
+
+        assert result["success"] is True
+        assert result["chat_id"] == "dm-channel-42"
+        assert result["recipient_id"] == "1173534822736597085"
+        assert result["message_id"] == "msg-99"
+        assert mock_session.post.call_count == 2
+
+        open_call = mock_session.post.call_args_list[0]
+        assert open_call.args[0] == "https://discord.com/api/v10/users/@me/channels"
+        assert open_call.kwargs["json"] == {"recipient_id": "1173534822736597085"}
+
+        send_call = mock_session.post.call_args_list[1]
+        assert send_call.args[0] == "https://discord.com/api/v10/channels/dm-channel-42/messages"
+        assert send_call.kwargs["json"] == {"content": "hello dm"}
 
 
 class TestSendToPlatformDiscordThread:

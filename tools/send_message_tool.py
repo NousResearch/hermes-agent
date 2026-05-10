@@ -30,6 +30,7 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+_DISCORD_DM_TARGET_RE = re.compile(r"^\s*dm:(\d+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -133,7 +134,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', 'platform:chat_id:thread_id' for Telegram topics and Discord threads, or 'discord:dm:USER_ID' for Discord direct messages. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:dm:1173534822736597085', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
@@ -326,6 +327,9 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             return match.group(1), match.group(2), True
     if platform_name == "discord":
+        match = _DISCORD_DM_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return f"dm:{match.group(1)}", None, True
         match = _NUMERIC_TOPIC_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
@@ -913,6 +917,7 @@ def _derive_forum_thread_name(message: str) -> str:
 # same channel on every send when the directory cache has no entry (e.g. fresh
 # install, or channel created after the last directory build).
 _DISCORD_CHANNEL_TYPE_PROBE_CACHE: Dict[str, bool] = {}
+_DISCORD_DM_CHANNEL_CACHE: Dict[str, str] = {}
 
 
 def _remember_channel_is_forum(chat_id: str, is_forum: bool) -> None:
@@ -921,6 +926,14 @@ def _remember_channel_is_forum(chat_id: str, is_forum: bool) -> None:
 
 def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
     return _DISCORD_CHANNEL_TYPE_PROBE_CACHE.get(str(chat_id))
+
+
+def _remember_discord_dm_channel(recipient_id: str, channel_id: str) -> None:
+    _DISCORD_DM_CHANNEL_CACHE[str(recipient_id)] = str(channel_id)
+
+
+def _probe_discord_dm_channel_cached(recipient_id: str) -> Optional[str]:
+    return _DISCORD_DM_CHANNEL_CACHE.get(str(recipient_id))
 
 
 async def _send_discord(token, chat_id, message, thread_id=None, media_files=None):
@@ -955,10 +968,36 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         media_files = media_files or []
         last_data = None
         warnings = []
+        effective_chat_id = str(chat_id)
+        dm_recipient_id = None
 
         # Thread endpoint: Discord threads are channels; send directly to the thread ID.
         if thread_id:
             url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
+        elif effective_chat_id.startswith("dm:"):
+            dm_recipient_id = effective_chat_id.split(":", 1)[1].strip()
+            if not dm_recipient_id.isdigit():
+                return _error(f"Discord DM target must be a numeric user ID: {chat_id}")
+            dm_channel_id = _probe_discord_dm_channel_cached(dm_recipient_id)
+            if dm_channel_id is None:
+                open_dm_url = "https://discord.com/api/v10/users/@me/channels"
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+                    async with session.post(
+                        open_dm_url,
+                        headers=json_headers,
+                        json={"recipient_id": dm_recipient_id},
+                        **_req_kw,
+                    ) as resp:
+                        if resp.status not in (200, 201):
+                            body = await resp.text()
+                            return _error(f"Discord DM open error ({resp.status}): {body}")
+                        dm_data = await resp.json()
+                dm_channel_id = str(dm_data.get("id") or "").strip()
+                if not dm_channel_id:
+                    return _error("Discord DM open error: response missing channel id")
+                _remember_discord_dm_channel(dm_recipient_id, dm_channel_id)
+            effective_chat_id = dm_channel_id
+            url = f"https://discord.com/api/v10/channels/{effective_chat_id}/messages"
         else:
             # Check if the target channel is a forum channel (type 15).
             # Forum channels reject POST /messages — create a thread post instead.
@@ -967,7 +1006,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
             _channel_type = None
             try:
                 from gateway.channel_directory import lookup_channel_type
-                _channel_type = lookup_channel_type("discord", chat_id)
+                _channel_type = lookup_channel_type("discord", effective_chat_id)
             except Exception:
                 pass
 
@@ -976,25 +1015,25 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
             elif _channel_type is not None:
                 is_forum = False
             else:
-                cached = _probe_is_forum_cached(chat_id)
+                cached = _probe_is_forum_cached(effective_chat_id)
                 if cached is not None:
                     is_forum = cached
                 else:
                     is_forum = False
                     try:
-                        info_url = f"https://discord.com/api/v10/channels/{chat_id}"
+                        info_url = f"https://discord.com/api/v10/channels/{effective_chat_id}"
                         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), **_sess_kw) as info_sess:
                             async with info_sess.get(info_url, headers=json_headers, **_req_kw) as info_resp:
                                 if info_resp.status == 200:
                                     info = await info_resp.json()
                                     is_forum = info.get("type") == 15
-                                    _remember_channel_is_forum(chat_id, is_forum)
+                                    _remember_channel_is_forum(effective_chat_id, is_forum)
                     except Exception:
-                        logger.debug("Failed to probe channel type for %s", chat_id, exc_info=True)
+                        logger.debug("Failed to probe channel type for %s", effective_chat_id, exc_info=True)
 
             if is_forum:
                 thread_name = _derive_forum_thread_name(message)
-                thread_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
+                thread_url = f"https://discord.com/api/v10/channels/{effective_chat_id}/threads"
 
                 # Filter to readable media files up front so we can pick the
                 # right code path (JSON vs multipart) before opening a session.
@@ -1062,7 +1101,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                 result = {
                     "success": True,
                     "platform": "discord",
-                    "chat_id": chat_id,
+                    "chat_id": effective_chat_id,
                     "thread_id": thread_id_created,
                     "message_id": starter_msg_id,
                 }
@@ -1070,7 +1109,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                     result["warnings"] = warnings
                 return result
 
-            url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
+            url = f"https://discord.com/api/v10/channels/{effective_chat_id}/messages"
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             # Send text message (skip if empty and media is present)
@@ -1112,7 +1151,14 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                 return {"error": error, "warnings": warnings}
             return {"error": error}
 
-        result = {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": last_data.get("id")}
+        result = {
+            "success": True,
+            "platform": "discord",
+            "chat_id": effective_chat_id,
+            "message_id": last_data.get("id"),
+        }
+        if dm_recipient_id:
+            result["recipient_id"] = dm_recipient_id
         if warnings:
             result["warnings"] = warnings
         return result

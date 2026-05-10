@@ -1108,6 +1108,11 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.1-codex-max": 272_000,
     "gpt-5.1-codex-mini": 272_000,
     "gpt-5.3-codex": 272_000,
+    # Spark runs on specialised low-latency hardware and exposes a smaller
+    # 128k window than other Codex OAuth slugs. Listed explicitly so the
+    # longest-key-first fallback resolves it correctly — substring match
+    # on "gpt-5.3-codex" otherwise wins and reports 272k. Availability is
+    # gated by ChatGPT Pro entitlement on the Codex backend.
     "gpt-5.3-codex-spark": 128_000,
     "gpt-5.2-codex": 272_000,
     "gpt-5.4-mini": 272_000,

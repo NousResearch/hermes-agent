@@ -597,6 +597,43 @@ class TestDelegateTask(unittest.TestCase):
             delegate_task(goal="Test depth", parent_agent=parent)
             self.assertEqual(mock_child._delegate_depth, 1)
 
+    def test_build_child_agent_propagates_parent_guard_context_id(self):
+        parent = _make_mock_parent(depth=0)
+        parent._guard_context_id = "pm-parent-1"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Keep PM context",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(mock_child._guard_context_id, "pm-parent-1")
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_delegate_task_propagates_task_guard_context_id_to_child(self, mock_run):
+        captured = {}
+
+        def _capture(task_index, goal, child, parent_agent):
+            captured["guard_context_id"] = getattr(child, "_guard_context_id", None)
+            return {"task_index": task_index, "status": "completed", "summary": "Done", "api_calls": 1, "duration_seconds": 0.1}
+
+        mock_run.side_effect = _capture
+        parent = _make_mock_parent(depth=0)
+
+        result = json.loads(delegate_task(tasks=[{"goal": "Task with guard context", "guard_context_id": "pm-task-1"}], parent_agent=parent))
+
+        self.assertIn("results", result)
+        self.assertEqual(captured["guard_context_id"], "pm-task-1")
+
     def test_active_children_tracking(self):
         """Verify children are registered/unregistered for interrupt propagation."""
         parent = _make_mock_parent(depth=0)

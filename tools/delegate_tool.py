@@ -1120,6 +1120,7 @@ def _build_child_agent(
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
     subagent_id: Optional[str] = None,
+    guard_context_id: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1366,6 +1367,7 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._guard_context_id = guard_context_id or _guard_context_id(parent_agent, {})
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -2259,6 +2261,7 @@ def delegate_task(
                 "task": task,
                 "role": _normalize_role(task.get("role") or top_role),
                 "subagent_id": _new_subagent_id(i),
+                "guard_context_id": _guard_context_id(parent_agent, task),
             }
         )
 
@@ -2326,6 +2329,7 @@ def delegate_task(
                 ),
                 role=effective_role,
                 subagent_id=planned["subagent_id"],
+                guard_context_id=planned.get("guard_context_id"),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names

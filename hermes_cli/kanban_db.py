@@ -1997,16 +1997,69 @@ def release_stale_claims(
 ) -> int:
     """Reset any ``running`` task whose claim has expired.
 
-    Returns the number of stale claims reclaimed.  Safe to call often.
+    A stale-by-TTL claim whose host-local worker PID is still alive is
+    *extended* (with a ``claim_extended`` event) instead of being
+    reclaimed. Reclaiming a live worker mid-flight produces the spawn-
+    then-immediately-reclaim loop seen on slow models that spend longer
+    than ``DEFAULT_CLAIM_TTL_SECONDS`` inside a single tool-free LLM
+    call (#23025): no tool calls means no ``kanban_heartbeat``, even
+    though the subprocess is healthy. ``enforce_max_runtime`` and
+    ``detect_crashed_workers`` remain the upper bounds for genuinely
+    wedged or dead workers.
+
+    Returns the number of stale claims actually reclaimed (live-pid
+    extensions don't count). Safe to call often.
     """
     now = int(time.time())
     reclaimed = 0
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid FROM tasks "
-        "WHERE status = 'running' AND claim_expires IS NOT NULL AND claim_expires < ?",
+        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "FROM tasks "
+        "WHERE status = 'running' AND claim_expires IS NOT NULL "
+        "  AND claim_expires < ?",
         (now,),
     ).fetchall()
     for row in stale:
+        lock = row["claim_lock"] or ""
+        host_local = lock.startswith(host_prefix)
+        if host_local and row["worker_pid"] and _pid_alive(row["worker_pid"]):
+            new_expires = now + int(DEFAULT_CLAIM_TTL_SECONDS)
+            with write_txn(conn):
+                cur = conn.execute(
+                    "UPDATE tasks SET claim_expires = ? "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND claim_lock IS ? "
+                    "  AND claim_expires IS NOT NULL "
+                    "  AND claim_expires < ?",
+                    (new_expires, row["id"], row["claim_lock"], now),
+                )
+                if cur.rowcount != 1:
+                    continue
+                run_id = _current_run_id(conn, row["id"])
+                if run_id is not None:
+                    conn.execute(
+                        "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                        (new_expires, run_id),
+                    )
+                _append_event(
+                    conn, row["id"], "claim_extended",
+                    {
+                        "reason": "pid_alive",
+                        "worker_pid": int(row["worker_pid"]),
+                        "claim_lock": row["claim_lock"],
+                        "claim_expires_was": int(row["claim_expires"]),
+                        "claim_expires_now": new_expires,
+                        "last_heartbeat_at": (
+                            int(row["last_heartbeat_at"])
+                            if row["last_heartbeat_at"] is not None
+                            else None
+                        ),
+                    },
+                    run_id=run_id,
+                )
+            continue
+
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
         )
@@ -2026,7 +2079,20 @@ def release_stale_claims(
                 error=f"stale_lock={row['claim_lock']}",
                 metadata=termination,
             )
-            payload = {"stale_lock": row["claim_lock"]}
+            payload = {
+                "stale_lock": row["claim_lock"],
+                "worker_pid": (
+                    int(row["worker_pid"])
+                    if row["worker_pid"] is not None else None
+                ),
+                "claim_expires": int(row["claim_expires"]),
+                "last_heartbeat_at": (
+                    int(row["last_heartbeat_at"])
+                    if row["last_heartbeat_at"] is not None else None
+                ),
+                "now": now,
+                "host_local": host_local,
+            }
             payload.update(termination)
             _append_event(
                 conn, row["id"], "reclaimed",

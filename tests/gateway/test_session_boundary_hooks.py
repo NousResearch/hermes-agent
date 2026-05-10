@@ -115,6 +115,24 @@ async def test_finalize_before_reset(mock_invoke_hook):
 
 @pytest.mark.asyncio
 @patch("hermes_cli.plugins.invoke_hook")
+async def test_reset_without_old_session_skips_finalize_hook(mock_invoke_hook):
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    runner.session_store._entries = {}
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    finalize_calls = [
+        c for c in mock_invoke_hook.call_args_list if c[0][0] == "on_session_finalize"
+    ]
+    assert finalize_calls == []
+    mock_invoke_hook.assert_any_call(
+        "on_session_reset", session_id="sess-new", platform="telegram"
+    )
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
 async def test_shutdown_fires_finalize_for_active_agents(mock_invoke_hook):
     """Gateway stop() must fire on_session_finalize for each active agent."""
     from gateway.run import GatewayRunner

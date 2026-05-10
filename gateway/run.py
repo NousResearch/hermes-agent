@@ -7655,13 +7655,16 @@ class GatewayRunner:
         self._clear_session_boundary_security_state(session_key)
 
         # Fire plugin on_session_finalize hook (session boundary)
-        try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _old_sid = old_entry.session_id if old_entry else None
-            _invoke_hook("on_session_finalize", session_id=_old_sid,
-                         platform=source.platform.value if source.platform else "")
-        except Exception:
-            pass
+        if old_entry is not None:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_session_finalize",
+                    session_id=old_entry.session_id,
+                    platform=source.platform.value if source.platform else "",
+                )
+            except Exception:
+                pass
 
         # Emit session:end hook (session is ending)
         await self.hooks.emit("session:end", {

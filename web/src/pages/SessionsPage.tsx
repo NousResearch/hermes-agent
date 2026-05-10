@@ -166,7 +166,13 @@ function MessageBubble({
     },
   };
 
-  const style = ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
+  // Fix for Issue #22961: vision_analyze tool results displayed as user messages.
+  // When a message has tool_name but role is incorrectly set to 'user' (happens
+  // for some vision tool results), override the display role to 'tool'.
+  const effectiveRole =
+    msg.tool_name && msg.role === "user" ? "tool" : msg.role;
+
+  const style = ROLE_STYLES[effectiveRole] ?? ROLE_STYLES.system;
   const label = msg.tool_name
     ? `${t.sessions.roles.tool}: ${msg.tool_name}`
     : style.label;

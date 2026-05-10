@@ -45,6 +45,10 @@ class TestSlashCommands:
         send = await send_and_capture(adapter, "/new", platform)
 
         send.assert_called_once()
+        runner.session_store.reset_session.assert_not_called()
+
+        send = await send_and_capture(adapter, "/approve", platform)
+        send.assert_called_once()
         runner.session_store.reset_session.assert_called_once()
 
     @pytest.mark.asyncio
@@ -167,8 +171,10 @@ class TestSessionLifecycle:
 
     @pytest.mark.asyncio
     async def test_new_then_status_reflects_reset(self, adapter, runner, session_entry, platform):
-        """After /new, /status should report the fresh session."""
+        """After confirmed /new, /status should report the fresh session."""
         await send_and_capture(adapter, "/new", platform)
+        runner.session_store.reset_session.assert_not_called()
+        await send_and_capture(adapter, "/approve", platform)
         runner.session_store.reset_session.assert_called_once()
 
         send = await send_and_capture(adapter, "/status", platform)
@@ -179,9 +185,11 @@ class TestSessionLifecycle:
 
     @pytest.mark.asyncio
     async def test_new_is_idempotent(self, adapter, runner, platform):
-        """/new called twice should not crash."""
+        """Confirmed /new called twice should not crash."""
         await send_and_capture(adapter, "/new", platform)
+        await send_and_capture(adapter, "/approve", platform)
         await send_and_capture(adapter, "/new", platform)
+        await send_and_capture(adapter, "/approve", platform)
         assert runner.session_store.reset_session.call_count == 2
 
 

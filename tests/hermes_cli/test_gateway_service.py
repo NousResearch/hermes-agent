@@ -81,12 +81,30 @@ class TestSystemdServiceRefresh:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.systemd_install()
-
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert calls[:2] == [
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "enable", gateway_cli.get_service_name()],
         ]
+
+    def test_systemd_current_ignores_path_payload_drift(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        installed = """[Unit]
+Description=Hermes
+
+[Service]
+ExecStart=/opt/hermes/venv/bin/python -m hermes_cli.main gateway run --replace
+Environment=\"PATH=/opt/hermes/venv/bin:/root/.local/bin:/usr/bin\"
+Environment=\"HERMES_HOME=/root/.hermes/profiles/kagura-vps\"
+"""
+        expected = installed.replace(":/root/.local/bin", "")
+        unit_path.write_text(installed, encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: expected)
+
+        assert gateway_cli.systemd_unit_is_current(system=False) is True
+
 
     def test_systemd_start_refreshes_outdated_unit(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"

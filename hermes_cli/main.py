@@ -1384,6 +1384,29 @@ def cmd_chat(args):
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
+    # xAI retirement warning — one-shot, non-blocking, never fails startup
+    try:
+        from hermes_cli.xai_retirement import (
+            MIGRATION_GUIDE_URL,
+            RETIREMENT_DATE,
+            find_retired_xai_refs,
+            format_issue,
+        )
+        from hermes_cli.config import load_config as _load_config_for_xai_check
+
+        _retired_xai_refs = find_retired_xai_refs(_load_config_for_xai_check())
+        if _retired_xai_refs:
+            sys.stderr.write(
+                f"\033[33m⚠ xAI retires {len(_retired_xai_refs)} model(s) "
+                f"in your config on {RETIREMENT_DATE}:\033[0m\n"
+            )
+            for _ref in _retired_xai_refs:
+                sys.stderr.write(f"  \033[33m⚠\033[0m {format_issue(_ref)}\n")
+            sys.stderr.write(f"  \033[2mMigration guide: {MIGRATION_GUIDE_URL}\033[0m\n")
+            sys.stderr.write("  \033[2mRun 'hermes doctor' for details.\033[0m\n\n")
+    except Exception:
+        pass
+
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
         print()

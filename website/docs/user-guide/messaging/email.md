@@ -145,6 +145,25 @@ Email access follows the same pattern as all other Hermes platforms:
 **Always configure `EMAIL_ALLOWED_USERS`.** Without it, anyone who knows the agent's email address could send commands. The agent has terminal access by default.
 :::
 
+### Challenge-response mode
+
+Set `EMAIL_AUTH_MODE=challenge` to require an authorized sender to prove inbox control before their original email is processed. In this mode:
+
+- authorized senders receive a one-time `/confirm <code>` challenge reply;
+- the original email body and attachments are not sent to the agent until the code is confirmed from the same sender address;
+- confirmation codes expire after `EMAIL_CHALLENGE_TTL_SECONDS` seconds (default: 15 minutes);
+- pending challenge state is stored in `EMAIL_CHALLENGE_STORE` (default: `$HERMES_HOME/email_challenges.json`); codes are stored hashed, not plaintext;
+- pending challenge storage is capped at 25 entries per sender and 500 entries total;
+- email bodies larger than 50,000 characters, more than 25 attachments, attachment payloads over 10 MB each or 25 MB total, or serialized pending events over about 200 KB are rejected instead of stored;
+- cached attachment files owned by rejected, expired, or trimmed pending challenges are deleted during cleanup when trusted metadata is available; after a successful confirmation, the challenge store metadata/body is scrubbed immediately while confirmed original attachments follow the normal platform media/cache lifecycle so downstream processing can read them;
+- if the challenge store is corrupt or invalid, cleanup is best-effort and orphaned attachment files may remain until normal cache expiry;
+- when the global pending cap is full, authorized senders receive a short busy response and can retry later;
+- unauthorized senders are dropped rather than challenged.
+
+Challenge eligibility supports explicit env/global allow settings (`EMAIL_ALLOWED_USERS`, `EMAIL_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, and `GATEWAY_ALLOW_ALL_USERS`). `EMAIL_ALLOWED_USERS` entries are matched as full sender email addresses in challenge mode; use `GATEWAY_ALLOWED_USERS` if you intentionally want the gateway's generic local-part matching. Challenge mode does not support config-only `allow_from` or pairing-only authorization; use an explicit allowlist or allow-all setting for senders that should receive challenges.
+
+In direct mode, `EMAIL_ALLOWED_USERS` uses exact sender-address matching. If only `GATEWAY_ALLOWED_USERS` is configured, non-matching senders are passed to central gateway authorization so previously paired users can still be accepted. Use `EMAIL_ALLOW_ALL_USERS=true` if you intentionally want to accept every sender.
+
 ---
 
 ## Troubleshooting
@@ -188,3 +207,6 @@ Email access follows the same pattern as all other Hermes platforms:
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+| `EMAIL_AUTH_MODE` | No | `direct` | Set to `challenge` to require eligible senders to confirm with a one-time code before their email is dispatched to the agent |
+| `EMAIL_CHALLENGE_TTL_SECONDS` | No | `900` | Seconds before a challenge code expires |
+| `EMAIL_CHALLENGE_STORE` | No | `$HERMES_HOME/email_challenges.json` | JSON file used to persist pending challenges; pending entries, attachment count/bytes, and serialized event size are capped and expired entries are scrubbed during polling/cleanup |

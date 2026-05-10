@@ -307,11 +307,14 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `EMAIL_IMAP_PORT` | IMAP port |
 | `EMAIL_SMTP_HOST` | SMTP hostname for the email adapter |
 | `EMAIL_SMTP_PORT` | SMTP port |
-| `EMAIL_ALLOWED_USERS` | Comma-separated email addresses allowed to message the bot |
+| `EMAIL_ALLOWED_USERS` | Comma-separated email addresses allowed to message the bot. Entries are full sender-address matches for email-specific auth; use `EMAIL_ALLOW_ALL_USERS=true` to allow all senders |
 | `EMAIL_HOME_ADDRESS` | Default recipient for proactive email delivery |
 | `EMAIL_HOME_ADDRESS_NAME` | Display name for the email home target |
 | `EMAIL_POLL_INTERVAL` | Email polling interval in seconds |
 | `EMAIL_ALLOW_ALL_USERS` | Allow all inbound email senders |
+| `EMAIL_AUTH_MODE` | Email authorization mode: unset/`direct` preserves normal allowlist/pairing behavior; `challenge` requires senders allowed by explicit env/global allowlists or allow-all settings to confirm before their email reaches the agent. Invalid values fail closed as challenge mode. config-only `allow_from` and pairing-only authorization are not challenge-mode eligibility sources |
+| `EMAIL_CHALLENGE_TTL_SECONDS` | Seconds before an email challenge code expires (default: `900`) |
+| `EMAIL_CHALLENGE_STORE` | Path to the JSON email challenge store (default: `$HERMES_HOME/email_challenges.json`). Email bodies over 50,000 characters, more than 25 attachments, attachment payloads over 10 MB each or 25 MB total, or serialized pending events over about 200 KB are rejected before storage. Pending entries are capped at 25 per sender and 500 total, and cached attachments from rejected/expired/trimmed pending challenges are deleted when trusted metadata is available. Successfully confirmed original attachments follow the normal platform media/cache lifecycle while stored challenge metadata/body is scrubbed immediately. Corrupt/invalid store recovery is best-effort and may leave attachment files for normal cache expiry |
 | `DINGTALK_CLIENT_ID` | DingTalk bot AppKey from developer portal ([open.dingtalk.com](https://open.dingtalk.com)) |
 | `DINGTALK_CLIENT_SECRET` | DingTalk bot AppSecret from developer portal |
 | `DINGTALK_ALLOWED_USERS` | Comma-separated DingTalk user IDs allowed to message the bot |

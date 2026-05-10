@@ -1352,6 +1352,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "imap_host": email_imap,
             "smtp_host": email_smtp,
         })
+        email_auth_mode = os.getenv("EMAIL_AUTH_MODE")
+        if email_auth_mode is not None:
+            config.platforms[Platform.EMAIL].extra["auth_mode"] = email_auth_mode
+        email_challenge_ttl = os.getenv("EMAIL_CHALLENGE_TTL_SECONDS")
+        if email_challenge_ttl is not None:
+            config.platforms[Platform.EMAIL].extra["challenge_ttl_seconds"] = email_challenge_ttl
+        email_challenge_store = os.getenv("EMAIL_CHALLENGE_STORE")
+        if email_challenge_store is not None:
+            config.platforms[Platform.EMAIL].extra["challenge_store"] = email_challenge_store
     email_home = os.getenv("EMAIL_HOME_ADDRESS")
     if email_home and Platform.EMAIL in config.platforms:
         config.platforms[Platform.EMAIL].home_channel = HomeChannel(

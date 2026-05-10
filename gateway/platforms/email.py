@@ -17,7 +17,9 @@ Environment variables:
 
 import asyncio
 import email as email_lib
+import hashlib
 import imaplib
+import json
 import logging
 import os
 import re
@@ -42,6 +44,11 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
+from gateway.email_challenge import (
+    DEFAULT_EMAIL_CHALLENGE_TTL_SECONDS,
+    EmailChallengeStore,
+    cleanup_challenge_cached_attachments,
+)
 
 logger = logging.getLogger(__name__)
 # Automated sender patterns — emails from these are silently ignored
@@ -61,6 +68,12 @@ _AUTOMATED_HEADERS = {
 
 # Gmail-safe max length per email body
 MAX_MESSAGE_LENGTH = 50_000
+MAX_EMAIL_CHALLENGE_ATTACHMENTS = 25
+MAX_EMAIL_CHALLENGE_ATTACHMENT_BYTES = 10_000_000
+MAX_EMAIL_CHALLENGE_TOTAL_ATTACHMENT_BYTES = 25_000_000
+MAX_EMAIL_CHALLENGE_EVENT_BYTES = 200_000
+MAX_EMAIL_CONFIRM_CODE_LENGTH = 256
+_CONFIRM_RE = re.compile(r"^\s*/confirm\s+([^\s]+)\s*(?:\r?\n.*)?\Z", re.IGNORECASE | re.DOTALL)
 
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -185,6 +198,9 @@ def _extract_email_address(raw: str) -> str:
 def _extract_attachments(
     msg: email_lib.message.Message,
     skip_attachments: bool = False,
+    max_attachment_bytes: Optional[int] = None,
+    max_total_attachment_bytes: Optional[int] = None,
+    max_attachments: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Extract attachment metadata and cache files locally.
 
@@ -195,49 +211,62 @@ def _extract_attachments(
     if not msg.is_multipart():
         return attachments
 
-    for part in msg.walk():
-        disposition = str(part.get("Content-Disposition", ""))
-        if skip_attachments and ("attachment" in disposition or "inline" in disposition):
-            continue
-        if "attachment" not in disposition and "inline" not in disposition:
-            continue
-        # Skip text/plain and text/html body parts
-        content_type = part.get_content_type()
-        if content_type in ("text/plain", "text/html") and "attachment" not in disposition:
-            continue
-
-        filename = part.get_filename()
-        if filename:
-            filename = _decode_header_value(filename)
-        else:
-            ext = part.get_content_subtype() or "bin"
-            filename = f"attachment.{ext}"
-
-        payload = part.get_payload(decode=True)
-        if not payload:
-            continue
-
-        ext = Path(filename).suffix.lower()
-        if ext in _IMAGE_EXTS:
-            try:
-                cached_path = cache_image_from_bytes(payload, ext)
-            except ValueError:
-                logger.debug("Skipping non-image attachment %s (invalid magic bytes)", filename)
+    total_payload_bytes = 0
+    try:
+        for part in msg.walk():
+            disposition = str(part.get("Content-Disposition", ""))
+            if skip_attachments and ("attachment" in disposition or "inline" in disposition):
                 continue
-            attachments.append({
-                "path": cached_path,
-                "filename": filename,
-                "type": "image",
-                "media_type": content_type,
-            })
-        else:
-            cached_path = cache_document_from_bytes(payload, filename)
-            attachments.append({
-                "path": cached_path,
-                "filename": filename,
-                "type": "document",
-                "media_type": content_type,
-            })
+            if "attachment" not in disposition and "inline" not in disposition:
+                continue
+            # Skip text/plain and text/html body parts
+            content_type = part.get_content_type()
+            if content_type in ("text/plain", "text/html") and "attachment" not in disposition:
+                continue
+
+            filename = part.get_filename()
+            if filename:
+                filename = _decode_header_value(filename)
+            else:
+                ext = part.get_content_subtype() or "bin"
+                filename = f"attachment.{ext}"
+
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+            if max_attachments is not None and len(attachments) >= max_attachments:
+                raise ValueError("too many attachments")
+            payload_size = len(payload)
+            if max_attachment_bytes is not None and payload_size > max_attachment_bytes:
+                raise ValueError("attachment payload too large")
+            total_payload_bytes += payload_size
+            if max_total_attachment_bytes is not None and total_payload_bytes > max_total_attachment_bytes:
+                raise ValueError("attachment payload total too large")
+
+            ext = Path(filename).suffix.lower()
+            if ext in _IMAGE_EXTS:
+                try:
+                    cached_path = cache_image_from_bytes(payload, ext)
+                except ValueError:
+                    logger.debug("Skipping non-image attachment %s (invalid magic bytes)", filename)
+                    continue
+                attachments.append({
+                    "path": cached_path,
+                    "filename": filename,
+                    "type": "image",
+                    "media_type": content_type,
+                })
+            else:
+                cached_path = cache_document_from_bytes(payload, filename)
+                attachments.append({
+                    "path": cached_path,
+                    "filename": filename,
+                    "type": "document",
+                    "media_type": content_type,
+                })
+    except Exception:
+        cleanup_challenge_cached_attachments({"attachments": attachments})
+        raise
 
     return attachments
 
@@ -262,6 +291,13 @@ class EmailAdapter(BasePlatformAdapter):
         #       skip_attachments: true
         extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
+        self._auth_mode_config = str(extra.get("auth_mode") or extra.get("email_auth_mode") or "")
+        self._challenge_store_config = str(extra.get("challenge_store") or "")
+        self._challenge_ttl_config = extra.get("challenge_ttl_seconds")
+        self._email_challenge_store_cache = EmailChallengeStore(
+            path=os.getenv("EMAIL_CHALLENGE_STORE", "").strip() or self._challenge_store_config or None,
+            ttl_seconds=self._email_challenge_ttl_seconds(),
+        )
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
@@ -357,6 +393,11 @@ class EmailAdapter(BasePlatformAdapter):
         """Check INBOX for unseen messages and dispatch them."""
         # Run IMAP operations in a thread to avoid blocking the event loop
         loop = asyncio.get_running_loop()
+        if self._email_auth_mode() == "challenge":
+            try:
+                await loop.run_in_executor(None, self._cleanup_expired_email_challenges)
+            except Exception as exc:  # noqa: BLE001 - cleanup must not block polling
+                logger.warning("[Email] Email challenge cleanup failed; continuing inbox poll: %s", exc)
         messages = await loop.run_in_executor(None, self._fetch_new_messages)
         for msg_data in messages:
             await self._dispatch_message(msg_data)
@@ -405,10 +446,51 @@ class EmailAdapter(BasePlatformAdapter):
                     if _is_automated_sender(sender_addr, msg_headers):
                         logger.debug("[Email] Skipping automated sender: %s", sender_addr)
                         continue
-                    body = _extract_text_body(msg)
-                    attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
+                    auth_mode = self._email_auth_mode()
+                    if auth_mode == "challenge" and not self._is_email_challenge_authorized(sender_addr):
+                        logger.debug("[Email] Skipping unauthorized challenge sender before body/cache: %s", sender_addr)
+                        continue
+                    direct_pre_auth = "allow"
+                    if auth_mode == "direct":
+                        direct_pre_auth = self._email_direct_pre_auth(sender_addr)
+                    if auth_mode == "direct" and direct_pre_auth == "deny":
+                        logger.debug("[Email] Skipping unauthorized direct sender before body/cache: %s", sender_addr)
+                        continue
 
-                    results.append({
+                    # Challenge mode must parse the text body to detect /confirm
+                    # replies and oversized originals, but attachment caching is
+                    # deferred until after those pre-agent eligibility checks.
+                    body = _extract_text_body(msg)
+                    attachment_error = ""
+                    if auth_mode == "challenge" and (
+                        len(body.strip()) > MAX_MESSAGE_LENGTH or _CONFIRM_RE.match(body.strip())
+                    ):
+                        attachments = []
+                    else:
+                        try:
+                            if auth_mode == "challenge":
+                                attachments = _extract_attachments(
+                                    msg,
+                                    skip_attachments=self._skip_attachments,
+                                    max_attachment_bytes=MAX_EMAIL_CHALLENGE_ATTACHMENT_BYTES,
+                                    max_total_attachment_bytes=MAX_EMAIL_CHALLENGE_TOTAL_ATTACHMENT_BYTES,
+                                    max_attachments=MAX_EMAIL_CHALLENGE_ATTACHMENTS,
+                                )
+                            elif direct_pre_auth == "allow":
+                                attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
+                            else:
+                                attachments = []
+                        except ValueError as exc:
+                            if auth_mode != "challenge":
+                                raise
+                            logger.warning("[Email] Rejecting challenge attachment payload for %s: %s", sender_addr, exc)
+                            attachments = []
+                            if str(exc) == "too many attachments":
+                                attachment_error = "too_many"
+                            else:
+                                attachment_error = "too_large"
+
+                    result = {
                         "uid": uid,
                         "sender_addr": sender_addr,
                         "sender_name": sender_name,
@@ -418,7 +500,10 @@ class EmailAdapter(BasePlatformAdapter):
                         "body": body,
                         "attachments": attachments,
                         "date": msg.get("Date", ""),
-                    })
+                    }
+                    if attachment_error:
+                        result["_email_challenge_attachment_error"] = attachment_error
+                    results.append(result)
             finally:
                 try:
                     imap.logout()
@@ -434,28 +519,50 @@ class EmailAdapter(BasePlatformAdapter):
 
         # Skip self-messages
         if sender_addr == self._address.lower():
+            cleanup_challenge_cached_attachments(msg_data)
             return
 
         # Never reply to automated senders
         if _is_automated_sender(sender_addr, {}):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
+            cleanup_challenge_cached_attachments(msg_data)
             return
 
-        # Skip senders not in EMAIL_ALLOWED_USERS — prevents the adapter
-        # from creating a MessageEvent (and thus thread context) for senders
-        # that the gateway will never authorize.  Without this early guard,
-        # a race between dispatch and authorization can result in the adapter
-        # sending a reply even though the handler returned None.
-        allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
-        if allowed_raw:
-            allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
-            if sender_addr.lower() not in allowed:
-                logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
+        # In direct mode, preserve the historical early EMAIL_ALLOWED_USERS
+        # guard. In challenge mode, only challenge senders authorized by env/global
+        # allowlists the central gateway will also accept after confirmation.
+        if self._email_auth_mode() == "challenge":
+            if not self._is_email_challenge_authorized(sender_addr):
+                logger.debug("[Email] Dropping unauthorized challenge sender at dispatch: %s", sender_addr)
+                cleanup_challenge_cached_attachments(msg_data)
                 return
+        else:
+            direct_pre_auth = self._email_direct_pre_auth(sender_addr)
+            if direct_pre_auth == "deny":
+                logger.debug("[Email] Dropping unauthorized direct sender at dispatch: %s", sender_addr)
+                cleanup_challenge_cached_attachments(msg_data)
+                return
+            if direct_pre_auth != "allow":
+                cleanup_challenge_cached_attachments(msg_data)
+                msg_data["attachments"] = []
 
         subject = msg_data["subject"]
         body = msg_data["body"].strip()
         attachments = msg_data["attachments"]
+
+        if (
+            self._email_auth_mode() == "challenge"
+            and not msg_data.get("_email_challenge_confirmed")
+        ):
+            confirm_match = _CONFIRM_RE.match(body)
+            if confirm_match:
+                try:
+                    await self._handle_challenge_confirmation(sender_addr, confirm_match.group(1), msg_data)
+                finally:
+                    cleanup_challenge_cached_attachments(msg_data)
+                return
+            await self._create_email_challenge(sender_addr, subject, body, msg_data)
+            return
 
         # Build message text: include subject as context
         text = body
@@ -499,6 +606,268 @@ class EmailAdapter(BasePlatformAdapter):
 
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
+
+    def _email_auth_mode(self) -> str:
+        raw_mode = os.getenv("EMAIL_AUTH_MODE", "").strip().lower() or self._auth_mode_config.strip().lower()
+        if not raw_mode:
+            return "direct"
+        if raw_mode in {"direct", "challenge"}:
+            return raw_mode
+        logger.warning("[Email] Invalid EMAIL_AUTH_MODE %r; using challenge mode for safety", raw_mode)
+        return "challenge"
+
+    def _email_auth_list_matches(self, raw: Any, sender_addr: str, include_local_part: bool = False) -> bool:
+        if isinstance(raw, (list, tuple, set)):
+            entries = {str(addr).strip() for addr in raw if str(addr).strip()}
+        else:
+            raw_text = str(raw or "").strip()
+            entries = {addr.strip() for addr in raw_text.split(",") if addr.strip()}
+        if not entries:
+            return False
+        check_ids = {sender_addr}
+        if include_local_part and "@" in sender_addr:
+            check_ids.add(sender_addr.split("@", 1)[0])
+        return "*" in entries or bool(check_ids & entries)
+
+    def _is_email_direct_authorized(self, sender_addr: str) -> bool:
+        return self._email_direct_pre_auth(sender_addr) != "deny"
+
+    def _email_direct_pre_auth(self, sender_addr: str) -> str:
+        """Return allow/deny/defer for direct-mode pre-central auth.
+
+        ``allow`` means this adapter can safely cache attachments before the
+        gateway's central authorization. ``defer`` preserves central pairing
+        checks but strips attachments because this adapter cannot verify them.
+        """
+        if os.getenv("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes"):
+            return "allow"
+
+        email_allowlist = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
+        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+        if not email_allowlist and not global_allowlist:
+            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes"):
+                return "allow"
+            return "defer"
+
+        if email_allowlist:
+            # Preserve direct-mode historical behavior: EMAIL_ALLOWED_USERS is
+            # a case-insensitive literal full-address list, so "*" is not a
+            # wildcard here. GATEWAY_ALLOWED_USERS keeps central wildcard rules.
+            allowed = {addr.strip().lower() for addr in email_allowlist.split(",") if addr.strip()}
+            if sender_addr.lower() in allowed:
+                return "allow"
+
+        if global_allowlist and self._email_auth_list_matches(global_allowlist, sender_addr, include_local_part=True):
+            return "allow"
+        if global_allowlist and not email_allowlist:
+            # Let central gateway auth decide pairing-store approvals. The
+            # adapter cannot see pairing state, so preserve the body-only event
+            # path without caching attachments for non-allowlisted senders.
+            return "defer"
+
+        return "deny"
+
+    def _is_email_challenge_authorized(self, sender_addr: str) -> bool:
+        if os.getenv("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes"):
+            return True
+
+        if self._email_auth_list_matches(os.getenv("EMAIL_ALLOWED_USERS", ""), sender_addr):
+            return True
+        if self._email_auth_list_matches(os.getenv("GATEWAY_ALLOWED_USERS", ""), sender_addr, include_local_part=True):
+            return True
+
+        configured_allowlists = any([
+            os.getenv("EMAIL_ALLOWED_USERS", "").strip(),
+            os.getenv("GATEWAY_ALLOWED_USERS", "").strip(),
+        ])
+        if not configured_allowlists:
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes")
+        return False
+
+    def _email_challenge_ttl_seconds(self) -> int:
+        raw = os.getenv("EMAIL_CHALLENGE_TTL_SECONDS", "").strip()
+        if not raw and self._challenge_ttl_config is not None:
+            raw = str(self._challenge_ttl_config).strip()
+        if not raw:
+            return DEFAULT_EMAIL_CHALLENGE_TTL_SECONDS
+        try:
+            ttl = int(raw)
+        except ValueError:
+            return DEFAULT_EMAIL_CHALLENGE_TTL_SECONDS
+        return ttl if ttl > 0 else DEFAULT_EMAIL_CHALLENGE_TTL_SECONDS
+
+    def _email_challenge_store(self) -> EmailChallengeStore:
+        return self._email_challenge_store_cache
+
+    def _cleanup_expired_email_challenges(self) -> None:
+        if self._email_auth_mode() != "challenge":
+            return
+        self._email_challenge_store().cleanup_expired()
+
+    async def _create_email_challenge(
+        self,
+        sender_addr: str,
+        subject: str,
+        body: str,
+        msg_data: Dict[str, Any],
+    ) -> None:
+        self._thread_context[sender_addr] = {
+            "subject": subject,
+            "message_id": msg_data.get("message_id", ""),
+        }
+        if len(body) > MAX_MESSAGE_LENGTH:
+            cleanup_challenge_cached_attachments(msg_data)
+            await self.send(
+                sender_addr,
+                "Your email request is too large to challenge or process. Please shorten it and resend.",
+                reply_to=msg_data.get("message_id") or None,
+            )
+            return
+        if msg_data.get("_email_challenge_attachment_error") == "too_large":
+            cleanup_challenge_cached_attachments(msg_data)
+            await self._send_email_challenge_notice(
+                sender_addr,
+                "Your email request has an attachment that is too large to challenge or process. Please reduce attachments and resend.",
+                msg_data,
+            )
+            return
+        if msg_data.get("_email_challenge_attachment_error") == "too_many":
+            cleanup_challenge_cached_attachments(msg_data)
+            await self._send_email_challenge_notice(
+                sender_addr,
+                "Your email request has too many attachments to challenge or process. Please reduce the attachments and resend.",
+                msg_data,
+            )
+            return
+        attachments = msg_data.get("attachments", [])
+        if not isinstance(attachments, list):
+            attachments = []
+        if len(attachments) > MAX_EMAIL_CHALLENGE_ATTACHMENTS:
+            cleanup_challenge_cached_attachments(msg_data)
+            await self._send_email_challenge_notice(
+                sender_addr,
+                "Your email request has too many attachments to challenge or process. Please reduce the attachments and resend.",
+                msg_data,
+            )
+            return
+        event_data = {
+            "sender_addr": sender_addr,
+            "sender_name": msg_data.get("sender_name", sender_addr),
+            "subject": subject,
+            "message_id": msg_data.get("message_id", ""),
+            "in_reply_to": msg_data.get("in_reply_to", ""),
+            "body": body,
+            "attachments": attachments,
+            "date": msg_data.get("date", ""),
+            "_email_challenge_confirmed": True,
+        }
+        try:
+            event_size = len(json.dumps(event_data, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+        except (TypeError, ValueError) as exc:
+            logger.warning("[Email] Email challenge metadata could not be serialized for %s: %s", sender_addr, exc)
+            cleanup_challenge_cached_attachments(msg_data)
+            await self._send_email_challenge_notice(
+                sender_addr,
+                "Your email request is temporarily unavailable for confirmation. Please try again later.",
+                msg_data,
+            )
+            return
+        if event_size > MAX_EMAIL_CHALLENGE_EVENT_BYTES:
+            cleanup_challenge_cached_attachments(msg_data)
+            await self._send_email_challenge_notice(
+                sender_addr,
+                "Your email request is too large to challenge or process. Please shorten it and resend.",
+                msg_data,
+            )
+            return
+        store = self._email_challenge_store()
+        try:
+            code = store.create(sender_addr, subject, msg_data.get("message_id", ""), event_data)
+        except Exception as exc:  # noqa: BLE001 - fail closed per message on store I/O errors
+            logger.warning("[Email] Email challenge store create failed for %s: %s", sender_addr, exc)
+            cleanup_challenge_cached_attachments(msg_data)
+            await self._send_email_challenge_notice(
+                sender_addr,
+                "Your email request is temporarily unavailable for confirmation. Please try again later.",
+                msg_data,
+            )
+            return
+        if code is None:
+            logger.warning("[Email] Email challenge not created for %s; pending challenge cap reached", sender_addr)
+            cleanup_challenge_cached_attachments(msg_data)
+            await self.send(
+                sender_addr,
+                "The email challenge queue is busy. Please try again later.",
+                reply_to=msg_data.get("message_id") or None,
+            )
+            return
+        body_hash = hashlib.sha256(body.encode("utf-8", errors="replace")).hexdigest()[:12]
+        ttl = store.ttl_seconds
+        result = await self.send(
+            sender_addr,
+            "Your email request is pending confirmation.\n\n"
+            f"Reply with: /confirm {code}\n\n"
+            f"Original subject: {subject or '(no subject)'}\n"
+            f"Body SHA256 prefix: {body_hash}\n"
+            f"This code expires in {ttl} seconds.",
+            reply_to=msg_data.get("message_id") or None,
+        )
+        if not result.success:
+            logger.warning("[Email] Email challenge delivery failed for %s; removing pending original", sender_addr)
+            try:
+                store.remove(sender_addr, code)
+            except Exception as exc:  # noqa: BLE001 - cleanup must not interrupt polling
+                logger.warning("[Email] Email challenge removal failed for %s after send failure: %s", sender_addr, exc)
+            finally:
+                cleanup_challenge_cached_attachments(msg_data)
+
+    async def _handle_challenge_confirmation(
+        self,
+        sender_addr: str,
+        code: str,
+        msg_data: Dict[str, Any],
+    ) -> None:
+        self._thread_context[sender_addr] = {
+            "subject": msg_data.get("subject", "Hermes Agent"),
+            "message_id": msg_data.get("message_id", ""),
+        }
+        if len(code) > MAX_EMAIL_CONFIRM_CODE_LENGTH:
+            await self.send(
+                sender_addr,
+                "That confirmation code is invalid or already used.",
+                reply_to=msg_data.get("message_id") or None,
+            )
+            return
+        try:
+            status, pending = self._email_challenge_store().confirm(sender_addr, code)
+        except Exception as exc:  # noqa: BLE001 - fail closed per message on store I/O errors
+            logger.warning("[Email] Email challenge confirmation failed for %s: %s", sender_addr, exc)
+            await self._send_email_challenge_notice(
+                sender_addr,
+                "That confirmation code could not be checked temporarily. Please try again later.",
+                msg_data,
+            )
+            return
+        if status == "ok" and pending:
+            await self._dispatch_message(pending)
+            return
+        responses = {
+            "sender_mismatch": "That confirmation code is invalid or already used.",
+            "expired": "That confirmation code has expired. Please resend the original request.",
+            "used": "That confirmation code is invalid or already used.",
+            "not_found": "That confirmation code is invalid or already used.",
+        }
+        await self.send(
+            sender_addr,
+            responses.get(status, "That confirmation code is invalid."),
+            reply_to=msg_data.get("message_id") or None,
+        )
+
+    async def _send_email_challenge_notice(self, sender_addr: str, content: str, msg_data: Dict[str, Any]) -> None:
+        try:
+            await self.send(sender_addr, content, reply_to=msg_data.get("message_id") or None)
+        except Exception as exc:  # noqa: BLE001 - challenge notices are best-effort
+            logger.warning("[Email] Email challenge notice failed for %s: %s", sender_addr, exc)
 
     async def send(
         self,

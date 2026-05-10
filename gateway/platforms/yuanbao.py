@@ -4591,6 +4591,15 @@ class YuanbaoAdapter(BasePlatformAdapter):
             await super()._process_message_background(event, session_key)
         finally:
             self._outbound.cancel_slow_notifier(chat_id)
+            # Clear the RecallGuard tracking entries for this message only if
+            # our msg_id is still current.  A concurrent pending message may
+            # have already overwritten the entry in _dispatch_inbound_event
+            # while we were running; in that case the drain task owns it and
+            # we must not clear it.
+            msg_id = event.message_id
+            if not msg_id or self._processing_msg_ids.get(session_key) == msg_id:
+                self._processing_msg_ids.pop(session_key, None)
+                self._processing_msg_texts.pop(session_key, None)
 
     # ------------------------------------------------------------------
     # Group query (delegate to GroupQueryService)

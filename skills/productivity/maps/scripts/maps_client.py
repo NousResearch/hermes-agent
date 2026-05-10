@@ -637,8 +637,11 @@ def cmd_nearby(args):
             f"Valid categories: {', '.join(VALID_CATEGORIES)}"
         )
 
-    radius = int(args.radius)
-    limit  = int(args.limit)
+    try:
+        radius = int(args.radius)
+        limit  = int(args.limit)
+    except (ValueError, TypeError):
+        error_exit("Radius and limit must be integers.")
     if radius <= 0:
         error_exit("Radius must be a positive integer (metres).")
     if limit <= 0:

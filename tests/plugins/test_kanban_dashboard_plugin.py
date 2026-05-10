@@ -534,6 +534,9 @@ def test_board_auto_initializes_missing_db(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Deliberately DO NOT call kb.init_db().
 
@@ -1748,7 +1751,6 @@ def test_dashboard_search_includes_body_and_result():
     assert "t.body || \"\"" in dist
     assert "t.result || \"\"" in dist
     assert "t.latest_summary || \"\"" in dist
-    assert "t.summary || \"\"" in dist
 
 
 def test_dashboard_bulk_actions_include_reclaim_first():

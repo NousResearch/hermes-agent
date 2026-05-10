@@ -1730,6 +1730,82 @@ class TestBuildAnthropicKwargs:
                             "every tool_use/result must be stripped when tools=None"
                         )
 
+    def test_oauth_cc_aliased_historical_tool_use_is_not_stripped(self):
+        """On the OAuth path, ``terminal`` (hermes name) is aliased to
+        ``Bash`` (CC canonical name) downstream. Message history from
+        prior OAuth turns therefore carries ``tool_use(name="Bash")``
+        even though the live tool list this turn has ``terminal``.
+
+        ``_strip_unknown_tool_blocks`` runs BEFORE the alias replacement,
+        so without expanding the allowlist to include CC alias targets,
+        every historical ``Bash`` call gets rewritten to a "[Previous
+        tool call: Bash(...) — tool no longer available in this turn.]"
+        breadcrumb — silently dropping a perfectly live tool from the
+        model's context.
+
+        Regression observed in interactive use immediately after the
+        partial-strip ordering fix landed: hermes ate a ``Bash`` call
+        with ``split -l 150 /tmp/homelab_audit.txt ...`` even though
+        Bash was clearly available in the current toolset.
+        """
+        messages = [
+            {"role": "user", "content": "split this audit"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tc_bash_cc_1",
+                        "function": {
+                            # CC canonical name — what the model emitted
+                            # last turn after the alias-on-the-wire swap.
+                            "name": "Bash",
+                            "arguments": '{"command": "split -l 150 /tmp/audit.txt /tmp/x_"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_bash_cc_1", "content": "ok"},
+            {"role": "user", "content": "now list them"},
+        ]
+        # Hermes-side tool list — ``terminal`` is the live hermes tool
+        # whose canonical CC alias is ``Bash``.
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=messages,
+            tools=[
+                {"type": "function", "function": {"name": "terminal", "description": "x"}},
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        # The historical Bash tool_use must survive — no "tool no longer
+        # available" breadcrumb should have replaced it.
+        found_bash_tool_use = False
+        breadcrumbs: list[str] = []
+        for m in kwargs["messages"]:
+            content = m.get("content")
+            if not isinstance(content, list):
+                continue
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_use" and b.get("name") == "Bash":
+                    found_bash_tool_use = True
+                if b.get("type") == "text":
+                    txt = b.get("text", "")
+                    if "tool no longer available" in txt:
+                        breadcrumbs.append(txt)
+        assert found_bash_tool_use, (
+            "live Bash tool_use was incorrectly stripped on OAuth path; "
+            f"breadcrumbs found: {breadcrumbs!r}"
+        )
+        assert not breadcrumbs, (
+            f"no 'tool no longer available' breadcrumbs should be emitted for "
+            f"tools that survive via CC aliasing; got: {breadcrumbs!r}"
+        )
+
     def test_surviving_tool_result_leads_user_message_after_partial_strip(self):
         """When an assistant turn has tool_use blocks for a mix of live and
         stale tools, the live tool_use survives and the stale ones become

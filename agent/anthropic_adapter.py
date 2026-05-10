@@ -3274,6 +3274,30 @@ def build_anthropic_kwargs(
     available_tool_names = {
         t.get("name") for t in anthropic_tools if isinstance(t, dict) and t.get("name")
     }
+    # On the OAuth path, tool names get aliased to Claude Code canonical
+    # names (terminal→Bash, read_file→Read, …) further down at the
+    # ``replace_with_cc_canonical`` call. Any tool_use blocks already in
+    # the message history from prior OAuth turns therefore carry the CC
+    # canonical names, NOT the hermes-side names. Without expanding the
+    # allowlist here, ``_strip_unknown_tool_blocks`` treats every
+    # historical ``Bash`` / ``Read`` / etc. tool_use as stale and
+    # rewrites it to a "[Previous tool call: Bash(...) — tool no longer
+    # available in this turn.]" breadcrumb, even though the same call
+    # will be live again this turn after aliasing.
+    if is_oauth:
+        try:
+            from agent import cc_aliases as _cc
+            if _cc.is_enabled():
+                for hermes_name in list(available_tool_names):
+                    cc_name = _cc.HERMES_TO_CC.get(hermes_name)
+                    if cc_name:
+                        available_tool_names.add(cc_name)
+        except Exception:
+            logger.debug(
+                "anthropic_adapter: failed to expand available_tool_names "
+                "with CC aliases — falling back to hermes-only set",
+                exc_info=True,
+            )
     anthropic_messages = _strip_unknown_tool_blocks(
         anthropic_messages, available_tool_names
     )

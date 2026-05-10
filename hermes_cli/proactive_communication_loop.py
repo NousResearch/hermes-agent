@@ -212,14 +212,23 @@ class ProactiveCommunicationLoop:
             )
 
     async def record_sent(self, session_id: str, result: SynthesisResult) -> None:
-        """Record that a proactive message was sent."""
+        """Record that a proactive message was sent (stored in state_meta)."""
         try:
-            self._db.record_proactive_sent(session_id, {
+            import datetime as _dt
+            import json as _json
+            today = _dt.date.today().isoformat()
+            key = f"proactive_sent:{session_id}:{today}"
+            existing_raw = self._db.get_meta(key)
+            existing = _json.loads(existing_raw) if existing_raw else []
+            if not isinstance(existing, list):
+                existing = []
+            existing.append({
                 "summary": (result.message or "")[:200],
                 "connection_type": result.connection_type,
                 "score": result.combined_score,
                 "ts": int(time.time()),
             })
+            self._db.set_meta(key, _json.dumps(existing))
         except Exception as exc:  # noqa: BLE001
             logger.debug("PCL: failed to record sent: %s", exc)
 
@@ -317,7 +326,12 @@ class ProactiveCommunicationLoop:
     def _load_recent_history(self, session_id: str, window_hours: int) -> str:
         cutoff = time.time() - window_hours * 3600
         try:
-            messages = self._db.get_messages_since(session_id, cutoff)
+            # SessionDB.get_messages() returns all messages; filter by timestamp
+            all_messages = self._db.get_messages(session_id)
+            messages = [
+                m for m in all_messages
+                if float(m.get("timestamp", 0)) >= cutoff
+            ]
             lines = [
                 f"[{m.get('role', '?')}]: {str(m.get('content', ''))[:500]}"
                 for m in messages
@@ -329,17 +343,35 @@ class ProactiveCommunicationLoop:
             return ""
 
     def _load_sent_summaries(self, session_id: str) -> str:
+        """Load summaries of proactive messages sent today for deduplication."""
         try:
-            sent = self._db.get_proactive_sent(session_id, since_hours=24)
-            return "; ".join(s.get("summary", "") for s in sent[:5]) or "(none sent today)"
+            # Stored in state_meta keyed by proactive:<session_id>:<date>
+            import datetime as _dt
+            today = _dt.date.today().isoformat()
+            key = f"proactive_sent:{session_id}:{today}"
+            raw = self._db.get_meta(key)
+            if not raw:
+                return "(none sent today)"
+            import json as _json
+            sent = _json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(sent, list):
+                return "; ".join(s.get("summary", "") for s in sent[:5])
+            return "(none sent today)"
         except Exception:  # noqa: BLE001
-            return "(unknown)"
+            return "(none sent today)"
 
     def _over_daily_limit(self, session_id: str) -> bool:
         try:
             limit = int(self._cfg.get("proactive_communication.max_per_day", DEFAULT_MAX_PER_DAY))
-            sent = self._db.get_proactive_sent(session_id, since_hours=24)
-            return len(sent) >= limit
+            import datetime as _dt
+            today = _dt.date.today().isoformat()
+            key = f"proactive_sent:{session_id}:{today}"
+            raw = self._db.get_meta(key)
+            if not raw:
+                return False
+            import json as _json
+            sent = _json.loads(raw) if isinstance(raw, str) else raw
+            return isinstance(sent, list) and len(sent) >= limit
         except Exception:  # noqa: BLE001
             return False
 

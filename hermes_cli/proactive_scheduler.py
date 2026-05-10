@@ -280,19 +280,19 @@ class ProactiveScheduler:
 
         async def _run() -> None:
             try:
-                from agent.session_db import SessionDB
+                from hermes_state import SessionDB
                 from hermes_cli.config import load_config
                 from hermes_cli.proactive_communication_loop import ProactiveCommunicationLoop
 
                 class _CfgWrapper:
-                    """Wrap the config dict so .get(key, default) works with dotted keys."""
+                    """Wrap config dict so .get(dotted_key, default) works."""
                     def __init__(self, cfg: dict) -> None:
                         self._cfg = cfg
 
                     def get(self, dotted_key: str, default: Any = None) -> Any:
                         return _cfg_get(self._cfg, dotted_key, default)
 
-                db = SessionDB(session_id=session_id)
+                db = SessionDB()
                 cfg_wrapper = _CfgWrapper(load_config())
 
                 loop_obj = ProactiveCommunicationLoop(session_db=db, config=cfg_wrapper)
@@ -322,14 +322,53 @@ class ProactiveScheduler:
         )
 
     async def _deliver(self, session_id: str, message: str) -> None:
+        """Deliver message to the session's origin channel.
+
+        Uses the same delivery path as cron jobs: looks up the session's
+        origin (the platform/chat_id where it started) and delivers via
+        cron.scheduler._deliver_result with a synthetic job dict.
+        """
         try:
-            from gateway.session import get_session_origin
-            from gateway.run import _deliver_to_origin
-            origin = get_session_origin(session_id)
-            if origin:
-                await _deliver_to_origin(origin, message, self._adapters)
-            else:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            session = db.get_session(session_id)
+            if not session:
+                logger.debug("ProactiveScheduler: session not found: %s", session_id)
+                return
+
+            # Build a minimal synthetic job dict that _deliver_result can route
+            origin = session.get("origin") or session.get("source")
+            if not origin:
                 logger.debug("ProactiveScheduler: no origin for session %s", session_id)
+                return
+
+            # Parse origin — stored as 'platform:chat_id' or as a dict
+            if isinstance(origin, str) and ":" in origin:
+                parts = origin.split(":", 1)
+                job = {
+                    "id": f"proactive:{session_id[:8]}",
+                    "name": "Proactive Communication",
+                    "origin": {"platform": parts[0], "chat_id": parts[1]},
+                    "deliver": "origin",
+                    "wrap_response": False,  # no cron header — deliver message as-is
+                }
+            elif isinstance(origin, dict):
+                job = {
+                    "id": f"proactive:{session_id[:8]}",
+                    "name": "Proactive Communication",
+                    "origin": origin,
+                    "deliver": "origin",
+                    "wrap_response": False,
+                }
+            else:
+                logger.debug("ProactiveScheduler: unrecognised origin format for %s: %r", session_id, origin)
+                return
+
+            from cron.scheduler import _deliver_result
+            err = _deliver_result(job, message, adapters=self._adapters, loop=self._loop)
+            if err:
+                logger.warning("ProactiveScheduler: delivery error for %s: %s", session_id, err)
+
         except Exception as exc:
             logger.debug("ProactiveScheduler: delivery failed for %s: %s", session_id, exc)
 
@@ -339,10 +378,17 @@ class ProactiveScheduler:
             return existing
 
         try:
-            from agent.session_db import SessionDB
-            db = SessionDB(session_id=session_id)
+            from hermes_state import SessionDB
+            db = SessionDB()
+            # get_messages returns all messages; filter by timestamp in analyze_flow
             cutoff = time.time() - _FLOW_ANALYSIS_WINDOW_DAYS * 86400
-            messages = db.get_messages_since(session_id, cutoff)
+            all_messages = db.get_messages(session_id)
+            # Normalize: state_db uses 'timestamp' key, flow analysis uses 'ts'
+            messages = [
+                {**m, "ts": float(m.get("timestamp") or 0)}
+                for m in all_messages
+                if float(m.get("timestamp") or 0) >= cutoff
+            ]
             tz_offset = float(_cfg_get(cfg or {}, "timezone_offset_hours", 0.0))
             profile = analyze_flow(messages, tz_offset_hours=tz_offset)
             self._flow_profiles[session_id] = profile
@@ -366,8 +412,21 @@ class ProactiveScheduler:
         return datetime.fromtimestamp(local_ts, tz=timezone.utc)
 
     def _get_active_sessions(self) -> List[str]:
+        """Get session IDs with recent message activity (last 7 days)."""
         try:
-            from agent.session_db import SessionDB
-            return SessionDB.list_active_sessions(since_hours=7 * 24)
-        except Exception:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            cutoff_ts = time.time() - 7 * 24 * 3600
+            # list_sessions_rich with order_by_last_active returns last_active timestamp
+            sessions = db.list_sessions_rich(
+                order_by_last_active=True,
+                limit=50,
+                include_children=False,
+            )
+            return [
+                s["id"] for s in sessions
+                if float(s.get("last_active") or 0) >= cutoff_ts
+            ]
+        except Exception as exc:
+            logger.debug("ProactiveScheduler: session list failed: %s", exc)
             return []

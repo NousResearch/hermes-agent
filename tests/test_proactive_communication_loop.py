@@ -135,7 +135,7 @@ def test_register_custom_threshold():
 def test_no_bartokgraph_returns_no_send():
     """Without BartokGraph, the loop must stay silent — it IS the feature."""
     db = MagicMock()
-    db.get_proactive_sent.return_value = []
+    db.get_meta.return_value = None
     cfg = MagicMock()
     cfg.get.return_value = "conservative"
 
@@ -152,11 +152,12 @@ def test_no_bartokgraph_returns_no_send():
 
 def test_no_graph_connections_returns_silence():
     """Empty connections from BartokGraph = stay silent, never fall back to recency."""
+    import time as _time
     db = MagicMock()
-    db.get_messages_since.return_value = [
-        {"role": "user", "content": "working on anomaly detection today"}
+    db.get_messages.return_value = [
+        {"role": "user", "content": "working on anomaly detection today", "timestamp": _time.time() - 3600}
     ]
-    db.get_proactive_sent.return_value = []
+    db.get_meta.return_value = None
     cfg = MagicMock()
     cfg.get.return_value = "conservative"
 
@@ -179,8 +180,8 @@ def test_no_graph_connections_returns_silence():
 def test_graph_traversal_failure_stays_silent():
     """Graph error = silence, not a fallback to recency."""
     db = MagicMock()
-    db.get_messages_since.return_value = [{"role": "user", "content": "hello"}]
-    db.get_proactive_sent.return_value = []
+    db.get_messages.return_value = [{"role": "user", "content": "hello", "timestamp": 1778369330.238517}]
+    db.get_meta.return_value = None
     cfg = MagicMock()
     cfg.get.return_value = "conservative"
 
@@ -204,8 +205,8 @@ def test_graph_traversal_failure_stays_silent():
 
 def test_daily_limit_blocks_send():
     db = MagicMock()
-    db.get_messages_since.return_value = [{"role": "user", "content": "hello"}]
-    db.get_proactive_sent.return_value = [{"summary": "already sent one"}]
+    db.get_messages.return_value = [{"role": "user", "content": "hello", "timestamp": 1778369330.238517}]
+    db.get_meta.return_value = '[{"summary": "already sent one", "ts": 1778372930}]'
     cfg = MagicMock()
     cfg.get.side_effect = lambda k, d=None: {
         "proactive_communication.threshold": "conservative",
@@ -241,10 +242,10 @@ def test_daily_limit_blocks_send():
 def test_temporal_bridge_high_score_sends():
     """A high-scoring temporal bridge with model agreement → sends."""
     db = MagicMock()
-    db.get_messages_since.return_value = [
-        {"role": "user", "content": "working on anomaly detection in time-series today"},
+    db.get_messages.return_value = [
+        {"role": "user", "content": "working on anomaly detection in time-series today", "timestamp": 1778369330.238528},
     ]
-    db.get_proactive_sent.return_value = []
+    db.get_meta.return_value = None
     cfg = MagicMock()
     cfg.get.side_effect = lambda k, d=None: {
         "proactive_communication.threshold": "conservative",
@@ -293,8 +294,8 @@ def test_temporal_bridge_high_score_sends():
 def test_low_scoring_connection_blocked():
     """Low novelty/relevance → no send even if model wants to."""
     db = MagicMock()
-    db.get_messages_since.return_value = [{"role": "user", "content": "hello"}]
-    db.get_proactive_sent.return_value = []
+    db.get_messages.return_value = [{"role": "user", "content": "hello", "timestamp": 1778369330.238517}]
+    db.get_meta.return_value = None
     cfg = MagicMock()
     cfg.get.side_effect = lambda k, d=None: {
         "proactive_communication.threshold": "conservative",
@@ -336,8 +337,8 @@ def test_low_scoring_connection_blocked():
 def test_model_veto_respected():
     """If model says should_send=false, respect it even with high scores."""
     db = MagicMock()
-    db.get_messages_since.return_value = [{"role": "user", "content": "something"}]
-    db.get_proactive_sent.return_value = []
+    db.get_messages.return_value = [{"role": "user", "content": "something", "timestamp": 1778369330.238535}]
+    db.get_meta.return_value = None
     cfg = MagicMock()
     cfg.get.side_effect = lambda k, d=None: {
         "proactive_communication.threshold": "balanced",

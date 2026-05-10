@@ -1896,22 +1896,12 @@ def _preserve_ctrl_enter_newline() -> bool:
 
 
 def _bind_prompt_submit_keys(kb, handler) -> None:
-    """Bind terminal Enter forms to the submit handler.
+    """Bind terminal Enter to the submit handler.
 
-    Enter is always submit. On POSIX we also bind c-j (LF) to submit because
-    some thin PTYs (docker exec, certain SSH flavors) deliver Enter as LF
-    instead of CR — without this, Enter appears dead on those terminals.
-
-    Exception: on Windows, WSL, SSH sessions, and Windows Terminal,
-    c-j is the wire encoding of Ctrl+Enter (a distinct keystroke from
-    plain Enter / c-m). We leave c-j unbound there so the c-j newline
-    handler registered separately can fire — giving the user an
-    Enter-involving newline keystroke without terminal settings changes.
-    See _preserve_ctrl_enter_newline() and issue #22379.
+    Only 'enter' is bound here. c-j (LF) handling is done separately
+    so that Shift+Enter can insert newlines by default on POSIX.
     """
     kb.add("enter")(handler)
-    if sys.platform != "win32" and not _preserve_ctrl_enter_newline():
-        kb.add("c-j")(handler)
 
 
 def _disable_prompt_toolkit_cpr_warning(app) -> None:
@@ -10878,7 +10868,19 @@ class HermesCLI:
                 event.app.current_buffer.reset(append_to_history=True)
 
         _bind_prompt_submit_keys(kb, handle_enter)
-        
+
+        # On POSIX local terminals (not WSL/SSH/WT), bind c-j based on env:
+        # - default: insert newline so Shift+Enter works for multiline
+        # - HERMES_CLI_SUBMIT_ON_LF=1: submit for thin PTYs that deliver Enter as LF
+        if sys.platform != "win32" and not _preserve_ctrl_enter_newline():
+            if os.environ.get("HERMES_CLI_SUBMIT_ON_LF") == "1":
+                kb.add("c-j")(handle_enter)
+            else:
+                @kb.add("c-j")
+                def handle_c_j_newline(event):
+                    """Shift+Enter inserts a newline on POSIX by default."""
+                    event.current_buffer.insert_text("\n")
+
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
             """Alt+Enter inserts a newline for multi-line input.

@@ -1922,6 +1922,50 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.reply_to_text, "父消息内容")
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_p2p_quote_reply_does_not_use_root_id_as_thread_id(self):
+        """Regression for root_id misattribution: root_id is the root message
+        of a thread, NOT a thread identifier. Using it as thread_id fallback
+        causes quoted replies in P2P to open a spurious thread session."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value=None)
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id="om_parent",
+            root_id="om_root",  # This should NOT leak into thread_id
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"quoted reply"}',
+            message_id="om_reply",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="p2p",
+                message_id="om_reply",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertIsNone(event.source.thread_id)
+        # reply_to_message_id may legitimately include root_id, but thread_id must not
+        self.assertEqual(event.reply_to_message_id, "om_parent")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

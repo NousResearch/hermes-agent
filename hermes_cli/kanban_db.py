@@ -4161,12 +4161,31 @@ def board_stats(conn: sqlite3.Connection) -> dict:
     }
 
 
-def task_age(task: Task) -> dict:
-    """Return age metrics for a single task. All values are seconds or None."""
+def task_age(
+    task: Task,
+    *,
+    active_run_started_at: Optional[int] = None,
+) -> dict:
+    """Return age metrics for a single task. All values are seconds or None.
+
+    ``active_run_started_at`` overrides ``task.started_at`` for the
+    ``started_age_seconds`` value when the task is currently running.
+    The task-level ``started_at`` records the FIRST run's start; once a
+    task is reclaimed (stale-lock recovery, crash recovery, manual
+    requeue) the first-run timestamp is no longer meaningful for "how
+    long has the current attempt been going". Passing the active run's
+    ``started_at`` produces an age that resets at each reclaim, which
+    is what the dashboard's stale-card colouring actually wants.
+    """
     now = int(time.time())
     age_since_created = now - int(task.created_at) if task.created_at else None
+    started_ref = (
+        active_run_started_at
+        if (task.status == "running" and active_run_started_at is not None)
+        else task.started_at
+    )
     age_since_started = (
-        now - int(task.started_at) if task.started_at else None
+        now - int(started_ref) if started_ref else None
     )
     time_to_complete = (
         int(task.completed_at) - int(task.started_at or task.created_at)
@@ -4177,6 +4196,34 @@ def task_age(task: Task) -> dict:
         "started_age_seconds": age_since_started,
         "time_to_complete_seconds": time_to_complete,
     }
+
+
+def active_run_starts(
+    conn: sqlite3.Connection, task_ids: Iterable[str]
+) -> dict[str, int]:
+    """Batch-fetch ``started_at`` of the currently-open run per task.
+
+    Returns a dict mapping ``task_id`` → ``started_at`` for every task
+    that has an open (``ended_at IS NULL``) run row. Tasks with no open
+    run are omitted. Used by the dashboard to compute per-attempt age
+    for ``running`` cards in a single query (avoids N+1 ``active_run``
+    calls on boards with many in-flight tasks).
+    """
+    ids = list(task_ids)
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT task_id, MAX(started_at) AS started_at
+          FROM task_runs
+         WHERE task_id IN ({placeholders})
+           AND ended_at IS NULL
+         GROUP BY task_id
+        """,
+        ids,
+    ).fetchall()
+    return {r["task_id"]: int(r["started_at"]) for r in rows if r["started_at"] is not None}
 
 
 # ---------------------------------------------------------------------------

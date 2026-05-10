@@ -132,11 +132,18 @@ def _task_dict(
     task: kanban_db.Task,
     *,
     latest_summary: Optional[str] = None,
+    active_run_started_at: Optional[int] = None,
 ) -> dict[str, Any]:
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
-    # computing deltas client-side.
-    d["age"] = kanban_db.task_age(task)
+    # computing deltas client-side. For ``running`` tasks the age is
+    # measured from the CURRENT run's start (passed in by the caller),
+    # not the task-level ``started_at`` which records the first run —
+    # otherwise reclaimed tasks glow stale on the dashboard immediately
+    # after a fresh attempt begins.
+    d["age"] = kanban_db.task_age(
+        task, active_run_started_at=active_run_started_at
+    )
     # Surface the latest non-null run summary so dashboards don't show
     # blank cards/drawers for tasks where the worker handed off via
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
@@ -399,13 +406,22 @@ def get_board(
         # for boards with hundreds of tasks). Truncated to a card-size
         # preview here — the full text is available via /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        # For ``running`` tasks, fetch the current run's start so card
+        # age reflects the active attempt (post-reclaim) rather than
+        # the task's first-run timestamp.
+        running_ids = [t.id for t in tasks if t.status == "running"]
+        active_starts = kanban_db.active_run_starts(conn, running_ids)
 
         for t in tasks:
             full = summary_map.get(t.id)
             preview = (
                 full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
             )
-            d = _task_dict(t, latest_summary=preview)
+            d = _task_dict(
+                t,
+                latest_summary=preview,
+                active_run_started_at=active_starts.get(t.id),
+            )
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -467,7 +483,16 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
         # operators can read the complete worker handoff without making
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
-        task_d = _task_dict(task, latest_summary=full_summary)
+        active_started: Optional[int] = None
+        if task.status == "running":
+            run = kanban_db.active_run(conn, task_id)
+            if run is not None:
+                active_started = run.started_at
+        task_d = _task_dict(
+            task,
+            latest_summary=full_summary,
+            active_run_started_at=active_started,
+        )
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])

@@ -500,6 +500,107 @@ def test_task_age_helper(kanban_home):
         conn.close()
 
 
+def test_task_age_running_uses_active_run_start(kanban_home):
+    """For ``running`` tasks, ``started_age_seconds`` measures the
+    CURRENT run's start (after reclaim), not the task's first-run start.
+
+    Regression: dashboard glowed red on freshly-reclaimed tasks because
+    age was computed off ``tasks.started_at`` (first run) instead of
+    the active run row's ``started_at``.
+    """
+    import time as _time
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="a")
+        # Simulate a task that started long ago (first run) and was
+        # reclaimed onto a fresh active run that just began.
+        first_run_start = int(_time.time()) - 7200  # 2h ago
+        active_run_start = int(_time.time()) - 60   # 1m ago
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='running', started_at=? WHERE id=?",
+                (first_run_start, tid),
+            )
+        task = kb.get_task(conn, tid)
+
+        # Without override → uses task.started_at (the stale first run)
+        stale = kb.task_age(task)
+        assert stale["started_age_seconds"] >= 7200 - 5
+
+        # With override → uses active run start
+        fresh = kb.task_age(task, active_run_started_at=active_run_start)
+        assert fresh["started_age_seconds"] < 120
+        # created age unchanged
+        assert fresh["created_age_seconds"] == stale["created_age_seconds"]
+    finally:
+        conn.close()
+
+
+def test_task_age_override_ignored_when_not_running(kanban_home):
+    """The active-run override only applies to ``running`` tasks; for
+    any other status the task-level ``started_at`` wins (so completed
+    tasks keep their historical age, etc.)."""
+    import time as _time
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="a")
+        first_run_start = int(_time.time()) - 3600
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='ready', started_at=? WHERE id=?",
+                (first_run_start, tid),
+            )
+        task = kb.get_task(conn, tid)
+        # Override should be ignored — status is 'ready', not 'running'.
+        result = kb.task_age(task, active_run_started_at=int(_time.time()))
+        assert result["started_age_seconds"] >= 3600 - 5
+    finally:
+        conn.close()
+
+
+def test_active_run_starts_batch(kanban_home):
+    import time as _time
+    conn = kb.connect()
+    try:
+        t1 = kb.create_task(conn, title="a", assignee="x")
+        t2 = kb.create_task(conn, title="b", assignee="x")
+        t3 = kb.create_task(conn, title="c", assignee="x")
+        now = int(_time.time())
+        # t1: closed run + open run (open should win, latest started_at)
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, started_at, ended_at) "
+                "VALUES (?, 'p', 'crashed', ?, ?)",
+                (t1, now - 7200, now - 3600),
+            )
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, started_at) "
+                "VALUES (?, 'p', 'running', ?)",
+                (t1, now - 60),
+            )
+            # t2: open run only
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, started_at) "
+                "VALUES (?, 'p', 'running', ?)",
+                (t2, now - 30),
+            )
+            # t3: only closed runs → omitted
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, started_at, ended_at) "
+                "VALUES (?, 'p', 'completed', ?, ?)",
+                (t3, now - 1000, now - 500),
+            )
+
+        result = kb.active_run_starts(conn, [t1, t2, t3])
+        assert result[t1] == now - 60
+        assert result[t2] == now - 30
+        assert t3 not in result
+        # Empty input is a no-op.
+        assert kb.active_run_starts(conn, []) == {}
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Notify subscriptions
 # ---------------------------------------------------------------------------

@@ -462,6 +462,62 @@ class TestBuildToolComplete:
         assert "timeout" in text
         assert result.raw_output is None
 
+    def test_build_tool_complete_generically_formats_unknown_json_dict_without_raw_output(self):
+        result = build_tool_complete(
+            "tc-recall-search",
+            "memory_archive_search",
+            '{"results":[{"id":"obs-1","status":"active","content":"Recall should render as a readable summary."}],"trust":"lower-trust archive evidence"}',
+        )
+        text = result.content[0].content.text
+        assert "memory_archive_search result" in text
+        assert "lower-trust archive evidence" in text
+        assert "Recall should render as a readable summary" in text
+        assert "{\"results\"" not in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_generically_formats_unknown_json_list_without_raw_output(self):
+        result = build_tool_complete(
+            "tc-plugin-list",
+            "some_plugin_tool",
+            '[{"name":"alpha","status":"ok"},{"name":"beta","status":"ok"}]',
+        )
+        text = result.content[0].content.text
+        assert "some_plugin_tool: 2 items" in text
+        assert "alpha" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_generically_formats_nested_json_without_inline_blob(self):
+        result = build_tool_complete(
+            "tc-recall-stats",
+            "memory_archive_stats",
+            '{"observations_by_status":{"active":12,"rejected":83},"capabilities":["sqlite-fts5-archive","hash-chain-audit"],"audit":{"ok":true,"count":208,"head":"abc123"}}',
+        )
+        text = result.content[0].content.text
+        assert "**observations_by_status:**" in text
+        assert "**active:** 12" in text
+        assert "**rejected:** 83" in text
+        assert "**capabilities:** 2 items" in text
+        assert "sqlite-fts5-archive" in text
+        assert "**audit:**" in text
+        assert "**ok:** True" in text
+        assert "{\"active\"" not in text
+        assert "[\"sqlite" not in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_search_files_files_only_formats_file_list(self):
+        result = build_tool_complete(
+            "tc-search-files",
+            "search_files",
+            '{"total_count":36,"files":["/home/nour/.hermes/config.yaml","/home/nour/.hermes/profiles/recall-test/config.yaml"],"truncated":true}',
+        )
+        text = result.content[0].content.text
+        assert "File search results" in text
+        assert "Found 36 files; showing 2." in text
+        assert "/home/nour/.hermes/config.yaml" in text
+        assert "use offset to page" in text
+        assert "{\"total_count\"" not in text
+        assert result.raw_output is None
+
     def test_build_tool_complete_truncates_large_output(self):
         """Very large outputs should be truncated."""
         big_output = "x" * 10000

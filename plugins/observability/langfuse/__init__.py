@@ -63,6 +63,29 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+_PLACEHOLDER_CREDENTIAL_VALUES = {
+    "*",
+    "**",
+    "***",
+    "changeme",
+    "your_api_key",
+    "your-api-key",
+    "placeholder",
+    "example",
+    "dummy",
+    "null",
+    "none",
+    "test-key",
+}
+
+
+def _looks_placeholder_credential(value: str) -> bool:
+    cleaned = value.strip()
+    if not cleaned:
+        return True
+    return cleaned.lower() in _PLACEHOLDER_CREDENTIAL_VALUES
+
+
 def _env_bool(*names: str) -> bool:
     for name in names:
         value = _env(name).lower()
@@ -108,6 +131,13 @@ def _get_langfuse() -> Optional[Langfuse]:
     public_key = _env("HERMES_LANGFUSE_PUBLIC_KEY") or _env("LANGFUSE_PUBLIC_KEY")
     secret_key = _env("HERMES_LANGFUSE_SECRET_KEY") or _env("LANGFUSE_SECRET_KEY")
     if not (public_key and secret_key):
+        _LANGFUSE_CLIENT = _INIT_FAILED
+        return None
+    if _looks_placeholder_credential(public_key) or _looks_placeholder_credential(secret_key):
+        logger.warning(
+            "Langfuse tracing disabled: placeholder credentials detected. "
+            "Set real HERMES_LANGFUSE_PUBLIC_KEY / HERMES_LANGFUSE_SECRET_KEY values."
+        )
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 

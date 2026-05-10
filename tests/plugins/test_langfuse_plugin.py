@@ -90,6 +90,17 @@ class TestRuntimeGate:
         langfuse_plugin = self._fresh_plugin()
         assert langfuse_plugin._get_langfuse() is None
 
+    def test_get_langfuse_rejects_placeholder_credentials(self, monkeypatch, caplog):
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "placeholder")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "test-key")
+
+        langfuse_plugin = self._fresh_plugin()
+        monkeypatch.setattr(langfuse_plugin, "Langfuse", lambda **kwargs: object())
+        caplog.set_level("WARNING")
+
+        assert langfuse_plugin._get_langfuse() is None
+        assert "placeholder credentials detected" in caplog.text.lower()
+
     def test_get_langfuse_caches_failure_no_config_load(self, monkeypatch):
         """A miss must be cached — no per-hook config.yaml reads, no env re-reads."""
         for k in (

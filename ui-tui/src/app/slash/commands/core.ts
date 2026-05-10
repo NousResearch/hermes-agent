@@ -20,7 +20,10 @@ import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
+import { translate, type TranslationKey } from '../../../i18n.js'
 import type { SlashCommand } from '../types.js'
+
+const tz = (key: TranslationKey, vars?: Record<string, string | number>) => translate('zh', key, vars)
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
@@ -63,7 +66,7 @@ export const coreCommands: SlashCommand[] = [
       }))
 
       if (ctx.local.catalog?.skillCount) {
-        sections.push({ text: `${ctx.local.catalog.skillCount} skill commands available — /skills to browse` })
+        sections.push({ text: `${ctx.local.catalog.skillCount} tz('sys.helpSkillCount', { count: String(ctx.local.catalog?.skillCount ?? 0) })` })
       }
 
       sections.push(
@@ -72,13 +75,13 @@ export const coreCommands: SlashCommand[] = [
             ['/details [hidden|collapsed|expanded|cycle]', 'set global agent detail visibility mode'],
             [
               '/details <section> [hidden|collapsed|expanded|reset]',
-              'override one section (thinking/tools/subagents/activity)'
+              tz('sys.helpDetailSection')
             ],
             ['/fortune [random|daily]', 'show a random or daily local fortune']
           ],
-          title: 'TUI'
+          title: 'TUI 命令'
         },
-        { rows: HOTKEYS, title: 'Hotkeys' }
+        { rows: HOTKEYS, title: '快捷键' }
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)
@@ -101,13 +104,13 @@ export const coreCommands: SlashCommand[] = [
       const next = flagFromArg(arg, current)
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /mouse [on|off|toggle]')
+        return ctx.transcript.sys(tz('sys.usageMouse'))
       }
 
       patchUiState({ mouseTracking: next })
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next ? 'on' : 'off' }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`mouse tracking ${next ? 'on' : 'off'}`))
+      queueMicrotask(() => ctx.transcript.sys(tz('sys.mouseTracking', { state: next ? tz('sys.on') : tz('sys.off') })))
     }
   },
 
@@ -134,12 +137,12 @@ export const coreCommands: SlashCommand[] = [
 
       patchOverlayState({
         confirm: {
-          cancelLabel: 'No, keep going',
-          confirmLabel: isNew ? 'Yes, start a new session' : 'Yes, clear the session',
+          cancelLabel: tz('sys.confirm.clearCancel'),
+          confirmLabel: isNew ? tz('sys.confirm.clearNew') : tz('sys.confirm.clearCurrent'),
           danger: true,
-          detail: 'This ends the current conversation and clears the transcript.',
+          detail: tz('sys.confirm.clearDetail'),
           onConfirm: commit,
-          title: isNew ? 'Start a new session?' : 'Clear the current session?'
+          title: isNew ? tz('sys.confirm.clearNewTitle') : tz('sys.confirm.clearCurrentTitle')
         }
       })
     }
@@ -150,7 +153,7 @@ export const coreCommands: SlashCommand[] = [
     name: 'redraw',
     run: (_arg, ctx) => {
       forceRedraw(process.stdout)
-      ctx.transcript.sys('ui redrawn')
+      ctx.transcript.sys(tz('sys.uiRedrawn'))
     }
   },
 
@@ -197,7 +200,7 @@ export const coreCommands: SlashCommand[] = [
           .then(
             ctx.guarded<SessionTitleResponse>(r => {
               const current = (r?.title ?? '').trim()
-              ctx.transcript.sys(current ? `title: ${current}` : 'no title set')
+              ctx.transcript.sys(current ? `标题：${current}` : tz('sys.noTitleSet'))
             })
           )
           .catch(ctx.guardedErr)
@@ -206,7 +209,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       if (!title) {
-        return ctx.transcript.sys('usage: /title <your session title>')
+        return ctx.transcript.sys(tz('sys.usageTitle'))
       }
 
       ctx.gateway
@@ -229,13 +232,13 @@ export const coreCommands: SlashCommand[] = [
       const next = flagFromArg(arg, ctx.ui.compact)
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /compact [on|off|toggle]')
+        return ctx.transcript.sys(tz('sys.usageCompact'))
       }
 
       patchUiState({ compact: next })
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'compact', value: next ? 'on' : 'off' }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`compact ${next ? 'on' : 'off'}`))
+      queueMicrotask(() => ctx.transcript.sys(tz('sys.compactMode', { state: next ? tz('sys.on') : tz('sys.off') })))
     }
   },
 
@@ -317,7 +320,7 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(dailyFortune(ctx.sid))
       }
 
-      ctx.transcript.sys('usage: /fortune [random|daily]')
+      ctx.transcript.sys(tz('sys.usageFortune'))
     }
   },
 
@@ -331,7 +334,7 @@ export const coreCommands: SlashCommand[] = [
         const text = await ctx.composer.selection.copySelection()
 
         if (text) {
-          return sys(`copied ${text.length} characters`)
+          return sys(tz('sys.copiedChars', { count: String(text.length) }))
         } else {
           return sys(
             'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence; HERMES_TUI_DEBUG_CLIPBOARD=1 for details'
@@ -340,14 +343,14 @@ export const coreCommands: SlashCommand[] = [
       }
 
       if (arg && Number.isNaN(parseInt(arg, 10))) {
-        return sys('usage: /copy [number]')
+        return sys(tz('sys.usageCopy'))
       }
 
       const all = ctx.local.getHistoryItems().filter(m => m.role === 'assistant')
       const target = all[arg ? Math.min(parseInt(arg, 10), all.length) - 1 : all.length - 1]
 
       if (!target) {
-        return sys('nothing to copy — start a conversation first')
+        return sys(tz('sys.nothingToCopy'))
       }
 
       void writeClipboardText(target.text)
@@ -357,15 +360,15 @@ export const coreCommands: SlashCommand[] = [
           }
 
           if (nativeOk) {
-            sys('copied to clipboard')
+            sys(tz('sys.copiedToClipboard'))
           } else {
             writeOsc52Clipboard(target.text)
-            sys('sent OSC52 copy sequence (terminal support required)')
+            sys(tz('sys.sentOsc52'))
           }
         })
         .catch(error => {
           if (!ctx.stale()) {
-            sys(`copy failed: ${String(error)}`)
+            sys(tz('sys.copyFailed', { error: String(error) }))
           }
         })
     }
@@ -374,7 +377,7 @@ export const coreCommands: SlashCommand[] = [
   {
     help: 'attach clipboard image',
     name: 'paste',
-    run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.paste())
+    run: (arg, ctx) => (arg ? ctx.transcript.sys(tz('sys.usagePaste')) : ctx.composer.paste())
   },
 
   {
@@ -384,7 +387,7 @@ export const coreCommands: SlashCommand[] = [
       const target = arg.trim().toLowerCase()
 
       if (target && !['auto', 'cursor', 'vscode', 'windsurf'].includes(target)) {
-        return ctx.transcript.sys('usage: /terminal-setup [auto|vscode|cursor|windsurf]')
+        return ctx.transcript.sys(tz('sys.usageTerminalSetup'))
       }
 
       const runner =
@@ -401,12 +404,12 @@ export const coreCommands: SlashCommand[] = [
           ctx.transcript.sys(result.message)
 
           if (result.success && result.requiresRestart) {
-            ctx.transcript.sys('restart the IDE terminal for the new keybindings to take effect')
+            ctx.transcript.sys(tz('sys.restartIdeTerminal'))
           }
         })
         .catch(error => {
           if (!ctx.stale()) {
-            ctx.transcript.sys(`terminal setup failed: ${String(error)}`)
+            ctx.transcript.sys(tz('sys.terminalSetupFailed', { error: String(error) }))
           }
         })
     }
@@ -418,7 +421,7 @@ export const coreCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       const text = ctx.gateway.gw.getLogTail(Math.min(80, Math.max(1, parseInt(arg, 10) || 20)))
 
-      text ? ctx.transcript.page(text, 'Logs') : ctx.transcript.sys('no gateway logs')
+      text ? ctx.transcript.page(text, '日志') : ctx.transcript.sys(tz('sys.noGatewayLogs'))
     }
   },
 
@@ -439,14 +442,14 @@ export const coreCommands: SlashCommand[] = [
       const preview = Math.max(80, parseInt(arg, 10) || 400)
 
       const lines = items.map((m, i) => {
-        const tag = m.role === 'user' ? `You #${i + 1}` : `Hermes #${i + 1}`
-        const body = m.text.trim() || (m.tools?.length ? `(${m.tools.length} tool calls)` : '(empty)')
+        const tag = m.role === 'user' ? tz('sys.historyYou', { n: String(i + 1) }) : tz('sys.historyHermes', { n: String(i + 1) })
+        const body = m.text.trim() || (m.tools?.length ? tz('sys.historyToolCalls', { n: String(m.tools.length) }) : tz('sys.historyEmpty'))
         const clipped = body.length > preview ? `${body.slice(0, preview).trimEnd()}…` : body
 
         return `[${tag}]\n${clipped}`
       })
 
-      ctx.transcript.page(lines.join('\n\n'), 'History')
+ctx.transcript.page(lines.join('\n\n'), '历史记录')
     }
   },
 
@@ -463,7 +466,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       if (!ctx.sid) {
-        return ctx.transcript.sys('no active session — nothing to save')
+        return ctx.transcript.sys(tz('sys.noActiveSessionSave'))
       }
 
       ctx.gateway
@@ -473,9 +476,9 @@ export const coreCommands: SlashCommand[] = [
             const file = r?.file
 
             if (file) {
-              ctx.transcript.sys(`conversation saved to: ${file}`)
+              ctx.transcript.sys(tz('sys.savedToFile', { file }))
             } else {
-              ctx.transcript.sys('failed to save')
+              ctx.transcript.sys(tz('sys.failedToSave'))
             }
           })
         )
@@ -501,13 +504,13 @@ export const coreCommands: SlashCommand[] = [
               : null
 
       if (!next) {
-        return ctx.transcript.sys('usage: /statusbar [on|off|top|bottom|toggle]')
+        return ctx.transcript.sys(tz('sys.usageStatusbar'))
       }
 
       patchUiState({ statusBar: next })
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`status bar ${next}`))
+      queueMicrotask(() => ctx.transcript.sys(tz('sys.statusBarMode', { mode: next })))
     }
   },
 
@@ -516,11 +519,11 @@ export const coreCommands: SlashCommand[] = [
     name: 'queue',
     run: (arg, ctx) => {
       if (!arg) {
-        return ctx.transcript.sys(`${ctx.composer.queueRef.current.length} queued message(s)`)
+        return ctx.transcript.sys(tz('sys.queuedCount', { count: String(ctx.composer.queueRef.current.length), s: ctx.composer.queueRef.current.length === 1 ? '' : 's' }))
       }
 
       ctx.composer.enqueue(arg)
-      ctx.transcript.sys(`queued: "${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}"`)
+      ctx.transcript.sys(tz('sys.queuedText', { text: `${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}` }))
     }
   },
 
@@ -531,7 +534,7 @@ export const coreCommands: SlashCommand[] = [
       const payload = arg?.trim() ?? ''
 
       if (!payload) {
-        return ctx.transcript.sys('usage: /steer <prompt>')
+        return ctx.transcript.sys(tz('sys.usageSteer'))
       }
 
       // If the agent isn't running, fall back to the queue so the user's

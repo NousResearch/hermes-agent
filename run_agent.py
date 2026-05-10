@@ -5201,15 +5201,39 @@ class AIAgent:
 
     def _write_current_session_sidecar(self) -> None:
         try:
-            atomic_json_write(
-                get_hermes_home() / "current-session.json",
-                {
-                    "session_id": self.session_id,
-                    "pid": os.getpid(),
-                    "cwd": os.getcwd(),
-                    "updated_at": datetime.now().isoformat(),
-                },
-            )
+            hermes_home = get_hermes_home()
+            updated_at = datetime.now().isoformat()
+            payload = {
+                "session_id": self.session_id,
+                "pid": os.getpid(),
+                "cwd": os.getcwd(),
+                "updated_at": updated_at,
+                "session_json": str(self.session_log_file),
+            }
+            atomic_json_write(hermes_home / "current-session.json", payload)
+
+            surface_id = os.getenv("CMUX_SURFACE_ID", "").strip()
+            if self.platform == "cli" and not self.quiet_mode and surface_id:
+                safe_surface_id = re.sub(r"[^A-Za-z0-9._-]", "_", surface_id)
+                if safe_surface_id:
+                    tty = ""
+                    try:
+                        if os.isatty(0):
+                            tty = os.ttyname(0)
+                    except Exception:
+                        tty = ""
+                    cmux_payload = {
+                        **payload,
+                        "cmux": {
+                            "workspace_id": os.getenv("CMUX_WORKSPACE_ID", ""),
+                            "surface_id": surface_id,
+                            "socket_path": os.getenv("CMUX_SOCKET_PATH", ""),
+                            "tty": tty,
+                        },
+                    }
+                    sidecar_dir = hermes_home / "current-sessions" / "by-cmux-surface"
+                    sidecar_dir.mkdir(parents=True, exist_ok=True)
+                    atomic_json_write(sidecar_dir / f"{safe_surface_id}.json", cmux_payload)
         except Exception as e:
             logger.debug("Could not write current-session sidecar: %s", e)
 

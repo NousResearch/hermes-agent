@@ -727,6 +727,19 @@ class Run:
         )
 
 
+@dataclass(frozen=True)
+class WorkerStartupGuard:
+    """Read-only startup validation for dispatcher-spawned workers."""
+
+    allowed: bool
+    reason: Optional[str] = None
+    task_id: Optional[str] = None
+    run_id: Optional[int] = None
+    status: Optional[str] = None
+    current_run_id: Optional[int] = None
+    claim_lock: Optional[str] = None
+
+
 @dataclass
 class Comment:
     id: int
@@ -2106,6 +2119,86 @@ def reclaim_task(
     return True
 
 
+def check_worker_startup_guard(
+    conn: sqlite3.Connection,
+    *,
+    task_id: Optional[str],
+    expected_run_id: Optional[int],
+    expected_claim_lock: Optional[str],
+) -> WorkerStartupGuard:
+    """Validate that a dispatcher-spawned worker still owns its task.
+
+    This is a read-only preflight used by the worker process itself before it
+    enters the model loop. It protects the claim->spawn gap: by the time the
+    child boots, the task may already have been reclaimed, blocked, archived,
+    or re-claimed by a newer run.
+    """
+    if not task_id:
+        return WorkerStartupGuard(False, reason="missing_task_id")
+
+    row = conn.execute(
+        "SELECT id, status, current_run_id, claim_lock FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return WorkerStartupGuard(False, reason="task_missing", task_id=task_id)
+
+    status = row["status"]
+    current_run_id = (
+        int(row["current_run_id"]) if row["current_run_id"] is not None else None
+    )
+    claim_lock = row["claim_lock"]
+
+    if status != "running":
+        return WorkerStartupGuard(
+            False,
+            reason=f"task_not_running:{status}",
+            task_id=task_id,
+            run_id=expected_run_id,
+            status=status,
+            current_run_id=current_run_id,
+            claim_lock=claim_lock,
+        )
+    if expected_run_id is not None and current_run_id != int(expected_run_id):
+        return WorkerStartupGuard(
+            False,
+            reason="run_mismatch",
+            task_id=task_id,
+            run_id=int(expected_run_id),
+            status=status,
+            current_run_id=current_run_id,
+            claim_lock=claim_lock,
+        )
+    if expected_claim_lock is None:
+        return WorkerStartupGuard(
+            False,
+            reason="missing_claim_lock",
+            task_id=task_id,
+            run_id=expected_run_id,
+            status=status,
+            current_run_id=current_run_id,
+            claim_lock=claim_lock,
+        )
+    if claim_lock != expected_claim_lock:
+        return WorkerStartupGuard(
+            False,
+            reason="claim_mismatch",
+            task_id=task_id,
+            run_id=expected_run_id,
+            status=status,
+            current_run_id=current_run_id,
+            claim_lock=claim_lock,
+        )
+    return WorkerStartupGuard(
+        True,
+        task_id=task_id,
+        run_id=expected_run_id,
+        status=status,
+        current_run_id=current_run_id,
+        claim_lock=claim_lock,
+    )
+
+
 def reassign_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2435,21 +2528,106 @@ def complete_task(
     return True
 
 
-def edit_completed_task_result(
+def edit_task_recovery_fields(
     conn: sqlite3.Connection,
     task_id: str,
     *,
-    result: str,
+    result: Optional[str] = None,
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
+    clear_skills: bool = False,
+    clear_claim: bool = False,
 ) -> bool:
-    """Backfill the user-visible result for an already completed task."""
+    """Edit narrow recovery fields on a task.
+
+    Supported today:
+    * backfill result/summary/metadata on an already-completed task
+    * clear persisted ``skills`` on a non-running task
+    * clear a stale claim on a non-running task that still has claim state
+    """
+    if not clear_skills and not clear_claim and result is None:
+        raise ValueError(
+            "result is required unless clear_skills=True or clear_claim=True"
+        )
     handoff_summary = summary if summary is not None else result
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, claim_lock, claim_expires, worker_pid, current_run_id "
+            "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
-        if not row or row["status"] != "done":
+        if not row:
+            return False
+        if clear_claim:
+            if row["status"] == "running":
+                return False
+            had_claim_state = not (
+                row["claim_lock"] is None
+                and row["claim_expires"] is None
+                and row["worker_pid"] is None
+                and row["current_run_id"] is None
+            )
+            if not had_claim_state:
+                return True
+            run_id = row["current_run_id"]
+            if run_id is not None:
+                run_row = conn.execute(
+                    "SELECT status, outcome FROM task_runs WHERE id = ?",
+                    (int(run_id),),
+                ).fetchone()
+                if (
+                    run_row is not None
+                    and run_row["status"] == "running"
+                    and run_row["outcome"] is None
+                ):
+                    _end_run(
+                        conn, task_id,
+                        outcome="reclaimed", status="reclaimed",
+                        error="operator_clear_claim",
+                    )
+            conn.execute(
+                "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL, "
+                "worker_pid = NULL, last_heartbeat_at = NULL, "
+                "current_run_id = NULL WHERE id = ?",
+                (task_id,),
+            )
+            _append_event(
+                conn, task_id, "edited",
+                {
+                 "fields": [
+                     "claim_lock",
+                     "claim_expires",
+                     "worker_pid",
+                     "last_heartbeat_at",
+                     "current_run_id",
+                 ],
+                 "claim_cleared": True},
+                run_id=run_id,
+            )
+            return True
+        if clear_skills:
+            if row["status"] == "running":
+                return False
+            run_id = None
+            if row["status"] == "done":
+                run = conn.execute(
+                    """
+                    SELECT id FROM task_runs
+                     WHERE task_id = ?
+                       AND outcome = 'completed'
+                     ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+                     LIMIT 1
+                    """,
+                    (task_id,),
+                ).fetchone()
+                run_id = int(run["id"]) if run else None
+            conn.execute("UPDATE tasks SET skills = NULL WHERE id = ?", (task_id,))
+            _append_event(
+                conn, task_id, "edited",
+                {"fields": ["skills"], "skills_cleared": True},
+                run_id=run_id,
+            )
+            return True
+        if row["status"] != "done":
             return False
         conn.execute(
             "UPDATE tasks SET result = ? WHERE id = ?",
@@ -2500,6 +2678,26 @@ def edit_completed_task_result(
             run_id=run_id,
         )
     return True
+
+
+def edit_completed_task_result(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    clear_skills: bool = False,
+) -> bool:
+    """Back-compat wrapper for the broader recovery-field editor."""
+    return edit_task_recovery_fields(
+        conn,
+        task_id,
+        result=result,
+        summary=summary,
+        metadata=metadata,
+        clear_skills=clear_skills,
+    )
 
 
 def block_task(
@@ -2832,6 +3030,11 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    skipped_invalid_skills: list[str] = field(default_factory=list)
+    """Ready task ids skipped because persisted ``task.skills`` contains
+    invalid toolset names. Operator-actionable configuration error: the
+    task stays ready but the dispatcher refuses to spawn it until the
+    bad skills are cleared or the task is recreated."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -3548,6 +3751,30 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def reset_task_failures(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Clear a task's consecutive-failure counter as an operator recovery
+    action. Returns ``True`` if the task exists."""
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 0, "
+            "last_failure_error = NULL WHERE id = ?",
+            (task_id,),
+        )
+        _append_event(
+            conn, task_id, "edited",
+            {"fields": ["consecutive_failures", "last_failure_error"],
+             "failures_reset": True},
+            run_id=row["current_run_id"],
+        )
+        return True
+
+
 # Legacy alias for test-code and anything else that still imports it.
 _clear_spawn_failures = _clear_failure_counter
 
@@ -3695,6 +3922,16 @@ def dispatch_once(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
+        task = get_task(conn, row["id"])
+        if task is not None:
+            invalid_skills = [
+                str(s).casefold()
+                for s in (task.skills or [])
+                if str(s).strip().casefold() in KNOWN_TOOLSET_NAMES
+            ]
+            if invalid_skills:
+                result.skipped_invalid_skills.append(row["id"])
+                continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a

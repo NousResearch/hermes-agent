@@ -33,6 +33,16 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture(autouse=True)
+def profiles_resolve_by_default(monkeypatch):
+    """Most rule tests isolate one failure mode at a time.
+
+    Keep profile-existence diagnostics silent unless a test explicitly
+    overrides the helper to exercise that rule.
+    """
+    monkeypatch.setattr(kd, "_profile_exists_safe", lambda _name: True)
+
+
 def _task(**overrides):
     base = {
         "id": "t_demo00",
@@ -243,6 +253,60 @@ def test_stuck_in_blocked_silent_when_not_blocked():
     assert kd.compute_task_diagnostics(task, events, [], now=9999999) == []
 
 
+def test_invalid_task_skills_fires_on_toolset_names():
+    task = _task(status="ready", skills=["web", "browser", "translation"])
+    diags = kd.compute_task_diagnostics(task, [], [])
+    assert len(diags) == 1
+    d = diags[0]
+    assert d.kind == "invalid_task_skills"
+    assert d.severity == "error"
+    assert d.data["invalid_skills"] == ["web", "browser"]
+
+
+def test_invalid_task_skills_silent_for_real_skill_names():
+    task = _task(status="ready", skills=["translation", "github-code-review"])
+    assert kd.compute_task_diagnostics(task, [], []) == []
+
+
+def test_missing_assignee_profile_fires(monkeypatch):
+    monkeypatch.setattr(kd, "_profile_exists_safe", lambda _name: False)
+    task = _task(status="ready", assignee="ghost")
+    diags = kd.compute_task_diagnostics(task, [], [])
+    assert len(diags) == 1
+    d = diags[0]
+    assert d.kind == "assignee_profile_not_found"
+    assert d.severity == "error"
+    assert d.data["assignee"] == "ghost"
+
+
+def test_missing_assignee_profile_silent_when_profile_exists(monkeypatch):
+    monkeypatch.setattr(kd, "_profile_exists_safe", lambda _name: True)
+    task = _task(status="ready", assignee="worker")
+    assert kd.compute_task_diagnostics(task, [], []) == []
+
+
+def test_stale_running_claim_fires():
+    now = int(time.time())
+    task = _task(
+        status="running",
+        claim_expires=now - 3600,
+        worker_pid=1234,
+        current_run_id=99,
+    )
+    diags = kd.compute_task_diagnostics(task, [], [], now=now)
+    assert len(diags) == 1
+    d = diags[0]
+    assert d.kind == "stale_running_claim"
+    assert d.severity == "critical"
+    assert d.data["age_seconds"] >= 3600
+
+
+def test_stale_running_claim_silent_when_claim_not_expired():
+    now = int(time.time())
+    task = _task(status="running", claim_expires=now + 3600)
+    assert kd.compute_task_diagnostics(task, [], [], now=now) == []
+
+
 def test_repeated_crashes_surfaces_actual_error_in_title():
     """The title should lead with the actual error text so operators
     see WHAT broke (e.g. rate-limit, auth, OOM) without opening logs.
@@ -319,6 +383,20 @@ def test_diagnostics_sorted_critical_first():
     kinds = [d.kind for d in diags]
     assert kinds[0] == "repeated_failures"  # critical
     assert "prose_phantom_refs" in kinds
+
+
+def test_diagnostics_sorts_stale_running_claim_before_error(monkeypatch):
+    monkeypatch.setattr(kd, "_profile_exists_safe", lambda _name: False)
+    now = int(time.time())
+    task = _task(
+        status="running",
+        assignee="ghost",
+        claim_expires=now - 10,
+    )
+    diags = kd.compute_task_diagnostics(task, [], [], now=now)
+    kinds = [d.kind for d in diags]
+    assert kinds[0] == "stale_running_claim"
+    assert "assignee_profile_not_found" in kinds
 
 
 # ---------------------------------------------------------------------------

@@ -80,6 +80,16 @@ def test_workspace_kind_validation(kanban_home):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
 
 
+def test_create_task_rejects_toolset_names_in_skills(kanban_home):
+    with kb.connect() as conn, pytest.raises(ValueError, match="toolset names"):
+        kb.create_task(
+            conn,
+            title="bad skills",
+            assignee="alice",
+            skills=["web", "browser"],
+        )
+
+
 # ---------------------------------------------------------------------------
 # Links + dependency resolution
 # ---------------------------------------------------------------------------
@@ -538,6 +548,119 @@ def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypat
     assert t in res.skipped_nonspawnable
     assert t not in res.skipped_unassigned
     assert not res.spawned
+
+
+def test_dispatch_skips_invalid_task_skills_and_keeps_ready(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="bad-skills", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET skills = ? WHERE id = ?",
+                ('["web", "translation"]', tid),
+            )
+        res = kb.dispatch_once(conn, dry_run=True)
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert tid in res.skipped_invalid_skills
+    assert tid not in res.spawned
+    assert task.status == "ready"
+    assert [e.kind for e in events] == ["created"]
+
+
+def test_dispatch_skips_invalid_task_skills_without_event_spam(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="bad-skills", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET skills = ? WHERE id = ?",
+                ('["web", "translation"]', tid),
+            )
+        res = kb.dispatch_once(conn, dry_run=False)
+        events = kb.list_events(conn, tid)
+    assert tid in res.skipped_invalid_skills
+    assert [e.kind for e in events] == ["created"]
+
+
+def test_reset_task_failures_clears_counter_and_emits_event(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="retrying", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET consecutive_failures = 4, "
+                "last_failure_error = 'boom' WHERE id = ?",
+                (tid,),
+            )
+        assert kb.reset_task_failures(conn, tid) is True
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert task.consecutive_failures == 0
+    assert task.last_failure_error is None
+    assert events[-1].kind == "edited"
+    assert events[-1].payload["failures_reset"] is True
+
+
+def test_edit_task_recovery_fields_clear_claim_on_non_running_task(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="stale", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = ?, "
+                "claim_expires = ?, worker_pid = ?, last_heartbeat_at = ?, "
+                "current_run_id = ? WHERE id = ?",
+                ("lock-1", 1234567890, 9999, 1234567000, run_id, tid),
+            )
+        assert kb.edit_task_recovery_fields(conn, tid, clear_claim=True) is True
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+        run_row = conn.execute(
+            "SELECT status, outcome, ended_at FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+    assert task.claim_lock is None
+    assert task.claim_expires is None
+    assert task.worker_pid is None
+    assert task.last_heartbeat_at is None
+    assert task.current_run_id is None
+    assert run_row["status"] == "reclaimed"
+    assert run_row["outcome"] == "reclaimed"
+    assert run_row["ended_at"] is not None
+    assert events[-1].kind == "edited"
+    assert events[-1].payload["claim_cleared"] is True
+
+
+def test_edit_task_recovery_fields_clear_claim_keeps_terminal_run_terminal(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="done-stale", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
+        assert kb.complete_task(conn, tid, summary="done")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET claim_lock = ?, claim_expires = ?, worker_pid = ?, "
+                "last_heartbeat_at = ?, current_run_id = ? WHERE id = ?",
+                ("lock-1", 1234567890, 9999, 1234567000, run_id, tid),
+            )
+        assert kb.edit_task_recovery_fields(conn, tid, clear_claim=True) is True
+        task = kb.get_task(conn, tid)
+        run_row = conn.execute(
+            "SELECT status, outcome, summary FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+    assert task.claim_lock is None
+    assert task.current_run_id is None
+    assert run_row["status"] == "done"
+    assert run_row["outcome"] == "completed"
+    assert run_row["summary"] == "done"
 
 
 def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):

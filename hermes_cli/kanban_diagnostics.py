@@ -34,6 +34,8 @@ from typing import Any, Callable, Iterable, Optional
 import json
 import time
 
+from hermes_cli.kanban_db import KNOWN_TOOLSET_NAMES
+
 
 # Severity rungs, ordered least → most urgent. The UI colors them
 # amber (warning), orange (error), red (critical). Sorted outputs put
@@ -217,6 +219,37 @@ def _generic_recovery_actions(task: Any, *, running: bool) -> list[DiagnosticAct
         payload={"reclaim_first": running},
     ))
     return out
+
+
+def _profile_exists_safe(name: Optional[str]) -> Optional[bool]:
+    if not name:
+        return None
+    try:
+        from hermes_cli import profiles
+        return bool(profiles.profile_exists(name))
+    except Exception:
+        return None
+
+
+def _profile_toolsets_safe(name: Optional[str]) -> Optional[list[str]]:
+    if not name:
+        return None
+    try:
+        from hermes_cli import profiles
+        from hermes_cli import config as config_mod
+        from hermes_constants import _profile_override_context
+
+        profile_dir = profiles.get_profile_dir(name)
+        if not profile_dir.is_dir():
+            return None
+        with _profile_override_context(str(profile_dir)):
+            cfg = config_mod.read_raw_config()
+        toolsets = cfg.get("toolsets")
+        if not isinstance(toolsets, list):
+            return None
+        return [str(t).strip() for t in toolsets if str(t).strip()]
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -570,9 +603,138 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_invalid_task_skills(task, events, runs, now, cfg) -> list[Diagnostic]:
+    skills = _task_field(task, "skills") or []
+    if not skills:
+        return []
+    invalid = [s for s in skills if str(s).casefold() in KNOWN_TOOLSET_NAMES]
+    if not invalid:
+        return []
+    task_id = _task_field(task, "id") or "TASK_ID"
+    running = _task_field(task, "status") == "running"
+    actions: list[DiagnosticAction] = []
+    if not running:
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label=f"Clear invalid skills: hermes kanban edit {task_id} --clear-skills",
+            payload={"command": f"hermes kanban edit {task_id} --clear-skills"},
+            suggested=True,
+        ))
+    actions.append(DiagnosticAction(
+        kind="cli_hint",
+        label=f"Inspect task: hermes kanban show {task_id}",
+        payload={"command": f"hermes kanban show {task_id}"},
+    ))
+    actions.extend(_generic_recovery_actions(task, running=running))
+    return [Diagnostic(
+        kind="invalid_task_skills",
+        severity="error",
+        title="Task skills contain toolset names",
+        detail=(
+            "This task's skills list contains Hermes toolset names rather than "
+            "SKILL bundle names. Dispatcher-spawned workers forward task.skills "
+            "through `--skills ...`, so values like web/browser/terminal/file "
+            "eventually fail worker startup with unknown-skill errors."
+        ),
+        actions=actions,
+        first_seen_at=now,
+        last_seen_at=now,
+        count=len(invalid),
+        data={"invalid_skills": invalid},
+    )]
+
+
+def _rule_assignee_profile_not_found(task, events, runs, now, cfg) -> list[Diagnostic]:
+    assignee = _task_field(task, "assignee")
+    status = _task_field(task, "status")
+    if not assignee or status not in ("triage", "todo", "ready", "running", "blocked"):
+        return []
+    exists = _profile_exists_safe(assignee)
+    if exists is not False:
+        return []
+    running = status == "running"
+    actions = [
+        DiagnosticAction(
+            kind="cli_hint",
+            label=f"Create profile: hermes profile create {assignee}",
+            payload={"command": f"hermes profile create {assignee}"},
+        ),
+    ]
+    actions.extend(_generic_recovery_actions(task, running=running))
+    if actions:
+        actions[-1].suggested = True
+    return [Diagnostic(
+        kind="assignee_profile_not_found",
+        severity="error",
+        title="Assigned profile does not exist",
+        detail=(
+            f"This task is assigned to profile '{assignee}', but Hermes "
+            "cannot resolve that profile on disk. Dispatcher-driven spawn "
+            "will skip or fail until the profile is created or the task is "
+            "reassigned."
+        ),
+        actions=actions,
+        first_seen_at=now,
+        last_seen_at=now,
+        count=1,
+        data={"assignee": assignee},
+    )]
+
+
+def _rule_stale_running_claim(task, events, runs, now, cfg) -> list[Diagnostic]:
+    if _task_field(task, "status") != "running":
+        return []
+    claim_expires = _task_field(task, "claim_expires")
+    if claim_expires is None or int(claim_expires) >= now:
+        return []
+    task_id = _task_field(task, "id") or "TASK_ID"
+    age_seconds = max(0, now - int(claim_expires))
+    return [Diagnostic(
+        kind="stale_running_claim",
+        severity="critical",
+        title="Running task has an expired claim",
+        detail=(
+            "This task is still marked running, but its claim TTL has already "
+            "expired. The dispatcher normally reclaims expired claims on the "
+            "next tick; if it remains stuck, reclaim it manually and inspect "
+            "the worker log before retrying."
+        ),
+        actions=[
+            DiagnosticAction(
+                kind="reclaim",
+                label="Reclaim task",
+                payload={},
+                suggested=True,
+            ),
+            DiagnosticAction(
+                kind="cli_hint",
+                label=f"Check worker log: hermes kanban log {task_id}",
+                payload={"command": f"hermes kanban log {task_id}"},
+            ),
+            DiagnosticAction(
+                kind="reassign",
+                label="Reassign to different profile",
+                payload={"reclaim_first": True},
+            ),
+        ],
+        first_seen_at=int(claim_expires),
+        last_seen_at=now,
+        count=1,
+        data={
+            "claim_expires": int(claim_expires),
+            "age_seconds": age_seconds,
+            "worker_pid": _task_field(task, "worker_pid"),
+            "current_run_id": _task_field(task, "current_run_id"),
+        },
+    )]
+
+
 # Registry — order matters: rules higher on the list render first when
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
+    _rule_stale_running_claim,
+    _rule_invalid_task_skills,
+    _rule_assignee_profile_not_found,
     _rule_hallucinated_cards,
     _rule_prose_phantom_refs,
     _rule_repeated_failures,
@@ -584,6 +746,9 @@ _RULES: list[RuleFn] = [
 # Known kinds (for the UI's filter / legend / i18n keys). Update when
 # rules are added.
 DIAGNOSTIC_KINDS = (
+    "stale_running_claim",
+    "invalid_task_skills",
+    "assignee_profile_not_found",
     "hallucinated_cards",
     "prose_phantom_refs",
     "repeated_failures",

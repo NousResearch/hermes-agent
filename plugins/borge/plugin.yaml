@@ -1,0 +1,9 @@
+name: borge
+version: 0.1.0
+description: "Borge Agent — affective state (Russell circumplex), Bayesian belief tracking, active inference tool scoring, memory consolidation, and skill evolution"
+author: "Borge Project"
+hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_llm_call
+  - on_session_end

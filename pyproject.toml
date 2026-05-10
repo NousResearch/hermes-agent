@@ -11,7 +11,6 @@ requires-python = ">=3.11"
 authors = [{ name = "Nous Research" }]
 license = { text = "MIT" }
 dependencies = [
-  # Core — pinned to known-good ranges to limit supply chain attack surface
   "openai>=2.21.0,<3",
   "anthropic>=0.39.0,<1",
   "python-dotenv>=1.2.1,<2",
@@ -20,20 +19,16 @@ dependencies = [
   "rich>=14.3.3,<15",
   "tenacity>=9.1.4,<10",
   "pyyaml>=6.0.2,<7",
-  "requests>=2.33.0,<3",  # CVE-2026-25645
+  "requests>=2.33.0,<3",
   "jinja2>=3.1.5,<4",
   "pydantic>=2.12.5,<3",
-  # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit>=3.0.52,<4",
-  # Tools
   "exa-py>=2.9.0,<3",
   "firecrawl-py>=4.16.0,<5",
   "parallel-web>=0.4.2,<1",
   "fal-client>=0.13.1,<1",
-  # Text-to-speech (Edge TTS is free, no API key needed)
   "edge-tts>=7.2.7,<8",
-  # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
+  "PyJWT[crypto]>=2.12.0,<3",
 ]
 
 [project.optional-dependencies]
@@ -47,8 +42,6 @@ matrix = ["matrix-nio[e2e]>=0.24.0,<1", "Markdown>=3.6,<4"]
 cli = ["simple-term-menu>=1.0,<2"]
 tts-premium = ["elevenlabs>=1.0,<2"]
 voice = [
-  # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime),
-  # so keep it out of the base install for source-build packagers like Homebrew.
   "faster-whisper>=1.0.0,<2",
   "sounddevice>=0.4.6,<1",
   "numpy>=1.24.0,<3",
@@ -76,10 +69,6 @@ all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",
   "hermes-agent[messaging]",
-  # matrix excluded: python-olm (required by matrix-nio[e2e]) is upstream-broken
-  # on modern macOS (archived libolm, C++ errors with Clang 21+). Including it
-  # here causes the entire [all] install to fail, dropping all other extras.
-  # Users who need Matrix can install manually: pip install 'hermes-agent[matrix]'
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
@@ -101,11 +90,14 @@ hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
+[project.entry-points."hermes_agent.plugins"]
+borge = "plugins.borge"
+
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "rl_cli", "utils"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "acp_adapter", "plugins", "plugins.*"]
+include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "borge", "borge.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

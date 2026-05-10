@@ -1747,6 +1747,180 @@ def _kanban_payload_dry_run_enabled(repo_policy: Optional[Mapping[str, Any]]) ->
     )
 
 
+def _kanban_native_selection_enabled(repo_policy: Optional[Mapping[str, Any]]) -> bool:
+    if not isinstance(repo_policy, Mapping):
+        return False
+    nested = _kanban_policy(repo_policy)
+    return any(
+        _truthy_evidence(value)
+        for value in (
+            repo_policy.get("kanban_native_candidate_selection"),
+            repo_policy.get("kanban_candidate_selection"),
+            nested.get("native_candidate_selection"),
+            nested.get("candidate_selection"),
+        )
+    )
+
+
+def _policy_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return []
+
+
+def _approved_kanban_tenants(repo_policy: Optional[Mapping[str, Any]]) -> set[str]:
+    nested = _kanban_policy(repo_policy)
+    values: list[str] = []
+    if isinstance(repo_policy, Mapping):
+        for key in ("approved_kanban_tenants", "kanban_approved_tenants", "approved_domains"):
+            values.extend(_policy_string_list(repo_policy.get(key)))
+    for key in ("approved_tenants", "approved_domains", "native_approved_tenants"):
+        values.extend(_policy_string_list(nested.get(key)))
+    return {value.lower() for value in values if value}
+
+
+def _kanban_task_value(task: Any, key: str, default: Any = None) -> Any:
+    if isinstance(task, Mapping):
+        return task.get(key, default)
+    return getattr(task, key, default)
+
+
+def _kanban_task_identifier(task: Any) -> str:
+    return str(
+        _kanban_task_value(task, "public_id")
+        or _kanban_task_value(task, "id")
+        or ""
+    ).strip()
+
+
+def _kanban_task_to_selected_issue(task: Any) -> dict[str, Any]:
+    identifier = _kanban_task_identifier(task)
+    task_id = str(_kanban_task_value(task, "id", "") or "").strip()
+    payload = {
+        "identifier": identifier,
+        "title": str(_kanban_task_value(task, "title", "") or ""),
+        "url": None,
+        "source": "kanban",
+        "task_id": task_id or identifier,
+    }
+    public_id = str(_kanban_task_value(task, "public_id", "") or "").strip()
+    if public_id:
+        payload["public_id"] = public_id
+    return payload
+
+
+def _kanban_task_candidate(
+    task: Any,
+    *,
+    active_work_ids: set[str],
+    approved_tenants: set[str],
+) -> dict[str, Any]:
+    identifier = _kanban_task_identifier(task)
+    tenant = str(_kanban_task_value(task, "tenant", "") or "").strip()
+    status = str(_kanban_task_value(task, "status", "") or "").strip().lower()
+    review_phase = str(_kanban_task_value(task, "review_phase", "") or "").strip().lower()
+    candidate = {
+        "identifier": identifier,
+        "eligible": False,
+        "reason": "unknown",
+        "shape": "kanban_native",
+        "parent_id": None,
+        "project": tenant or "none",
+        "source": "kanban",
+        "task_id": str(_kanban_task_value(task, "id", "") or "").strip() or identifier,
+        "tenant": tenant or None,
+    }
+    if not identifier:
+        candidate["reason"] = "missing_kanban_identifier"
+    elif not tenant:
+        candidate["reason"] = "missing_kanban_tenant"
+    elif approved_tenants and tenant.lower() not in approved_tenants:
+        candidate["reason"] = "kanban_tenant_not_approved"
+    elif status != "ready":
+        candidate["reason"] = "kanban_status_not_ready"
+    elif review_phase in {"worker_done", "review_ready", "closed"}:
+        candidate["reason"] = "kanban_review_phase_not_executable"
+    elif identifier in active_work_ids or candidate["task_id"] in active_work_ids:
+        candidate["reason"] = "active_work_state_lock"
+    else:
+        candidate["eligible"] = True
+        candidate["reason"] = "eligible_kanban_ready"
+    return candidate
+
+
+def _kanban_goal_contract(task: Any) -> dict[str, Any]:
+    identifier = _kanban_task_identifier(task)
+    title = str(_kanban_task_value(task, "title", "") or "")
+    summary = f"Execute Kanban {identifier}: {title}".strip()
+    body = str(_kanban_task_value(task, "body", "") or "")
+    command = (
+        f"/goal {summary}; source=kanban-native; verify Done when before closeout; "
+        "preserve review gates and do not admit a next card on budget exhaustion."
+    )
+    if body:
+        command += f"\n\nKanban task body:\n{body}"
+    return {"command": command, "summary": summary, "mode": "kanban-native"}
+
+
+def _list_kanban_native_ready_tasks(tenant: Optional[str] = None) -> list[Any]:
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        kb.init_db(conn)
+        return kb.list_tasks(conn, status="ready", tenant=tenant, limit=100)
+    finally:
+        conn.close()
+
+
+def _finish_kanban_native_dry_run(
+    tasks: list[Any],
+    *,
+    active_work_ids: set[str],
+    repo_policy: Optional[Mapping[str, Any]],
+) -> dict[str, Any]:
+    approved_tenants = _approved_kanban_tenants(repo_policy)
+    candidates = [
+        _kanban_task_candidate(task, active_work_ids=active_work_ids, approved_tenants=approved_tenants)
+        for task in tasks
+    ]
+    groups = _group_candidates(candidates)
+    for task, candidate in zip(tasks, candidates):
+        if candidate.get("eligible"):
+            goal_contract = _kanban_goal_contract(task)
+            selected = _kanban_task_to_selected_issue(task)
+            work_state = _would_work_state(candidate)
+            work_state.update({"mode": "kanban", "source": "kanban", "task_id": candidate.get("task_id")})
+            return {
+                "status": "would_run",
+                "reason": "kanban_native_ready_task_selected",
+                "selected_issue": selected,
+                "would_create_work_state": work_state,
+                "would_goal_contract": goal_contract,
+                "candidates": candidates,
+                "groups": groups,
+                "source": "kanban",
+                "side_effects": {
+                    "work_state_written": False,
+                    "executor_spawned": False,
+                    "linear_mutated": False,
+                    "kanban_task_claimed": False,
+                },
+            }
+    return {
+        "status": "blocked",
+        "reason": "no_eligible_kanban_native_task",
+        "selected_issue": None,
+        "would_create_work_state": None,
+        "would_goal_contract": None,
+        "candidates": candidates,
+        "groups": groups,
+        "source": "kanban",
+    }
+
+
 def _first_policy_value(
     repo_policy: Optional[Mapping[str, Any]],
     keys: Iterable[str],
@@ -2063,6 +2237,7 @@ def evaluate_dry_run_admission(
     enforce_closeout_gate: bool = False,
     repo_policy: Optional[Mapping[str, Any]] = None,
     expected_repo_full_name: Optional[str] = None,
+    kanban_task_provider: Optional[Callable[[], list[Any]]] = None,
 ) -> dict[str, Any]:
     """Produce CH-388 read-only admission proof for /autopilot dry-run."""
 
@@ -2097,6 +2272,24 @@ def evaluate_dry_run_admission(
                 closeout_snapshot,
                 blocking_cards=list(closeout_snapshot.get("blocked_cards") or []),
             )
+        if _kanban_native_selection_enabled(repo_policy):
+            try:
+                tasks = (kanban_task_provider or _list_kanban_native_ready_tasks)()
+            except Exception as exc:
+                return _empty_dry_run(
+                    "blocked",
+                    "kanban_native_queue_unavailable_fail_closed",
+                    kanban_reason=type(exc).__name__,
+                )
+            kanban_dry_run = _finish_kanban_native_dry_run(
+                [task for task in tasks if task is not None],
+                active_work_ids=active_ids,
+                repo_policy=repo_policy,
+            )
+            if kanban_dry_run.get("status") == "would_run":
+                return kanban_dry_run
+            if not _truthy_evidence((_kanban_policy(repo_policy)).get("fallback_to_linear")):
+                return kanban_dry_run
         queue = linear_client.list_execution_ready_issues(
             team_key="CH",
             state_name="Execution Ready",

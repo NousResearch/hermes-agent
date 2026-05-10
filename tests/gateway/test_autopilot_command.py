@@ -22,6 +22,7 @@ from gateway.autopilot import (
     classify_linear_target,
     classify_work_state_target,
     evaluate_autopilot_pr_closeout_gate,
+    evaluate_dry_run_admission,
     evaluate_kanban_closeout_gate,
     handle_autopilot_command,
     handle_autopilot_runtime_command,
@@ -634,6 +635,146 @@ def test_kanban_payload_contract_missing_repo_or_executor_fails_closed(tmp_path)
     assert payload["missing"] == ["repo_full_name", "executor"]
     assert payload["side_effects"]["kanban_task_written"] is False
     assert result.decision["side_effects"]["executor_spawned"] is False
+
+
+def test_kanban_native_candidate_selection_picks_ready_task_without_linear(tmp_path):
+    store = _state_store(tmp_path)
+    store.set_enabled(True, actor="tester")
+    task = SimpleNamespace(
+        id="t_kanban1",
+        public_id="BO-101",
+        title="Native queue task",
+        body="## Done when\n- done\n\n## Verification\n- tests",
+        status="ready",
+        tenant="brain-os",
+        review_phase=None,
+    )
+    linear = _FakeLinearClient({}, queue={"status": "unavailable", "reason": "linear_should_not_be_required"})
+
+    dry_run = evaluate_dry_run_admission(
+        command=parse_autopilot_args("dry-run"),
+        state=store.status(),
+        linear_client=linear,
+        work_state_store=_FakeWorkStateStore(),
+        repo_policy={
+            "kanban": {
+                "native_candidate_selection": True,
+                "approved_tenants": ["brain-os"],
+            }
+        },
+        kanban_task_provider=lambda: [task],
+    )
+
+    assert dry_run["status"] == "would_run"
+    assert dry_run["reason"] == "kanban_native_ready_task_selected"
+    assert dry_run["source"] == "kanban"
+    assert dry_run["selected_issue"] == {
+        "identifier": "BO-101",
+        "title": "Native queue task",
+        "url": None,
+        "source": "kanban",
+        "task_id": "t_kanban1",
+        "public_id": "BO-101",
+    }
+    assert dry_run["would_create_work_state"] == {
+        "work_id": "BO-101",
+        "owner": "hermes",
+        "executor": "hermes",
+        "mode": "kanban",
+        "state": "created",
+        "parent_id": None,
+        "source": "kanban",
+        "task_id": "t_kanban1",
+    }
+    assert dry_run["would_goal_contract"]["command"].startswith("/goal Execute Kanban BO-101")
+    assert dry_run["side_effects"] == {
+        "work_state_written": False,
+        "executor_spawned": False,
+        "linear_mutated": False,
+        "kanban_task_claimed": False,
+    }
+    assert linear.queue_calls == []
+
+
+def test_kanban_native_candidate_selection_rejects_unapproved_tenant_without_linear_fallback(tmp_path):
+    store = _state_store(tmp_path)
+    store.set_enabled(True, actor="tester")
+    task = SimpleNamespace(
+        id="t_other",
+        public_id="WS-101",
+        title="Other tenant task",
+        body="",
+        status="ready",
+        tenant="whystarve",
+        review_phase=None,
+    )
+    linear = _FakeLinearClient({}, queue={"status": "unavailable", "reason": "linear_should_not_be_required"})
+
+    dry_run = evaluate_dry_run_admission(
+        command=parse_autopilot_args("dry-run"),
+        state=store.status(),
+        linear_client=linear,
+        work_state_store=_FakeWorkStateStore(),
+        repo_policy={
+            "kanban_native_candidate_selection": True,
+            "approved_kanban_tenants": ["brain-os"],
+        },
+        kanban_task_provider=lambda: [task],
+    )
+
+    assert dry_run["status"] == "blocked"
+    assert dry_run["reason"] == "no_eligible_kanban_native_task"
+    assert dry_run["candidates"][0]["reason"] == "kanban_tenant_not_approved"
+    assert dry_run["selected_issue"] is None
+    assert linear.queue_calls == []
+
+
+def test_kanban_native_candidate_selection_off_pauses_before_queue_lookup(tmp_path):
+    store = _state_store(tmp_path)
+    calls = []
+
+    dry_run = evaluate_dry_run_admission(
+        command=parse_autopilot_args("dry-run"),
+        state=store.status(),
+        linear_client=_FakeLinearClient({}, queue=[]),
+        work_state_store=_FakeWorkStateStore(),
+        repo_policy={"kanban_native_candidate_selection": True},
+        kanban_task_provider=lambda: calls.append("called") or [],
+    )
+
+    assert dry_run["status"] == "paused"
+    assert dry_run["reason"] == "controller_disabled_noop"
+    assert calls == []
+
+
+def test_kanban_native_candidate_selection_active_lock_blocks_next_card(tmp_path):
+    store = _state_store(tmp_path)
+    store.set_enabled(True, actor="tester")
+    task = SimpleNamespace(
+        id="t_locked",
+        public_id="BO-102",
+        title="Already locked task",
+        body="",
+        status="ready",
+        tenant="brain-os",
+        review_phase=None,
+    )
+    live = SimpleNamespace(owner="hermes", state="running", work_id="BO-102")
+
+    dry_run = evaluate_dry_run_admission(
+        command=parse_autopilot_args("dry-run"),
+        state=store.status(),
+        linear_client=_FakeLinearClient({}, queue={"status": "unavailable"}),
+        work_state_store=_FakeWorkStateStore([live]),
+        repo_policy={
+            "kanban_native_candidate_selection": True,
+            "approved_kanban_tenants": ["brain-os"],
+        },
+        kanban_task_provider=lambda: [task],
+    )
+
+    assert dry_run["status"] == "blocked"
+    assert dry_run["candidates"][0]["reason"] == "active_work_state_lock"
 
 
 def test_kanban_payload_contract_missing_done_when_uses_existing_fail_closed_admission(tmp_path):

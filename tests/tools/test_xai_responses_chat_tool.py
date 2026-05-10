@@ -89,14 +89,11 @@ def _basic_payload(text: str = "hello", response_id: str = "resp-001"):
 class TestRequirements:
     def test_unavailable_without_key(self, monkeypatch):
         monkeypatch.delenv("XAI_API_KEY", raising=False)
-        ok, why = check_xai_responses_requirements()
-        assert ok is False
-        assert "XAI_API_KEY" in why
+        assert check_xai_responses_requirements() is False
 
     def test_available_with_key(self, monkeypatch):
         monkeypatch.setenv("XAI_API_KEY", "sk")
-        ok, _ = check_xai_responses_requirements()
-        assert ok is True
+        assert check_xai_responses_requirements() is True
 
 
 class TestSchema:

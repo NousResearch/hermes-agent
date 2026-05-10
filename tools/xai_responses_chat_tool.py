@@ -279,10 +279,8 @@ def _extract_text(payload: Dict[str, Any]) -> str:
 # Tool registration
 # ---------------------------------------------------------------------------
 
-def check_xai_responses_requirements() -> "tuple[bool, str]":
-    if os.environ.get("XAI_API_KEY", "").strip():
-        return True, ""
-    return False, "XAI_API_KEY environment variable is not set"
+def check_xai_responses_requirements() -> bool:
+    return bool(os.environ.get("XAI_API_KEY", "").strip())
 
 
 XAI_RESPONSES_SCHEMA = {
@@ -378,5 +376,6 @@ registry.register(
     schema=XAI_RESPONSES_SCHEMA,
     handler=_handle_xai_responses_tool_call,
     check_fn=check_xai_responses_requirements,
+    requires_env=["XAI_API_KEY"],
     emoji="🧠",
 )

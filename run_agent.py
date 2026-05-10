@@ -89,6 +89,25 @@ class _OpenAIProxy:
 
 OpenAI = _OpenAIProxy()
 
+
+def _kanban_worker_startup_env() -> Optional[dict[str, Any]]:
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if not task_id:
+        return None
+    run_raw = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+    run_id: Optional[int] = None
+    if run_raw:
+        try:
+            run_id = int(run_raw)
+        except ValueError:
+            run_id = None
+    return {
+        "task_id": task_id,
+        "run_id": run_id,
+        "claim_lock": os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip() or None,
+        "db_path": os.environ.get("HERMES_KANBAN_DB", "").strip() or None,
+    }
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -10853,6 +10872,72 @@ class AIAgent:
         self._unicode_sanitization_passes = 0
         self._tool_guardrails.reset_for_turn()
         self._tool_guardrail_halt_decision = None
+
+        # Dispatcher-spawned Kanban workers validate ownership/state before
+        # doing any model work. The task may have been reclaimed, blocked,
+        # archived, or superseded by a newer run in the claim->spawn gap.
+        _kanban_startup = _kanban_worker_startup_env()
+        if _kanban_startup is not None:
+            try:
+                from hermes_cli import kanban_db as _kanban_db
+
+                db_path = _kanban_startup.get("db_path")
+                if db_path:
+                    conn = _kanban_db.connect(Path(db_path))
+                else:
+                    conn = _kanban_db.connect()
+                try:
+                    verdict = _kanban_db.check_worker_startup_guard(
+                        conn,
+                        task_id=_kanban_startup["task_id"],
+                        expected_run_id=_kanban_startup["run_id"],
+                        expected_claim_lock=_kanban_startup["claim_lock"],
+                    )
+                finally:
+                    conn.close()
+                if not verdict.allowed:
+                    _turn_exit_reason = f"kanban_startup_guard:{verdict.reason}"
+                    final_response = (
+                        "Kanban worker startup skipped because the task no longer "
+                        f"belongs to this worker ({verdict.reason})."
+                    )
+                    logger.info(
+                        "Kanban startup guard skipped worker: task=%s reason=%s "
+                        "expected_run=%s current_run=%s status=%s",
+                        verdict.task_id,
+                        verdict.reason,
+                        verdict.run_id,
+                        verdict.current_run_id,
+                        verdict.status,
+                    )
+                    return {
+                        "final_response": final_response,
+                        "last_reasoning": None,
+                        "messages": [],
+                        "api_calls": 0,
+                        "completed": False,
+                        "turn_exit_reason": _turn_exit_reason,
+                        "partial": False,
+                        "interrupted": False,
+                        "response_previewed": False,
+                        "model": self.model,
+                        "provider": self.provider,
+                        "base_url": self.base_url,
+                        "input_tokens": self.session_input_tokens,
+                        "output_tokens": self.session_output_tokens,
+                        "cache_read_tokens": self.session_cache_read_tokens,
+                        "cache_write_tokens": self.session_cache_write_tokens,
+                        "reasoning_tokens": self.session_reasoning_tokens,
+                        "prompt_tokens": self.session_prompt_tokens,
+                        "completion_tokens": self.session_completion_tokens,
+                        "total_tokens": self.session_total_tokens,
+                        "last_prompt_tokens": 0,
+                        "estimated_cost_usd": self.session_estimated_cost_usd,
+                        "cost_status": self.session_cost_status,
+                        "cost_source": self.session_cost_source,
+                    }
+            except Exception:
+                logger.debug("kanban worker startup guard failed open", exc_info=True)
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.

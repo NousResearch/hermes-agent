@@ -735,6 +735,19 @@ class Run:
         )
 
 
+@dataclass(frozen=True)
+class WorkerStartupGuard:
+    """Read-only startup validation for dispatcher-spawned workers."""
+
+    allowed: bool
+    reason: Optional[str] = None
+    task_id: Optional[str] = None
+    run_id: Optional[int] = None
+    status: Optional[str] = None
+    current_run_id: Optional[int] = None
+    claim_lock: Optional[str] = None
+
+
 @dataclass
 class Comment:
     id: int
@@ -2034,6 +2047,76 @@ def reclaim_task(
     # so it runs after the enclosing one commits.)
     _clear_failure_counter(conn, task_id)
     return True
+
+
+def check_worker_startup_guard(
+    conn: sqlite3.Connection,
+    *,
+    task_id: Optional[str],
+    expected_run_id: Optional[int],
+    expected_claim_lock: Optional[str],
+) -> WorkerStartupGuard:
+    """Validate that a dispatcher-spawned worker still owns its task.
+
+    This is a read-only preflight used by the worker process itself before it
+    enters the model loop. It protects the claim->spawn gap: by the time the
+    child boots, the task may already have been reclaimed, blocked, archived,
+    or re-claimed by a newer run.
+    """
+    if not task_id:
+        return WorkerStartupGuard(False, reason="missing_task_id")
+
+    row = conn.execute(
+        "SELECT id, status, current_run_id, claim_lock FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return WorkerStartupGuard(False, reason="task_missing", task_id=task_id)
+
+    status = row["status"]
+    current_run_id = (
+        int(row["current_run_id"]) if row["current_run_id"] is not None else None
+    )
+    claim_lock = row["claim_lock"]
+
+    if status != "running":
+        return WorkerStartupGuard(
+            False,
+            reason=f"task_not_running:{status}",
+            task_id=task_id,
+            run_id=expected_run_id,
+            status=status,
+            current_run_id=current_run_id,
+            claim_lock=claim_lock,
+        )
+    if expected_run_id is not None and current_run_id != int(expected_run_id):
+        return WorkerStartupGuard(
+            False,
+            reason="run_mismatch",
+            task_id=task_id,
+            run_id=int(expected_run_id),
+            status=status,
+            current_run_id=current_run_id,
+            claim_lock=claim_lock,
+        )
+    if expected_claim_lock and claim_lock != expected_claim_lock:
+        return WorkerStartupGuard(
+            False,
+            reason="claim_mismatch",
+            task_id=task_id,
+            run_id=expected_run_id,
+            status=status,
+            current_run_id=current_run_id,
+            claim_lock=claim_lock,
+        )
+    return WorkerStartupGuard(
+        True,
+        task_id=task_id,
+        run_id=expected_run_id,
+        status=status,
+        current_run_id=current_run_id,
+        claim_lock=claim_lock,
+    )
 
 
 def reassign_task(

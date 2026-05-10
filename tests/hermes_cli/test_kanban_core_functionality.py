@@ -1464,6 +1464,66 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         conn.close()
 
 
+def test_worker_startup_guard_rejects_reclaimed_run(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="startup-guard", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        lock = claimed.claim_lock
+        assert run_id is not None and lock is not None
+
+        assert kb.reclaim_task(conn, tid, reason="operator reclaim")
+
+        verdict = kb.check_worker_startup_guard(
+            conn,
+            task_id=tid,
+            expected_run_id=run_id,
+            expected_claim_lock=lock,
+        )
+        assert verdict.allowed is False
+        assert verdict.reason == "task_not_running:ready"
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+    finally:
+        conn.close()
+
+
+def test_worker_startup_guard_rejects_superseded_run_without_failure(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="startup-guard", assignee="worker")
+        first = kb.claim_task(conn, tid)
+        assert first is not None
+        run1 = first.current_run_id
+        lock1 = first.claim_lock
+        assert run1 is not None and lock1 is not None
+
+        assert kb.reclaim_task(conn, tid, reason="retry")
+        second = kb.claim_task(conn, tid)
+        assert second is not None
+        run2 = second.current_run_id
+        lock2 = second.claim_lock
+        assert run2 is not None and lock2 is not None and run2 != run1
+
+        verdict = kb.check_worker_startup_guard(
+            conn,
+            task_id=tid,
+            expected_run_id=run1,
+            expected_claim_lock=lock1,
+        )
+        assert verdict.allowed is False
+        assert verdict.reason == "run_mismatch"
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == run2
+        assert task.consecutive_failures == 0
+    finally:
+        conn.close()
+
+
 def test_run_on_block_with_reason(kanban_home):
     conn = kb.connect()
     try:

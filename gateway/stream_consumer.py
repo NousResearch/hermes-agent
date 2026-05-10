@@ -330,6 +330,26 @@ class GatewayStreamConsumer:
                 # tag is not lost.
                 if got_done:
                     self._flush_think_buffer()
+                    # --- pre_gateway_text_send hook (outbound interception) ---
+                    # Fire on the final assembled text only — never on
+                    # individual streaming deltas — to avoid performance
+                    # overhead and partial-text mutations.
+                    if self._accumulated:
+                        try:
+                            from hermes_cli.plugins import apply_text_send_hooks as _apply_hooks
+                            self._accumulated, _hook_blocked = _apply_hooks(
+                                self._accumulated,
+                                platform=getattr(self.adapter, "name", ""),
+                                chat_id=self.chat_id,
+                                mode="streaming",
+                                is_edit=bool(self._message_id),
+                                finalize=True,
+                            )
+                            if _hook_blocked:
+                                if not self._accumulated:
+                                    self._accumulated = ""
+                        except Exception:
+                            pass  # fail-open: deliver unmodified
 
                 # Decide whether to flush an edit
                 now = time.monotonic()

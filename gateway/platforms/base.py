@@ -2821,6 +2821,34 @@ class BasePlatformAdapter(ABC):
 
                 # Send the text portion
                 if text_content:
+                    # --- pre_gateway_text_send hook (outbound interception) ---
+                    try:
+                        from hermes_cli.plugins import apply_text_send_hooks as _apply_hooks
+                        text_content, _hook_blocked = _apply_hooks(
+                            text_content,
+                            platform=self.name,
+                            session_id=getattr(event, "session_id", "") or "",
+                            chat_id=event.source.chat_id,
+                            mode="non_streaming",
+                            is_edit=False,
+                            finalize=True,
+                        )
+                        if _hook_blocked:
+                            logger.info(
+                                "[%s] Outbound text blocked by pre_gateway_text_send plugin hook",
+                                self.name,
+                            )
+                            if text_content:
+                                # Plugin provided fallback text — deliver it instead
+                                pass  # fall through to send below
+                            else:
+                                text_content = ""  # suppress entirely
+                    except Exception as _hook_err:
+                        logger.debug(
+                            "[%s] pre_gateway_text_send hook error (fail-open): %s",
+                            self.name, _hook_err,
+                        )
+                if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = (
                         event.reply_to_message_id

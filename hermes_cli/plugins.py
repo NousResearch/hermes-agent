@@ -97,6 +97,19 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Gateway outbound text hook.  Fired immediately before a text response
+    # is delivered to the platform adapter — the last chance to inspect,
+    # rewrite, or suppress the final text the user will see.  Outbound
+    # counterpart to pre_gateway_dispatch.
+    # Plugins may return a dict to influence delivery:
+    #   {"action": "allow"}  / None              -> deliver unchanged
+    #   {"action": "rewrite", "text": "..."}      -> replace text, deliver
+    #   {"action": "block",   "text": "..."}      -> suppress original; send
+    #                                                fallback text (or empty)
+    # First rewrite/block wins.  Errors are caught and logged; delivery
+    # proceeds with the original text (fail-open).
+    # Kwargs: platform, session_id, chat_id, text, mode, is_edit, finalize.
+    "pre_gateway_text_send",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
@@ -1167,6 +1180,61 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
+
+def apply_text_send_hooks(
+    text: str,
+    *,
+    platform: str = "",
+    session_id: str = "",
+    chat_id: str = "",
+    mode: str = "non_streaming",
+    is_edit: bool = False,
+    finalize: bool = True,
+) -> tuple:
+    """Apply ``pre_gateway_text_send`` hooks and return ``(text, blocked)``.
+
+    This is the shared helper that both the non-streaming delivery path
+    (``gateway/platforms/base.py``) and the streaming path
+    (``gateway/stream_consumer.py``) call to give plugins a last chance
+    to inspect, rewrite, or suppress outbound text.
+
+    Returns:
+        A ``(text, blocked)`` tuple.  When *blocked* is ``True`` the
+        caller should suppress the normal send and optionally deliver
+        the returned *text* as a fallback notice.
+
+    Fail-open:  If ``invoke_hook()`` raises, the original *text* is
+    returned unchanged so a misbehaving plugin can never prevent all
+    message delivery.
+    """
+    try:
+        results = invoke_hook(
+            "pre_gateway_text_send",
+            platform=platform,
+            session_id=session_id,
+            chat_id=chat_id,
+            text=text,
+            mode=mode,
+            is_edit=is_edit,
+            finalize=finalize,
+        )
+    except Exception as exc:
+        logger.warning("pre_gateway_text_send invocation failed: %s", exc)
+        return text, False  # fail-open: deliver unmodified
+
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        action = result.get("action")
+        if action == "rewrite":
+            new_text = result.get("text")
+            if isinstance(new_text, str):
+                return new_text, False
+        if action == "block":
+            return result.get("text", ""), True
+        if action == "allow":
+            break
+    return text, False
 
 
 def get_pre_tool_call_block_message(

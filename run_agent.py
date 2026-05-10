@@ -9740,6 +9740,10 @@ class AIAgent:
 
         if self._session_db:
             try:
+                self._persist_session(messages, None)
+            except Exception as e:
+                logger.warning("Session persistence before compression split failed: %s", e)
+            try:
                 # Propagate title to the new session with auto-numbering
                 old_title = self._session_db.get_session_title(self.session_id)
                 # Trigger memory extraction on the old session before it rotates.
@@ -9768,6 +9772,10 @@ class AIAgent:
                 self._session_db.update_system_prompt(self.session_id, new_system_prompt)
                 # Reset flush cursor — new session starts with no messages written
                 self._last_flushed_db_idx = 0
+                try:
+                    self._persist_session(compressed, None)
+                except Exception as e:
+                    logger.warning("Compressed session persistence after split failed: %s", e)
             except Exception as e:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 

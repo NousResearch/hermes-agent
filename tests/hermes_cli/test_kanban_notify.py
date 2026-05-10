@@ -2,6 +2,7 @@ import asyncio
 import pytest
 
 from pathlib import Path
+from types import SimpleNamespace
 from hermes_cli import kanban_db as kb
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -429,3 +430,52 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
     finally:
         conn.close()
     assert subs == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
+    """`/kanban --board <slug> create ...` must subscribe on that board.
+
+    The gateway handler currently auto-subscribes after `/kanban create`,
+    but the create detection must still work when the shared `--board`
+    flag appears before the subcommand, and the subscription must land in
+    that board's DB rather than the ambient/default board.
+    """
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    kb.create_board("projx")
+
+    runner = object.__new__(GatewayRunner)
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="chat1",
+        thread_id="th1",
+        user_id="u1",
+    )
+    event = SimpleNamespace(
+        text='/kanban --board projx create "hello" --assignee alice',
+        source=source,
+    )
+
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+
+    assert "subscribed" in out.lower()
+
+    conn = kb.connect(board="projx")
+    try:
+        subs = kb.list_notify_subs(conn)
+        tasks = kb.list_tasks(conn)
+    finally:
+        conn.close()
+
+    assert [t.title for t in tasks] == ["hello"]
+    assert len(subs) == 1
+    assert subs[0]["chat_id"] == "chat1"
+    assert subs[0]["thread_id"] == "th1"
+
+    conn = kb.connect(board="default")
+    try:
+        assert kb.list_notify_subs(conn) == []
+    finally:
+        conn.close()

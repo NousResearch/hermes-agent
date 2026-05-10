@@ -32,6 +32,9 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _resolve_pre_spawn_guard_config,
+    _build_pre_spawn_guard_payload,
+    _evaluate_pre_spawn_guard,
 )
 
 
@@ -157,6 +160,186 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestDelegatePreSpawnGuardAdapter(unittest.TestCase):
+    def test_disabled_guard_returns_allowed_noop(self):
+        decision = _evaluate_pre_spawn_guard(
+            config={"enabled": False},
+            parent_agent=_make_mock_parent(),
+            task={"goal": "safe research"},
+            task_index=0,
+            task_count=1,
+            subagent_id="subagent-test",
+            role="leaf",
+        )
+
+        self.assertTrue(decision["allowed"])
+        self.assertEqual(decision["decision"], "disabled")
+        self.assertFalse(decision["should_call_guard"])
+
+    def test_runtime_mode_resolution_prefers_config_then_env_then_manual(self):
+        with patch.dict(os.environ, {"HERMES_RUNTIME_MODE": "autonomous"}):
+            cfg = _resolve_pre_spawn_guard_config({"pre_spawn_guard": {"enabled": True}})
+            self.assertEqual(cfg["runtime_mode"], "autonomous")
+            cfg = _resolve_pre_spawn_guard_config({"pre_spawn_guard": {"enabled": True, "runtime_mode": "manual"}})
+            self.assertEqual(cfg["runtime_mode"], "manual")
+        with patch.dict(os.environ, {}, clear=True):
+            cfg = _resolve_pre_spawn_guard_config({"pre_spawn_guard": {"enabled": True}})
+            self.assertEqual(cfg["runtime_mode"], "manual")
+
+    def test_missing_task_context_blocks_when_required(self):
+        decision = _evaluate_pre_spawn_guard(
+            config={"enabled": True, "require_task_context": True, "runtime_mode": "autonomous"},
+            parent_agent=_make_mock_parent(),
+            task={"goal": "mutate prod"},
+            task_index=0,
+            task_count=1,
+            subagent_id="subagent-test",
+            role="leaf",
+        )
+
+        self.assertFalse(decision["allowed"])
+        self.assertEqual(decision["decision"], "missing_task_context")
+        self.assertFalse(decision["should_call_guard"])
+
+    def test_missing_task_context_passes_without_telemetry_by_default(self):
+        decision = _evaluate_pre_spawn_guard(
+            config={"enabled": True, "require_task_context": False, "runtime_mode": "manual"},
+            parent_agent=_make_mock_parent(),
+            task={"goal": "manual scratch"},
+            task_index=0,
+            task_count=1,
+            subagent_id="subagent-test",
+            role="leaf",
+        )
+
+        self.assertTrue(decision["allowed"])
+        self.assertEqual(decision["decision"], "no_task_context_allowed")
+        self.assertFalse(decision["should_call_guard"])
+        self.assertFalse(decision.get("telemetry"))
+
+    def test_fail_policy_auto_manual_unknown_fails_open_with_warning(self):
+        decision = _evaluate_pre_spawn_guard(
+            config={"enabled": True, "runtime_mode": "manual", "fail_policy": "auto"},
+            parent_agent=_make_mock_parent(),
+            task={"goal": "test", "guard_context_id": "pm-1"},
+            task_index=0,
+            task_count=1,
+            subagent_id="subagent-test",
+            role="leaf",
+            command_runner=TimeoutError("boom"),
+        )
+
+        self.assertTrue(decision["allowed"])
+        self.assertEqual(decision["decision"], "hook_error_fail_open")
+        self.assertIn("warning", decision)
+
+    def test_fail_policy_auto_autonomous_unknown_fails_closed(self):
+        decision = _evaluate_pre_spawn_guard(
+            config={"enabled": True, "runtime_mode": "autonomous", "fail_policy": "auto"},
+            parent_agent=_make_mock_parent(),
+            task={"goal": "test", "guard_context_id": "pm-1"},
+            task_index=0,
+            task_count=1,
+            subagent_id="subagent-test",
+            role="leaf",
+            command_runner=TimeoutError("boom"),
+        )
+
+        self.assertFalse(decision["allowed"])
+        self.assertEqual(decision["decision"], "hook_error_fail_closed")
+
+    def test_explicit_fail_policy_overrides_auto(self):
+        parent = _make_mock_parent()
+        base = {
+            "enabled": True,
+            "runtime_mode": "autonomous",
+            "require_task_context": False,
+        }
+        open_decision = _evaluate_pre_spawn_guard(
+            config={**base, "fail_policy": "fail_open"},
+            parent_agent=parent,
+            task={"goal": "test", "guard_context_id": "pm-1"},
+            task_index=0,
+            task_count=1,
+            subagent_id="subagent-test",
+            role="leaf",
+            command_runner=RuntimeError("guard unavailable"),
+        )
+        closed_decision = _evaluate_pre_spawn_guard(
+            config={**base, "fail_policy": "fail_closed"},
+            parent_agent=parent,
+            task={"goal": "test", "guard_context_id": "pm-1"},
+            task_index=0,
+            task_count=1,
+            subagent_id="subagent-test",
+            role="leaf",
+            command_runner=RuntimeError("guard unavailable"),
+        )
+
+        self.assertTrue(open_decision["allowed"])
+        self.assertFalse(closed_decision["allowed"])
+
+    def test_command_decisions_are_normalized(self):
+        allowed = _evaluate_pre_spawn_guard(
+            config={"enabled": True, "command": "/bin/guard"},
+            parent_agent=_make_mock_parent(),
+            task={"goal": "test", "guard_context_id": "pm-1"},
+            task_index=0,
+            task_count=1,
+            subagent_id="subagent-test",
+            role="leaf",
+            command_runner=lambda payload, config: {"ok": True, "allowed": True, "reason": "go"},
+        )
+        blocked = _evaluate_pre_spawn_guard(
+            config={"enabled": True, "command": "/bin/guard"},
+            parent_agent=_make_mock_parent(),
+            task={"goal": "test", "guard_context_id": "pm-1"},
+            task_index=0,
+            task_count=1,
+            subagent_id="subagent-test",
+            role="leaf",
+            command_runner=lambda payload, config: {"ok": True, "allowed": False, "reason": "missing approval"},
+        )
+
+        self.assertTrue(allowed["allowed"])
+        self.assertEqual(allowed["decision"], "allowed")
+        self.assertFalse(blocked["allowed"])
+        self.assertEqual(blocked["decision"], "blocked")
+
+    def test_payload_truncates_goal_and_excludes_full_context(self):
+        parent = _make_mock_parent()
+        parent._guard_context_id = "pm-1"
+        parent._session_id = "session-1"
+        payload = _build_pre_spawn_guard_payload(
+            parent_agent=parent,
+            task={"goal": "g" * 400, "context": "SECRET CONTEXT"},
+            task_index=0,
+            task_count=1,
+            subagent_id="subagent-test",
+            role="leaf",
+            config={"require_task_context": False},
+        )
+
+        self.assertEqual(payload["guard_context_id"], "pm-1")
+        self.assertLessEqual(len(payload["goal_preview"]), 243)
+        self.assertNotIn("context", payload)
+        self.assertNotIn("SECRET CONTEXT", json.dumps(payload))
+
+    def test_bypass_config_is_unsupported_in_first_slice(self):
+        decision = _evaluate_pre_spawn_guard(
+            config={"enabled": True, "bypass_enabled": True, "require_task_context": True},
+            parent_agent=_make_mock_parent(),
+            task={"goal": "test"},
+            task_index=0,
+            task_count=1,
+            subagent_id="subagent-test",
+            role="leaf",
+        )
+
+        self.assertFalse(decision["allowed"])
+        self.assertIn("bypass_unsupported", decision.get("warnings", []))
+
+
 class TestDelegateTask(unittest.TestCase):
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
@@ -183,6 +366,89 @@ class TestDelegateTask(unittest.TestCase):
         parent = _make_mock_parent()
         result = json.loads(delegate_task(tasks=[{"context": "no goal here"}], parent_agent=parent))
         self.assertIn("error", result)
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._evaluate_pre_spawn_guard")
+    @patch("tools.delegate_tool._resolve_pre_spawn_guard_config")
+    def test_pre_spawn_guard_block_prevents_child_construction(self, mock_config, mock_guard, mock_run, mock_build):
+        mock_config.return_value = {"enabled": True, "require_task_context": False}
+        mock_guard.return_value = {
+            "ok": True,
+            "allowed": False,
+            "decision": "blocked",
+            "reason": "missing approval_required",
+        }
+        parent = _make_mock_parent()
+        parent._guard_context_id = "pm-1"
+
+        result = json.loads(delegate_task(goal="Fix tests", context="error log...", parent_agent=parent))
+
+        self.assertIn("error", result)
+        self.assertIn("pre-spawn guard blocked task 0", result["error"])
+        self.assertEqual(result["guard"]["decisions"][0]["reason"], "missing approval_required")
+        mock_build.assert_not_called()
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._evaluate_pre_spawn_guard")
+    @patch("tools.delegate_tool._resolve_pre_spawn_guard_config")
+    def test_pre_spawn_guard_allowed_preserves_single_task_flow(self, mock_config, mock_guard, mock_run):
+        mock_config.return_value = {"enabled": True, "require_task_context": False}
+        mock_guard.return_value = {"ok": True, "allowed": True, "decision": "allowed"}
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done!", "api_calls": 3, "duration_seconds": 5.0
+        }
+        parent = _make_mock_parent()
+        parent._guard_context_id = "pm-1"
+
+        result = json.loads(delegate_task(goal="Fix tests", context="error log...", parent_agent=parent))
+
+        self.assertIn("results", result)
+        self.assertEqual(result["results"][0]["summary"], "Done!")
+        mock_guard.assert_called_once()
+        mock_run.assert_called_once()
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._evaluate_pre_spawn_guard")
+    @patch("tools.delegate_tool._resolve_pre_spawn_guard_config")
+    def test_pre_spawn_guard_blocks_whole_batch_before_any_child_construction(self, mock_config, mock_guard, mock_run, mock_build):
+        mock_config.return_value = {"enabled": True, "require_task_context": False}
+        mock_guard.side_effect = [
+            {"ok": True, "allowed": True, "decision": "allowed"},
+            {"ok": True, "allowed": False, "decision": "blocked", "reason": "missing approval"},
+        ]
+        parent = _make_mock_parent()
+        parent._guard_context_id = "pm-1"
+        tasks = [{"goal": "Task A"}, {"goal": "Task B"}]
+
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+
+        self.assertIn("error", result)
+        self.assertIn("pre-spawn guard blocked task 1", result["error"])
+        self.assertEqual(len(result["guard"]["decisions"]), 2)
+        mock_build.assert_not_called()
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._evaluate_pre_spawn_guard")
+    @patch("tools.delegate_tool._resolve_pre_spawn_guard_config")
+    def test_disabled_pre_spawn_guard_preserves_existing_single_task_flow(self, mock_config, mock_guard, mock_run):
+        mock_config.return_value = {"enabled": False}
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done!", "api_calls": 3, "duration_seconds": 5.0
+        }
+        parent = _make_mock_parent()
+
+        result = json.loads(delegate_task(goal="Fix tests", context="error log...", parent_agent=parent))
+
+        self.assertIn("results", result)
+        self.assertEqual(result["results"][0]["summary"], "Done!")
+        mock_guard.assert_not_called()
+        mock_run.assert_called_once()
 
     @patch("tools.delegate_tool._run_single_child")
     def test_single_task_mode(self, mock_run):

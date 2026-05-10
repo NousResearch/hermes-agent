@@ -22,8 +22,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 import os
+import subprocess
 import threading
 import time
+import uuid as _uuid
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
@@ -319,6 +321,240 @@ def _normalize_role(r: Optional[str]) -> str:
         return r_norm
     logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
     return "leaf"
+
+
+def _normalize_guard_policy(value: Any, default: str = "auto") -> str:
+    norm = str(value or default).strip().lower().replace("-", "_")
+    return norm if norm in {"auto", "fail_open", "fail_closed"} else default
+
+
+def _normalize_runtime_mode(value: Any) -> str:
+    norm = str(value or "").strip().lower()
+    return norm if norm in {"manual", "autonomous"} else "manual"
+
+
+def _resolve_pre_spawn_guard_config(delegation_config: Optional[dict] = None) -> Dict[str, Any]:
+    """Return normalized delegation.pre_spawn_guard configuration.
+
+    This helper is deliberately pure-ish and does not call the guard.  It gives
+    the native delegate_task hook a stable config surface while keeping the
+    default upstream behavior a no-op.
+    """
+    raw = (delegation_config or {}).get("pre_spawn_guard") or {}
+    runtime_mode = raw.get("runtime_mode")
+    if runtime_mode is None:
+        runtime_mode = os.getenv("HERMES_RUNTIME_MODE")
+    cfg: Dict[str, Any] = {
+        "enabled": is_truthy_value(raw.get("enabled"), default=False),
+        "mode": str(raw.get("mode") or "command"),
+        "command": raw.get("command"),
+        "timeout_seconds": 3.0,
+        "runtime_mode": _normalize_runtime_mode(runtime_mode),
+        "fail_policy": _normalize_guard_policy(raw.get("fail_policy")),
+        "require_task_context": is_truthy_value(raw.get("require_task_context"), default=False),
+        "record_all_allowed": is_truthy_value(raw.get("record_all_allowed"), default=False),
+        "bypass_enabled": is_truthy_value(raw.get("bypass_enabled"), default=False),
+    }
+    try:
+        cfg["timeout_seconds"] = max(0.1, float(raw.get("timeout_seconds", 3.0)))
+    except (TypeError, ValueError):
+        cfg["timeout_seconds"] = 3.0
+    return cfg
+
+
+def _parent_attr(parent_agent: Any, name: str) -> Any:
+    """Read real attrs from objects or MagicMocks without auto-creating mocks."""
+    try:
+        if hasattr(parent_agent, "__dict__") and name in vars(parent_agent):
+            return vars(parent_agent)[name]
+    except Exception:
+        pass
+    value = getattr(parent_agent, name, None)
+    return value if isinstance(value, (str, int, float, bool, list, dict, tuple)) else None
+
+
+def _guard_context_id(parent_agent: Any, task: dict[str, Any]) -> Optional[str]:
+    value = _parent_attr(parent_agent, "_guard_context_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    value = task.get("guard_context_id") or task.get("external_task_id")
+    return str(value).strip() if value else None
+
+
+def _truncate_preview(value: Any, limit: int = 240) -> str:
+    text = str(value or "")
+    return text[:limit] + "..." if len(text) > limit else text
+
+
+def _new_subagent_id(task_index: int) -> str:
+    return f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
+
+
+def _pre_spawn_guard_error(decision: dict[str, Any], decisions: list[dict[str, Any]]) -> str:
+    idx = decision.get("task_index", 0)
+    reason = decision.get("reason") or decision.get("decision") or "blocked"
+    return json.dumps(
+        {
+            "error": f"delegate_task pre-spawn guard blocked task {idx}: {reason}",
+            "guard": {"decisions": decisions},
+        }
+    )
+
+
+def _build_pre_spawn_guard_payload(
+    *,
+    parent_agent: Any,
+    task: dict[str, Any],
+    task_index: int,
+    task_count: int,
+    subagent_id: str,
+    role: str,
+    config: dict[str, Any],
+) -> Dict[str, Any]:
+    """Build the JSON payload sent to a pre-spawn guard command."""
+    guard_context_id = _guard_context_id(parent_agent, task)
+    parent_sid = _parent_attr(parent_agent, "_subagent_id")
+    session_id = _parent_attr(parent_agent, "session_id") or _parent_attr(parent_agent, "_session_id")
+    return {
+        "version": 1,
+        "event": "delegate_pre_spawn",
+        "parent_session_id": session_id,
+        "parent_task_id": _parent_attr(parent_agent, "_current_task_id"),
+        "guard_context_id": guard_context_id,
+        "subagent_id": subagent_id,
+        "parent_subagent_id": parent_sid if isinstance(parent_sid, str) else None,
+        "delegate_depth": int(_parent_attr(parent_agent, "_delegate_depth") or 0),
+        "task_index": int(task_index),
+        "task_count": int(task_count),
+        "role": _normalize_role(role),
+        "profile": str(task.get("profile") or _parent_attr(parent_agent, "profile") or "delegate"),
+        "goal_preview": _truncate_preview(task.get("goal")),
+        "toolsets": list(task.get("toolsets") or []),
+        "action_id": str(task.get("action_id") or f"delegate_task:{task_index}"),
+        "requires_task_context": bool(config.get("require_task_context")),
+        "runtime_mode": config.get("runtime_mode", "manual"),
+    }
+
+
+def _run_pre_spawn_guard_command(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    command = config.get("command")
+    if not command:
+        raise RuntimeError("pre-spawn guard command is not configured")
+    proc = subprocess.run(
+        [str(command)],
+        input=json.dumps(payload, ensure_ascii=False),
+        text=True,
+        capture_output=True,
+        timeout=float(config.get("timeout_seconds", 3.0)),
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or f"guard exited {proc.returncode}").strip())
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"guard returned invalid JSON: {exc.msg}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("guard returned non-object JSON")
+    return data
+
+
+def _hook_error_decision(config: dict[str, Any], reason: str) -> Dict[str, Any]:
+    policy = _normalize_guard_policy(config.get("fail_policy"))
+    runtime_mode = _normalize_runtime_mode(config.get("runtime_mode"))
+    fail_closed = policy == "fail_closed" or (
+        policy == "auto" and (runtime_mode == "autonomous" or bool(config.get("require_task_context")))
+    )
+    decision = "hook_error_fail_closed" if fail_closed else "hook_error_fail_open"
+    payload: Dict[str, Any] = {
+        "ok": False,
+        "allowed": not fail_closed,
+        "decision": decision,
+        "reason": reason,
+        "should_call_guard": False,
+    }
+    if not fail_closed:
+        payload["warning"] = reason
+    return payload
+
+
+def _evaluate_pre_spawn_guard(
+    *,
+    config: dict[str, Any],
+    parent_agent: Any,
+    task: dict[str, Any],
+    task_index: int,
+    task_count: int,
+    subagent_id: str,
+    role: str,
+    command_runner: Any = None,
+) -> Dict[str, Any]:
+    """Evaluate pre-spawn guard semantics without constructing a child agent."""
+    cfg = dict(config or {})
+    cfg.setdefault("runtime_mode", "manual")
+    cfg.setdefault("fail_policy", "auto")
+    cfg.setdefault("require_task_context", False)
+    warnings: list[str] = []
+    if cfg.get("bypass_enabled"):
+        warnings.append("bypass_unsupported")
+    if not is_truthy_value(cfg.get("enabled"), default=False):
+        return {"ok": True, "allowed": True, "decision": "disabled", "should_call_guard": False}
+
+    context_id = _guard_context_id(parent_agent, task)
+    if not context_id:
+        if cfg.get("require_task_context"):
+            return {
+                "ok": False,
+                "allowed": False,
+                "decision": "missing_task_context",
+                "reason": "delegate_task pre-spawn guard requires a guard context",
+                "should_call_guard": False,
+                "warnings": warnings,
+            }
+        payload: Dict[str, Any] = {
+            "ok": True,
+            "allowed": True,
+            "decision": "no_task_context_allowed",
+            "should_call_guard": False,
+            "warnings": warnings,
+        }
+        if cfg.get("record_all_allowed"):
+            payload["warning"] = "delegate_task allowed without guard context"
+        return payload
+
+    payload = _build_pre_spawn_guard_payload(
+        parent_agent=parent_agent,
+        task=task,
+        task_index=task_index,
+        task_count=task_count,
+        subagent_id=subagent_id,
+        role=role,
+        config=cfg,
+    )
+    try:
+        if isinstance(command_runner, BaseException):
+            raise command_runner
+        raw = command_runner(payload, cfg) if callable(command_runner) else _run_pre_spawn_guard_command(payload, cfg)
+    except Exception as exc:
+        decision = _hook_error_decision(cfg, str(exc))
+        if warnings:
+            decision["warnings"] = warnings
+        return decision
+
+    allowed = bool(raw.get("allowed"))
+    result: Dict[str, Any] = {
+        "ok": bool(raw.get("ok", True)),
+        "allowed": allowed,
+        "decision": "allowed" if allowed else "blocked",
+        "reason": raw.get("reason") or ("allowed" if allowed else "blocked"),
+        "should_call_guard": True,
+        "guard": raw,
+    }
+    if raw.get("event") is not None:
+        result["event"] = raw.get("event")
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def _get_max_concurrent_children() -> int:
@@ -883,6 +1119,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    subagent_id: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -894,7 +1131,6 @@ def _build_child_agent(
     model on OpenRouter while the parent runs on Nous Portal).
     """
     from run_agent import AIAgent
-    import uuid as _uuid
 
     # ── Role resolution ─────────────────────────────────────────────────
     # Honor the caller's role only when BOTH the kill switch and the
@@ -912,7 +1148,7 @@ def _build_child_agent(
     # spawn_requested event, and the _active_subagents registry all share
     # one key.  parent_id is non-None when THIS parent is itself a subagent
     # (nested orchestrator -> worker chain).
-    subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
+    subagent_id = subagent_id or _new_subagent_id(task_index)
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
     tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
 
@@ -2014,10 +2250,39 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    n_tasks = len(task_list)
+    planned_children = []
+    for i, task in enumerate(task_list):
+        planned_children.append(
+            {
+                "task_index": i,
+                "task": task,
+                "role": _normalize_role(task.get("role") or top_role),
+                "subagent_id": _new_subagent_id(i),
+            }
+        )
+
+    pre_spawn_guard = _resolve_pre_spawn_guard_config(cfg)
+    guard_decisions: list[dict[str, Any]] = []
+    if is_truthy_value(pre_spawn_guard.get("enabled"), default=False):
+        for planned in planned_children:
+            decision = _evaluate_pre_spawn_guard(
+                config=pre_spawn_guard,
+                parent_agent=parent_agent,
+                task=planned["task"],
+                task_index=planned["task_index"],
+                task_count=n_tasks,
+                subagent_id=planned["subagent_id"],
+                role=planned["role"],
+            )
+            decision.setdefault("task_index", planned["task_index"])
+            guard_decisions.append(decision)
+            if not decision.get("allowed"):
+                return _pre_spawn_guard_error(decision, guard_decisions)
+
     overall_start = time.monotonic()
     results = []
 
-    n_tasks = len(task_list)
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
@@ -2033,11 +2298,11 @@ def delegate_task(
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
     try:
-        for i, t in enumerate(task_list):
+        for planned in planned_children:
+            i = planned["task_index"]
+            t = planned["task"]
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
-            # Per-task role beats top-level; normalise again so unknown
-            # per-task values warn and degrade to leaf uniformly.
-            effective_role = _normalize_role(t.get("role") or top_role)
+            effective_role = planned["role"]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2060,6 +2325,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                subagent_id=planned["subagent_id"],
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names

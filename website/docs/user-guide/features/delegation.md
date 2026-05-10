@@ -129,6 +129,70 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 
 Single-task delegation runs directly without thread pool overhead.
 
+## Pre-Spawn Guard
+
+Installations that need an external policy check before subagents are constructed can enable a disabled-by-default pre-spawn guard. This is useful for permission brokers, budget gates, compliance systems, or any local workflow that needs to approve or deny a worker before Hermes allocates a child agent.
+
+```yaml
+# In ~/.hermes/config.yaml
+delegation:
+  pre_spawn_guard:
+    enabled: true
+    command: /usr/local/bin/permission-broker
+    timeout_seconds: 3.0
+    runtime_mode: manual      # manual | autonomous
+    fail_policy: auto         # auto | fail_open | fail_closed
+    require_task_context: false
+```
+
+When enabled, Hermes sends one JSON object on stdin to the configured command for each planned child before calling the child-agent constructor. The payload is intentionally small and does **not** include the full task context:
+
+```json
+{
+  "version": 1,
+  "event": "delegate_pre_spawn",
+  "guard_context_id": "optional-external-context-id",
+  "subagent_id": "sa-0-abc12345",
+  "parent_subagent_id": null,
+  "delegate_depth": 0,
+  "task_index": 0,
+  "task_count": 1,
+  "role": "leaf",
+  "profile": "delegate",
+  "goal_preview": "Short truncated goal preview...",
+  "toolsets": ["terminal", "file"],
+  "action_id": "delegate_task:0",
+  "requires_task_context": false,
+  "runtime_mode": "manual"
+}
+```
+
+When the guard is disabled (the default), delegation behavior is unchanged. `manual` is for interactive sessions where an operator can react to warnings; `autonomous` is for unattended dispatchers where unknown states should fail closed.
+
+The `goal_preview` field is truncated to 240 characters so external policy commands can make a coarse routing/approval decision without receiving the full task context.
+
+The command should print a JSON decision on stdout:
+
+```json
+{ "ok": true, "allowed": true, "reason": "approved" }
+```
+
+or:
+
+```json
+{ "ok": true, "allowed": false, "reason": "missing approval" }
+```
+
+`allowed: false` is treated as a policy decision, not a hook crash. For batches, Hermes evaluates every planned child first and uses all-or-nothing semantics: if any child is denied, no child in that batch is constructed. The command's exit code is not used to encode the policy decision: return exit 0 with `allowed: false` for a valid denial; non-zero exit, timeout, or invalid JSON are treated as hook failures and resolved by `fail_policy`.
+
+Failure handling is controlled by `fail_policy`:
+
+- `fail_open`: hook errors allow the spawn and attach a warning.
+- `fail_closed`: hook errors block the spawn.
+- `auto`: fail closed for autonomous/runtime-enforced contexts (`runtime_mode: autonomous` or `require_task_context: true`), otherwise fail open with a warning for manual sessions.
+
+If `require_task_context: true`, Hermes blocks without calling the command unless a guard context exists. Parent agents can carry a guard context (attribute name: `_guard_context_id`), and individual tasks may also include `guard_context_id` or `external_task_id` for integrations that map delegation to an external work item.
+
 ## Model Override
 
 You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:

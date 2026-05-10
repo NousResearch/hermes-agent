@@ -297,6 +297,10 @@ object HermesAutomationBridge {
             .ifBlank { "im" }
             .take(MAX_EVENT_VALUE_CHARS)
         val parsed = parseOperatorCommand(command, prefix)
+        val access = operatorCommandAccess(arguments)
+        if (!access.allowed) {
+            return operatorCommandDeniedJson(parsed, access)
+        }
         return when (parsed.type) {
             OperatorCommandType.HELP -> operatorCommandHelpJson(parsed)
             OperatorCommandType.LIST_TASKS -> withParsedOperatorCommand(listJson(context), parsed)
@@ -3757,6 +3761,10 @@ object HermesAutomationBridge {
                         "manual",
                         "external_broadcast",
                         "OpenGUI standby payload",
+                        "feishu",
+                        "telegram",
+                        "discord",
+                        "rest",
                         "quick_settings_tile",
                         "home_screen_widget",
                         "launcher_shortcut",
@@ -4610,6 +4618,29 @@ object HermesAutomationBridge {
         }
     }
 
+    private data class OperatorCommandAccess(
+        val allowed: Boolean,
+        val reason: String,
+        val guildId: String,
+        val channelId: String,
+        val userId: String,
+        val guildAllowListSize: Int,
+        val channelAllowListSize: Int,
+        val userAllowListSize: Int,
+    ) {
+        fun toJson(): JSONObject {
+            return JSONObject()
+                .put("allowed", allowed)
+                .put("reason", reason)
+                .put("guild_id", guildId.ifBlank { JSONObject.NULL })
+                .put("channel_id", channelId.ifBlank { JSONObject.NULL })
+                .put("user_id", userId.ifBlank { JSONObject.NULL })
+                .put("guild_allowlist_size", guildAllowListSize)
+                .put("channel_allowlist_size", channelAllowListSize)
+                .put("user_allowlist_size", userAllowListSize)
+        }
+    }
+
     private fun parseOperatorCommand(text: String, prefix: String): ParsedOperatorCommand {
         val rawText = text.trim()
         val stripped = stripOperatorCommandPrefix(rawText, prefix)
@@ -4716,12 +4747,115 @@ object HermesAutomationBridge {
         return trimmed.substring(safePrefix.length).trim().ifBlank { "help" }
     }
 
+    private fun operatorCommandAccess(arguments: JSONObject): OperatorCommandAccess {
+        val guildId = stringArgument(
+            arguments,
+            "guild_id",
+            "guildId",
+            "discord_guild_id",
+            "server_id",
+            "serverId",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val channelId = stringArgument(
+            arguments,
+            "channel_id",
+            "channelId",
+            "conversation_id",
+            "conversationId",
+            "discord_channel_id",
+            "chat_id",
+            "chatId",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val userId = stringArgument(
+            arguments,
+            "user_id",
+            "userId",
+            "platform_user_id",
+            "platformUserId",
+            "discord_user_id",
+            "open_id",
+            "openId",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val allowedGuildIds = stringSetArgument(arguments, "allowed_guild_ids", "allowedGuildIds", "discord_allowed_guild_ids")
+        val allowedChannelIds = stringSetArgument(arguments, "allowed_channel_ids", "allowedChannelIds", "discord_allowed_channel_ids")
+        val allowedUserIds = stringSetArgument(arguments, "allowed_user_ids", "allowedUserIds", "discord_allowed_user_ids")
+        val failures = mutableListOf<String>()
+        if (!matchesAllowList(allowedGuildIds, guildId)) {
+            failures += "guild_id is not allowlisted"
+        }
+        if (!matchesAllowList(allowedChannelIds, channelId)) {
+            failures += "channel_id is not allowlisted"
+        }
+        if (!matchesAllowList(allowedUserIds, userId)) {
+            failures += "user_id is not allowlisted"
+        }
+        return OperatorCommandAccess(
+            allowed = failures.isEmpty(),
+            reason = failures.joinToString("; "),
+            guildId = guildId.take(MAX_EVENT_VALUE_CHARS),
+            channelId = channelId.take(MAX_EVENT_VALUE_CHARS),
+            userId = userId.take(MAX_EVENT_VALUE_CHARS),
+            guildAllowListSize = allowedGuildIds.size,
+            channelAllowListSize = allowedChannelIds.size,
+            userAllowListSize = allowedUserIds.size,
+        )
+    }
+
+    private fun matchesAllowList(allowList: Set<String>, value: String): Boolean {
+        return allowList.isEmpty() || (value.isNotBlank() && value in allowList)
+    }
+
+    private fun stringSetArgument(arguments: JSONObject, vararg keys: String): Set<String> {
+        val key = keys.firstOrNull { candidate -> arguments.has(candidate) && !arguments.isNull(candidate) } ?: return emptySet()
+        return when (val value = arguments.opt(key)) {
+            is JSONArray -> buildSet {
+                for (index in 0 until value.length()) {
+                    value.optString(index).trim().take(MAX_EVENT_VALUE_CHARS).takeIf { it.isNotBlank() }?.let { add(it) }
+                }
+            }
+            else -> value?.toString().orEmpty()
+                .split(',', ';', '\n', '\t', ' ')
+                .map { it.trim().take(MAX_EVENT_VALUE_CHARS) }
+                .filter { it.isNotBlank() }
+                .toSet()
+        }
+    }
+
     private fun operatorCommandHelpJson(parsed: ParsedOperatorCommand): String {
         return JSONObject()
             .put("success", true)
             .put("handled", true)
             .put("parsed_command", parsed.toJson())
             .put("reply_lines", JSONArray(OPENGUI_COMPATIBLE_COMMAND_HELP))
+            .put("compatible_prefixes", JSONArray(listOf("!opengui", "/")))
+            .put("slash_command_schema", openguiSlashCommandSchemaJson())
+            .put(
+                "allowlist_arguments",
+                JSONArray(
+                    listOf(
+                        "allowed_guild_ids",
+                        "allowed_channel_ids",
+                        "allowed_user_ids",
+                        "guild_id",
+                        "channel_id",
+                        "user_id",
+                    )
+                )
+            )
+            .toString()
+    }
+
+    private fun operatorCommandDeniedJson(parsed: ParsedOperatorCommand, access: OperatorCommandAccess): String {
+        return JSONObject()
+            .put("success", false)
+            .put("handled", false)
+            .put("status", "not_allowed")
+            .put("parsed_command", parsed.toJson())
+            .put("message", "Hermes rejected this OpenGUI-compatible IM command because it did not match the supplied allowlist.")
+            .put("access", access.toJson())
             .put("compatible_prefixes", JSONArray(listOf("!opengui", "/")))
             .toString()
     }
@@ -4748,6 +4882,17 @@ object HermesAutomationBridge {
             .put("message", "Send /help or !opengui help to view supported remote commands.")
             .put("compatible_prefixes", JSONArray(listOf("!opengui", "/")))
             .toString()
+    }
+
+    private fun openguiSlashCommandSchemaJson(): JSONObject {
+        val subcommands = JSONArray()
+        for ((name, description) in OPENGUI_SLASH_COMMANDS) {
+            subcommands.put(JSONObject().put("name", name).put("description", description))
+        }
+        return JSONObject()
+            .put("name", "opengui")
+            .put("description", "Control Hermes Android remote automations")
+            .put("subcommands", subcommands)
     }
 
     private fun withParsedOperatorCommand(resultJson: String, parsed: ParsedOperatorCommand): String {
@@ -4796,6 +4941,18 @@ object HermesAutomationBridge {
         "/status [executionId] - inspect recent execution status",
         "/devices - list this standby Hermes device",
         "/pause, /resume, and /cancel are recognized for compatibility; current local runs are synchronous",
+    )
+
+    private val OPENGUI_SLASH_COMMANDS = listOf(
+        "help" to "Show Hermes OpenGUI-compatible commands",
+        "devices" to "List online Hermes standby devices",
+        "tasks" to "List saved Hermes automations",
+        "run" to "Run an existing remote-dispatch automation by id or label",
+        "do" to "Dispatch a natural-language task to a matching enabled automation",
+        "status" to "Show recent execution status",
+        "cancel" to "Recognized for OpenGUI compatibility",
+        "pause" to "Recognized for OpenGUI compatibility",
+        "resume" to "Recognized for OpenGUI compatibility",
     )
 
     private val AUTOMATION_ACTIONS = listOf(

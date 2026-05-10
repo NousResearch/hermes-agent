@@ -329,6 +329,51 @@ class HermesAutomationInstrumentedTest {
         assertTrue(commandPause.toString(), commandPause.getBoolean("success"))
         assertFalse(commandPause.getBoolean("handled"))
         assertEquals("pause", commandPause.getJSONObject("parsed_command").getString("type"))
+
+        val commandHelp = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "operator_command",
+                JSONObject().put("command", "!opengui"),
+            )
+        )
+        assertTrue(commandHelp.toString(), commandHelp.getBoolean("success"))
+        assertEquals("opengui", commandHelp.getJSONObject("slash_command_schema").getString("name"))
+        assertTrue(commandHelp.getJSONArray("allowlist_arguments").toString().contains("allowed_user_ids"))
+
+        val allowedCommand = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "operator_command",
+                JSONObject()
+                    .put("command", "/devices")
+                    .put("guild_id", "guild-a")
+                    .put("channel_id", "channel-a")
+                    .put("user_id", "user-a")
+                    .put("allowed_guild_ids", JSONArray().put("guild-a"))
+                    .put("allowed_channel_ids", "channel-a,channel-b")
+                    .put("allowed_user_ids", "user-a"),
+            )
+        )
+        assertTrue(allowedCommand.toString(), allowedCommand.getBoolean("success"))
+        assertEquals("devices", allowedCommand.getJSONObject("parsed_command").getString("type"))
+
+        val deniedCommand = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "operator_command",
+                JSONObject()
+                    .put("command", "/devices")
+                    .put("guild_id", "guild-a")
+                    .put("channel_id", "channel-a")
+                    .put("user_id", "user-b")
+                    .put("allowed_user_ids", "user-a"),
+            )
+        )
+        assertFalse(deniedCommand.toString(), deniedCommand.getBoolean("success"))
+        assertFalse(deniedCommand.getBoolean("handled"))
+        assertEquals("not_allowed", deniedCommand.getString("status"))
+        assertEquals(1, deniedCommand.getJSONObject("access").getInt("user_allowlist_size"))
     }
 
     @Test

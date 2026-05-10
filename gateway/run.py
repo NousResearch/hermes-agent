@@ -7785,7 +7785,23 @@ class GatewayRunner:
         if text.startswith("kanban"):
             text = text[len("kanban"):].lstrip()
 
-        is_create = text.split(None, 1)[:1] == ["create"]
+        tokens = shlex.split(text) if text else []
+        board_override = None
+        is_create = False
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok == "--board":
+                if i + 1 < len(tokens):
+                    board_override = tokens[i + 1]
+                i += 2
+                continue
+            if tok.startswith("--board="):
+                board_override = tok.split("=", 1)[1] or None
+                i += 1
+                continue
+            is_create = tok == "create"
+            break
 
         try:
             output = await asyncio.to_thread(run_slash, text)
@@ -7812,7 +7828,7 @@ class GatewayRunner:
                     if platform_str and chat_id:
                         def _sub():
                             from hermes_cli import kanban_db as _kb
-                            conn = _kb.connect()
+                            conn = _kb.connect(board=board_override)
                             try:
                                 _kb.add_notify_sub(
                                     conn, task_id=task_id,

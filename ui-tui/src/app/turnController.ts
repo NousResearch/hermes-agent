@@ -403,7 +403,10 @@ class TurnController {
         : { reasoning: '', text: raw }
       : { reasoning: '', text: '' }
 
-    if (split.reasoning && !this.reasoningText.trim()) {
+    // Drop split reasoning when display.show_reasoning is off — without this
+    // gate, embedded <think>…</think> chunks leak from streamed text into
+    // turn state and the finalized assistant Msg's `thinking` field. See #22894.
+    if (split.reasoning && !this.reasoningText.trim() && getUiState().showReasoning) {
       this.reasoningText = split.reasoning
       this.activeReasoningText = split.reasoning
       patchTurnState({ reasoning: this.reasoningText, reasoningTokens: estimateTokensRough(this.reasoningText) })
@@ -566,8 +569,19 @@ class TurnController {
     const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = finalTail(split.text, this.segmentMessages)
-    const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
-    const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
+    // When display.show_reasoning is off, drop any saved/streamed/payload
+    // reasoning so finalized assistant messages don't render `thinking`. The
+    // visible text is still split out of `<think>` tags above. See #22894.
+    const showReasoning = getUiState().showReasoning
+
+    const existingReasoning = showReasoning
+      ? this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
+      : ''
+
+    const savedReasoning = showReasoning
+      ? [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
+      : ''
+
     const savedToolTokens = this.toolTokenAcc
     let tools = this.pendingSegmentTools
     const last = this.segmentMessages[this.segmentMessages.length - 1]

@@ -86,6 +86,33 @@ class _FakeSession:
         pass
 
 
+class _NonEditableAdapter:
+    SUPPORTS_MESSAGE_EDITING = False
+    MAX_MESSAGE_LENGTH = 4096
+
+    def __init__(self):
+        self.sent = []
+        self.edits = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return type("SendResult", (), {"success": True, "message_id": "msg-1"})()
+
+    async def edit_message(self, *args, **kwargs):
+        self.edits.append((args, kwargs))
+        raise AssertionError("non-editable adapters should not receive streaming edits")
+
+    async def send_typing(self, chat_id, metadata=None):
+        return None
+
+
 def _patch_aiohttp(session):
     """Patch aiohttp.ClientSession to return our fake session."""
     return patch(
@@ -282,6 +309,45 @@ class TestRunAgentViaProxy:
 
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_proxy_skips_stream_consumer_for_non_editable_platform(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        runner.config.streaming = StreamingConfig(enabled=True, edit_interval=0.01, buffer_threshold=1)
+        adapter = _NonEditableAdapter()
+        runner.adapters[Platform.WECOM] = adapter
+        source = _make_source(platform=Platform.WECOM)
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":" world"}}]}\n\n'
+                "data: [DONE]\n\n"
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch(
+            "gateway.run._load_gateway_config",
+            return_value={"display": {"platforms": {"wecom": {"streaming": True}}}},
+        ):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert result["final_response"] == "Hello world"
+        assert result["response_previewed"] is False
+        assert adapter.sent == []
+        assert adapter.edits == []
 
     @pytest.mark.asyncio
     async def test_handles_http_error(self, monkeypatch):

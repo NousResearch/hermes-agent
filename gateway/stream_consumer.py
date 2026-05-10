@@ -36,6 +36,12 @@ _NEW_SEGMENT = object()
 # API/tool iterations (for example: "I'll inspect the repo first.").
 _COMMENTARY = object()
 
+# Queue marker for replacing the current stream buffer with the final
+# assistant text before finalizing.  This lets platforms that create an
+# immediate placeholder (for example WeCom's <think></think>) update the
+# same message even when the provider did not emit token deltas.
+_FINAL_TEXT = object()
+
 
 @dataclass
 class StreamConsumerConfig:
@@ -96,7 +102,11 @@ class GatewayStreamConsumer:
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
-        self.metadata = metadata
+        if callable(getattr(type(adapter), "start_streaming_message", None)):
+            self.metadata = dict(metadata or {})
+            self.metadata.setdefault("streaming", True)
+        else:
+            self.metadata = metadata
         # Fired whenever a fresh content bubble is created on the platform
         # (first-send of a new message, commentary, overflow chunk, or
         # fallback continuation). The gateway uses this to linearize the
@@ -131,10 +141,24 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+        self._adapter_started_stream: bool = False
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
+
+    def _standalone_send_metadata(self) -> Optional[dict]:
+        """Metadata for completed standalone sends.
+
+        ``metadata["streaming"]`` is only for messages the consumer will
+        continue editing/finalizing.  Fallback chunks, commentary, fresh-final
+        messages, and overflow chunks are already complete when sent.
+        """
+        if not self.metadata:
+            return self.metadata
+        metadata = dict(self.metadata)
+        metadata.pop("streaming", None)
+        return metadata
 
     @property
     def already_sent(self) -> bool:
@@ -154,6 +178,11 @@ class GatewayStreamConsumer:
         """Queue a completed interim assistant commentary message."""
         if text:
             self._queue.put((_COMMENTARY, text))
+
+    def on_final_text(self, text: str) -> None:
+        """Queue the final assistant text as a replacement update."""
+        if text:
+            self._queue.put((_FINAL_TEXT, text))
 
     def _notify_new_message(self) -> None:
         """Fire the on_new_message callback, swallowing any errors."""
@@ -302,6 +331,31 @@ class GatewayStreamConsumer:
         # Platform message length limit — leave room for cursor + formatting
         _raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
         _safe_limit = max(500, _raw_limit - len(self.cfg.cursor) - 100)
+        start_stream = (
+            getattr(self.adapter, "start_streaming_message", None)
+            if callable(getattr(type(self.adapter), "start_streaming_message", None))
+            else None
+        )
+        if callable(start_stream):
+            try:
+                result = await start_stream(
+                    chat_id=self.chat_id,
+                    metadata=self.metadata,
+                )
+                if getattr(result, "success", False) and getattr(result, "message_id", None):
+                    self._message_id = result.message_id
+                    self._message_created_ts = time.monotonic()
+                    self._already_sent = True
+                    self._last_sent_text = ""
+                    self._adapter_started_stream = True
+                    self._notify_new_message()
+                elif result is not None:
+                    self._message_id = "__no_edit__"
+                    self._edit_supported = False
+            except Exception as e:
+                logger.debug("start_streaming_message failed: %s", e)
+                self._message_id = "__no_edit__"
+                self._edit_supported = False
 
         try:
             while True:
@@ -309,6 +363,7 @@ class GatewayStreamConsumer:
                 got_done = False
                 got_segment_break = False
                 commentary_text = None
+                final_text = None
                 while True:
                     try:
                         item = self._queue.get_nowait()
@@ -321,9 +376,18 @@ class GatewayStreamConsumer:
                         if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
                             commentary_text = item[1]
                             break
+                        if isinstance(item, tuple) and len(item) == 2 and item[0] is _FINAL_TEXT:
+                            final_text = item[1]
+                            break
                         self._filter_and_accumulate(item)
                     except queue.Empty:
                         break
+
+                if final_text is not None:
+                    self._think_buffer = ""
+                    self._in_think_block = False
+                    self._accumulated = final_text
+                    got_done = True
 
                 # Flush any held-back partial-tag buffer on stream end
                 # so trailing text that was waiting for a potential open
@@ -537,12 +601,11 @@ class GatewayStreamConsumer:
         if not text.strip():
             return reply_to_id
         try:
-            meta = dict(self.metadata) if self.metadata else {}
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
                 reply_to=reply_to_id,
-                metadata=meta,
+                metadata=self._standalone_send_metadata(),
             )
             if result.success and result.message_id:
                 self._message_id = str(result.message_id)
@@ -650,7 +713,7 @@ class GatewayStreamConsumer:
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=chunk,
-                    metadata=self.metadata,
+                    metadata=self._standalone_send_metadata(),
                 )
                 if result.success:
                     break
@@ -725,7 +788,7 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=tail,
-                metadata=self.metadata,
+                metadata=self._standalone_send_metadata(),
             )
             if result.success:
                 self._already_sent = True
@@ -762,7 +825,7 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=self.metadata,
+                metadata=self._standalone_send_metadata(),
             )
             # Note: do NOT set _already_sent = True here.
             # Commentary messages are interim status updates (e.g. "Using browser
@@ -814,7 +877,7 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=self.metadata,
+                metadata=self._standalone_send_metadata(),
             )
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
@@ -952,7 +1015,7 @@ class GatewayStreamConsumer:
                                 self._MAX_FLOOD_STRIKES,
                                 self._current_edit_interval,
                             )
-                            if self._flood_strikes < self._MAX_FLOOD_STRIKES:
+                            if self._flood_strikes < self._MAX_FLOOD_STRIKES and not finalize:
                                 # Don't disable edits yet — just slow down.
                                 # Update _last_edit_time so the next edit
                                 # respects the new interval.

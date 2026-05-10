@@ -1,5 +1,6 @@
 """Tests for the WeCom platform adapter."""
 
+import asyncio
 import base64
 import os
 from pathlib import Path
@@ -36,10 +37,11 @@ class TestWeComRequirements:
 
 
 class TestWeComAdapterInit:
-    def test_declares_non_editable_message_capability(self):
+    def test_message_editing_uses_stream_messages(self):
         from gateway.platforms.wecom import WeComAdapter
 
-        assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
+        assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is True
+        assert WeComAdapter.REQUIRES_EDIT_FINALIZE is True
 
     def test_reads_config_from_extra(self):
         from gateway.platforms.wecom import WeComAdapter
@@ -185,6 +187,145 @@ class TestWeComReplyMode:
         # (unsupported type). Markdown renders everywhere.
         assert args[1]["msgtype"] == "markdown"
         assert args[1]["markdown"]["content"] == "hello from reply"
+
+    @pytest.mark.asyncio
+    async def test_start_streaming_message_sends_thinking_placeholder(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-123"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.start_streaming_message("chat-123")
+
+        assert result.success is True
+        assert result.message_id.startswith("stream-")
+        args = adapter._send_reply_request.await_args.args
+        assert args[0] == "req-1"
+        assert args[1]["msgtype"] == "stream"
+        assert args[1]["stream"]["id"] == result.message_id
+        assert args[1]["stream"]["finish"] is False
+        assert args[1]["stream"]["content"] == "<think></think>"
+
+    @pytest.mark.asyncio
+    async def test_edit_message_updates_and_finalizes_stream(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._stream_reply_req_ids["stream-1"] = "req-1"
+        adapter._stream_chats["stream-1"] = "chat-123"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.edit_message(
+            "chat-123",
+            "stream-1",
+            "final answer",
+            finalize=True,
+        )
+
+        assert result.success is True
+        args = adapter._send_reply_request.await_args.args
+        assert args[0] == "req-1"
+        assert args[1] == {
+            "msgtype": "stream",
+            "stream": {
+                "id": "stream-1",
+                "finish": True,
+                "content": "final answer",
+            },
+        }
+        assert "stream-1" not in adapter._stream_reply_req_ids
+
+    @pytest.mark.asyncio
+    async def test_stream_unsupported_downgrades_without_partial_send(self):
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-123"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"errcode": 600039, "errmsg": "unsupported msgtype stream"}
+        )
+        adapter._send_request = AsyncMock()
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat-123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("hello")
+        consumer.finish()
+        await task
+
+        assert consumer.final_response_sent is False
+        assert adapter._send_request.await_count == 0
+        assert "chat-123" in adapter._stream_unsupported_chats
+
+    @pytest.mark.asyncio
+    async def test_final_text_replaces_thinking_placeholder_on_same_stream(self):
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-123"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat-123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0)
+        consumer.on_final_text("final answer")
+        consumer.finish()
+        await task
+
+        calls = adapter._send_reply_request.await_args_list
+        assert len(calls) >= 2
+        first_payload = calls[0].args[1]
+        final_payload = calls[-1].args[1]
+        stream_id = first_payload["stream"]["id"]
+        assert first_payload["stream"]["content"] == "<think></think>"
+        assert final_payload["stream"] == {
+            "id": stream_id,
+            "finish": True,
+            "content": "final answer",
+        }
+        assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_sends_markdown_not_unfinished_stream(self):
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-123"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat-123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""),
+        )
+        consumer._fallback_prefix = "partial"
+        await consumer._send_fallback_final("partial final tail")
+
+        payload = adapter._send_reply_request.await_args.args[1]
+        assert payload == {
+            "msgtype": "markdown",
+            "markdown": {"content": "final tail"},
+        }
+        assert consumer.final_response_sent is True
 
     @pytest.mark.asyncio
     async def test_send_image_file_uses_passive_reply_media_when_reply_context_exists(self):

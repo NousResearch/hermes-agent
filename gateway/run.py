@@ -13545,6 +13545,8 @@ class GatewayRunner:
                 _adapter = self.adapters.get(source.platform)
                 if _adapter:
                     _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                    if not _adapter_supports_edit:
+                        raise RuntimeError("skip streaming for non-editable platform")
                     _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                     _buffer_only = False
                     if source.platform == Platform.MATRIX:
@@ -13672,6 +13674,8 @@ class GatewayRunner:
         finally:
             # Finalize stream consumer
             if _stream_consumer:
+                if full_response:
+                    _stream_consumer.on_final_text(full_response)
                 _stream_consumer.finish()
             if stream_task:
                 try:
@@ -14835,10 +14839,6 @@ class GatewayRunner:
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
-            # Signal the stream consumer that the agent is done
-            if _stream_consumer is not None:
-                _stream_consumer.finish()
-            
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
 
@@ -14857,6 +14857,10 @@ class GatewayRunner:
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
+                if _stream_consumer is not None:
+                    if error_msg:
+                        _stream_consumer.on_final_text(error_msg)
+                    _stream_consumer.finish()
                 return {
                     "final_response": error_msg,
                     "messages": result.get("messages", []),
@@ -14911,6 +14915,10 @@ class GatewayRunner:
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
+
+            if _stream_consumer is not None:
+                _stream_consumer.on_final_text(final_response)
+                _stream_consumer.finish()
             
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).

@@ -10,6 +10,10 @@ from gateway.platforms.wecom_callback import WecomCallbackAdapter
 from gateway.platforms.wecom_crypto import WXBizMsgCrypt
 
 
+def test_message_editing_is_not_supported():
+    assert WecomCallbackAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+
 def _app(name="test-app", corp_id="ww1234567890", agent_id="1000002"):
     return {
         "name": name,

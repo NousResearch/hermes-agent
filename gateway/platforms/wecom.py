@@ -143,7 +143,8 @@ class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
-    SUPPORTS_MESSAGE_EDITING = False
+    SUPPORTS_MESSAGE_EDITING = True
+    REQUIRES_EDIT_FINALIZE = True
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
@@ -175,6 +176,9 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._stream_reply_req_ids: Dict[str, str] = {}
+        self._stream_chats: Dict[str, str] = {}
+        self._stream_unsupported_chats: set[str] = set()
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -1220,6 +1224,28 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
 
+    async def _send_reply_stream(
+        self,
+        reply_req_id: str,
+        stream_id: str,
+        content: str,
+        *,
+        finish: bool = False,
+    ) -> Dict[str, Any]:
+        response = await self._send_reply_request(
+            reply_req_id,
+            {
+                "msgtype": "stream",
+                "stream": {
+                    "id": stream_id,
+                    "finish": bool(finish),
+                    "content": content[:self.MAX_MESSAGE_LENGTH],
+                },
+            },
+        )
+        self._raise_for_wecom_error(response, "send reply stream")
+        return response
+
     async def _send_reply_media_message(
         self,
         reply_req_id: str,
@@ -1340,18 +1366,52 @@ class WeComAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
-        del metadata
+        metadata = metadata or {}
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
         try:
             reply_req_id = self._reply_req_id_for_message(reply_to)
+            stream_id = None
 
             if not reply_req_id and chat_id in self._last_chat_req_ids:
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
-            if reply_req_id:
+            wants_stream = bool(metadata.get("streaming"))
+            if wants_stream and chat_id in self._stream_unsupported_chats:
+                return SendResult(
+                    success=False,
+                    error="WeCom stream messages unsupported for this chat",
+                )
+            if wants_stream and not reply_req_id:
+                return SendResult(
+                    success=False,
+                    error="No WeCom reply context available for streaming",
+                )
+            if wants_stream and reply_req_id:
+                stream_id = self._new_req_id("stream")
+                try:
+                    response = await self._send_reply_stream(
+                        reply_req_id,
+                        stream_id,
+                        content,
+                        finish=False,
+                    )
+                except Exception as exc:
+                    if self._is_stream_unsupported_error(exc):
+                        self._stream_unsupported_chats.add(chat_id)
+                        logger.info(
+                            "[%s] WeCom stream messages unsupported for chat %s; falling back to markdown final delivery",
+                            self.name,
+                            chat_id,
+                        )
+                        return SendResult(success=False, error=str(exc))
+                    raise
+                self._stream_reply_req_ids[stream_id] = reply_req_id
+                self._stream_chats[stream_id] = chat_id
+                self._trim_stream_tracking()
+            elif reply_req_id:
                 response = await self._send_reply_markdown(reply_req_id, content)
             else:
                 response = await self._send_request(
@@ -1374,9 +1434,117 @@ class WeComAdapter(BasePlatformAdapter):
 
         return SendResult(
             success=True,
-            message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],
+            message_id=stream_id or self._payload_req_id(response) or uuid.uuid4().hex[:12],
             raw_response=response,
         )
+
+    async def start_streaming_message(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Create a WeCom stream reply with an immediate thinking placeholder."""
+        del metadata
+        if not chat_id:
+            return SendResult(success=False, error="chat_id is required")
+        if chat_id in self._stream_unsupported_chats:
+            return SendResult(success=False, error="WeCom stream messages unsupported for this chat")
+
+        reply_req_id = self._last_chat_req_ids.get(chat_id)
+        if not reply_req_id:
+            return SendResult(success=False, error="No WeCom reply context available for streaming")
+
+        stream_id = self._new_req_id("stream")
+        try:
+            response = await self._send_reply_stream(
+                reply_req_id,
+                stream_id,
+                "<think></think>",
+                finish=False,
+            )
+        except asyncio.TimeoutError:
+            return SendResult(success=False, error="Timeout starting WeCom stream message")
+        except Exception as exc:
+            if self._is_stream_unsupported_error(exc):
+                self._stream_unsupported_chats.add(chat_id)
+                logger.info(
+                    "[%s] WeCom stream messages unsupported for chat %s; falling back to markdown final delivery",
+                    self.name,
+                    chat_id,
+                )
+            else:
+                logger.warning("[%s] Stream start failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
+        self._stream_reply_req_ids[stream_id] = reply_req_id
+        self._stream_chats[stream_id] = chat_id
+        self._trim_stream_tracking()
+        return SendResult(
+            success=True,
+            message_id=stream_id,
+            raw_response=response,
+        )
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Update a WeCom AI Bot stream message.
+
+        WeCom stream replies are keyed by the stream ``id`` we created in
+        ``send(metadata={"streaming": True})``.  If the client/API rejects
+        ``msgtype=stream`` at any point, callers fall back to normal markdown
+        final delivery.
+        """
+        stream_id = str(message_id or "").strip()
+        reply_req_id = self._stream_reply_req_ids.get(stream_id)
+        if not reply_req_id:
+            return SendResult(success=False, error="stream message not found")
+        try:
+            response = await self._send_reply_stream(
+                reply_req_id,
+                stream_id,
+                content,
+                finish=finalize,
+            )
+        except asyncio.TimeoutError:
+            return SendResult(success=False, error="Timeout updating WeCom stream message")
+        except Exception as exc:
+            if self._is_stream_unsupported_error(exc):
+                self._stream_unsupported_chats.add(chat_id)
+            logger.warning("[%s] Stream update failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
+        if finalize:
+            self._stream_reply_req_ids.pop(stream_id, None)
+            self._stream_chats.pop(stream_id, None)
+        return SendResult(
+            success=True,
+            message_id=stream_id,
+            raw_response=response,
+        )
+
+    @staticmethod
+    def _is_stream_unsupported_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return (
+            "600039" in text
+            or "unsupported" in text
+            or "not support" in text
+            or "不支持" in text
+        )
+
+    def _trim_stream_tracking(self) -> None:
+        while len(self._stream_reply_req_ids) > DEDUP_MAX_SIZE:
+            old_stream_id = next(iter(self._stream_reply_req_ids))
+            self._stream_reply_req_ids.pop(old_stream_id, None)
+            self._stream_chats.pop(old_stream_id, None)
+        while len(self._stream_unsupported_chats) > DEDUP_MAX_SIZE:
+            self._stream_unsupported_chats.pop()
 
     async def send_image(
         self,

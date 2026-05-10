@@ -53,6 +53,8 @@ def check_wecom_callback_requirements() -> bool:
 
 
 class WecomCallbackAdapter(BasePlatformAdapter):
+    SUPPORTS_MESSAGE_EDITING = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM_CALLBACK)
         extra = config.extra or {}

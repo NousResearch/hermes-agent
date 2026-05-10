@@ -264,6 +264,189 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["source"] == "manual:device_code"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+    singleton = payload["providers"]["openai-codex"]
+    assert singleton["tokens"]["access_token"] == token
+    assert singleton["tokens"]["refresh_token"] == "refresh-token"
+    assert singleton["label"] == "codex@example.com"
+
+
+def test_auth_add_codex_oauth_honors_custom_label_and_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("codex@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {
+                "access_token": token,
+                "refresh_token": "refresh-token",
+            },
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-03-23T10:00:00Z",
+        },
+    )
+
+    from hermes_cli.auth import resolve_codex_runtime_credentials
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = "work-codex"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    entry = next(item for item in entries if item["source"] == "manual:device_code")
+    assert entry["label"] == "work-codex"
+    assert payload["providers"]["openai-codex"]["label"] == "work-codex"
+    assert resolve_codex_runtime_credentials()["api_key"] == token
+
+
+def test_codex_runtime_reads_legacy_titled_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    token = _jwt_with_email("codex@example.com")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "work-codex",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": token,
+                        "refresh_token": "refresh-token",
+                        "last_refresh": "2026-03-23T10:00:00Z",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth import resolve_codex_runtime_credentials
+
+    creds = resolve_codex_runtime_credentials()
+    assert creds["api_key"] == token
+    assert creds["last_refresh"] == "2026-03-23T10:00:00Z"
+
+
+def test_codex_titled_entries_round_robin_without_singleton_duplication(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    work_token = _jwt_with_email("work@example.com")
+    personal_token = _jwt_with_email("personal@example.com")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": personal_token,
+                        "refresh_token": "personal-refresh",
+                    },
+                    "last_refresh": "2026-03-23T10:00:00Z",
+                    "auth_mode": "chatgpt",
+                    "label": "personal-codex",
+                },
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "work-codex",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": work_token,
+                        "refresh_token": "work-refresh",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "personal-codex",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": personal_token,
+                        "refresh_token": "personal-refresh",
+                    },
+                ],
+            },
+        },
+    )
+
+    import agent.credential_pool as credential_pool
+
+    monkeypatch.setattr(
+        credential_pool,
+        "_load_config_safe",
+        lambda: {"credential_pool_strategies": {"openai-codex": "round_robin"}},
+    )
+
+    pool = credential_pool.load_pool("openai-codex")
+    entries = pool.entries()
+    assert [entry.label for entry in entries] == ["work-codex", "personal-codex"]
+    assert not any(entry.source == "device_code" for entry in entries)
+
+    assert pool.select().label == "work-codex"
+    assert pool.select().label == "personal-codex"
+    assert pool.select().label == "work-codex"
+
+
+def test_codex_manual_device_entry_resyncs_after_exhaustion(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    old_token = _jwt_with_email("old@example.com")
+    new_token = _jwt_with_email("new@example.com")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": new_token,
+                        "refresh_token": "new-refresh",
+                    },
+                    "last_refresh": "2026-03-23T10:00:00Z",
+                    "auth_mode": "chatgpt",
+                    "label": "work-codex",
+                },
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "work-codex",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": old_token,
+                        "refresh_token": "old-refresh",
+                        "last_status": "exhausted",
+                        "last_status_at": 1711188000.0,
+                        "last_error_code": 401,
+                        "last_error_reset_at": 1893456000.0,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.label == "work-codex"
+    assert entry.access_token == new_token
+    assert entry.refresh_token == "new-refresh"
+    assert entry.last_status is None
 
 
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):

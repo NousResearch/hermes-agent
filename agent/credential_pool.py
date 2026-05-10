@@ -56,6 +56,12 @@ AUTH_TYPE_API_KEY = "api_key"
 
 SOURCE_MANUAL = "manual"
 
+
+def _is_device_code_source(source: str) -> bool:
+    normalized = (source or "").strip().lower()
+    return normalized == "device_code" or normalized == f"{SOURCE_MANUAL}:device_code"
+
+
 STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
@@ -492,7 +498,7 @@ class CredentialPool:
         device_code-sourced entries; env/API-key-sourced entries have no
         auth.json shadow to sync from.
         """
-        if self.provider != "openai-codex" or entry.source != "device_code":
+        if self.provider != "openai-codex" or not _is_device_code_source(entry.source):
             return entry
         try:
             with _auth_store_lock():
@@ -606,7 +612,7 @@ class CredentialPool:
         Applies to any OAuth provider whose singleton lives in auth.json
         (currently Nous and OpenAI Codex).
         """
-        if entry.source != "device_code":
+        if not _is_device_code_source(entry.source):
             return
         try:
             with _auth_store_lock():
@@ -877,7 +883,7 @@ class CredentialPool:
             # frozen behind last_error_reset_at (can be hours in the
             # future for ChatGPT weekly windows).
             if (self.provider == "openai-codex"
-                    and entry.source == "device_code"
+                    and _is_device_code_source(entry.source)
                     and entry.last_status == STATUS_EXHAUSTED):
                 synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced is not entry:
@@ -1379,6 +1385,8 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # via `hermes auth openai-codex`.
         if isinstance(tokens, dict) and tokens.get("access_token"):
             active_sources.add("device_code")
+            if any(_is_device_code_source(entry.source) for entry in entries):
+                return changed, active_sources
             changed |= _upsert_entry(
                 entries,
                 provider,
@@ -1390,7 +1398,8 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "refresh_token": tokens.get("refresh_token"),
                     "base_url": "https://chatgpt.com/backend-api/codex",
                     "last_refresh": state.get("last_refresh"),
-                    "label": label_from_token(tokens.get("access_token", ""), "device_code"),
+                    "label": str(state.get("label") or "").strip()
+                    or label_from_token(tokens.get("access_token", ""), "device_code"),
                 },
             )
 

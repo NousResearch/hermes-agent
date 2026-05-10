@@ -2425,19 +2425,39 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     else:
         auth_store = _load_auth_store()
     state = _load_provider_state(auth_store, "openai-codex")
-    if not state:
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+
+    # Compatibility for credentials written by `hermes auth add openai-codex
+    # --label ...` before the singleton mirror was updated.  Those entries
+    # live only in credential_pool.openai-codex, so the runtime resolver must
+    # still be able to use them instead of reporting "missing tokens".
+    if not isinstance(tokens, dict):
+        pool_entries = auth_store.get("credential_pool", {}).get("openai-codex", [])
+        if isinstance(pool_entries, list):
+            for entry in pool_entries:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("auth_type") != "oauth":
+                    continue
+                if entry.get("source") not in {"device_code", "manual:device_code"}:
+                    continue
+                access = entry.get("access_token")
+                refresh = entry.get("refresh_token")
+                if isinstance(access, str) and access.strip() and isinstance(refresh, str) and refresh.strip():
+                    tokens = {"access_token": access, "refresh_token": refresh}
+                    state = {
+                        "tokens": tokens,
+                        "last_refresh": entry.get("last_refresh"),
+                        "auth_mode": "chatgpt",
+                        "label": entry.get("label"),
+                    }
+                    break
+
+    if not isinstance(tokens, dict):
         raise AuthError(
             "No Codex credentials stored. Run `hermes auth` to authenticate.",
             provider="openai-codex",
             code="codex_auth_missing",
-            relogin_required=True,
-        )
-    tokens = state.get("tokens")
-    if not isinstance(tokens, dict):
-        raise AuthError(
-            "Codex auth state is missing tokens. Run `hermes auth` to re-authenticate.",
-            provider="openai-codex",
-            code="codex_auth_invalid_shape",
             relogin_required=True,
         )
     access_token = tokens.get("access_token")
@@ -2462,7 +2482,7 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
+def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str | None = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -2472,6 +2492,8 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
+        if label:
+            state["label"] = label
         _save_provider_state(auth_store, "openai-codex", state)
         _save_auth_store(auth_store)
 

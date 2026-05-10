@@ -476,6 +476,44 @@ class TestSendVoiceReply:
         mock_tts.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_korean_first_blocks_english_spoken_reply_without_request(self, runner):
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event("status?")
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Deployment is complete. Check the logs.")
+
+        spoken_text = mock_tts.call_args.kwargs["text"]
+        assert "Deployment" not in spoken_text
+        assert "logs" not in spoken_text
+        assert "영어 답변" in spoken_text
+
+    @pytest.mark.asyncio
+    async def test_explicit_english_request_allows_english_spoken_reply(self, runner):
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event("Please answer in English voice for this turn.")
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Deployment is complete. Check the logs.")
+
+        spoken_text = mock_tts.call_args.kwargs["text"]
+        assert spoken_text == "Deployment is complete. Check the logs."
+
+    @pytest.mark.asyncio
     async def test_tts_failure_no_crash(self, runner):
         event = _make_event()
         mock_adapter = AsyncMock()

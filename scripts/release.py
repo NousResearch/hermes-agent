@@ -703,6 +703,7 @@ AUTHOR_MAP = {
     "22549957+li0near@users.noreply.github.com": "li0near",
     "guoyu801@gmail.com": "li0near",
     "ty@tmrtn.com": "tymrtn",
+    "elitovsky@zenproject.net": "kallidean",
     "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
     "haimu0x0@proton.me": "haimu0x",
     "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",

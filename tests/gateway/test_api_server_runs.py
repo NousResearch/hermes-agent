@@ -226,6 +226,11 @@ class TestRunStatus:
                 assert status["output"] == "done"
                 assert status["usage"]["total_tokens"] == 6
                 assert status["last_event"] == "run.completed"
+                for _ in range(20):
+                    if mock_agent.shutdown_memory_provider.called:
+                        break
+                    await asyncio.sleep(0.05)
+                mock_agent.shutdown_memory_provider.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):

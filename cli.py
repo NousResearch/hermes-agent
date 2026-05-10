@@ -6428,6 +6428,131 @@ class HermesCLI:
         _cprint(f"  Original session: {parent_session_id}")
         _cprint(f"  Branch session:   {new_session_id}")
 
+    def _handle_rewind_command(self, cmd_original: str) -> None:
+        """Handle /rewind — pick a previous user message and rewind to it.
+
+        Soft-deletes (active=0) every message at-or-after the chosen user
+        turn, reloads the active transcript, and pre-fills the prompt
+        buffer with the chosen message so the user can edit and resubmit.
+        Memory providers are notified with ``rewound=True`` so per-turn
+        caches invalidate.
+        """
+        if not self.conversation_history:
+            _cprint("  No conversation to rewind — send a message first.")
+            return
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
+            return
+
+        try:
+            items = self._session_db.list_recent_user_messages(
+                self.session_id, limit=10
+            )
+        except Exception as e:
+            _cprint(f"  Failed to load message history: {e}")
+            return
+
+        if not items:
+            _cprint("  No user messages to rewind to.")
+            return
+
+        labels = [f"{i+1}. {item['preview']}" for i, item in enumerate(items)]
+        idx = self._run_curses_picker(
+            title="Rewind to message", items=labels, default_index=0
+        )
+        if idx is None:
+            return  # cancelled
+
+        try:
+            selected_id = items[idx]["id"]
+        except (IndexError, KeyError, TypeError):
+            _cprint("  Invalid selection.")
+            return
+
+        try:
+            result = self._session_db.rewind_to_message(
+                self.session_id, selected_id
+            )
+        except ValueError as e:
+            _cprint(f"  Rewind failed: {e}")
+            return
+        except Exception as e:
+            _cprint(f"  Rewind failed: {e}")
+            return
+
+        # Reload active-only transcript
+        try:
+            self.conversation_history = (
+                self._session_db.get_messages_as_conversation(self.session_id)
+            )
+        except Exception:
+            # Defensive — leave history alone if reload fails
+            pass
+
+        # Agent state surgery — mirrors /branch path
+        if self.agent:
+            try:
+                self.agent.reset_session_state()
+            except Exception:
+                pass
+            if hasattr(self.agent, "_invalidate_system_prompt"):
+                try:
+                    self.agent._invalidate_system_prompt()
+                except Exception:
+                    pass
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                try:
+                    self.agent._last_flushed_db_idx = len(self.conversation_history)
+                except Exception:
+                    pass
+
+            _mm = getattr(self.agent, "_memory_manager", None)
+            if _mm is not None:
+                try:
+                    _mm.on_session_switch(
+                        self.session_id,
+                        parent_session_id="",
+                        reset=False,
+                        rewound=True,
+                    )
+                except Exception:
+                    pass
+
+        # Pre-fill the prompt buffer with the chosen message text so the
+        # user can edit-and-resubmit.  Gateway / non-prompt-toolkit
+        # invocations have no live buffer, so fall back to printing.
+        target_msg = result.get("target_message") or {}
+        target_text = target_msg.get("content") or ""
+        if isinstance(target_text, list):
+            # Multimodal — flatten text parts for the buffer prefill.
+            parts = [
+                p.get("text", "") for p in target_text
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
+            target_text = "\n".join(t for t in parts if t)
+
+        prefilled = False
+        app = getattr(self, "_app", None)
+        if app is not None and isinstance(target_text, str) and target_text:
+            try:
+                buf = app.current_buffer
+                if buf is not None and hasattr(buf, "text"):
+                    buf.text = target_text
+                    if hasattr(buf, "cursor_position"):
+                        buf.cursor_position = len(target_text)
+                    prefilled = True
+            except Exception:
+                prefilled = False
+
+        rewound_count = result.get("rewound_count", 0)
+        _cprint(
+            f"  ↶ Rewound {rewound_count} message(s)."
+            " Edit and resubmit, or send a new message."
+        )
+        if not prefilled and isinstance(target_text, str) and target_text:
+            _cprint(f"  Previous message: {target_text}")
+
     def save_conversation(self):
         """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
 
@@ -7909,6 +8034,8 @@ class HermesCLI:
             self.undo_last()
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
+        elif canonical == "rewind":
+            self._handle_rewind_command(cmd_original)
         elif canonical == "save":
             self.save_conversation()
         elif canonical == "cron":

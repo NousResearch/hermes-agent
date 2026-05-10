@@ -83,6 +83,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from toolsets import get_toolset_names
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -90,6 +92,7 @@ from typing import Any, Iterable, Optional
 
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -1282,6 +1285,11 @@ def create_task(
                 raise ValueError(
                     f"skill name cannot contain comma: {name!r} "
                     f"(pass a list of separate names instead of a comma-joined string)"
+                )
+            if name.casefold() in KNOWN_TOOLSET_NAMES:
+                raise ValueError(
+                    f"{name!r} is a toolset name, not a skill name. "
+                    "Put it in the assignee profile's toolsets instead of task skills."
                 )
             if name in seen:
                 continue

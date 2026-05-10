@@ -1,0 +1,12 @@
+[railway]
+startCommand = "hermes gateway run"
+healthCheckTimeout = 120
+
+[build]
+dockerfile = "Dockerfile"
+
+[deploy]
+region = "us-east-1"
+
+# NOTE: /opt/data is ephemeral. To persist, use Railway Volumes via dashboard.
+# No VOLUME directive in Dockerfile (Railway forbids it).

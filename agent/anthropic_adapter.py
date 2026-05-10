@@ -1742,6 +1742,29 @@ def _strip_unknown_tool_blocks(
         # message still validates (Anthropic rejects empty content).
         if not new_blocks:
             new_blocks = [{"type": "text", "text": "(content removed)"}]
+        # In a user message that's responding to an assistant tool_use,
+        # Anthropic requires tool_result blocks to come BEFORE any other
+        # content; otherwise the API 400s with
+        #   `tool_use` ids were found without `tool_result` blocks
+        #   immediately after: <id>
+        # The in-place rewrite above can leave leading text breadcrumbs
+        # ahead of a surviving real tool_result (when some — but not all
+        # — tool_results in the same user message were converted). Stable
+        # partition restores the required ordering while preserving the
+        # breadcrumbs after the live tool_results.
+        if msg.get("role") == "user" and any(
+            isinstance(b, dict) and b.get("type") == "tool_result"
+            for b in new_blocks
+        ):
+            tool_results = [
+                b for b in new_blocks
+                if isinstance(b, dict) and b.get("type") == "tool_result"
+            ]
+            other = [
+                b for b in new_blocks
+                if not (isinstance(b, dict) and b.get("type") == "tool_result")
+            ]
+            new_blocks = tool_results + other
         msg["content"] = new_blocks
 
     if unknown_tool_use_ids:

@@ -1730,6 +1730,69 @@ class TestBuildAnthropicKwargs:
                             "every tool_use/result must be stripped when tools=None"
                         )
 
+    def test_surviving_tool_result_leads_user_message_after_partial_strip(self):
+        """When an assistant turn has tool_use blocks for a mix of live and
+        stale tools, the live tool_use survives and the stale ones become
+        text breadcrumbs.  The matching user message must still place the
+        surviving tool_result BEFORE the breadcrumbs — otherwise Anthropic
+        400s with `tool_use` ids were found without `tool_result` blocks
+        immediately after.  Regression for the dump captured at
+        request_dump_20260510_172029_36d2cf.json (msg[4] had a leading
+        text breadcrumb ahead of a surviving tool_result)."""
+        messages = [
+            {"role": "user", "content": "do many things"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    # Two stale Bash calls bracket one live skill_view call.
+                    {
+                        "id": "tc_bash_1",
+                        "function": {"name": "Bash", "arguments": '{"command": "ls"}'},
+                    },
+                    {
+                        "id": "tc_skill_1",
+                        "function": {"name": "skill_view", "arguments": '{"name": "x"}'},
+                    },
+                    {
+                        "id": "tc_bash_2",
+                        "function": {"name": "Bash", "arguments": '{"command": "pwd"}'},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_bash_1", "content": "out 1"},
+            {"role": "tool", "tool_call_id": "tc_skill_1", "content": "skill output"},
+            {"role": "tool", "tool_call_id": "tc_bash_2", "content": "out 2"},
+            {"role": "user", "content": "continue"},
+        ]
+        # skill_view is the only live tool in this turn.
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=[
+                {"type": "function", "function": {"name": "skill_view", "description": "x"}},
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+        )
+        # Find the user message that holds tool_result blocks.
+        target = None
+        for m in kwargs["messages"]:
+            content = m.get("content")
+            if m.get("role") != "user" or not isinstance(content, list):
+                continue
+            if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+                target = content
+                break
+        assert target is not None, "expected a user message carrying tool_result blocks"
+        # The very first block must be the surviving tool_result — text
+        # breadcrumbs for the stripped Bash results must come after.
+        first = target[0]
+        assert isinstance(first, dict) and first.get("type") == "tool_result", (
+            f"first block must be tool_result, got: {first!r}"
+        )
+        assert first.get("tool_use_id") == "tc_skill_1"
+
 
 # ---------------------------------------------------------------------------
 # Model output limit lookup

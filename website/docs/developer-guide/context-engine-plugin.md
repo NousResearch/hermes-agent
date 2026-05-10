@@ -143,6 +143,37 @@ def register(ctx):
 
 Only one engine can be registered. A second plugin attempting to register is rejected with a warning.
 
+## Installing a third-party context engine
+
+The `plugins/context_engine/<name>/` path above is the in-repo layout Hermes uses for bundled engines. Third-party engines are usually installed as regular Hermes plugins, then registered with `ctx.register_context_engine(...)`.
+
+Typical install flow:
+
+1. Clone or unpack the plugin into one of Hermes' plugin discovery directories:
+
+```bash
+# Personal install
+git clone https://github.com/example/hermes-lcm \
+  ~/.hermes/plugins/hermes-lcm
+
+# Project-local install (shared with one repo)
+git clone https://github.com/example/hermes-lcm \
+  .hermes/plugins/hermes-lcm
+```
+
+2. Make sure the plugin's `register(ctx)` function calls `ctx.register_context_engine(...)`.
+
+3. Restart Hermes (or reopen the CLI / gateway process) so the plugin is discovered.
+
+4. Select the engine by its `name` property:
+
+```yaml
+context:
+  engine: lcm
+```
+
+The plugin directory name does not have to match the engine name, but the `context.engine` value must match the engine object's `name`.
+
 ## Lifecycle
 
 ```

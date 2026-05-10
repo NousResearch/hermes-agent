@@ -14,8 +14,8 @@ Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM.
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/mlops/training/unsloth` |
+| Source | Optional — install with `hermes skills install official/mlops/unsloth` |
+| Path | `optional-skills/mlops/training/unsloth` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |

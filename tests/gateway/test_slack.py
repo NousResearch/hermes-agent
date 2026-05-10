@@ -115,6 +115,26 @@ class TestSlashCommandSessionIsolation:
         assert event.source.user_id == "U123"
 
     @pytest.mark.asyncio
+    async def test_investigate_slash_rewrites_to_agent_prompt(self, adapter):
+        command = {
+            "command": "/investigate",
+            "text": "ANIMA-FIGMA-PLUGIN-BTH",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+            "response_url": "https://hooks.slack.com/commands/fake",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type is MessageType.TEXT
+        assert event.text == "investigate - ANIMA-FIGMA-PLUGIN-BTH"
+        assert event.get_command() is None
+        assert ("C123", "U123") not in adapter._slash_command_contexts
+
+    @pytest.mark.asyncio
     async def test_dm_slash_command_keeps_dm_session_semantics(self, adapter):
         command = {
             "text": "hello",
@@ -132,6 +152,79 @@ class TestSlashCommandSessionIsolation:
         assert event.source.user_id == "U123"
 
 
+
+# ---------------------------------------------------------------------------
+# TestInvestigateShortcut
+# ---------------------------------------------------------------------------
+
+class TestInvestigateShortcut:
+    @pytest.mark.asyncio
+    async def test_message_shortcut_routes_selected_message_to_agent(self, adapter):
+        body = {
+            "type": "message_action",
+            "callback_id": "investigate",
+            "trigger_id": "trigger-123",
+            "team": {"id": "T123"},
+            "channel": {"id": "C123"},
+            "user": {"id": "U123", "username": "ofer"},
+            "message": {
+                "user": "U456",
+                "ts": "1778400000.000100",
+                "thread_ts": "1778399999.000000",
+                "text": "ANIMA-FIGMA-PLUGIN-BTH failed",
+            },
+        }
+
+        await adapter._handle_investigate_shortcut(body)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type is MessageType.TEXT
+        assert event.get_command() is None
+        assert event.source.chat_type == "group"
+        assert event.source.chat_id == "C123"
+        assert event.source.user_id == "U123"
+        assert event.source.thread_id == "1778399999.000000"
+        assert event.reply_to_message_id == "1778399999.000000"
+        assert "investigate - Slack message shortcut selected this message" in event.text
+        assert "ANIMA-FIGMA-PLUGIN-BTH failed" in event.text
+        assert adapter._channel_team["C123"] == "T123"
+
+    @pytest.mark.asyncio
+    async def test_message_shortcut_prepends_thread_context_for_thread_reply(self, adapter):
+        body = {
+            "type": "message_action",
+            "callback_id": "investigate",
+            "trigger_id": "trigger-456",
+            "team": {"id": "T123"},
+            "channel": {"id": "C123"},
+            "user": {"id": "U123", "username": "ofer"},
+            "message": {
+                "user": "U456",
+                "ts": "1778400000.000100",
+                "thread_ts": "1778399999.000000",
+                "text": "ANIMA-FIGMA-PLUGIN-BTH failed",
+            },
+        }
+
+        with patch.object(
+            adapter,
+            "_fetch_thread_context",
+            new=AsyncMock(return_value="[Thread context]\n"),
+        ) as fetch_mock:
+            await adapter._handle_investigate_shortcut(body)
+
+        fetch_mock.assert_awaited_once_with(
+            channel_id="C123",
+            thread_ts="1778399999.000000",
+            current_ts="1778400000.000100",
+            team_id="T123",
+        )
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text.startswith("[Thread context]\n")
+        assert "investigate - Slack message shortcut selected this message" in event.text
+
+
 # ---------------------------------------------------------------------------
 # TestAppMentionHandler
 # ---------------------------------------------------------------------------
@@ -147,6 +240,7 @@ class TestAppMentionHandler:
         # Track which events get registered
         registered_events = []
         registered_commands = []
+        registered_shortcuts = []
 
         mock_app = MagicMock()
 
@@ -162,8 +256,15 @@ class TestAppMentionHandler:
                 return fn
             return decorator
 
+        def mock_shortcut(callback_id):
+            def decorator(fn):
+                registered_shortcuts.append(callback_id)
+                return fn
+            return decorator
+
         mock_app.event = mock_event
         mock_app.command = mock_command
+        mock_app.shortcut = mock_shortcut
         mock_app.client = AsyncMock()
         mock_app.client.auth_test = AsyncMock(return_value={
             "user_id": "U_BOT",
@@ -201,10 +302,11 @@ class TestAppMentionHandler:
         slash_matcher = registered_commands[0]
         import re as _re
         assert isinstance(slash_matcher, _re.Pattern)
-        for expected in ("/hermes", "/btw", "/stop", "/model", "/help"):
+        for expected in ("/hermes", "/btw", "/stop", "/model", "/help", "/investigate"):
             assert slash_matcher.match(expected), (
                 f"Slack slash regex does not match {expected}"
             )
+        assert registered_shortcuts == ["investigate"]
 
 
 class TestSlackConnectCleanup:
@@ -254,6 +356,7 @@ class TestSlackConnectCleanup:
             return decorator
         mock_app.event = _noop_decorator
         mock_app.command = _noop_decorator
+        mock_app.shortcut = _noop_decorator
         mock_app.action = _noop_decorator
         mock_app.client = AsyncMock()
 
@@ -331,6 +434,7 @@ class TestSlackProxyBehavior:
                 self.registered_events = []
                 self.registered_commands = []
                 self.registered_actions = []
+                self.registered_shortcuts = []
                 created_apps.append(self)
 
             def event(self, event_type):
@@ -351,6 +455,14 @@ class TestSlackProxyBehavior:
 
             def action(self, action_id):
                 self.registered_actions.append(action_id)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def shortcut(self, callback_id):
+                self.registered_shortcuts.append(callback_id)
 
                 def decorator(fn):
                     return fn
@@ -414,6 +526,7 @@ class TestSlackProxyBehavior:
                 self.registered_events = []
                 self.registered_commands = []
                 self.registered_actions = []
+                self.registered_shortcuts = []
                 created_apps.append(self)
 
             def event(self, event_type):
@@ -434,6 +547,14 @@ class TestSlackProxyBehavior:
 
             def action(self, action_id):
                 self.registered_actions.append(action_id)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def shortcut(self, callback_id):
+                self.registered_shortcuts.append(callback_id)
 
                 def decorator(fn):
                     return fn
@@ -1984,6 +2105,73 @@ class TestThreadReplyHandling:
         msg_event = adapter_with_session_store.handle_message.call_args[0][0]
         assert "<@U_BOT>" not in msg_event.text
         assert msg_event.text == "thanks for the help"
+
+
+    @pytest.mark.asyncio
+    async def test_investigate_thread_reply_with_session_prepends_context(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        mock_session_store._entries = {session_key: MagicMock()}
+        event = {
+            "text": "investigate why this failed",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+
+        with patch.object(
+            adapter_with_session_store,
+            "_fetch_thread_context",
+            new=AsyncMock(return_value="[Thread context]\n"),
+        ) as fetch_mock:
+            await adapter_with_session_store._handle_slack_message(event)
+
+        fetch_mock.assert_awaited_once_with(
+            channel_id="C123",
+            thread_ts="123.000",
+            current_ts="123.456",
+            team_id="T_TEAM",
+        )
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("[Thread context]\n")
+        assert msg_event.text.endswith("investigate why this failed")
+
+    @pytest.mark.asyncio
+    async def test_investigate_thread_reply_with_existing_marker_skips_refetch(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        mock_session_store._entries = {session_key: MagicMock()}
+        event = {
+            "text": (
+                "[Thread context — prior messages in this thread "
+                "(not yet in conversation history):]\n"
+                "Alice: original issue\n"
+                "[End of thread context]\n\n"
+                "investigate: why this failed"
+            ),
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+
+        with patch.object(
+            adapter_with_session_store,
+            "_fetch_thread_context",
+            new=AsyncMock(),
+        ) as fetch_mock:
+            await adapter_with_session_store._handle_slack_message(event)
+
+        fetch_mock.assert_not_awaited()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert msg_event.text == event["text"]
 
     @pytest.mark.asyncio
     async def test_top_level_message_requires_mention_even_with_session(

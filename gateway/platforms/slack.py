@@ -52,6 +52,11 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+_THREAD_CONTEXT_MARKER = (
+    "[Thread context — prior messages in this thread "
+    "(not yet in conversation history):]"
+)
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -626,6 +631,13 @@ class SlackAdapter(BasePlatformAdapter):
             import re as _re
 
             _slash_names = [name for name, _d, _h in slack_native_slashes()]
+            # ``/investigate`` is a Slack-native prompt shortcut rather than a
+            # core Hermes control command. Register it with Slack Bolt so the
+            # workspace command can be acked, then rewrite it below into a
+            # normal agent prompt instead of letting gateway.run treat it as an
+            # unknown slash command.
+            if "investigate" not in _slash_names:
+                _slash_names.append("investigate")
             if _slash_names:
                 _slash_pattern = _re.compile(
                     r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
@@ -641,6 +653,15 @@ class SlackAdapter(BasePlatformAdapter):
                     text=f"Running `/{slash}`…",
                 )
                 await self._handle_slash_command(command)
+
+            # Slack message shortcut: right-click/More actions → Investigate.
+            # Slack delivers this as an interactive ``message_action`` payload,
+            # not as a normal message or slash command; without this handler
+            # Slack Bolt logs "Unhandled request" and Slack shows an error.
+            @self._app.shortcut("investigate")
+            async def handle_investigate_shortcut(ack, body):
+                await ack()
+                await self._handle_investigate_shortcut(body)
 
             # Register Block Kit action handlers for approval buttons
             for _action_id in (
@@ -1579,6 +1600,14 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Internal handlers -----
 
+    def _message_has_thread_context_marker(self, text: str) -> bool:
+        """Return whether a message already contains injected thread context."""
+        return _THREAD_CONTEXT_MARKER in (text or "")
+
+    def _is_investigate_thread_trigger(self, text: str) -> bool:
+        """Return whether a thread message should force thread-context fetch."""
+        return bool(re.match(r"^\s*investigate(?:\s|:|$)", text or "", re.IGNORECASE))
+
     def _assistant_thread_key(self, channel_id: str, thread_ts: str) -> Optional[Tuple[str, str]]:
         """Return a stable cache key for Slack assistant thread metadata."""
         if not channel_id or not thread_ts:
@@ -1885,6 +1914,14 @@ class SlackAdapter(BasePlatformAdapter):
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        has_active_session = (
+            is_thread_reply
+            and self._has_active_session_for_thread(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+            )
+        )
 
         if not is_dm and bot_uid:
             if channel_id in self._slack_free_response_channels():
@@ -1901,15 +1938,7 @@ class SlackAdapter(BasePlatformAdapter):
                     event_thread_ts is not None
                     and event_thread_ts in self._mentioned_threads
                 )
-                has_session = (
-                    is_thread_reply
-                    and self._has_active_session_for_thread(
-                        channel_id=channel_id,
-                        thread_ts=event_thread_ts,
-                        user_id=user_id,
-                    )
-                )
-                if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
+                if not reply_to_bot_thread and not in_mentioned_thread and not has_active_session:
                     return
 
         if is_mentioned:
@@ -1926,13 +1955,16 @@ class SlackAdapter(BasePlatformAdapter):
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
 
-        # When entering a thread for the first time (no existing session),
-        # fetch thread context so the agent understands the conversation.
-        if is_thread_reply and not self._has_active_session_for_thread(
-            channel_id=channel_id,
-            thread_ts=event_thread_ts,
-            user_id=user_id,
-        ):
+        # Normally we only prepend thread context on the first turn for a
+        # thread. Investigations are the exception: an earlier interrupted or
+        # empty turn may have created the session without context, so thread
+        # investigation prompts should re-fetch it unless already present.
+        should_force_thread_context = (
+            is_thread_reply
+            and self._is_investigate_thread_trigger(text)
+            and not self._message_has_thread_context_marker(text)
+        )
+        if is_thread_reply and (not has_active_session or should_force_thread_context):
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id,
                 thread_ts=event_thread_ts,
@@ -2672,6 +2704,80 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
 
+    async def _handle_investigate_shortcut(self, body: dict) -> None:
+        """Handle Slack's ``investigate`` message shortcut.
+
+        Message shortcuts arrive as interactive payloads (``type=message_action``)
+        rather than Events API messages, so they bypass ``_handle_slack_message``.
+        Convert the selected Slack message into a normal agent prompt and key the
+        session to the selected message's thread so the final answer is posted in
+        context.
+        """
+        user = body.get("user") or {}
+        channel = body.get("channel") or {}
+        team = body.get("team") or {}
+        message = body.get("message") or {}
+
+        user_id = user.get("id") or body.get("user_id") or ""
+        user_name = user.get("username") or user.get("name") or ""
+        channel_id = channel.get("id") or body.get("channel_id") or message.get("channel") or ""
+        team_id = team.get("id") or body.get("team_id") or ""
+        message_ts = message.get("ts", "")
+        thread_ts = message.get("thread_ts") or message_ts
+
+        if team_id and channel_id:
+            self._channel_team[channel_id] = team_id
+
+        selected_text = (message.get("text") or "").strip()
+        blocks_text = _extract_text_from_slack_blocks(message.get("blocks") or [])
+        if blocks_text and blocks_text not in selected_text:
+            selected_text = (selected_text + "\n" + blocks_text).strip()
+
+        actor = message.get("user") or message.get("bot_id") or "unknown"
+        if selected_text:
+            text = (
+                "investigate - Slack message shortcut selected this message:\n"
+                f"From: {actor}\n"
+                f"Message ts: {message_ts}\n"
+                f"Text:\n{selected_text}"
+            )
+        else:
+            text = (
+                "investigate - Slack message shortcut selected a message with "
+                f"no visible text. Message ts: {message_ts}"
+            )
+
+        is_thread_reply = bool(thread_ts and thread_ts != message_ts)
+        if is_thread_reply and not self._message_has_thread_context_marker(text):
+            thread_context = await self._fetch_thread_context(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                current_ts=message_ts,
+                team_id=team_id,
+            )
+            if thread_context:
+                text = thread_context + text
+
+        is_dm = str(channel_id).startswith("D")
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_type="dm" if is_dm else "group",
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=thread_ts,
+        )
+
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=body,
+            message_id=f"shortcut:{body.get('trigger_id') or message_ts}",
+            reply_to_message_id=thread_ts if thread_ts != message_ts else None,
+            reply_to_text=selected_text or None,
+        )
+        await self.handle_message(event)
+
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle Slack slash commands.
 
@@ -2711,6 +2817,11 @@ class SlackAdapter(BasePlatformAdapter):
                 pass  # Treat as a regular question
             else:
                 text = "/help"
+        elif slash_name == "investigate":
+            # ``/investigate`` is a prompt shortcut, not a Hermes control
+            # command. Rewrite it to normal text so the agent performs the
+            # investigation instead of gateway.run rejecting an unknown slash.
+            text = f"investigate - {text}".strip(" -")
         else:
             # Native slash — /<slash_name> [args].  Route directly through the
             # gateway command dispatcher by prepending the slash.

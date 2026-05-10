@@ -876,9 +876,15 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
-        "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
+        "user_message_preview": {  # CLI: submitted user-message visual anchor in scrollback
             "first_lines": 2,
             "last_lines": 2,
+            "boxed": True,
+            "box_style": "round",
+            "accent_color": "#B084FF",
+            "text_color": "#F2EAFE",
+            "margin_top": 2,
+            "margin_bottom": 2,
         },
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway

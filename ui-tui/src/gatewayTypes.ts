@@ -1,3 +1,4 @@
+import type { UserPromptAnchorConfig } from './domain/userPromptAnchor.js'
 import type { SessionInfo, SlashCategory, Usage } from './types.js'
 
 export interface GatewaySkin {
@@ -73,6 +74,7 @@ export interface ConfigDisplayConfig {
   // validation anyway.
   tui_status_indicator?: string
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
+  user_message_preview?: UserPromptAnchorConfig
 }
 
 export interface ConfigVoiceConfig {

@@ -44,6 +44,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
           msg={msg}
           sections={sections}
           t={ui.theme}
+          userPromptAnchor={ui.userPromptAnchor}
         />
       ))}
 
@@ -74,6 +75,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
           }}
           sections={sections}
           t={ui.theme}
+          userPromptAnchor={ui.userPromptAnchor}
         />
       )}
 
@@ -86,6 +88,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
           msg={{ kind: 'trail', role: 'system', text: '', tools: streamPendingTools }}
           sections={sections}
           t={ui.theme}
+          userPromptAnchor={ui.userPromptAnchor}
         />
       )}
     </>

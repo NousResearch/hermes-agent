@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
+import { userPromptAnchorStyle } from '../domain/userPromptAnchor.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 import { DEFAULT_INDICATOR_STYLE, type UiState } from './interfaces.js'
@@ -25,7 +26,8 @@ const buildUiState = (): UiState => ({
   statusBar: 'top',
   streaming: true,
   theme: DEFAULT_THEME,
-  usage: ZERO
+  usage: ZERO,
+  userPromptAnchor: userPromptAnchorStyle(DEFAULT_THEME)
 })
 
 export const $uiState = atom<UiState>(buildUiState())

@@ -12758,6 +12758,15 @@ def main(
     
     # Handle query shorthand
     query = query or q
+
+    # Keep direct ``python cli.py`` invocation in parity with the wrapper
+    # entrypoints: discover MCP tools before resolving the live CLI toolset.
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+
+        discover_mcp_tools()
+    except Exception:
+        pass
     
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools

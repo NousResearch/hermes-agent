@@ -16,8 +16,6 @@ Subclasses only need to implement:
     evaluate()        -- Periodic evaluation
 """
 
-import asyncio
-import json
 import logging
 import os
 import sys
@@ -56,7 +54,6 @@ from atroposlib.envs.base import (
 from atroposlib.envs.server_handling.server_manager import (
     APIServerConfig,
     ServerBaseline,
-    ServerManager,
 )
 from atroposlib.type_definitions import Item
 

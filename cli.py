@@ -5484,87 +5484,155 @@ class HermesCLI:
             else:
                 print("(^_^)v New session started!")
 
-    def _handle_handoff_command(self, cmd_original: str) -> None:
-        """Handle /handoff <platform> — hand off current session to a messaging platform."""
+    def _handle_handoff_command(self, cmd_original: str) -> bool:
+        """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
+
+        Flow:
+          1. Validate platform name + the gateway has a home channel for it.
+          2. Reject if the agent is currently running (the in-flight turn
+             would race with the gateway's switch_session).
+          3. Write ``handoff_state='pending'`` on this session row.
+          4. Block-poll ``state.db`` for terminal state (timeout 60s).
+          5. On ``completed`` → print resume hint and signal CLI exit by
+             returning False (the caller honors that like ``/quit``).
+          6. On ``failed`` / timeout → print error and return True so the
+             user keeps their CLI session.
+
+        Returns:
+            False to signal CLI exit, True to keep going.
+        """
         from hermes_state import format_session_db_unavailable
 
         parts = cmd_original.split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
             _cprint("  Usage: /handoff <platform>")
-            _cprint("  Supported: telegram, discord, slack, whatsapp, signal, matrix")
-            _cprint("  The session will become available on that platform's home channel.")
-            return
+            _cprint("  Hands the current session off to that platform's home channel.")
+            _cprint("  The CLI session ends here; resume it later with /resume.")
+            return True
 
-        platform = parts[1].strip().lower()
-        supported = {"telegram", "discord", "slack", "whatsapp", "signal", "matrix"}
-        if platform not in supported:
-            _cprint(f"  Unknown platform '{platform}'. Supported: {', '.join(sorted(supported))}")
-            return
+        platform_name = parts[1].strip().lower()
 
-        # Ensure session is in the DB
+        # Validate platform name + home channel via the live gateway config.
+        try:
+            from gateway.config import load_gateway_config, Platform
+        except Exception as exc:  # pragma: no cover — gateway pkg always shipped
+            _cprint(f"  Could not load gateway config: {exc}")
+            return True
+
+        try:
+            platform = Platform(platform_name)
+        except (ValueError, KeyError):
+            _cprint(f"  Unknown platform '{platform_name}'.")
+            return True
+
+        try:
+            gw_config = load_gateway_config()
+        except Exception as exc:
+            _cprint(f"  Could not load gateway config: {exc}")
+            return True
+
+        pcfg = gw_config.platforms.get(platform)
+        if not pcfg or not pcfg.enabled:
+            _cprint(f"  Platform '{platform_name}' is not configured/enabled in the gateway.")
+            return True
+
+        home = gw_config.get_home_channel(platform)
+        if not home or not home.chat_id:
+            _cprint(f"  No home channel configured for {platform_name}.")
+            _cprint(f"  Set one with /sethome on the destination chat first.")
+            return True
+
+        # Refuse mid-turn: an in-flight agent run would race with the
+        # gateway's switch_session and the synthetic turn dispatch.
+        if getattr(self, "_agent_running", False):
+            _cprint("  Agent is busy. Wait for the current turn to finish, then retry /handoff.")
+            return True
+
+        # Make sure we have a SessionDB handle.
         if not self._session_db:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
-
+            try:
+                from hermes_state import SessionDB
+                self._session_db = SessionDB()
+            except Exception:
+                pass
         if not self._session_db:
             _cprint(f"  {format_session_db_unavailable()}")
-            return
+            return True
 
-        # Make sure the session has a title
+        # Make sure the session row exists in state.db. Most CLI sessions
+        # are written via _flush_messages_to_session_db on the first turn
+        # already, but if the user tries to hand off an empty session we
+        # still want a row to mark.
+        try:
+            row = self._session_db.get_session(self.session_id)
+            if not row:
+                # Nothing has flushed yet. Create a stub so the gateway has
+                # something to switch_session onto. Inserting via title-set
+                # is the simplest path because set_session_title's INSERT OR
+                # IGNORE creates the row.
+                placeholder_title = f"handoff-{self.session_id[:8]}"
+                self._session_db.set_session_title(self.session_id, placeholder_title)
+        except Exception as exc:
+            _cprint(f"  Could not ensure session row in state.db: {exc}")
+            return True
+
+        # Display title for messaging.
         session_title = ""
         try:
-            session_meta = self._session_db.get_session(self.session_id)
-            if session_meta:
-                session_title = session_meta.get("title") or ""
+            row = self._session_db.get_session(self.session_id)
+            if row:
+                session_title = row.get("title") or ""
         except Exception:
             pass
-
         if not session_title:
-            # Auto-title from conversation if not set
-            if hasattr(self, "agent") and self.agent and self.conversation_history:
-                last_user_msgs = [m for m in self.conversation_history[-6:] if m.get("role") == "user"]
-                if last_user_msgs:
-                    title = last_user_msgs[0].get("content", "")[:60]
-                    title = title.replace("\n", " ").strip()
-                    if title:
-                        session_title = title
-                        self._session_db.set_session_title(self.session_id, title)
+            session_title = self.session_id[:8]
 
-        if not session_title:
-            session_title = "untitled session"
-
-        # Mark session for handoff
-        ok = self._session_db.set_handoff_pending(self.session_id, platform)
+        # Mark pending — gateway watcher will pick this up.
+        ok = self._session_db.request_handoff(self.session_id, platform_name)
         if not ok:
-            _cprint(f"  Session is already pending handoff or not found.")
-            return
+            _cprint("  Session is already in flight for handoff. Wait for it to settle, then retry.")
+            return True
 
-        _cprint(f"  Session '{session_title}' queued for handoff to {platform}.")
-        _cprint(f"  The session will resume when the next message arrives on the {platform} home channel.")
+        _cprint(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).")
+        _cprint(f"  Waiting for the gateway to pick it up...")
 
-        # Also try to send a notification via send_message
+        # Poll-block on terminal state. Tick every 0.5s; bail at ~60s.
+        import time as _time
+        deadline = _time.time() + 60.0
+        last_state = "pending"
+        while _time.time() < deadline:
+            try:
+                state_row = self._session_db.get_handoff_state(self.session_id)
+            except Exception:
+                state_row = None
+            current = (state_row or {}).get("state") or "pending"
+            if current != last_state:
+                if current == "running":
+                    _cprint("  Gateway picked it up; transferring...")
+                last_state = current
+            if current == "completed":
+                _cprint("")
+                _cprint(f"  ↻ Handoff complete. The session is now active on {platform_name}.")
+                _cprint(f"  Resume it on this CLI later with: /resume {session_title}")
+                _cprint("")
+                # End the CLI cleanly — same exit semantics as /quit.
+                self._should_exit = True
+                return False
+            if current == "failed":
+                err = (state_row or {}).get("error") or "unknown error"
+                _cprint(f"  Handoff failed: {err}")
+                _cprint("  Your CLI session is intact. Try /handoff again, or /resume on the platform manually.")
+                return True
+            _time.sleep(0.5)
+
+        # Timed out. Clear the pending flag so the user can retry.
         try:
-            summary_lines = ["Handoff from CLI", f"Session: {session_title}"]
-            if hasattr(self, "agent") and self.agent:
-                last_msgs = self.conversation_history[-4:] if self.conversation_history else []
-                for msg in last_msgs:
-                    role = msg.get("role", "")
-                    content = str(msg.get("content", ""))[:120]
-                    if content.strip():
-                        summary_lines.append(f"[{role}] {content}")
-            summary = "\n".join(summary_lines)
-
-            from tools.send_message_tool import send_message_tool
-            result_json = send_message_tool({"target": platform, "message": summary})
-            import json
-            result = json.loads(result_json)
-            if result.get("success"):
-                _cprint(f"  Notification sent to {platform} home channel.")
-            else:
-                err = result.get("error", "unknown error")
-                _cprint(f"  Could not send notification to {platform}: {err}")
-        except Exception as e:
-            _cprint(f"  Could not send notification: {e}")
+            self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
+        except Exception:
+            pass
+        _cprint("  Timed out waiting for the gateway. Is `hermes gateway` running?")
+        _cprint("  Your CLI session is intact.")
+        return True
 
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
@@ -6993,7 +7061,8 @@ class HermesCLI:
                     from hermes_state import format_session_db_unavailable
                     _cprint(f"  {format_session_db_unavailable()}")
         elif canonical == "handoff":
-            self._handle_handoff_command(cmd_original)
+            if not self._handle_handoff_command(cmd_original):
+                return False
         elif canonical == "new":
             parts = cmd_original.split(maxsplit=1)
             title = parts[1].strip() if len(parts) > 1 else None

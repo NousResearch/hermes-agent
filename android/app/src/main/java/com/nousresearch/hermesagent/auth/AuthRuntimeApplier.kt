@@ -21,6 +21,7 @@ object AuthRuntimeApplier {
         val existingSettings = settingsStore.load()
         val preset = ProviderPresets.find(session.runtimeProvider)
         val resolvedBaseUrl = session.baseUrl.ifBlank { preset?.baseUrl.orEmpty() }
+        val runtimeConfigBaseUrl = ProviderPresets.runtimeConfigBaseUrl(session.runtimeProvider, resolvedBaseUrl)
         val resolvedModel = session.model.ifBlank { preset?.modelHint.orEmpty() }
 
         if (!Python.isStarted()) {
@@ -40,7 +41,7 @@ object AuthRuntimeApplier {
             "write_runtime_config",
             session.runtimeProvider,
             resolvedModel,
-            resolvedBaseUrl,
+            runtimeConfigBaseUrl,
         )
 
         settingsStore.save(

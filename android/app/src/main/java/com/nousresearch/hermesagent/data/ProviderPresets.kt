@@ -123,6 +123,15 @@ object ProviderPresets {
 
     fun find(id: String): ProviderPreset? = defaults.firstOrNull { it.id == id }
 
+    fun runtimeConfigBaseUrl(providerId: String, baseUrl: String): String {
+        val normalized = baseUrl.trim().trimEnd('/')
+        val presetDefault = find(providerId)?.baseUrl.orEmpty().trim().trimEnd('/')
+        return when {
+            providerId == "zai" && normalized == presetDefault -> ""
+            else -> normalized
+        }
+    }
+
     fun modelSelections(providerId: String): List<ModelSelectionPreset> {
         val providerHint = find(providerId)?.modelHint.orEmpty().takeIf { it.isNotBlank() }?.let {
             ModelSelectionPreset(

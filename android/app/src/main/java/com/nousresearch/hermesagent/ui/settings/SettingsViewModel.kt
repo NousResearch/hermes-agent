@@ -198,7 +198,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             val useLocalBackend = localBackendStatus.started
             val effectiveProvider = if (useLocalBackend) "custom" else snapshot.provider
             val effectiveModel = if (useLocalBackend) localBackendStatus.modelName else snapshot.model
-            val effectiveBaseUrl = if (useLocalBackend) localBackendStatus.baseUrl else snapshot.baseUrl
+            val effectiveBaseUrl = if (useLocalBackend) {
+                localBackendStatus.baseUrl
+            } else {
+                ProviderPresets.runtimeConfigBaseUrl(snapshot.provider, snapshot.baseUrl)
+            }
             Python.getInstance().getModule("hermes_android.config_bridge").callAttr(
                 "write_runtime_config",
                 effectiveProvider,

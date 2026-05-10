@@ -33,7 +33,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
-from utils import atomic_replace
+from utils import atomic_replace, _preserve_file_mode, _restore_file_mode
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -764,8 +764,13 @@ class MemoryStore:
         file *before* the lock is acquired, creating a race window where
         concurrent readers see an empty file. Atomic rename avoids this:
         readers always see either the old complete file or the new one.
+
+        Preserves existing file permissions so group-shared deployments
+        (e.g. NixOS, Docker volumes) don't lose their permission bits
+        after every memory update (#22889).
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
+        original_mode = _preserve_file_mode(path)
         try:
             # Write to temp file in same directory (same filesystem for atomic rename)
             fd, tmp_path = tempfile.mkstemp(
@@ -776,7 +781,8 @@ class MemoryStore:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                atomic_replace(tmp_path, path)
+                real_path = atomic_replace(tmp_path, path)
+                _restore_file_mode(Path(real_path), original_mode)
             except BaseException:
                 # Clean up temp file on any failure
                 try:

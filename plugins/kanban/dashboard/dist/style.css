@@ -538,6 +538,15 @@
   background: color-mix(in srgb, var(--color-ring) 6%, var(--color-card));
 }
 
+/* Batch drag source styling — cards that are part of the current multi-drag.
+   The browser ghost image floats; we dim the original DOM nodes so the user
+   sees the whole set is in-flight. */
+.hermes-kanban-card--dragging-source :where(.hermes-kanban-card-content) {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+  transition: opacity 120ms ease, filter 120ms ease;
+}
+
 .hermes-kanban-card-check {
   width: 0.85rem;
   height: 0.85rem;
@@ -776,6 +785,22 @@
   transition: none;
 }
 
+/* ---- Multi-drag ghost ----------------------------------------------- */
+
+.hermes-kanban-drag-ghost {
+  position: fixed;
+  left: -9999px;
+  padding: 0.45rem 0.8rem;
+  background: var(--color-card);
+  border: 2px solid var(--color-ring);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-foreground);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  opacity: 0.95;
+}
 
 /* ---- Staleness tiers ------------------------------------------------ */
 

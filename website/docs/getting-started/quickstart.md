@@ -240,9 +240,8 @@ hermes config set terminal.backend ssh       # Remote server
 ### Voice mode
 
 ```bash
-# From the Hermes install directory (the curl installer placed it at
-# ~/.hermes/hermes-agent on Linux/macOS or %LOCALAPPDATA%\hermes\hermes-agent on Windows):
-cd ~/.hermes/hermes-agent
+# From your Hermes repo checkout or install directory:
+cd /path/to/hermes-agent
 uv pip install -e ".[voice]"
 # Includes faster-whisper for free local speech-to-text
 ```
@@ -278,7 +277,7 @@ ACP support ships with the standard `[all]` extras, so the curl installer alread
 hermes acp
 ```
 
-(If you installed without `[all]`, run `cd ~/.hermes/hermes-agent && uv pip install -e ".[acp]"` first.)
+(If you installed without `[all]`, run `cd /path/to/hermes-agent && uv pip install -e ".[acp]"` first.)
 
 See [ACP Editor Integration](../user-guide/features/acp.md).
 

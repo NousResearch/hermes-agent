@@ -320,6 +320,15 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "TinyFish",
+                "badge": "free · search + extract",
+                "tag": "Free real-browser search & URL extraction — no credit card (5 req/min search)",
+                "web_backend": "tinyfish",
+                "env_vars": [
+                    {"key": "TINYFISH_API_KEY", "prompt": "TinyFish API key", "url": "https://agent.tinyfish.ai"},
+                ],
+            },
+            {
                 "name": "DuckDuckGo (ddgs)",
                 "badge": "free · no key · search only",
                 "tag": "Search via the ddgs Python package — no API key (pair with any extract provider)",

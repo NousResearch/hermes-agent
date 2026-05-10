@@ -126,7 +126,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "tinyfish"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -142,6 +142,7 @@ def _get_backend() -> str:
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
+        ("tinyfish", _has_env("TINYFISH_API_KEY")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -204,6 +205,8 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "tinyfish":
+        return _has_env("TINYFISH_API_KEY")
     return False
 
 
@@ -305,6 +308,7 @@ def _web_requires_env() -> list[str]:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "TINYFISH_API_KEY",
     ]
 
 
@@ -1247,6 +1251,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "tinyfish":
+            from tools.web_providers.tinyfish import TinyFishSearchProvider
+            response_data = TinyFishSearchProvider().search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "tavily":
             logger.info("Tavily search: '%s' (limit: %d)", query, limit)
             raw = _tavily_request("search", {
@@ -1397,6 +1411,12 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "tinyfish":
+                from tools.web_providers.tinyfish import TinyFishExtractProvider
+                extract_result = TinyFishExtractProvider().extract(safe_urls, format=format or "markdown")
+                if not extract_result.get("success"):
+                    return json.dumps(extract_result, ensure_ascii=False)
+                results = extract_result.get("data", [])
             elif backend in ("searxng", "brave-free", "ddgs"):
                 # These backends are search-only — they cannot extract URL content
                 _label = {"searxng": "SearXNG", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]
@@ -2084,11 +2104,11 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "tinyfish"):
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "tinyfish")
     )
 
 

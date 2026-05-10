@@ -9017,6 +9017,16 @@ def cmd_logs(args):
     )
 
 
+def cmd_runs(args):
+    """Read durable run ledger summaries, events, capsules, and recovery state."""
+    from hermes_cli.run_ledger_cli import runs_command
+
+    code = runs_command(args)
+    if code:
+        sys.exit(code)
+    return code
+
+
 def _build_provider_choices() -> list[str]:
     """Build the --provider choices list from CANONICAL_PROVIDERS + 'auto'."""
     try:
@@ -9049,7 +9059,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "mcp", "memory", "model",
-        "pairing", "plugins", "profile", "sessions", "setup", "skills",
+        "pairing", "plugins", "profile", "runs", "sessions", "setup", "skills",
         "slack", "status", "tools", "uninstall", "update", "version",
         "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -11455,6 +11465,63 @@ Examples:
         help="List running hermes dashboard processes and exit",
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
+
+    # =========================================================================
+    # runs command
+    # =========================================================================
+    runs_parser = subparsers.add_parser(
+        "runs",
+        help="Read durable run ledgers",
+        description="Read-only inspection for durable run ledgers",
+    )
+    runs_subparsers = runs_parser.add_subparsers(dest="runs_action")
+    runs_list = runs_subparsers.add_parser("list", help="List recent run ledgers")
+    runs_list.add_argument("--json", action="store_true", help="Emit JSON")
+    runs_list.add_argument("--limit", type=int, default=None, help="Maximum runs to show")
+    runs_list.add_argument(
+        "--lock-timeout",
+        type=float,
+        default=2.0,
+        help="Seconds to wait for an existing shared ledger lock",
+    )
+
+    runs_events = runs_subparsers.add_parser("events", help="Read redacted run events")
+    runs_events.add_argument("span", help="RUN_ID[:START..END]")
+    runs_events.add_argument("--json", action="store_true", help="Emit JSON")
+    runs_events.add_argument("--type", help="Filter by event type")
+    runs_events.add_argument("--tool", help="Filter by tool name")
+    runs_events.add_argument("--session", help="Filter by session id")
+    runs_events.add_argument("--status", help="Filter by status")
+    runs_events.add_argument("--limit", type=int, default=200, help="Maximum events to emit")
+    runs_events.add_argument(
+        "--lock-timeout",
+        type=float,
+        default=2.0,
+        help="Seconds to wait for an existing shared ledger lock",
+    )
+
+    runs_capsule = runs_subparsers.add_parser("capsule", help="Read a state capsule")
+    runs_capsule.add_argument("run_id", help="Run id")
+    runs_capsule.add_argument("--latest", action="store_true", help="Read the latest capsule")
+    runs_capsule.add_argument("--capsule", help="Capsule id or safe capsule path")
+    runs_capsule.add_argument("--json", action="store_true", help="Emit JSON")
+
+    runs_recover = runs_subparsers.add_parser("recover", help="Summarize recovery state")
+    runs_recover.add_argument("run_id", help="Run id")
+    runs_recover.add_argument("--json", action="store_true", help="Emit JSON")
+    runs_recover.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Maximum recent completed tool calls to include",
+    )
+    runs_recover.add_argument(
+        "--lock-timeout",
+        type=float,
+        default=2.0,
+        help="Seconds to wait for an existing shared ledger lock",
+    )
+    runs_parser.set_defaults(func=cmd_runs)
 
     # =========================================================================
     # logs command

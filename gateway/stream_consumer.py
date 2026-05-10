@@ -689,14 +689,20 @@ class GatewayStreamConsumer:
             self._notify_new_message()
 
         # Remove the frozen partial message so the user only sees the
-        # complete fallback response.  Best-effort — if the delete fails
-        # (e.g. flood control still active, or bot lacks permission), the
-        # partial message remains but at least the full answer was delivered.
+        # complete fallback response.  Best-effort — if the platform doesn't
+        # implement ``delete_message``, the delete fails (flood control still
+        # active, bot lacks permission, message too old to delete), the
+        # partial remains but at least the full answer was delivered.
         if stale_message_id and stale_message_id != last_message_id:
-            try:
-                await self.adapter.delete_message(self.chat_id, stale_message_id)
-            except Exception:
-                pass
+            delete_fn = getattr(self.adapter, "delete_message", None)
+            if delete_fn is not None:
+                try:
+                    await delete_fn(self.chat_id, stale_message_id)
+                except Exception as e:
+                    logger.debug(
+                        "Fallback partial cleanup failed (%s): %s",
+                        stale_message_id, e,
+                    )
 
         self._message_id = last_message_id
         self._already_sent = True

@@ -44,6 +44,9 @@ class NativeToolCallingChatClient(
         userContentParts: List<ChatContentPart> = emptyList(),
     ): Result {
         val normalizedBaseUrl = baseUrl.trimEnd('/')
+        require(normalizedBaseUrl.startsWith("http://") || normalizedBaseUrl.startsWith("https://")) {
+            "Native tool chat requires a local HTTP base URL; got '${baseUrl.ifBlank { "<blank>" }}'."
+        }
         val messages = JSONArray()
             .put(systemMessage())
             .put(
@@ -1659,7 +1662,7 @@ class NativeToolCallingChatClient(
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
         private const val TOOL_TIMEOUT_SECONDS = 60
         private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L
-        private const val NATIVE_TOOL_MAX_TOKENS = 512
+        private const val NATIVE_TOOL_MAX_TOKENS = 4000
         private const val PRIVILEGED_TOOL_TIMEOUT_SECONDS = 30
         private const val MAX_TOOL_RESULT_CHARS = 12_000
         private const val MAX_NATIVE_ERROR_CHARS = 360

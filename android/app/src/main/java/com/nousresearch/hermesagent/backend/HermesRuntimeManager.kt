@@ -73,32 +73,51 @@ object HermesRuntimeManager {
 
     @Synchronized
     fun ensureStarted(context: Context): RuntimeState {
-        if (currentState.started && currentState.error == null) {
+        val appContext = context.applicationContext
+        val settings = AppSettingsStore(appContext).load()
+        val selectedLocalBackend = BackendKind.fromPersistedValue(settings.onDeviceBackend)
+        if (
+            selectedLocalBackend == BackendKind.NONE &&
+            currentState.started &&
+            currentState.error == null &&
+            !currentState.baseUrl.isNullOrBlank()
+        ) {
             return currentState
         }
 
         return try {
-            HermesLinuxSubsystemBridge.ensureInstalled(context.applicationContext)
-            refreshPythonRuntimeEnvironment(context.applicationContext)
-            val settings = AppSettingsStore(context.applicationContext).load()
+            HermesLinuxSubsystemBridge.ensureInstalled(appContext)
+            refreshPythonRuntimeEnvironment(appContext)
             val localBackendStatus = OnDeviceBackendManager.ensureConfigured(
-                context.applicationContext,
+                appContext,
                 settings.onDeviceBackend,
             )
             if (localBackendStatus.started) {
                 currentState = RuntimeState(
                     started = true,
                     baseUrl = localBackendStatus.baseUrl,
-                    hermesHome = File(context.filesDir, "hermes-home").absolutePath,
+                    hermesHome = File(appContext.filesDir, "hermes-home").absolutePath,
                     modelName = localBackendStatus.modelName,
                     probeResult = "native-android-litert-lm",
                 )
-                DeviceStateWriter.write(context.applicationContext)
+                DeviceStateWriter.write(appContext)
+                return currentState
+            }
+            if (selectedLocalBackend != BackendKind.NONE) {
+                currentState = RuntimeState(
+                    started = false,
+                    hermesHome = File(appContext.filesDir, "hermes-home").absolutePath,
+                    modelName = localBackendStatus.modelName.ifBlank { settings.model },
+                    error = localBackendStatus.statusMessage.ifBlank {
+                        "Selected local backend ${selectedLocalBackend.persistedValue} did not start."
+                    },
+                )
+                DeviceStateWriter.write(appContext)
                 return currentState
             }
 
-            ensurePythonStarted(context.applicationContext)
-            refreshPythonRuntimeEnvironment(context.applicationContext)
+            ensurePythonStarted(appContext)
+            refreshPythonRuntimeEnvironment(appContext)
             val effectiveProvider = if (localBackendStatus.started) "custom" else settings.provider
             val effectiveModel = if (localBackendStatus.started) localBackendStatus.modelName else settings.model
             val effectiveBaseUrl = if (localBackendStatus.started) localBackendStatus.baseUrl else settings.baseUrl
@@ -122,14 +141,14 @@ object HermesRuntimeManager {
                 modelName = status.optString("api_server_model_name").ifBlank { null },
                 probeResult = probeResult,
             )
-            DeviceStateWriter.write(context.applicationContext)
+            DeviceStateWriter.write(appContext)
             currentState
         } catch (exc: Throwable) {
             currentState = RuntimeState(
                 started = false,
                 error = exc.message ?: exc.toString(),
             )
-            DeviceStateWriter.write(context.applicationContext)
+            DeviceStateWriter.write(appContext)
             currentState
         }
     }

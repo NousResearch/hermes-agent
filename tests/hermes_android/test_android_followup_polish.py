@@ -107,13 +107,16 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     assert 'put("accelerator", runtimeBackendLabel)' in litert_proxy
     assert 'com.google.ai.edge.litertlm:litertlm-android:0.11.0' in gradle
     assert 'ExperimentalFlags.enableSpeculativeDecoding' in litert_proxy
-    assert 'shouldEnableSpeculativeDecoding(modelPath, openClAvailable)' in litert_proxy
+    assert 'speculativeDecodingDecision(modelPath)' in litert_proxy
+    assert 'ExperimentalFlags.enableSpeculativeDecoding = false' in litert_proxy
     assert 'Build.SUPPORTED_ABIS.any { it.startsWith("x86") }' in litert_proxy
     assert 'Capabilities(modelPath).use' in litert_proxy
     assert 'capabilities.hasSpeculativeDecodingSupport()' in litert_proxy
     assert 'chatTemplateExtraContext(requestJson)' in litert_proxy
     assert 'conversation.sendMessage(promptMessage, extraContext)' in litert_proxy
     assert 'put("speculative_decoding", engineInitResult.speculativeDecoding)' in litert_proxy
+    assert 'put("speculative_decoding_supported", engineInitResult.speculativeDecodingSupported)' in litert_proxy
+    assert 'put("mtp_policy", engineInitResult.speculativeDecodingPolicy)' in litert_proxy
     assert 'libOpenCL.so' in manifest
     assert 'libvndksupport.so' in manifest
 

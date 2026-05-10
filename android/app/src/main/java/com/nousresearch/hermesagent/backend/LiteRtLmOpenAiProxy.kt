@@ -172,6 +172,8 @@ object LiteRtLmOpenAiProxy {
             val visionBackend: String,
             val audioBackend: String,
             val speculativeDecoding: Boolean,
+            val speculativeDecodingSupported: Boolean,
+            val speculativeDecodingPolicy: String,
         )
 
         private val engineInitResult = initializeEngine(
@@ -179,6 +181,7 @@ object LiteRtLmOpenAiProxy {
             modelPath = modelPath,
             supportImage = inferenceConfig.supportImage,
             supportAudio = inferenceConfig.supportAudio,
+            maxTokens = inferenceConfig.maxTokens,
         )
         private val engine = engineInitResult.engine
         private val runtimeBackendLabel = engineInitResult.backend
@@ -204,6 +207,8 @@ object LiteRtLmOpenAiProxy {
                             put("vision_accelerator", visionBackendLabel)
                             put("audio_accelerator", audioBackendLabel)
                             put("speculative_decoding", engineInitResult.speculativeDecoding)
+                            put("speculative_decoding_supported", engineInitResult.speculativeDecodingSupported)
+                            put("mtp_policy", engineInitResult.speculativeDecodingPolicy)
                             put("model", modelName)
                         }
                     )
@@ -240,11 +245,11 @@ object LiteRtLmOpenAiProxy {
             modelPath: String,
             supportImage: Boolean,
             supportAudio: Boolean,
+            maxTokens: Int,
         ): EngineInitResult {
             var lastError: Throwable? = null
             val openClAvailable = hasLoadableOpenClLibrary()
-            val enableSpeculativeDecoding = shouldEnableSpeculativeDecoding(modelPath, openClAvailable)
-            ExperimentalFlags.enableSpeculativeDecoding = enableSpeculativeDecoding
+            val speculativeDecoding = speculativeDecodingDecision(modelPath)
             val backends = if (isTranslatedArm64OnX86(context) || !openClAvailable) {
                 listOf(Backend.CPU() to "cpu")
             } else {
@@ -273,36 +278,68 @@ object LiteRtLmOpenAiProxy {
                             visionBackend = visionBackend,
                             audioBackend = if (supportAudio) Backend.CPU() else null,
                             maxNumImages = if (supportImage) 1 else null,
+                            maxNumTokens = maxTokens.takeIf { it > 0 },
                             cacheDir = context.cacheDir.absolutePath,
                         )
                     )
+                    ExperimentalFlags.enableSpeculativeDecoding = speculativeDecoding.enabled
                     candidate.initialize()
+                    ExperimentalFlags.enableSpeculativeDecoding = false
                     return EngineInitResult(
                         engine = candidate,
                         backend = label,
                         visionBackend = visionBackendLabel,
                         audioBackend = if (supportAudio) "cpu" else "none",
-                        speculativeDecoding = enableSpeculativeDecoding,
+                        speculativeDecoding = speculativeDecoding.enabled,
+                        speculativeDecodingSupported = speculativeDecoding.supported,
+                        speculativeDecodingPolicy = speculativeDecoding.policy,
                     )
                 } catch (error: Throwable) {
                     lastError = error
+                    ExperimentalFlags.enableSpeculativeDecoding = false
                     kotlin.runCatching { candidate?.close() }
                 }
             }
             throw lastError ?: IllegalStateException("LiteRT-LM engine initialization failed")
         }
 
-        private fun shouldEnableSpeculativeDecoding(modelPath: String, openClAvailable: Boolean): Boolean {
-            if (!openClAvailable || Build.SUPPORTED_ABIS.any { it.startsWith("x86") }) {
-                return false
-            }
-            return runCatching {
+        private data class SpeculativeDecodingDecision(
+            val supported: Boolean,
+            val enabled: Boolean,
+            val policy: String,
+        )
+
+        private fun speculativeDecodingDecision(modelPath: String): SpeculativeDecodingDecision {
+            val supported = runCatching {
                 Capabilities(modelPath).use { capabilities ->
                     capabilities.hasSpeculativeDecodingSupport()
                 }
-            }.getOrElse {
-                File(modelPath).name.lowercase(Locale.US).contains("gemma-4")
+            }.getOrDefault(false)
+            val gemma4Fallback = !supported && File(modelPath).name.lowercase(Locale.US).contains("gemma-4")
+            val capabilitySupported = supported || gemma4Fallback
+            if (!capabilitySupported) {
+                return SpeculativeDecodingDecision(
+                    supported = false,
+                    enabled = false,
+                    policy = "disabled: model does not advertise Gemma 4 MTP support",
+                )
             }
+            if (Build.SUPPORTED_ABIS.any { it.startsWith("x86") }) {
+                return SpeculativeDecodingDecision(
+                    supported = true,
+                    enabled = false,
+                    policy = "disabled: x86 emulator/device build",
+                )
+            }
+            return SpeculativeDecodingDecision(
+                supported = true,
+                enabled = true,
+                policy = if (supported) {
+                    "enabled: LiteRT-LM capabilities advertise Gemma 4 MTP support"
+                } else {
+                    "enabled: Gemma 4 filename fallback after capabilities probe failed"
+                },
+            )
         }
 
         private fun isTranslatedArm64OnX86(context: Context): Boolean {

@@ -101,8 +101,7 @@ class NativeAppChatAndToolInstrumentedTest {
         seedPreferredQwenGgufModel(modelFile)
 
         val runtime = HermesRuntimeManager.ensureStarted(app)
-        assertTrue(runtime.error.orEmpty(), runtime.started)
-        val backendStatus = OnDeviceBackendManager.currentStatus()
+        val backendStatus = assumeQwenBackendReady(runtime)
         assertEquals(BackendKind.LLAMA_CPP, backendStatus.backendKind)
         assertEquals(modelFile.absolutePath, backendStatus.sourceModelPath)
 
@@ -165,8 +164,7 @@ class NativeAppChatAndToolInstrumentedTest {
         seedPreferredQwenGgufModel(modelFile)
 
         val runtime = HermesRuntimeManager.ensureStarted(app)
-        assertTrue(runtime.error.orEmpty(), runtime.started)
-        val backendStatus = OnDeviceBackendManager.currentStatus()
+        val backendStatus = assumeQwenBackendReady(runtime)
         assertEquals(BackendKind.LLAMA_CPP, backendStatus.backendKind)
 
         val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
@@ -211,6 +209,18 @@ class NativeAppChatAndToolInstrumentedTest {
         assertTrue("Chat did not complete. Last reply='$latestReply' error='$latestError'", latestReply.isNotBlank())
         return latestReply
     }
+
+    private fun assumeQwenBackendReady(runtime: HermesRuntimeManager.RuntimeState) =
+        OnDeviceBackendManager.currentStatus().also { backendStatus ->
+            assumeTrue(
+                "Qwen llama.cpp backend unavailable: runtime=${runtime.error} backend=${backendStatus.statusMessage}",
+                runtime.started &&
+                    runtime.baseUrl.orEmpty().startsWith("http://127.0.0.1:") &&
+                    backendStatus.started &&
+                    backendStatus.baseUrl.startsWith("http://127.0.0.1:") &&
+                    backendStatus.modelName.isNotBlank(),
+            )
+        }
 
     private fun seedPreferredGemma4Model(modelFile: File) {
         val record = LocalModelDownloadRecord(

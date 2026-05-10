@@ -50,10 +50,11 @@ def test_model_catalog_prefers_verified_sub_5gb_litert_lm_mobile_models():
 
     assert 'gemma-4-e2b-litert-lm' in catalog
     assert 'litert-community/gemma-4-E2B-it-litert-lm' in catalog
-    assert '2_583_085_056' in catalog
+    assert '2_588_147_712' in catalog
     assert 'gemma-4-e4b-litert-lm' in catalog
     assert 'litert-community/gemma-4-E4B-it-litert-lm' in catalog
-    assert '3_654_467_584' in catalog
+    assert '3_659_530_240' in catalog
+    assert 'Gemma 4 MTP support' in catalog
     assert 'gemma-3-1b-it-litert-lm' in catalog
     assert 'litert-community/Gemma3-1B-IT' in catalog
     assert 'gemma-3-4b-it-vision-task' in catalog
@@ -106,6 +107,17 @@ def test_on_device_backend_preflights_required_model_extensions_before_launching
     assert 'Download a $requiredExtension artifact and mark it as preferred first.' in backend_manager
 
 
+def test_runtime_manager_rechecks_local_backend_instead_of_returning_stale_remote_cache():
+    runtime_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/HermesRuntimeManager.kt").read_text(encoding="utf-8")
+
+    assert 'val selectedLocalBackend = BackendKind.fromPersistedValue(settings.onDeviceBackend)' in runtime_manager
+    assert 'selectedLocalBackend == BackendKind.NONE' in runtime_manager
+    assert '!currentState.baseUrl.isNullOrBlank()' in runtime_manager
+    assert 'OnDeviceBackendManager.ensureConfigured(' in runtime_manager
+    assert 'selectedLocalBackend != BackendKind.NONE' in runtime_manager
+    assert 'error = localBackendStatus.statusMessage.ifBlank' in runtime_manager
+
+
 def test_litert_runtime_rejects_web_task_flatbuffers_before_engine_start():
     proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
 
@@ -140,6 +152,19 @@ def test_litert_proxy_skips_gpu_when_opencl_is_missing():
     assert 'System.load(file.absolutePath)' in proxy
     assert 'visionBackend = visionBackend' in proxy
     assert 'else -> "cpu"' in proxy
+    assert 'maxNumTokens = maxTokens.takeIf { it > 0 }' in proxy
+
+
+def test_on_device_backend_applies_edge_gallery_model_defaults_for_gemma_and_qwen():
+    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
+
+    assert 'maxTokens = 4000' in backend_manager
+    assert 'maxContextLength = 32000' in backend_manager
+    assert 'maxTokens = 1024' in backend_manager
+    assert 'maxTokens = 4096' in backend_manager
+    assert '"gemma-4" in lower || "gemma4" in lower' in backend_manager
+    assert '"qwen3-0.6b" in lower || "qwen3-0-6b" in lower' in backend_manager
+    assert '"qwen2.5-1.5b" in lower || "qwen2-5-1-5b" in lower' in backend_manager
 
 
 def test_litert_proxy_requests_optional_opencl_native_library_for_adreno():
@@ -158,7 +183,8 @@ def test_native_tool_loop_allows_long_file_generation_prompts():
     assert '.put("max_tokens", maxTokens)' in native_client
     assert '.put("chat_template_kwargs", JSONObject().put("enable_thinking", false))' in native_client
     assert 'private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L' in native_client
-    assert 'private const val NATIVE_TOOL_MAX_TOKENS = 512' in native_client
+    assert 'private const val NATIVE_TOOL_MAX_TOKENS = 4000' in native_client
+    assert 'Native tool chat requires a local HTTP base URL' in native_client
     assert 'toolCompletionReply(latestToolResult)' in native_client
     assert 'executeExplicitDirectToolRequest(userText)' in native_client
     assert 'extractExactTerminalCommand(userText)' in native_client

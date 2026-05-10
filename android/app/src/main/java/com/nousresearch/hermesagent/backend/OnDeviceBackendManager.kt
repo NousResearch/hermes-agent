@@ -240,7 +240,35 @@ object OnDeviceBackendManager {
     }
 
     private fun inferenceConfigFor(preferred: LocalModelDownloadRecord): LiteRtLmOpenAiProxy.InferenceConfig {
+        val lower = preferred.modelIdentityText()
+        val modelDefaults = when {
+            "gemma-4" in lower || "gemma4" in lower -> LiteRtLmOpenAiProxy.InferenceConfig(
+                topK = 64,
+                topP = 0.95f,
+                temperature = 1.0f,
+                maxTokens = 4000,
+                maxContextLength = 32000,
+            )
+            "qwen3-0.6b" in lower || "qwen3-0-6b" in lower -> LiteRtLmOpenAiProxy.InferenceConfig(
+                topK = 64,
+                topP = 0.95f,
+                temperature = 1.0f,
+                maxTokens = 1024,
+            )
+            "qwen2.5-1.5b" in lower || "qwen2-5-1-5b" in lower -> LiteRtLmOpenAiProxy.InferenceConfig(
+                topK = 20,
+                topP = 0.8f,
+                temperature = 0.7f,
+                maxTokens = 4096,
+            )
+            else -> LiteRtLmOpenAiProxy.InferenceConfig()
+        }
         return LiteRtLmOpenAiProxy.InferenceConfig(
+            topK = modelDefaults.topK,
+            topP = modelDefaults.topP,
+            temperature = modelDefaults.temperature,
+            maxTokens = modelDefaults.maxTokens,
+            maxContextLength = modelDefaults.maxContextLength,
             supportImage = preferred.supportsImageInput(),
             supportAudio = preferred.supportsAudioInput(),
         )

@@ -42,6 +42,13 @@ def test_android_boot_and_chat_paths_guard_local_backend_failures_instead_of_cra
     assert 'catch (error: Exception)' in sse_client
 
 
+def test_android_python_runtime_smoke_resets_local_backend_selection_before_remote_runtime_probe():
+    runtime_smoke = (REPO_ROOT / "android/app/src/androidTest/java/com/nousresearch/hermesagent/NativeAgentRuntimeSmokeTest.kt").read_text(encoding="utf-8")
+
+    assert 'AppSettingsStore(context).let { store ->' in runtime_smoke
+    assert 'onDeviceBackend = BackendKind.NONE.persistedValue' in runtime_smoke
+
+
 def test_android_chat_ui_and_native_tool_prompt_stay_compact_on_large_font_phone_screens():
     chat_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
     app_shell = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")

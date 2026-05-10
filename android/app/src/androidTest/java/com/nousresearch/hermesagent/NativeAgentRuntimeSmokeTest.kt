@@ -4,8 +4,10 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.chaquo.python.Python
+import com.nousresearch.hermesagent.backend.BackendKind
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
 import com.nousresearch.hermesagent.backend.PythonBootProbe
+import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import com.nousresearch.hermesagent.device.HermesSystemControlBridge
 import org.json.JSONArray
@@ -98,6 +100,16 @@ class NativeAgentRuntimeSmokeTest {
 
     @Test
     fun embeddedHermesPythonRuntimeStartsLocalServer() {
+        AppSettingsStore(context).let { store ->
+            store.save(
+                store.load().copy(
+                    provider = "openrouter",
+                    baseUrl = "",
+                    model = "",
+                    onDeviceBackend = BackendKind.NONE.persistedValue,
+                )
+            )
+        }
         val bootProbe = JSONObject(PythonBootProbe.readProbe(context))
         assertEquals(bootProbe.toString(), "ok", bootProbe.optString("status"))
 

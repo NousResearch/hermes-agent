@@ -607,7 +607,7 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
             RecommendedLocalModelPreset(
                 id = "gemma4-e2b-litert-lm",
                 title = "Gemma 4 E2B (LiteRT-LM)",
-                description = "First-class Gemma 4 local runtime target for Hermes mobile chat, image-capable runtime plumbing, and Android agent tools.",
+                description = "First-class Gemma 4 local runtime target for Hermes mobile chat, image-capable runtime plumbing, MTP acceleration, and Android agent tools.",
                 repoOrUrl = "litert-community/gemma-4-E2B-it-litert-lm",
                 filePath = "",
                 runtimeFlavor = "LiteRT-LM",

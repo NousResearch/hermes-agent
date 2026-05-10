@@ -1715,9 +1715,9 @@ stt:
   provider: "local"            # "local" | "groq" | "openai" | "mistral"
   local:
     model: "base"              # tiny, base, small, medium, large-v3
-    language: ""               # optional ISO-639-1 hint (e.g. "en"); blank = auto-detect
+    language: ""               # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   groq:
-    language: ""               # optional ISO-639-1 hint (e.g. "en"); blank = auto-detect
+    language: ""               # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
     language: ""               # auto-detect; set to "en", "es", "fr", etc. to force

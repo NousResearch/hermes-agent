@@ -14,7 +14,7 @@ Hermes Kanban is a durable task board, shared across all your Hermes profiles, t
 
 The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
-- **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`. The dispatcher spawns each worker with these tools already in its schema; the model reads its task and hands work off by calling them directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
+- **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_list`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with these tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
 - **You (and scripts, and cron) drive the board through `hermes kanban …`** on the CLI, `/kanban …` as a slash command, or the dashboard. These are for humans and automation — the places without a tool-calling model behind them.
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
@@ -66,7 +66,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   - `scratch` (default) — fresh tmp dir under `~/.hermes/kanban/workspaces/<id>/` (or `~/.hermes/kanban/boards/<slug>/workspaces/<id>/` on non-default boards).
   - `dir:<path>` — an existing shared directory (Obsidian vault, mail ops dir, per-account folder). **Must be an absolute path.** Relative paths like `dir:../tenants/foo/` are rejected at dispatch because they'd resolve against whatever CWD the dispatcher happens to be in, which is ambiguous and a confused-deputy escape vector. The path is otherwise trusted — it's your box, your filesystem, the worker runs with your uid. This is the trusted-local-user threat model; kanban is single-host by design.
   - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Worker-side `git worktree add` creates it.
-- **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After ~5 consecutive spawn failures on the same task the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
+- **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
 
 ## Boards (multi-project)
@@ -231,17 +231,19 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 
 ## How workers interact with the board
 
-**Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on a dedicated **kanban toolset** in the model's schema — seven tools that read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.
+**Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on a dedicated **kanban toolset** in the model's schema. The same toolset is also available to orchestrator profiles that enable `kanban` in their toolsets config. These tools read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.
 
 | Tool | Purpose | Required params |
 |---|---|---|
 | `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
+| `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
 | `kanban_block` | Escalate for human input with a `reason`. | `reason` |
 | `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
 | `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
 | `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
 | `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. | `parent_id`, `child_id` |
+| `kanban_unblock` | (Orchestrators) move a blocked task back to `ready`. | `task_id` |
 
 A typical worker turn looks like:
 
@@ -278,7 +280,7 @@ kanban_create(
 kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dependencies")
 ```
 
-The three "(Orchestrators)" tools — `kanban_create`, `kanban_link`, and `kanban_comment` on foreign tasks — are available to every worker; the convention (enforced by the `kanban-orchestrator` skill) is that worker profiles don't fan out and orchestrator profiles don't execute.
+The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (enforced by the `kanban-orchestrator` skill) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks.
 
 ### Why tools instead of shelling to `hermes kanban`
 

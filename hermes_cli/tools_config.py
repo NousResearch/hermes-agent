@@ -12,6 +12,7 @@ the `platform_toolsets` key.
 import json as _json
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -74,6 +75,7 @@ CONFIGURABLE_TOOLSETS = [
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
+    ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
 ]
 
 # Toolsets that are OFF by default for new installs.
@@ -445,6 +447,27 @@ TOOL_CATEGORIES = {
             },
         ],
     },
+    "computer_use": {
+        "name": "Computer Use (macOS)",
+        "icon": "🖱️",
+        "platform_gate": "darwin",
+        "providers": [
+            {
+                "name": "cua-driver (background)",
+                "badge": "★ recommended · free · local",
+                "tag": (
+                    "macOS background computer-use via SkyLight SPIs — does "
+                    "NOT steal your cursor or focus. Works with any model."
+                ),
+                "env_vars": [
+                    # cua-driver reads HOME/TMPDIR from the process env, no
+                    # extra keys required. HERMES_CUA_DRIVER_VERSION is an
+                    # optional pin for reproducibility across macOS updates.
+                ],
+                "post_setup": "cua_driver",
+            },
+        ],
+    },
     "rl": {
         "name": "RL Training",
         "icon": "🧪",
@@ -509,8 +532,12 @@ def _run_post_setup(post_setup_key: str):
         if not node_modules.exists() and npm_bin:
             _print_info("    Installing Node.js dependencies for browser tools...")
             import subprocess
+            # Use the resolved npm_bin absolute path so subprocess.Popen can
+            # execute npm.cmd on Windows (CreateProcessW otherwise rejects
+            # batch shims).  On POSIX npm_bin is the plain path — same
+            # behaviour as before.
             result = subprocess.run(
-                ["npm", "install", "--silent"],
+                [npm_bin, "install", "--silent"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
@@ -609,11 +636,13 @@ def _run_post_setup(post_setup_key: str):
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
-        if not camofox_dir.exists() and shutil.which("npm"):
+        _npm_bin = shutil.which("npm")
+        if not camofox_dir.exists() and _npm_bin:
             _print_info("    Installing Camofox browser server...")
             import subprocess
+            # Absolute npm path so .cmd shim executes on Windows.
             result = subprocess.run(
-                ["npm", "install", "--silent"],
+                [_npm_bin, "install", "--silent"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
@@ -628,6 +657,53 @@ def _run_post_setup(post_setup_key: str):
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
+
+    elif post_setup_key == "cua_driver":
+        # cua-driver provides macOS background computer-use (SkyLight SPIs).
+        # Install via upstream curl script if the binary isn't on $PATH yet.
+        import platform as _plat
+        import subprocess
+        if _plat.system() != "Darwin":
+            _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
+            return
+        if shutil.which("cua-driver"):
+            try:
+                version = subprocess.run(
+                    ["cua-driver", "--version"],
+                    capture_output=True, text=True, timeout=5,
+                ).stdout.strip()
+                _print_success(f"    cua-driver already installed: {version or 'unknown version'}")
+            except Exception:
+                _print_success("    cua-driver already installed.")
+            _print_info("    Grant macOS permissions if not done yet:")
+            _print_info("      System Settings > Privacy & Security > Accessibility")
+            _print_info("      System Settings > Privacy & Security > Screen Recording")
+            return
+        if not shutil.which("curl"):
+            _print_warning("    curl not found — install manually:")
+            _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
+            return
+        _print_info("    Installing cua-driver (macOS background computer-use)...")
+        try:
+            install_cmd = (
+                "/bin/bash -c \"$(curl -fsSL "
+                "https://raw.githubusercontent.com/trycua/cua/main/"
+                "libs/cua-driver/scripts/install.sh)\""
+            )
+            result = subprocess.run(install_cmd, shell=True, timeout=300)
+            if result.returncode == 0 and shutil.which("cua-driver"):
+                _print_success("    cua-driver installed.")
+                _print_info("    IMPORTANT — grant macOS permissions now:")
+                _print_info("      System Settings > Privacy & Security > Accessibility")
+                _print_info("      System Settings > Privacy & Security > Screen Recording")
+                _print_info("    Both must allow the terminal / Hermes process.")
+            else:
+                _print_warning("    cua-driver install did not complete. Re-run manually:")
+                _print_info(f"      {install_cmd}")
+        except subprocess.TimeoutExpired:
+            _print_warning("    cua-driver install timed out. Re-run manually.")
+        except Exception as e:
+            _print_warning(f"    cua-driver install failed: {e}")
 
     elif post_setup_key == "kittentts":
         try:
@@ -897,6 +973,38 @@ def _get_platform_tools(
             ts for ts in toolset_names
             if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
         }
+        # Mixed config: composite toolset alongside configurables (e.g.
+        # ``[hermes-cli, spotify]`` after enabling Spotify via ``hermes
+        # tools``). Without expansion the composite name is silently dropped,
+        # leaving sessions with only the configurable opt-ins and no native
+        # tools. Mirror the else-branch's subset inference, but apply
+        # _DEFAULT_OFF_TOOLSETS only to the implicit expansion — anything the
+        # user explicitly listed (e.g. ``spotify``) must survive.
+        composite_tools = set()
+        for ts_name in toolset_names:
+            if ts_name in configurable_keys or ts_name in plugin_ts_keys:
+                continue
+            if ts_name not in TOOLSETS:
+                continue
+            composite_tools.update(resolve_toolset(ts_name))
+
+        if composite_tools:
+            expanded = set()
+            for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
+                if not _toolset_allowed_for_platform(ts_key, platform):
+                    continue
+                ts_tools = set(resolve_toolset(ts_key))
+                if ts_tools and ts_tools.issubset(composite_tools):
+                    expanded.add(ts_key)
+
+            default_off = set(_DEFAULT_OFF_TOOLSETS)
+            if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
+                default_off.remove(platform)
+            if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
+                default_off.remove("homeassistant")
+            expanded -= default_off
+
+            enabled_toolsets |= expanded
     else:
         # No explicit config — fall back to resolving composite toolset names
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.
@@ -1317,11 +1425,51 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     return visible
 
 
+_POST_SETUP_INSTALLED: dict = {
+    # post_setup_key -> predicate(): True when the install side-effect
+    # is already satisfied. Used by `_toolset_needs_configuration_prompt`
+    # to force the provider-setup flow when a no-key provider still needs
+    # a binary/dependency install (otherwise an already-configured user
+    # who toggles the toolset on via `hermes tools` gets a silent no-op
+    # because the gate sees "no env vars to ask about" and skips the
+    # provider-setup flow that would have run the post_setup hook).
+    #
+    # Only entries here are gated; other post_setup hooks (kittentts,
+    # piper, agent_browser, etc.) keep their existing behaviour. Add an
+    # entry when (a) the post_setup is the ONLY install side-effect for
+    # a no-key provider, and (b) an installed-state check is cheap and
+    # doesn't trigger a heavy import.
+    "cua_driver": lambda: bool(shutil.which("cua-driver")),
+}
+
+
+def _post_setup_already_installed(post_setup_key: str) -> bool:
+    """Return True when the post_setup install side-effect is satisfied."""
+    predicate = _POST_SETUP_INSTALLED.get(post_setup_key)
+    if predicate is None:
+        # No install-state check registered → assume satisfied (don't
+        # change behaviour for hooks we haven't explicitly opted in).
+        return True
+    try:
+        return bool(predicate())
+    except Exception:
+        return True
+
+
 def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
     """Return True when enabling this toolset should open provider setup."""
     cat = TOOL_CATEGORIES.get(ts_key)
     if not cat:
         return not _toolset_has_keys(ts_key, config)
+
+    # If any visible provider has a registered post_setup install-state
+    # check that hasn't been satisfied (e.g. cua-driver binary not on
+    # PATH yet), force the configuration flow so `_configure_provider`
+    # invokes `_run_post_setup` and the install actually runs.
+    for provider in _visible_providers(cat, config):
+        post_setup = provider.get("post_setup")
+        if post_setup and not _post_setup_already_installed(post_setup):
+            return True
 
     if ts_key == "tts":
         tts_cfg = config.get("tts", {})

@@ -4,6 +4,7 @@ description: Configure and use Honcho memory with Hermes -- cross-session user m
 version: 2.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Honcho, Memory, Profiles, Observation, Dialectic, User-Modeling, Session-Summary]

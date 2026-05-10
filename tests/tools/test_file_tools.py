@@ -361,4 +361,28 @@ class TestSearchHints:
         assert "offset=100" in raw
 
 
+# ---------------------------------------------------------------------------
+# PATCH_SCHEMA shape tests (issue #15524)
+# ---------------------------------------------------------------------------
 
+class TestPatchSchemaShape:
+    """PATCH_SCHEMA must advertise per-mode required params via description
+    text (not JSON-schema ``required``), so strict models like kimi-k2.x stop
+    silently omitting old_string / new_string / patch content."""
+
+    def test_per_mode_required_params_documented_in_descriptions(self):
+        desc = PATCH_SCHEMA["description"]
+        assert "REQUIRED PARAMETERS: mode, path, old_string, new_string" in desc
+        assert "REQUIRED PARAMETERS: mode, patch" in desc
+        props = PATCH_SCHEMA["parameters"]["properties"]
+        for name in ("path", "old_string", "new_string"):
+            assert "REQUIRED when mode='replace'" in props[name]["description"]
+        assert "REQUIRED when mode='patch'" in props["patch"]["description"]
+
+    def test_no_anyof_required_stays_mode_only(self):
+        # anyOf/oneOf at parameters level break Anthropic, Fireworks, and the
+        # Moonshot/Kimi schema sanitizer — description-level guidance is the
+        # only provider-safe signalling mechanism.
+        params = PATCH_SCHEMA["parameters"]
+        assert params["required"] == ["mode"]
+        assert "anyOf" not in params and "oneOf" not in params

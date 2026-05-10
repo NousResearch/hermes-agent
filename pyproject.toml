@@ -20,6 +20,7 @@ dependencies = [
   "rich>=14.3.3,<15",
   "tenacity>=9.1.4,<10",
   "pyyaml>=6.0.2,<7",
+  "ruamel.yaml>=0.18.16,<0.19",
   "requests>=2.33.0,<3",  # CVE-2026-25645
   "jinja2>=3.1.5,<4",
   "pydantic>=2.12.5,<3",
@@ -36,13 +37,25 @@ dependencies = [
   "edge-tts>=7.2.7,<8",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
+  # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
+  # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
+  # out of the box.  ``tzdata`` ships the Olson database as a data package
+  # Python resolves automatically.  No-op on Linux/macOS (which have
+  # /usr/share/zoneinfo).  Credits: PR #13182 (@sprmn24).
+  "tzdata>=2023.3; sys_platform == 'win32'",
+  # Cross-platform process / PID management.  `psutil` is the canonical
+  # answer for "is this PID alive" and process-tree walking across Linux,
+  # macOS and Windows.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
+  # (which is a silent killer on Windows — see CONTRIBUTING.md) and
+  # `os.killpg` (which doesn't exist on Windows).
+  "psutil>=5.9.0,<8",
 ]
 
 [project.optional-dependencies]
 modal = ["modal>=1.0.0,<2"]
 daytona = ["daytona>=0.148.0,<1"]
 vercel = ["vercel>=0.5.7,<0.6.0"]
-dev = ["debugpy>=1.8.0,<2", "pytest>=9.0.2,<10", "pytest-asyncio>=1.3.0,<2", "pytest-xdist>=3.0,<4", "mcp>=1.2.0,<2", "ty>=0.0.1a29,<0.0.22", "ruff"]
+dev = ["debugpy>=1.8.0,<2", "pytest>=9.0.2,<10", "pytest-asyncio>=1.3.0,<2", "pytest-xdist>=3.0,<4", "pytest-split>=0.9,<1", "mcp>=1.2.0,<2", "ty>=0.0.1a29,<0.0.22", "ruff"]
 messaging = ["python-telegram-bot[webhooks]>=22.6,<23", "discord.py[voice]>=2.7.1,<3", "aiohttp>=3.13.3,<4", "slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4", "qrcode>=7.0,<8"]
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
@@ -64,6 +77,11 @@ honcho = ["honcho-ai>=2.0.1,<3"]
 mcp = ["mcp>=1.2.0,<2"]
 homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
+# Computer use — macOS background desktop control via cua-driver (MCP stdio).
+# The cua-driver binary itself is installed via `hermes tools` post-setup
+# (curl install script); this extra just pins the MCP client used to talk
+# to it, which is already provided by the `mcp` extra.
+computer-use = ["mcp>=1.2.0,<2"]
 acp = ["agent-client-protocol>=0.9.0,<1.0"]
 mistral = ["mistralai>=2.3.0,<3"]
 bedrock = ["boto3>=1.35.0,<2"]
@@ -109,6 +127,13 @@ google = [
   "google-auth-oauthlib>=1.0,<2",
   "google-auth-httplib2>=0.2,<1",
 ]
+youtube = [
+  # Required by skills/media/youtube-content and
+  # optional-skills/productivity/memento-flashcards (youtube_quiz.py).
+  # Without this declaration uv sync omits the package and both skills fail
+  # at first invocation with ModuleNotFoundError (issue #22243).
+  "youtube-transcript-api>=1.2.0",
+]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 web = ["fastapi>=0.104.0,<1", "uvicorn[standard]>=0.24.0,<1"]
 rl = [
@@ -146,6 +171,7 @@ all = [
   "hermes-agent[mistral]",
   "hermes-agent[bedrock]",
   "hermes-agent[web]",
+  "hermes-agent[youtube]",
 ]
 
 [project.scripts]
@@ -154,7 +180,7 @@ hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "rl_cli", "utils"]
+py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "rl_cli", "utils"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*"]
@@ -182,7 +208,25 @@ exclude = ["tinker-atropos"]
 
 [tool.ruff]
 exclude = ["tinker-atropos"]
-select = [] # disable all lints for now, until we've wrangled typechecks a bit more :3
+preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
+
+[tool.ruff.lint]
+# All other lints are intentionally disabled (see comment history on this
+# file) while we wrangle typechecks — but PLW1514 is too load-bearing to
+# keep off.  Bare open()/read_text()/write_text() in text mode defaults to
+# the system locale encoding on Windows (cp1252 on US-locale installs),
+# which silently corrupts any non-ASCII file content.  We had three
+# separate Windows sandbox regressions in one debug session before
+# adding the explicit encoding.  This rule keeps new code honest.
+select = ["PLW1514"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests can intentionally exercise locale-encoding edge cases.
+"tests/**" = ["PLW1514"]
+# Skills and plugins are partially user-authored — their own conventions.
+"skills/**" = ["PLW1514"]
+"optional-skills/**" = ["PLW1514"]
+"plugins/**" = ["PLW1514"]
 
 [tool.uv]
 exclude-newer = "7 days"

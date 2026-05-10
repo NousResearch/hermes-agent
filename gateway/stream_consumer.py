@@ -411,7 +411,7 @@ class GatewayStreamConsumer:
                     # path below so we don't finalize here for it.
                     current_update_visible = await self._send_or_edit(
                         display_text,
-                        finalize=got_segment_break,
+                        finalize=(got_done or got_segment_break),
                     )
                     self._last_edit_time = time.monotonic()
 

@@ -72,6 +72,7 @@ def _default_state() -> Dict[str, Any]:
         "last_run_at": None,
         "last_run_duration_seconds": None,
         "last_run_summary": None,
+        "last_run_summary_shown_at": None,
         "last_report_path": None,
         "paused": False,
         "run_count": 0,
@@ -876,6 +877,82 @@ def _reconcile_classification(
     return {"consolidated": consolidated, "pruned": pruned}
 
 
+def _build_rename_summary(
+    *,
+    before_names: Set[str],
+    after_report: List[Dict[str, Any]],
+    tool_calls: List[Dict[str, Any]],
+    model_final: str,
+) -> str:
+    """Format the user-visible rename map for a curator run.
+
+    Renders the "where did my skills go?" lines that get appended to the
+    `final_summary` string fed to gateway/CLI receivers. Empty string when
+    nothing was archived this run — most ticks are no-op and shouldn't add
+    extra log noise.
+
+    Format::
+
+        archived 4 skill(s):
+          • pdf-extraction → document-tools
+          • docx-extraction → document-tools
+          • flaky-thing — pruned (stale)
+          • old-utility → spreadsheet-ops
+        full report: hermes curator status
+
+    Cap is 10 entries so a 50-skill consolidation doesn't blow up
+    agent.log; the full list is always in REPORT.md.
+    """
+    after_by_name = {r.get("name"): r for r in after_report if isinstance(r, dict)}
+    after_names = set(after_by_name.keys())
+    removed = sorted(before_names - after_names)
+    added = sorted(after_names - before_names)
+    if not removed:
+        return ""
+
+    heuristic = _classify_removed_skills(
+        removed=removed,
+        added=added,
+        after_names=after_names,
+        tool_calls=tool_calls,
+    )
+    model_block = _parse_structured_summary(model_final)
+    destinations = set(after_names) | set(added)
+    absorbed_declarations = _extract_absorbed_into_declarations(tool_calls)
+    classification = _reconcile_classification(
+        removed=removed,
+        heuristic=heuristic,
+        model_block=model_block,
+        destinations=destinations,
+        absorbed_declarations=absorbed_declarations,
+    )
+    consolidated = classification["consolidated"]
+    pruned = classification["pruned"]
+
+    SHOW = 10
+    lines: List[str] = []
+    total = len(consolidated) + len(pruned)
+    lines.append(f"archived {total} skill(s):")
+    shown = 0
+    for entry in consolidated:
+        if shown >= SHOW:
+            break
+        name = entry.get("name", "?")
+        into = entry.get("into", "?")
+        lines.append(f"  • {name} → {into}")
+        shown += 1
+    for entry in pruned:
+        if shown >= SHOW:
+            break
+        name = entry.get("name", "?") if isinstance(entry, dict) else str(entry)
+        lines.append(f"  • {name} — pruned (stale)")
+        shown += 1
+    if total > SHOW:
+        lines.append(f"  … and {total - SHOW} more")
+    lines.append("full report: hermes curator status")
+    return "\n".join(lines)
+
+
 def _write_run_report(
     *,
     started_at: datetime,
@@ -1398,6 +1475,22 @@ def run_curator_review(
                 "error": str(e),
             }
 
+        # Append the rename map (`old-name → umbrella`) to the user-visible
+        # summary so people don't have to dig into REPORT.md to find out where
+        # their skills went. Best-effort: classification is pure but never
+        # block the run on a formatting issue.
+        try:
+            rename_lines = _build_rename_summary(
+                before_names=before_names,
+                after_report=skill_usage.agent_created_report(),
+                tool_calls=llm_meta.get("tool_calls", []) or [],
+                model_final=llm_meta.get("final", "") or "",
+            )
+            if rename_lines:
+                final_summary = f"{final_summary}\n{rename_lines}"
+        except Exception as e:
+            logger.debug("Curator rename summary build failed: %s", e, exc_info=True)
+
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         state2 = load_state()
         state2["last_run_duration_seconds"] = elapsed
@@ -1607,7 +1700,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # terminal. The background-thread runner also hides it; this
         # belt-and-suspenders path matters when a caller invokes
         # run_curator_review(synchronous=True) from the CLI.
-        with open(os.devnull, "w") as _devnull, \
+        with open(os.devnull, "w", encoding="utf-8") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
              contextlib.redirect_stderr(_devnull):
             conv_result = review_agent.run_conversation(user_message=prompt)

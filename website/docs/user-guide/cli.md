@@ -92,7 +92,7 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
-| `Alt+Enter` or `Ctrl+J` | New line (multi-line input) |
+| `Alt+Enter`, `Ctrl+J`, or `Shift+Enter` | New line (multi-line input). `Shift+Enter` requires a terminal that distinguishes it from `Enter` — see below. On Windows Terminal, `Alt+Enter` is captured by the terminal (fullscreen toggle); use `Ctrl+Enter` or `Ctrl+J` instead. |
 | `Alt+V` | Paste an image from the clipboard when supported by the terminal |
 | `Ctrl+V` | Paste text and opportunistically attach clipboard images |
 | `Ctrl+B` | Start/stop voice recording when voice mode is enabled (`voice.record_key`, default: `ctrl+b`) |
@@ -204,7 +204,7 @@ personalities:
 
 There are two ways to enter multi-line messages:
 
-1. **`Alt+Enter` or `Ctrl+J`** — inserts a new line
+1. **`Alt+Enter`, `Ctrl+J`, or `Shift+Enter`** — inserts a new line
 2. **Backslash continuation** — end a line with `\` to continue:
 
 ```
@@ -214,8 +214,21 @@ There are two ways to enter multi-line messages:
 ```
 
 :::info
-Pasting multi-line text is supported — use `Alt+Enter` or `Ctrl+J` to insert newlines, or simply paste content directly.
+Pasting multi-line text is supported — use any of the newline keys above, or simply paste content directly.
 :::
+
+### Shift+Enter compatibility
+
+Most terminals send the same byte sequence for `Enter` and `Shift+Enter` by default, so applications cannot distinguish them. Hermes recognises `Shift+Enter` only when the terminal sends a distinct sequence via the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) or xterm's `modifyOtherKeys` mode.
+
+| Terminal | Status |
+|---|---|
+| Kitty, foot, WezTerm, Ghostty | Distinct `Shift+Enter` enabled by default |
+| iTerm2 (recent), Alacritty, VS Code terminal, Warp | Supported once the Kitty protocol is enabled in settings |
+| Windows Terminal Preview 1.25+ | Supported once the Kitty protocol is enabled in settings |
+| macOS Terminal.app, stock Windows Terminal (stable) | Not supported — `Shift+Enter` is indistinguishable from `Enter` |
+
+Where the terminal cannot distinguish them, `Alt+Enter` and `Ctrl+J` continue to work everywhere. **On Windows Terminal specifically, `Alt+Enter` is captured by the terminal (toggles fullscreen) and never reaches Hermes — use `Ctrl+Enter` (delivered as `Ctrl+J`) or `Ctrl+J` directly for a newline.**
 
 ## Interrupting the Agent
 
@@ -355,7 +368,7 @@ compression:
 # Summarization model configured under auxiliary:
 auxiliary:
   compression:
-    model: "google/gemini-3-flash-preview"  # Model used for summarization
+    model: ""  # Leave empty to use the main chat model (default). Or pin a cheap fast model, e.g. "google/gemini-3-flash-preview".
 ```
 
 When compression triggers, middle turns are summarized while the first 3 and last 20 turns are always preserved.

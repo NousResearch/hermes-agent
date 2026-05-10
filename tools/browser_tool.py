@@ -422,7 +422,7 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     if _cloud_provider_resolved:
         return _cached_cloud_provider
 
-    _cloud_provider_resolved = True
+    resolved: Optional[CloudBrowserProvider] = None
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
@@ -434,23 +434,44 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
             )
             if provider_key == "local":
                 _cached_cloud_provider = None
+                _cloud_provider_resolved = True
                 return None
         if provider_key and provider_key in _PROVIDER_REGISTRY:
-            _cached_cloud_provider = _PROVIDER_REGISTRY[provider_key]()
+            try:
+                resolved = _PROVIDER_REGISTRY[provider_key]()
+            except Exception:
+                logger.warning(
+                    "Failed to instantiate explicit cloud_provider %r; will retry on next call",
+                    provider_key,
+                    exc_info=True,
+                )
+                return None
     except Exception as e:
+        # Config file may be temporarily unreadable; still try auto-detect so
+        # env-based / managed-gateway credentials can resolve. Don't pin cache.
         logger.debug("Could not read cloud_provider from config: %s", e)
 
-    if _cached_cloud_provider is None:
+    if resolved is None:
         # Prefer Browser Use (managed Nous gateway or direct API key),
         # fall back to Browserbase (direct credentials only).
-        fallback_provider = BrowserUseProvider()
-        if fallback_provider.is_configured():
-            _cached_cloud_provider = fallback_provider
-        else:
-            fallback_provider = BrowserbaseProvider()
+        try:
+            fallback_provider = BrowserUseProvider()
             if fallback_provider.is_configured():
-                _cached_cloud_provider = fallback_provider
+                resolved = fallback_provider
+            else:
+                fallback_provider = BrowserbaseProvider()
+                if fallback_provider.is_configured():
+                    resolved = fallback_provider
+        except Exception:  # pragma: no cover - defensive: never poison cache
+            logger.debug("Cloud provider auto-detect failed", exc_info=True)
+            return None
 
+    if resolved is None:
+        # Transient None — credentials may self-heal. Don't poison the cache.
+        return None
+
+    _cached_cloud_provider = resolved
+    _cloud_provider_resolved = True
     return _cached_cloud_provider
 
 
@@ -708,7 +729,16 @@ def _run_chrome_fallback_command(
             )
         return {"success": False, "error": hint}
 
-    cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+    # On Windows npx is npx.cmd — use shutil.which so CreateProcessW can
+    # execute the batch shim.  shutil.which honours PATHEXT on Windows and
+    # returns the plain executable on POSIX.  If npx isn't on PATH (Termux,
+    # bare container), fall back to the bare name and let Popen raise with
+    # a readable "FileNotFoundError: 'npx'" rather than WinError 193.
+    if browser_cmd == "npx agent-browser":
+        _npx_bin = shutil.which("npx") or "npx"
+        cmd_prefix = [_npx_bin, "agent-browser"]
+    else:
+        cmd_prefix = [browser_cmd]
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
@@ -728,9 +758,45 @@ def _run_chrome_fallback_command(
         stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
+            # On Windows, launch the child in a new process group so parent
+            # console Ctrl+C doesn't kill it with STATUS_CONTROL_C_EXIT
+            # (0xC000013A = rc 3221225786), AND insulate its stdio + handle
+            # inheritance from the parent.
+            #
+            # Additional Windows hardening beyond CREATE_NEW_PROCESS_GROUP:
+            # * STARTF_USESTDHANDLES + explicit handles → CreateProcess hands
+            #   the child ONLY our three chosen handles (DEVNULL stdin +
+            #   temp-file stdout/stderr). Without this, some parents leak
+            #   console handles that break downstream grandchild spawns — the
+            #   agent-browser Rust binary spawns a detached daemon grandchild,
+            #   and that grandchild's CreateProcess dies silently
+            #   ("Daemon process exited during startup with no error output")
+            #   when inherited parent handles are in a weird state. Observed
+            #   in the Hermes CLI where sys.stdout and sys.stderr both report
+            #   fileno=1 (stderr dup'd onto stdout at the OS level).
+            # * close_fds=True → block inheritance of every other handle.
+            #   (Default on POSIX; must be explicit on Windows for stdio.)
+            _popen_extra: dict = {}
+            if os.name == "nt":
+                # CREATE_NO_WINDOW → don't attach a console (cmd.exe would
+                # otherwise briefly allocate one for the .cmd shim).
+                # Do NOT add CREATE_NEW_PROCESS_GROUP: on Python 3.11 Windows
+                # it interacts with asyncio's ProactorEventLoop such that the
+                # subprocess creation cancels the running loop task, which
+                # surfaces as KeyboardInterrupt in app.run() and tears down
+                # the CLI mid-turn. The agent thread's subprocess spawn
+                # unwound MainThread's prompt_toolkit loop that way — see
+                # diag log: "asyncio.CancelledError → KeyboardInterrupt".
+                _CREATE_NO_WINDOW = 0x08000000
+                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
+                _popen_extra["close_fds"] = True
+                _si = subprocess.STARTUPINFO()
+                _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
+                _popen_extra["startupinfo"] = _si
             proc = subprocess.Popen(
                 full, stdout=stdout_fd, stderr=stderr_fd,
                 stdin=subprocess.DEVNULL, env=browser_env,
+                **_popen_extra,
             )
         finally:
             os.close(stdout_fd)
@@ -742,7 +808,7 @@ def _run_chrome_fallback_command(
             proc.wait()
             return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
         try:
-            with open(stdout_path, "r") as f:
+            with open(stdout_path, "r", encoding="utf-8") as f:
                 stdout = f.read().strip()
             if stdout:
                 return json.loads(stdout.split("\n")[-1])
@@ -1101,7 +1167,7 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
     """
     try:
         path = os.path.join(socket_dir, f"{session_name}.owner_pid")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(str(os.getpid()))
     except OSError as exc:
         logger.debug("Could not write owner_pid file for %s: %s",
@@ -1165,16 +1231,11 @@ def _reap_orphaned_browser_sessions():
         owner_alive: Optional[bool] = None  # None = owner_pid missing/unreadable
         if os.path.isfile(owner_pid_file):
             try:
-                owner_pid = int(Path(owner_pid_file).read_text().strip())
-                try:
-                    os.kill(owner_pid, 0)
-                    owner_alive = True
-                except ProcessLookupError:
-                    owner_alive = False
-                except PermissionError:
-                    # Owner exists but we can't signal it (different uid).
-                    # Treat as alive — don't reap someone else's session.
-                    owner_alive = True
+                owner_pid = int(Path(owner_pid_file).read_text(encoding="utf-8").strip())
+                # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484).
+                # Use the cross-platform existence check.
+                from gateway.status import _pid_exists
+                owner_alive = _pid_exists(owner_pid)
             except (ValueError, OSError):
                 owner_alive = None  # corrupt file — fall through
 
@@ -1196,20 +1257,16 @@ def _reap_orphaned_browser_sessions():
             continue
 
         try:
-            daemon_pid = int(Path(pid_file).read_text().strip())
+            daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
         except (ValueError, OSError):
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
-        # Check if the daemon is still alive
-        try:
-            os.kill(daemon_pid, 0)  # signal 0 = existence check
-        except ProcessLookupError:
-            # Already dead, just clean up the dir
+        # Check if the daemon is still alive. ``os.kill(pid, 0)`` on Windows
+        # is NOT a no-op — use the handle-based existence check.
+        from gateway.status import _pid_exists
+        if not _pid_exists(daemon_pid):
             shutil.rmtree(socket_dir, ignore_errors=True)
-            continue
-        except PermissionError:
-            # Alive but owned by someone else — leave it alone
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
@@ -1619,13 +1676,22 @@ def _find_agent_browser() -> str:
             _agent_browser_resolved = True
             return which_result
 
-    # Check local node_modules/.bin/ (npm install in repo root)
+    # Check local node_modules/.bin/ (npm install in repo root).
+    # On Windows, npm drops three shims in .bin: an extensionless POSIX shell
+    # script (for Git Bash / WSL), `agent-browser.cmd` (for cmd/PowerShell),
+    # and `agent-browser.ps1` (for PowerShell). CreateProcess (used by Python's
+    # subprocess on Windows) cannot execute the extensionless shim — it raises
+    # WinError 193 "%1 is not a valid Win32 application". We must resolve to the
+    # `.cmd` shim instead. `shutil.which` consults PATHEXT, so we delegate to it
+    # with an explicit path so POSIX hosts still pick the extensionless shim.
     repo_root = Path(__file__).parent.parent
-    local_bin = repo_root / "node_modules" / ".bin" / "agent-browser"
-    if local_bin.exists():
-        _cached_agent_browser = str(local_bin)
-        _agent_browser_resolved = True
-        return _cached_agent_browser
+    local_bin_dir = repo_root / "node_modules" / ".bin"
+    if local_bin_dir.is_dir():
+        local_which = shutil.which("agent-browser", path=str(local_bin_dir))
+        if local_which:
+            _cached_agent_browser = local_which
+            _agent_browser_resolved = True
+            return _cached_agent_browser
 
     # Check common npx locations (also search the extended fallback PATH)
     npx_path = shutil.which("npx")
@@ -1759,7 +1825,12 @@ def _run_browser_command(
 
     # Keep concrete executable paths intact, even when they contain spaces.
     # Only the synthetic npx fallback needs to expand into multiple argv items.
-    cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+    # shutil.which resolves npx → npx.cmd on Windows; bare "npx" stays on POSIX.
+    if browser_cmd == "npx agent-browser":
+        _npx_bin = shutil.which("npx") or "npx"
+        cmd_prefix = [_npx_bin, "agent-browser"]
+    else:
+        cmd_prefix = [browser_cmd]
 
     cmd_parts = cmd_prefix + backend_args + [
         "--json",
@@ -1811,7 +1882,7 @@ def _run_browser_command(
                 # Detect AppArmor user namespace restrictions (Ubuntu 23.10+)
                 _userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
                 try:
-                    with open(_userns_restrict) as _f:
+                    with open(_userns_restrict, encoding="utf-8") as _f:
                         if _f.read().strip() == "1":
                             _needs_sandbox_bypass = True
                             logger.debug(
@@ -1835,12 +1906,30 @@ def _run_browser_command(
         stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
+            # See matching comment at the other Popen site above — on
+            # Windows we put agent-browser in its own process group, force
+            # STARTF_USESTDHANDLES so CreateProcess hands the child ONLY our
+            # three explicit handles (no leaked parent-console handles to
+            # confuse the Rust binary's daemon-spawn), and close_fds=True to
+            # block inheritance of everything else.
+            _popen_extra: dict = {}
+            if os.name == "nt":
+                # See matching block at the other Popen site — CREATE_NO_WINDOW
+                # only, NO CREATE_NEW_PROCESS_GROUP (cancels asyncio loop task
+                # on Python 3.11 Windows → KeyboardInterrupt in CLI MainThread).
+                _CREATE_NO_WINDOW = 0x08000000
+                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
+                _popen_extra["close_fds"] = True
+                _si = subprocess.STARTUPINFO()
+                _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
+                _popen_extra["startupinfo"] = _si
             proc = subprocess.Popen(
                 cmd_parts,
                 stdout=stdout_fd,
                 stderr=stderr_fd,
                 stdin=subprocess.DEVNULL,
                 env=browser_env,
+                **_popen_extra,
             )
         finally:
             os.close(stdout_fd)
@@ -1856,9 +1945,9 @@ def _run_browser_command(
             result = {"success": False, "error": f"Command timed out after {timeout} seconds"}
             # Fall through to fallback check below
         else:
-            with open(stdout_path, "r") as f:
+            with open(stdout_path, "r", encoding="utf-8") as f:
                 stdout = f.read()
-            with open(stderr_path, "r") as f:
+            with open(stderr_path, "r", encoding="utf-8") as f:
                 stderr = f.read()
             returncode = proc.returncode
 
@@ -3157,7 +3246,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 pid_file = os.path.join(socket_dir, f"{session_name}.pid")
                 if os.path.isfile(pid_file):
                     try:
-                        daemon_pid = int(Path(pid_file).read_text().strip())
+                        daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
                         os.kill(daemon_pid, signal.SIGTERM)
                         logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
                     except (ProcessLookupError, ValueError, PermissionError, OSError):
@@ -3300,7 +3389,7 @@ def _running_in_docker() -> bool:
     if os.path.exists("/.dockerenv"):
         return True
     try:
-        with open("/proc/1/cgroup", "rt") as fp:
+        with open("/proc/1/cgroup", "rt", encoding="utf-8") as fp:
             return "docker" in fp.read()
     except OSError:
         return False

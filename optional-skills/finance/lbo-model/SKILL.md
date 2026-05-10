@@ -4,6 +4,7 @@ description: Build leveraged buyout models in Excel — sources & uses, debt sch
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [finance, valuation, lbo, private-equity, excel, openpyxl, modeling]

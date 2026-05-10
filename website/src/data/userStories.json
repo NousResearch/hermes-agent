@@ -1087,5 +1087,203 @@
     "headline": "Private Telegram topics, each with its own skill bindings",
     "quote": "Hermes extracts what worked from completed workflows, writes it as a reusable skill, and loads it for similar future problems. Private Telegram chat topics for isolated workflows with their own skill bindings.",
     "size": "sm"
+  },
+  {
+    "source": "hn",
+    "author": "Flere-Imsaho",
+    "url": "https://news.ycombinator.com/item?id=47636804",
+    "date": "2026-04-04",
+    "category": "privacy",
+    "headline": "I'm using Hermes — same applies to all agents, sandbox it",
+    "quote": "I'm using Hermes. The same applies to all agents, don't give it free reign over all your stuff. Run it within a sandbox. https://github.com/nousresearch/hermes-agent",
+    "size": "sm",
+    "id": "hn-flere-imsaho-im-using-hermes"
+  },
+  {
+    "source": "reddit",
+    "author": "u/Suitable_Currency440",
+    "url": "https://www.reddit.com/r/LocalLLaMA/comments/1ro9lph/anybody_who_tried_hermesagent/",
+    "date": "2026-03-08",
+    "category": "dev-workflow",
+    "headline": "Hermes is OpenClaw with a week of debug + RAG + memory",
+    "quote": "Its amazing, its openclaw already set up and working, its like an OC with 1 week of debugging manually done + rag + memory persistence + better tool calling. (Qwen3.5-9b, 16gb VRAM), 10/10, only will go back to OC if it becomes at least on par with it.",
+    "size": "md",
+    "id": "reddit-suitable-currency440-hermes-is-openclaw"
+  },
+  {
+    "source": "reddit",
+    "author": "u/patbhakta",
+    "url": "https://www.reddit.com/r/Rag/comments/1sgmvxh/anyone_here_tried_hermes_agent_whats_your/",
+    "date": "2026-04-09",
+    "category": "personal-assistant",
+    "headline": "Hermes vs OpenClaw: memory lets me jump between projects",
+    "quote": "I'm using Hermes currently but only as a beginner agent. It's kinda like a VA. The good part about Hermes vs openclaw is memory. With OpenClaw it's a one track mind. With Hermes I can jump from one project to next but also go back to something from last week or more. Personally I use Hermes with paperclip which is chat.",
+    "size": "md",
+    "id": "reddit-patbhakta-hermes-vs-openclaw"
+  },
+  {
+    "source": "reddit",
+    "author": "u/Delicious_Ease2595",
+    "url": "https://www.reddit.com/r/openclaw/comments/1slqt5h/is_hermes_agent_a_new_hype_or_is_it_genuinely/",
+    "date": "2026-04-15",
+    "category": "dev-workflow",
+    "headline": "Side-by-side: Hermes more stable, troubleshoots OpenClaw",
+    "quote": "Using both side by side I find it more stable and less headache than OC. Hermes has more research skills, and it's very handy as troubleshooter of OC. Telegram recently added bot to bot communication in their API so I'm thinking a way both communicate.",
+    "size": "md",
+    "id": "reddit-delicious-ease2595-hermes-more"
+  },
+  {
+    "source": "reddit",
+    "author": "u/yellow-green-bird",
+    "url": "https://www.reddit.com/r/openclaw/comments/1slqt5h/is_hermes_agent_a_new_hype_or_is_it_genuinely/",
+    "date": "2026-04-15",
+    "category": "dev-workflow",
+    "headline": "Every OpenClaw update breaks something — Hermes just runs",
+    "quote": "Came here to say the same. Every time I update OpenClaw it breaks something, that I have to randomly find later. Hermes just runs and never once I had to go in circles to repair it yet.",
+    "size": "sm",
+    "id": "reddit-yellow-green-bird-every-openclaw-update"
+  },
+  {
+    "source": "reddit",
+    "author": "u/itsdodobitch",
+    "url": "https://www.reddit.com/r/hermesagent/comments/1t29ogw/one_month_with_hermes_agent_what_i_wish_i_knew/",
+    "date": "2026-05-03",
+    "category": "meta",
+    "headline": "One month with Hermes: don't build the whole machine on day one",
+    "quote": "Hermes works impressively well out of the box. The real challenge starts after that first 'wow' moment, because Hermes is powerful enough to make you overestimate how ready you are to use it properly. Start with one small workflow. Make it boringly reliable. Then add the next piece. Don't turn the default profile into a giant backpack full of every skill, every tool, every instruction.",
+    "size": "lg",
+    "id": "reddit-itsdodobitch-one-month-with"
+  },
+  {
+    "source": "reddit",
+    "author": "u/Birdinhandandbush",
+    "url": "https://www.reddit.com/r/hermesagent/comments/1snfnq9/yes_hermes_and_qwen354b_is_all_i_need_details/",
+    "date": "2026-04-16",
+    "category": "personal-assistant",
+    "headline": "Hermes + Qwen3.5:4b on a 5060Ti is all I need",
+    "quote": "I have a 5060ti 16gb VRAM and 64gb DDR5 System Ram. I started out wanting to test Hermes as a Claw alternative. After a few days I set up Telegram with the botfather, and I haven't gone back to CLI. Hermes is now almost entirely a personal assistant on my Telegram App. Where the 9b chugged along, the 4B model is snappy, responsive, alive and chatty.",
+    "size": "lg",
+    "id": "reddit-birdinhandandbush-hermes"
+  },
+  {
+    "source": "reddit",
+    "author": "u/hackrepair",
+    "url": "https://www.reddit.com/r/hermesagent/comments/1smgo1i/my_hermes_journey/",
+    "date": "2026-04-15",
+    "category": "cost-optimization",
+    "headline": "My Hermes Journey: smart-routing tiers that save 10 hours and $40",
+    "quote": "Set this as your Smart routing default (using OpenRouter): Tier 1 Hermes (Gemini 3.1 Flash Lite) for clear mechanical multi-file work. Tier 2 Sonnet for ambiguous, delicate, high-risk tasks. Tier 3 Minimax for low-overhead. Run the minimax-cache-optimization skill. Seriously, do this from day one and you'll save about 10 hours of trial and error.",
+    "size": "lg",
+    "id": "reddit-hackrepair-my-hermes-journey"
+  },
+  {
+    "source": "reddit",
+    "author": "u/ninjapapi",
+    "url": "https://www.reddit.com/r/SideProject/comments/1t6356h/5_things_hermes_does_as_an_ai_agent_that_chatgpt/",
+    "date": "2026-05-07",
+    "category": "personal-assistant",
+    "headline": "5 things Hermes does that ChatGPT will never do",
+    "quote": "ChatGPT is a browser tab. Hermes is a server process that's running right now, has been building a model of your workflow for the past few weeks, and just sent you a Telegram message before you woke up. It doesn't stop when you close your laptop. It messages you first. Memory that gets useful over time. Runs code, doesn't just write it. Takes action in your actual apps.",
+    "size": "lg",
+    "id": "reddit-ninjapapi-5-things-hermes"
+  },
+  {
+    "source": "reddit",
+    "author": "u/Suitable_Currency440",
+    "url": "https://www.reddit.com/r/LocalLLaMA/comments/1ro9lph/anybody_who_tried_hermesagent/",
+    "date": "2026-03-08",
+    "category": "personal-assistant",
+    "headline": "Hermes very good as personal agent on Qwen3.5 27B",
+    "quote": "Fairly good with qwen3.5-4b, very decent with qwen3.5-9b, VERY good with 27b. Personal agent? Yes. Coding for high complexity tasks? Not really, but with high guidance? Yes.",
+    "size": "sm",
+    "id": "reddit-suitable-currency440-hermes-very-good"
+  },
+  {
+    "source": "reddit",
+    "author": "u/sickleRunner",
+    "url": "https://www.reddit.com/r/LocalLLaMA/comments/1ro9lph/anybody_who_tried_hermesagent/",
+    "date": "2026-03-08",
+    "category": "cost-optimization",
+    "headline": "Switching between Hermes and OpenClaw on primeclaws.com",
+    "quote": "I tried hermes on primeclaws.com, it's nice that you can switch between hermes and openclaw and also you get AI models for free.",
+    "size": "sm",
+    "id": "reddit-sicklerunner-switching-between-hermes"
+  },
+  {
+    "source": "reddit",
+    "author": "u/Jonathan_Rivera",
+    "url": "https://www.reddit.com/r/hermesagent/comments/1stz6gd/how_i_use_obsidian_as_the_longterm_memory/",
+    "date": "2026-04-23",
+    "category": "personal-assistant",
+    "headline": "Obsidian as the long-term memory backbone for Hermes (794 upvotes)",
+    "quote": "How I use Obsidian as the long-term memory backbone for my AI assistant. (794-upvote diagram showing Hermes Agent writing structured markdown notes back into a synced Obsidian vault, treating the vault as the durable memory layer that survives context resets and cross-machine moves.)",
+    "size": "md",
+    "id": "reddit-jonathan-rivera-obsidian-as-the"
+  },
+  {
+    "source": "reddit",
+    "author": "u/itsdodobitch",
+    "url": "https://www.reddit.com/r/hermesagent/comments/1t4efcb/what_is_the_new_kanban_feature_built_into_hermes/",
+    "date": "2026-05-05",
+    "category": "dev-workflow",
+    "headline": "Kanban multi-agent feature is game-changing",
+    "quote": "WHAT IS THE NEW KANBAN FEATURE BUILT INTO HERMES? (IT'S GAME CHANGING) — image post showing Hermes' new built-in Kanban board where a parent agent posts cards and child subagents pull them, work in parallel, and report back, turning the agent into a multi-agent project manager.",
+    "size": "md",
+    "id": "reddit-itsdodobitch-kanban-feature"
+  },
+  {
+    "source": "x",
+    "author": "@vmiss33",
+    "url": "https://x.com/vmiss33/status/2050984822168830302",
+    "date": "2026-05-03",
+    "category": "cost-optimization",
+    "headline": "100% human guide: what I use Hermes for and how I keep it cheap",
+    "quote": "100% human generated. Includes what I use Hermes agent for (since I've seen a lot of people wondering what to do with this thing), and what models/providers I use to keep things cheap. I have been running a multi agent setup for Hermes agent for the last several weeks. It sends me messages on Telegram to remind me.",
+    "size": "lg",
+    "id": "x-vmiss33-human-guide"
+  },
+  {
+    "source": "x",
+    "author": "@HeyYanvi",
+    "url": "https://x.com/HeyYanvi/status/2046015096514617385",
+    "date": "2026-04-19",
+    "category": "creative",
+    "headline": "Hermes designed an X-to-NotebookLM podcast workflow for me",
+    "quote": "This research is gold. Been deep in Hermes for weeks and it's started autonomously suggesting entire workflows I never would have designed myself. One it built for me recently: X API to extract from lists and bookmarks to structure into article to NotebookLM podcast. I'm building a physical AI companion with Hermes as the core cognitive layer right now.",
+    "size": "md",
+    "id": "x-heyyanvi-hermes-designed-an"
+  },
+  {
+    "source": "x",
+    "author": "@ExileAI_0",
+    "url": "https://x.com/ExileAI_0/status/2046197309495533698",
+    "date": "2026-04-20",
+    "category": "creative",
+    "headline": "Spare-laptop Hermes 'Iris' builds a RenPy visual novel autonomously",
+    "quote": "Secondary Hermes install yesterday on a spare laptop. Introduced it to the network, gave it two targets: RenPy and ComfyUI. It found ComfyUI, figured out how to generate images locally with LM Studio, then asked me to turn on the internet to install RenPy. About 10 minutes later there popped up a small but complete RenPy novel with 10 images and a little story.",
+    "size": "lg",
+    "id": "x-exileai-0-hermes-iris"
+  },
+  {
+    "source": "x",
+    "author": "@brucexu_eth",
+    "url": "https://x.com/brucexu_eth/status/2048625942416023874",
+    "date": "2026-04-27",
+    "category": "creative",
+    "headline": "Hermes Inc.: Telegram-native startup sim built at Hermes hackathon",
+    "quote": "Built Hermes Inc. for the Hermes hackathon: a Telegram-native startup simulation game powered by Hermes Agent. An experiment in agent-native game design. Your AI teammates argue, remember, react, and evolve the company over time through weekly decisions, autonomous updates, events, and milestone visuals.",
+    "size": "md",
+    "id": "x-brucexu-eth-hermes"
+  },
+  {
+    "source": "x",
+    "author": "@hypepartners",
+    "url": "https://x.com/hypepartners/status/2033578968612233606",
+    "date": "2026-03-16",
+    "category": "enterprise",
+    "headline": "Why 95% of AI users see no results — Hype's Hermes deep dive",
+    "quote": "Of the 95% of people who use AI, only 5% see real results. Hype's VP of AI, @glitch_, on why the gap isn't the models, but the architecture. Read his deep dive on building with Hermes Agent, @NousResearch, agent swarms, experiment loops, and what actually compounds.",
+    "size": "md",
+    "id": "x-hypepartners-why-of"
   }
 ]

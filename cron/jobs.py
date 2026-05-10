@@ -8,6 +8,7 @@ Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 import copy
 import json
 import logging
+import shutil
 import tempfile
 import threading
 import os
@@ -68,6 +69,65 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
     normalized["skills"] = skills
     normalized["skill"] = skills[0] if skills else None
+    return normalized
+
+
+def _coerce_job_text(value: Any, fallback: str = "") -> str:
+    """Coerce legacy/hand-edited nullable cron fields to strings for readers."""
+    if value is None:
+        return fallback
+    return str(value)
+
+
+def _schedule_display_for_job(job: Dict[str, Any]) -> str:
+    display = _coerce_job_text(job.get("schedule_display")).strip()
+    if display:
+        return display
+
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        for key in ("display", "value", "expr", "run_at"):
+            text = _coerce_job_text(schedule.get(key)).strip()
+            if text:
+                return text
+    elif schedule is not None:
+        return str(schedule)
+
+    return "?"
+
+
+def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a read-safe cron job shape for UI/API/tool/scheduler consumers.
+
+    Older or hand-edited jobs can have nullable fields like ``prompt``,
+    ``name``, or ``schedule_display``.  Keep storage untouched on read, but
+    ensure consumers never crash while formatting or running those records.
+    """
+    normalized = _apply_skill_fields(job)
+    job_id = _coerce_job_text(normalized.get("id"), "unknown")
+    prompt = _coerce_job_text(normalized.get("prompt"))
+    normalized["id"] = job_id
+    normalized["prompt"] = prompt
+
+    name = _coerce_job_text(normalized.get("name")).strip()
+    if not name:
+        script = _coerce_job_text(normalized.get("script")).strip()
+        label_source = (
+            prompt
+            or (normalized["skills"][0] if normalized.get("skills") else "")
+            or script
+            or job_id
+            or "cron job"
+        )
+        name = label_source[:50].strip() or "cron job"
+    normalized["name"] = name
+    normalized["schedule_display"] = _schedule_display_for_job(normalized)
+
+    state = _coerce_job_text(normalized.get("state")).strip()
+    if not state:
+        state = "scheduled" if normalized.get("enabled", True) else "paused"
+    normalized["state"] = state
+
     return normalized
 
 
@@ -532,11 +592,12 @@ def create_job(
     else:
         context_from = None
 
-    label_source = (prompt or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
+    prompt_text = _coerce_job_text(prompt)
+    label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
-        "prompt": prompt,
+        "prompt": prompt_text,
         "skills": normalized_skills,
         "skill": normalized_skills[0] if normalized_skills else None,
         "model": normalized_model,
@@ -580,13 +641,13 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     jobs = load_jobs()
     for job in jobs:
         if job["id"] == job_id:
-            return _apply_skill_fields(job)
+            return _normalize_job_record(job)
     return None
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
-    jobs = [_apply_skill_fields(j) for j in load_jobs()]
+    jobs = [_normalize_job_record(j) for j in load_jobs()]
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
     return jobs
@@ -636,7 +697,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         jobs[i] = updated
         save_jobs(jobs)
-        return _apply_skill_fields(jobs[i])
+        return _normalize_job_record(jobs[i])
     return None
 
 
@@ -696,6 +757,10 @@ def remove_job(job_id: str) -> bool:
     jobs = [j for j in jobs if j["id"] != job_id]
     if len(jobs) < original_len:
         save_jobs(jobs)
+        # Clean up output directory to prevent orphaned dirs accumulating
+        job_output_dir = OUTPUT_DIR / job_id
+        if job_output_dir.exists():
+            shutil.rmtree(job_output_dir)
         return True
     return False
 

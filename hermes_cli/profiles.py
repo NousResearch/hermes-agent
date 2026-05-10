@@ -81,8 +81,8 @@ INHERITANCE_SKELETON_YAML = """\
 # model: anthropic/claude-opus-4
 # max_turns: 120
 #
-# To disable inheritance, delete this file and run:
-#   hermes config set --profile {name} --no-inherit
+# To disable inheritance, set inherit: false below.
+inherit: true
 """
 
 # Template for standalone profiles (no inheritance)
@@ -93,6 +93,7 @@ FULL_CONFIG_SKELETON_YAML = """\
 # model: anthropic/claude-sonnet-4
 # max_turns: 90
 # toolsets: [terminal, file, web, search]
+inherit: false
 """
 
 
@@ -566,7 +567,7 @@ def create_profile(
     if not config_path.exists() and not (clone_from or clone_all or clone_config):
         # Only create skeleton for fresh profiles, not cloned ones
         if inherits:
-            config_path.write_text(INHERITANCE_SKELETON_YAML.format(name=name))
+            config_path.write_text(INHERITANCE_SKELETON_YAML)
         else:
             config_path.write_text(FULL_CONFIG_SKELETON_YAML)
 

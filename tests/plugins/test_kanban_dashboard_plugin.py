@@ -1036,6 +1036,20 @@ def test_create_task_without_skills_defaults_to_empty_list(client):
     assert task.get("skills") in (None, [])
 
 
+def test_create_task_with_toolset_name_in_skills_is_rejected(client):
+    """POST /tasks fails fast when callers confuse toolsets with skills."""
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "bad skills payload",
+            "assignee": "linguist",
+            "skills": ["web"],
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "toolset name" in r.json()["detail"]
+
+
 
 # ---------------------------------------------------------------------------
 # Dispatcher-presence warning in POST /tasks response

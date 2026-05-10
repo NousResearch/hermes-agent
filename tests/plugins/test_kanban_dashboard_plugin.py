@@ -467,6 +467,34 @@ def test_patch_status_triage_works(client):
     assert r.json()["task"]["status"] == "todo"
 
 
+def test_patch_status_uses_shared_operator_service(client, monkeypatch):
+    """Dashboard direct moves must call the shared operator service.
+
+    This prevents the dashboard route and external operator backends from
+    growing separate SQL/state-machine semantics for drag/drop moves.
+    """
+    from hermes_cli import kanban_operator as op
+
+    calls = []
+    original = op.set_status_direct
+
+    def spy(conn, task_id, status):
+        calls.append((task_id, status))
+        return original(conn, task_id, status)
+
+    monkeypatch.setattr(op, "set_status_direct", spy)
+    t = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "x"},
+    ).json()["task"]
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}", json={"status": "triage"},
+    )
+
+    assert r.status_code == 200
+    assert calls == [(t["id"], "triage")]
+
+
 # ---------------------------------------------------------------------------
 # Progress rollup (done children / total children)
 # ---------------------------------------------------------------------------

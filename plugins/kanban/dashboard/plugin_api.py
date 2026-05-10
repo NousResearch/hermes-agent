@@ -48,7 +48,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status as http_status
 from pydantic import BaseModel, Field
 
-from hermes_cli import kanban_db
+from hermes_cli import kanban_db, kanban_operator
 
 log = logging.getLogger(__name__)
 
@@ -620,7 +620,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     ok = kanban_db.unblock_task(conn, task_id)
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
-                    ok = _set_status_direct(conn, task_id, "ready")
+                    ok = kanban_operator.set_status_direct(conn, task_id, "ready")
             elif s == "archived":
                 ok = kanban_db.archive_task(conn, task_id)
             elif s == "running":
@@ -629,7 +629,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
                 )
             elif s in ("todo", "triage"):
-                ok = _set_status_direct(conn, task_id, s)
+                ok = kanban_operator.set_status_direct(conn, task_id, s)
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
             if not ok:
@@ -640,111 +640,27 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 
         # --- priority -----------------------------------------------------
         if payload.priority is not None:
-            with kanban_db.write_txn(conn):
-                conn.execute(
-                    "UPDATE tasks SET priority = ? WHERE id = ?",
-                    (int(payload.priority), task_id),
-                )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'reprioritized', ?, ?)",
-                    (task_id, json.dumps({"priority": int(payload.priority)}),
-                     int(time.time())),
-                )
+            if not kanban_operator.update_priority(conn, task_id, int(payload.priority)):
+                raise HTTPException(status_code=404, detail="task not found")
 
         # --- title / body -------------------------------------------------
         if payload.title is not None or payload.body is not None:
-            with kanban_db.write_txn(conn):
-                sets, vals = [], []
-                if payload.title is not None:
-                    if not payload.title.strip():
-                        raise HTTPException(status_code=400, detail="title cannot be empty")
-                    sets.append("title = ?")
-                    vals.append(payload.title.strip())
-                if payload.body is not None:
-                    sets.append("body = ?")
-                    vals.append(payload.body)
-                vals.append(task_id)
-                conn.execute(
-                    f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals,
+            try:
+                ok = kanban_operator.edit_task(
+                    conn,
+                    task_id,
+                    title=payload.title,
+                    body=payload.body,
                 )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'edited', NULL, ?)",
-                    (task_id, int(time.time())),
-                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            if not ok:
+                raise HTTPException(status_code=404, detail="task not found")
 
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(updated) if updated else None}
     finally:
         conn.close()
-
-
-def _set_status_direct(
-    conn: sqlite3.Connection, task_id: str, new_status: str,
-) -> bool:
-    """Direct status write for drag-drop moves that aren't covered by the
-    structured complete/block/unblock/archive verbs (e.g. todo<->ready,
-    running<->ready). Appends a ``status`` event row for the live feed.
-
-    When this transitions OFF ``running`` to anything other than the
-    terminal verbs above (which own their own run closing), we close the
-    active run with outcome='reclaimed' so attempt history isn't
-    orphaned. ``running -> ready`` via drag-drop is the common case
-    (user yanking a stuck worker back to the queue).
-    """
-    with kanban_db.write_txn(conn):
-        # Snapshot current state so we know whether to close a run.
-        prev = conn.execute(
-            "SELECT status, current_run_id FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        if prev is None:
-            return False
-
-        # Guard: don't allow promoting to 'ready' unless all parents are done.
-        # Prevents the dispatcher from spawning a child whose upstream work
-        # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
-        if new_status == "ready":
-            parent_statuses = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if parent_statuses and not all(
-                p["status"] == "done" for p in parent_statuses
-            ):
-                return False
-
-        was_running = prev["status"] == "running"
-
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, "
-            "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
-            "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
-            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
-            "WHERE id = ?",
-            (new_status, new_status, new_status, new_status, task_id),
-        )
-        if cur.rowcount != 1:
-            return False
-        run_id = None
-        if was_running and new_status != "running" and prev["current_run_id"]:
-            run_id = kanban_db._end_run(
-                conn, task_id,
-                outcome="reclaimed", status="reclaimed",
-                summary=f"status changed to {new_status} (dashboard/direct)",
-            )
-        conn.execute(
-            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-            "VALUES (?, ?, 'status', ?, ?)",
-            (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
-        )
-    # If we re-opened something, children may have gone stale.
-    if new_status in ("done", "ready"):
-        kanban_db.recompute_ready(conn)
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -835,70 +751,20 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
     ids = [i for i in (payload.ids or []) if i]
     if not ids:
         raise HTTPException(status_code=400, detail="ids is required")
-    results: list[dict] = []
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        for tid in ids:
-            entry: dict[str, Any] = {"id": tid, "ok": True}
-            try:
-                task = kanban_db.get_task(conn, tid)
-                if task is None:
-                    entry.update(ok=False, error="not found")
-                    results.append(entry)
-                    continue
-                if payload.archive:
-                    if not kanban_db.archive_task(conn, tid):
-                        entry.update(ok=False, error="archive refused")
-                if payload.status is not None and not payload.archive:
-                    s = payload.status
-                    if s == "done":
-                        ok = kanban_db.complete_task(
-                            conn, tid,
-                            result=payload.result,
-                            summary=payload.summary,
-                            metadata=payload.metadata,
-                        )
-                    elif s == "blocked":
-                        ok = kanban_db.block_task(conn, tid)
-                    elif s == "ready":
-                        cur = kanban_db.get_task(conn, tid)
-                        if cur and cur.status == "blocked":
-                            ok = kanban_db.unblock_task(conn, tid)
-                        else:
-                            ok = _set_status_direct(conn, tid, "ready")
-                    elif s in ("todo", "running", "triage"):
-                        ok = _set_status_direct(conn, tid, s)
-                    else:
-                        entry.update(ok=False, error=f"unknown status {s!r}")
-                        results.append(entry)
-                        continue
-                    if not ok:
-                        entry.update(ok=False, error=f"transition to {s!r} refused")
-                if payload.assignee is not None:
-                    try:
-                        if not kanban_db.assign_task(
-                            conn, tid, payload.assignee or None,
-                        ):
-                            entry.update(ok=False, error="assign refused")
-                    except RuntimeError as e:
-                        entry.update(ok=False, error=str(e))
-                if payload.priority is not None:
-                    with kanban_db.write_txn(conn):
-                        conn.execute(
-                            "UPDATE tasks SET priority = ? WHERE id = ?",
-                            (int(payload.priority), tid),
-                        )
-                        conn.execute(
-                            "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                            "VALUES (?, 'reprioritized', ?, ?)",
-                            (tid, json.dumps({"priority": int(payload.priority)}),
-                             int(time.time())),
-                        )
-            except Exception as e:  # defensive — one bad id shouldn't kill the batch
-                entry.update(ok=False, error=str(e))
-            results.append(entry)
-        return {"results": results}
+        return kanban_operator.bulk_update(
+            conn,
+            ids=ids,
+            status=payload.status,
+            assignee=payload.assignee,
+            priority=payload.priority,
+            archive=payload.archive,
+            result=payload.result,
+            summary=payload.summary,
+            metadata=payload.metadata,
+        )
     finally:
         conn.close()
 
@@ -1010,7 +876,7 @@ def reclaim_task_endpoint(
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        ok = kanban_db.reclaim_task(conn, task_id, reason=payload.reason)
+        ok = kanban_operator.reclaim_task(conn, task_id, reason=payload.reason)
         if not ok:
             raise HTTPException(
                 status_code=409,
@@ -1101,7 +967,7 @@ def reassign_task_endpoint(
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        ok = kanban_db.reassign_task(
+        ok = kanban_operator.reassign_task(
             conn, task_id,
             payload.profile or None,
             reclaim_first=bool(payload.reclaim_first),
@@ -1387,14 +1253,9 @@ def dispatch(
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        result = kanban_db.dispatch_once(
+        return kanban_operator.dispatch_once(
             conn, dry_run=dry_run, max_spawn=max_n, board=board,
         )
-        # DispatchResult is a dataclass.
-        try:
-            return asdict(result)
-        except TypeError:
-            return {"result": str(result)}
     finally:
         conn.close()
 
@@ -1419,42 +1280,34 @@ class RenameBoardBody(BaseModel):
     color: Optional[str] = None
 
 
-def _board_counts(slug: str) -> dict[str, int]:
-    """Return ``{status: count}`` for a board. Safe on an empty DB."""
-    try:
-        path = kanban_db.kanban_db_path(board=slug)
-        if not path.exists():
-            return {}
-        conn = kanban_db.connect(board=slug)
-        try:
-            rows = conn.execute(
-                "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
-            ).fetchall()
-            return {r["status"]: int(r["n"]) for r in rows}
-        finally:
-            conn.close()
-    except Exception:
-        return {}
-
-
 @router.get("/boards")
 def list_boards(include_archived: bool = Query(False)):
     """Return every board on disk with task counts and the active slug."""
-    boards = kanban_db.list_boards(include_archived=include_archived)
-    current = kanban_db.get_current_board()
-    for b in boards:
-        b["is_current"] = (b["slug"] == current)
-        b["counts"] = _board_counts(b["slug"])
-        b["total"] = sum(b["counts"].values())
-    return {"boards": boards, "current": current}
+    return kanban_operator.list_boards(include_archived=include_archived)
 
 
 @router.post("/boards")
 def create_board_endpoint(payload: CreateBoardBody):
     """Create a new board. Idempotent — ``slug`` collision returns existing."""
     try:
-        meta = kanban_db.create_board(
+        return kanban_operator.create_board(
             payload.slug,
+            name=payload.name,
+            description=payload.description,
+            icon=payload.icon,
+            color=payload.color,
+            switch=payload.switch,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.patch("/boards/{slug}")
+def rename_board(slug: str, payload: RenameBoardBody):
+    """Update a board's display metadata (slug is immutable — create a new one to rename the directory)."""
+    try:
+        return kanban_operator.update_board_metadata(
+            slug,
             name=payload.name,
             description=payload.description,
             icon=payload.icon,
@@ -1462,41 +1315,17 @@ def create_board_endpoint(payload: CreateBoardBody):
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if payload.switch:
-        try:
-            kanban_db.set_current_board(meta["slug"])
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-    return {"board": meta, "current": kanban_db.get_current_board()}
-
-
-@router.patch("/boards/{slug}")
-def rename_board(slug: str, payload: RenameBoardBody):
-    """Update a board's display metadata (slug is immutable — create a new one to rename the directory)."""
-    try:
-        normed = kanban_db._normalize_board_slug(slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    if not normed or not kanban_db.board_exists(normed):
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
-    meta = kanban_db.write_board_metadata(
-        normed,
-        name=payload.name,
-        description=payload.description,
-        icon=payload.icon,
-        color=payload.color,
-    )
-    return {"board": meta}
 
 
 @router.delete("/boards/{slug}")
 def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete instead of archive")):
     """Archive (default) or hard-delete a board."""
     try:
-        res = kanban_db.remove_board(slug, archive=not delete)
+        return kanban_operator.remove_board(slug, delete=delete)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"result": res, "current": kanban_db.get_current_board()}
 
 
 @router.post("/boards/{slug}/switch")
@@ -1508,13 +1337,11 @@ def switch_board(slug: str):
     commands and the CLI share the same current-board pointer.
     """
     try:
-        normed = kanban_db._normalize_board_slug(slug)
+        return kanban_operator.switch_board(slug)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if not normed or not kanban_db.board_exists(normed):
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
-    kanban_db.set_current_board(normed)
-    return {"current": normed}
 
 
 # ---------------------------------------------------------------------------

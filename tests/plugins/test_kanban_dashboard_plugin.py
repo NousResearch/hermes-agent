@@ -1833,3 +1833,49 @@ def test_run_metadata_secondary_styling():
     assert "max-height" in meta_decl
     assert "overflow: auto" in meta_decl
     assert "color: var(--color-muted-foreground)" in meta_decl
+
+
+def test_run_metadata_uses_native_collapse():
+    """Metadata panel uses <details>/<summary> for zero-JS collapse.
+
+    Native <details> means the browser handles state — no event handlers,
+    no React-state coupling, accessible by default (keyboard navigable,
+    screen-reader announces the disclosure state). Default-open state is
+    decided per-render based on payload length.
+    """
+    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
+    # Element must be <details> / <summary>, not plain <div>s.
+    assert 'h("details"' in js
+    assert 'h("summary"' in js
+    # The open prop is computed from json length (collapsed when verbose).
+    assert "open: !collapsed" in js or "open:!collapsed" in js
+    assert "json.length > 300" in js
+
+
+def test_run_metadata_skips_empty_object():
+    """Empty `{}` metadata renders nothing — no useless labeled block.
+
+    `r.metadata && {} && ...` would render a "Metadata" labeled block
+    containing just `{}`, which is visual noise. The render predicate now
+    also checks Object.keys(r.metadata).length > 0.
+    """
+    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
+    assert "Object.keys(r.metadata).length > 0" in js
+
+
+def test_run_metadata_disclosure_indicator_styled():
+    """Native disclosure marker is hidden + replaced with a CSS-only chevron.
+
+    Browsers render an OS-specific arrow next to <summary> by default. For a
+    consistent look across OSes the hermes dashboard hides that marker and
+    renders a CSS ::before chevron that rotates on [open]. Pin it so a
+    future CSS rebuild can't silently lose it (which would put two markers
+    side-by-side on Firefox/WebKit).
+    """
+    css = _dashboard_dist_path("style.css").read_text(encoding="utf-8")
+    # Default markers suppressed.
+    assert "list-style: none" in css
+    assert "::-webkit-details-marker" in css
+    # CSS-only chevron present + animates on open state.
+    assert ".hermes-kanban-run-meta-block[open]" in css
+    assert "rotate(90deg)" in css

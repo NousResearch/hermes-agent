@@ -422,6 +422,37 @@ async def test_discord_thread_participation_tracked_on_dispatch(adapter, monkeyp
     assert "777" in adapter._threads
 
 
+def test_thread_require_mention_defaults_to_false(adapter):
+    """thread_require_mention should default to False (existing behavior)."""
+    result = adapter._discord_thread_require_mention()
+    assert result is False
+
+
+def test_thread_require_mention_is_true_via_env(adapter, monkeypatch):
+    """thread_require_mention should return True when env var is set."""
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    result = adapter._discord_thread_require_mention()
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_discord_bot_thread_with_thread_require_mention_respects_mention(adapter, monkeypatch):
+    """When thread_require_mention=true, messages in bot threads require @mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    adapter._threads.mark("456")
+
+    thread = FakeThread(channel_id=456, name="existing thread")
+    message = make_message(channel=thread, content="follow-up without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_thread(adapter, monkeypatch):
     """Active voice-linked text channels should behave like free-response channels."""

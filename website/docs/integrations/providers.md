@@ -46,6 +46,8 @@ For the official API-key path, see the dedicated [Google Gemini guide](/docs/gui
 
 :::tip Model key alias
 In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.
+
+`model.default` still needs to be a real provider model ID (or a provider-published alias such as `gemini-pro-latest`). Hermes does not implement generic pseudo-values like `latest` or `auto`, so those will just be passed through as literal model names.
 :::
 
 

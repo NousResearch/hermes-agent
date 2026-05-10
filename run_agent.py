@@ -1911,7 +1911,8 @@ class AIAgent:
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
-        
+        self._write_current_session_sidecar()
+
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
         self._memory_write_origin = "assistant_tool"
@@ -5197,6 +5198,20 @@ class AIAgent:
         content = re.sub(r'\n+(<think>)', r'\n\1', content)
         content = re.sub(r'(</think>)\n+', r'\1\n', content)
         return content.strip()
+
+    def _write_current_session_sidecar(self) -> None:
+        try:
+            atomic_json_write(
+                get_hermes_home() / "current-session.json",
+                {
+                    "session_id": self.session_id,
+                    "pid": os.getpid(),
+                    "cwd": os.getcwd(),
+                    "updated_at": datetime.now().isoformat(),
+                },
+            )
+        except Exception as e:
+            logger.debug("Could not write current-session sidecar: %s", e)
 
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """
@@ -10432,6 +10447,7 @@ class AIAgent:
                     pass
                 # Update session_log_file to point to the new session's JSON file
                 self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+                self._write_current_session_sidecar()
                 self._session_db_created = False
                 self._session_db.create_session(
                     session_id=self.session_id,

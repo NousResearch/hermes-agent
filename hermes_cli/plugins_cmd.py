@@ -164,7 +164,8 @@ def _read_manifest(plugin_dir: Path) -> dict:
         import yaml
 
         with open(manifest_file, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            manifest = yaml.safe_load(f) or {}
+        return manifest if isinstance(manifest, dict) else {}
     except Exception as e:
         logger.warning("Failed to read plugin.yaml in %s: %s", plugin_dir, e)
         return {}
@@ -745,6 +746,8 @@ def _discover_all_plugins() -> list:
                 try:
                     with open(manifest_file, encoding="utf-8") as f:
                         manifest = yaml.safe_load(f) or {}
+                        if not isinstance(manifest, dict):
+                            manifest = {}
                     name = manifest.get("name", d.name)
                     version = manifest.get("version", "")
                     description = manifest.get("description", "")

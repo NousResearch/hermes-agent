@@ -220,6 +220,11 @@ class TestReadManifest:
         result = _read_manifest(tmp_path)
         assert result == {}
 
+    def test_non_mapping_yaml_returns_empty(self, tmp_path):
+        (tmp_path / "plugin.yaml").write_text("- not\n- a\n- mapping\n")
+        result = _read_manifest(tmp_path)
+        assert result == {}
+
 
 # ── cmd_install tests ─────────────────────────────────────────────────────────
 

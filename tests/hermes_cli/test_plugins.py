@@ -162,6 +162,23 @@ class TestPluginDiscovery:
         }
         assert len(non_bundled) == 0
 
+    def test_discover_skips_non_mapping_manifest(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "bad_manifest"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text("- just\n- a\n- list\n", encoding="utf-8")
+        (plugin_dir / "__init__.py").write_text("def register(ctx):\n    return None\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        non_bundled = {
+            n: p for n, p in mgr._plugins.items()
+            if p.manifest.source != "bundled"
+        }
+        assert non_bundled == {}
+
     def test_entry_points_scanned(self, tmp_path, monkeypatch):
         """Entry-point based plugins are discovered (mocked)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))

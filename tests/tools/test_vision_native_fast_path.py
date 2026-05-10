@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from tools.vision_tools import (
     _build_native_vision_tool_result,
@@ -150,6 +152,21 @@ class TestHandleVisionAnalyzeFastPath:
 
     def test_vision_capable_main_model_uses_fast_path(self, tmp_path, monkeypatch):
         """Main model supports native vision → fast path returns multimodal."""
+        # In ``auto`` mode, routing uses models.dev vision caps — CI snapshots may
+        # not list every slug and would fall through to auxiliary vision (no keys).
+        # Pin native routing here so we still exercise gate + multimodal envelope.
+        hermes_home = Path(os.environ["HERMES_HOME"])
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"agent": {"image_input_mode": "native"}}),
+            encoding="utf-8",
+        )
+        try:
+            import hermes_cli.config as _cfg_mod
+
+            _cfg_mod._LOAD_CONFIG_CACHE.clear()
+        except Exception:
+            pass
+
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
 

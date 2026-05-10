@@ -1785,3 +1785,51 @@ def test_dashboard_lane_head_preserves_assignee_casing():
         "Lane head must not visually uppercase profile names — see #21320 "
         "and the explanatory comment in the CSS rule."
     )
+
+
+# ---------------------------------------------------------------------------
+# Built-asset regressions for the dashboard's run-history rendering
+# (issue #19548 — completed-run metadata used to render as a large pale box
+# that read like a crash dump). The plugin ships built-only, so we lock in
+# the rendered shape with static assertions on dist/index.js + dist/style.css.
+# ---------------------------------------------------------------------------
+
+
+def _dashboard_dist_path(name: str) -> Path:
+    repo_root = Path(__file__).resolve().parents[2]
+    p = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / name
+    assert p.exists(), f"dashboard asset missing: {p}"
+    return p
+
+
+def test_run_metadata_pretty_printed_with_label():
+    """Run-history metadata is pretty-printed JSON inside a labeled sub-block."""
+    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
+    # Pretty-printed JSON (indent=2) so a writer task's changed_files +
+    # URLs blob doesn't render as one wall-of-text monoline.
+    assert "JSON.stringify(r.metadata, null, 2)" in js
+    # Explicit label so the panel reads as auxiliary detail, not a crash dump.
+    assert '"hermes-kanban-run-meta-label"' in js
+    assert '"Metadata"' in js
+    # Wrapped in the labelled meta block container.
+    assert '"hermes-kanban-run-meta-block"' in js
+
+
+def test_run_metadata_secondary_styling():
+    """Metadata block is capped, transparent, and visually secondary."""
+    css = _dashboard_dist_path("style.css").read_text(encoding="utf-8")
+    # The label class exists with muted-foreground treatment.
+    assert ".hermes-kanban-run-meta-label" in css
+    # Container styling: thin left rule, no opaque highlighted fill that
+    # could be mistaken for an error/warning panel.
+    assert ".hermes-kanban-run-meta-block" in css
+    block_start = css.index(".hermes-kanban-run-meta-block {")
+    block_decl = css[block_start : block_start + 400]
+    assert "background: transparent" in block_decl
+    assert "border-left" in block_decl
+    # Cap meta height so verbose JSON doesn't sprawl across the run row.
+    meta_start = css.index(".hermes-kanban-run-meta {")
+    meta_decl = css[meta_start : meta_start + 400]
+    assert "max-height" in meta_decl
+    assert "overflow: auto" in meta_decl
+    assert "color: var(--color-muted-foreground)" in meta_decl

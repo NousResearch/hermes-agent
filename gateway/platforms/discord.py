@@ -3528,6 +3528,15 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
+    def _discord_thread_require_mention(self) -> bool:
+        """Return whether Discord threads should still require a bot mention."""
+        configured = self.config.extra.get("thread_require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in ("false", "0", "no", "off")
+            return bool(configured)
+        return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() not in ("false", "0", "no", "off")
+
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
 
@@ -4107,8 +4116,9 @@ class DiscordAdapter(BasePlatformAdapter):
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._threads
+            thread_require_mention = self._discord_thread_require_mention()
 
-            if require_mention and not is_free_channel and not in_bot_thread:
+            if require_mention and not is_free_channel and not (in_bot_thread and not thread_require_mention):
                 if self._client.user not in message.mentions and not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every

@@ -359,6 +359,7 @@ async def test_discord_auto_thread_can_be_disabled(adapter, monkeypatch):
 async def test_discord_bot_thread_skips_mention_requirement(adapter, monkeypatch):
     """Messages in a thread the bot has participated in should not require @mention."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
 
@@ -374,6 +375,41 @@ async def test_discord_bot_thread_skips_mention_requirement(adapter, monkeypatch
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "follow-up without mention"
     assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_discord_bot_thread_can_require_mentions_when_thread_gate_enabled_via_env(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    adapter._threads.mark("456")
+
+    thread = FakeThread(channel_id=456, name="existing thread")
+    message = make_message(channel=thread, content="follow-up without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_bot_thread_can_require_mentions_when_thread_gate_enabled_in_config(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    adapter.config.extra["thread_require_mention"] = True
+    adapter._threads.mark("456")
+
+    thread = FakeThread(channel_id=456, name="existing thread")
+    message = make_message(channel=thread, content="follow-up without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

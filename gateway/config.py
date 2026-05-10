@@ -758,6 +758,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
+                if "thread_require_mention" in platform_cfg:
+                    bridged["thread_require_mention"] = platform_cfg["thread_require_mention"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:
@@ -823,6 +825,8 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(discord_cfg, dict):
                 if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
                     os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
+                if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
+                    os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
                 frc = discord_cfg.get("free_response_channels")
                 if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
                     if isinstance(frc, list):

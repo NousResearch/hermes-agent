@@ -13269,6 +13269,7 @@ class GatewayRunner:
     # Each entry is a tuple of (section, key) read from the raw config dict.
     # Add more here as new baked-at-construction config settings are added.
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
+        ("agent", "max_turns"),
         ("model", "context_length"),
         ("model", "max_tokens"),
         ("compression", "enabled"),

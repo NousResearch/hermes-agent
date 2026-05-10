@@ -44,7 +44,7 @@ This MCP server shells out to `gemini -p "prompt"` for tool calls. It uses the G
 
 ## Installation
 
-### Option 1: pip install (recommended)
+### Option 1: pip install (when published to PyPI)
 
 ```bash
 pip install gemini-mcp-server

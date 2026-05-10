@@ -362,13 +362,21 @@ class GatewayStreamConsumer:
                         chunks = self.adapter.truncate_message(
                             self._accumulated, _safe_limit
                         )
+                        chunks_delivered = False
+                        reply_to = self._message_id
                         for chunk in chunks:
-                            await self._send_new_chunk(chunk, self._message_id)
+                            new_id = await self._send_new_chunk(chunk, reply_to)
+                            if new_id is not None and new_id != reply_to:
+                                chunks_delivered = True
                         self._accumulated = ""
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
                         if got_done:
-                            self._final_response_sent = self._already_sent
+                            # Only claim final delivery if THESE chunks actually
+                            # landed.  ``_already_sent`` may be True from prior
+                            # tool-progress edits or fallback-mode promotion (#10748)
+                            # — that doesn't mean the final answer reached the user.
+                            self._final_response_sent = chunks_delivered
                             return
                         if got_segment_break:
                             self._message_id = None

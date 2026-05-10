@@ -9904,17 +9904,20 @@ class HermesCLI:
                 from agent.image_routing import (
                     build_native_content_parts,
                     decide_image_input_mode,
+                    native_vision_path_hint_enabled,
                 )
                 from hermes_cli.config import load_config
 
+                _cfg = load_config()
                 _img_mode = decide_image_input_mode(
                     (self.provider or "").strip(),
                     (self.model or "").strip(),
-                    load_config(),
+                    _cfg,
                 )
             except Exception as _img_exc:
                 logging.debug("image_routing decision failed, defaulting to text: %s", _img_exc)
                 _img_mode = "text"
+                _cfg = {}
 
             if _img_mode == "native":
                 try:
@@ -9923,6 +9926,7 @@ class HermesCLI:
                     _parts, _skipped = build_native_content_parts(
                         _text_for_parts,
                         _img_str_paths,
+                        include_path_hints=native_vision_path_hint_enabled(_cfg),
                     )
                     if _skipped:
                         _cprint(

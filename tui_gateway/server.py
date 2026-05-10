@@ -3094,6 +3094,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     from agent.image_routing import (
                         decide_image_input_mode,
                         build_native_content_parts,
+                        native_vision_path_hint_enabled,
                     )
                     from agent.auxiliary_client import (
                         _read_main_model,
@@ -3113,12 +3114,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         file=sys.stderr,
                     )
                     _mode = "text"
+                    _cfg = {}
 
                 if _mode == "native":
                     try:
                         _parts, _skipped = build_native_content_parts(
                             prompt,
                             images,
+                            include_path_hints=native_vision_path_hint_enabled(_cfg),
                         )
                         if _skipped:
                             print(

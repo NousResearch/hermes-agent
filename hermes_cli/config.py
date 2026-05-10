@@ -471,6 +471,12 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        # When true, native image turns also append "[Image attached at: <path>]"
+        # to the text part so MCP/skill tools can receive the same local image
+        # path as a string argument. Default false preserves prompt-cache
+        # friendliness and avoids exposing local cache paths unless explicitly
+        # needed.
+        "native_vision_path_hint": False,
         "disabled_toolsets": [],
     },
     

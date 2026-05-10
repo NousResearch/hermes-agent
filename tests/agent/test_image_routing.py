@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from agent.image_routing import (
     _explicit_aux_vision_override,
     build_native_content_parts,
     decide_image_input_mode,
+    native_vision_path_hint_enabled,
 )
 
 
@@ -125,6 +127,29 @@ class TestDecideImageInputMode:
             assert decide_image_input_mode("xiaomi", "mimo-v2.5-pro", {}) == "text"
 
 
+# ─── native_vision_path_hint_enabled ─────────────────────────────────────────
+
+
+class TestNativeVisionPathHintEnabled:
+    def test_missing_config_is_false(self):
+        assert native_vision_path_hint_enabled(None) is False
+        assert native_vision_path_hint_enabled({}) is False
+
+    def test_boolean_config(self):
+        assert native_vision_path_hint_enabled({"agent": {"native_vision_path_hint": True}}) is True
+        assert native_vision_path_hint_enabled({"agent": {"native_vision_path_hint": False}}) is False
+
+    def test_string_config(self):
+        for value in ("true", "True", "1", "yes", "on"):
+            assert native_vision_path_hint_enabled({"agent": {"native_vision_path_hint": value}}) is True
+        for value in ("false", "False", "0", "no", "off", "", "nonsense"):
+            assert native_vision_path_hint_enabled({"agent": {"native_vision_path_hint": value}}) is False
+
+    def test_non_bool_non_string_is_false(self):
+        assert native_vision_path_hint_enabled({"agent": {"native_vision_path_hint": 1}}) is False
+        assert native_vision_path_hint_enabled({"agent": {"native_vision_path_hint": ["true"]}}) is False
+
+
 # ─── build_native_content_parts ──────────────────────────────────────────────
 
 
@@ -136,31 +161,26 @@ def _png_bytes() -> bytes:
 
 
 class TestBuildNativeContentParts:
-    def test_text_then_image(self, tmp_path: Path):
+    def test_text_then_image_without_path_hint_by_default(self, tmp_path: Path):
         img = tmp_path / "cat.png"
         img.write_bytes(_png_bytes())
         parts, skipped = build_native_content_parts("hello", [str(img)])
         assert skipped == []
         assert len(parts) == 2
         assert parts[0]["type"] == "text"
-        # User caption is preserved and a per-image path hint is appended so
-        # the model can use the local path as a string argument for tools
-        # that take ``image_url: str`` (issue #18960).
-        assert parts[0]["text"] == f"hello\n\n[Image attached at: {img}]"
+        assert parts[0]["text"] == "hello"
         assert parts[1]["type"] == "image_url"
         assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
-    def test_empty_text_inserts_default_prompt(self, tmp_path: Path):
+    def test_empty_text_inserts_default_prompt_without_path_hint_by_default(self, tmp_path: Path):
         img = tmp_path / "cat.jpg"
         img.write_bytes(_png_bytes())
         parts, skipped = build_native_content_parts("", [str(img)])
         assert skipped == []
         # Even with empty user text, we insert a neutral prompt so the turn
-        # isn't just pixels, and the path hint is appended after.
+        # isn't just pixels.
         assert parts[0]["type"] == "text"
-        assert parts[0]["text"] == (
-            f"What do you see in this image?\n\n[Image attached at: {img}]"
-        )
+        assert parts[0]["text"] == "What do you see in this image?"
         assert parts[1]["type"] == "image_url"
 
     def test_missing_file_is_skipped(self, tmp_path: Path):
@@ -170,7 +190,7 @@ class TestBuildNativeContentParts:
         # would otherwise be told a non-existent file is attached.
         assert parts == [{"type": "text", "text": "hi"}]
 
-    def test_path_hint_appended(self, tmp_path: Path):
+    def test_path_hint_appended_when_enabled(self, tmp_path: Path):
         """The local path of each attached image is appended to the user
         text part so MCP/skill tools that take ``image_url: str`` can be
         invoked on the same image (issue #18960). Mirrors text-mode
@@ -178,14 +198,18 @@ class TestBuildNativeContentParts:
         """
         img = tmp_path / "scan.png"
         img.write_bytes(_png_bytes())
-        parts, _ = build_native_content_parts("attach this", [str(img)])
+        parts, _ = build_native_content_parts(
+            "attach this",
+            [str(img)],
+            include_path_hints=True,
+        )
         text_part = next(p for p in parts if p.get("type") == "text")
         assert "[Image attached at:" in text_part["text"]
         assert str(img) in text_part["text"]
         # User caption is preserved verbatim ahead of the hint.
         assert text_part["text"].startswith("attach this")
 
-    def test_path_hint_one_per_attached_image(self, tmp_path: Path):
+    def test_path_hint_one_per_attached_image_when_enabled(self, tmp_path: Path):
         """Each successfully attached image gets its own path hint line;
         skipped images do NOT appear in the hints.
         """
@@ -193,13 +217,28 @@ class TestBuildNativeContentParts:
         good.write_bytes(_png_bytes())
         missing = tmp_path / "missing.png"  # never created
         parts, skipped = build_native_content_parts(
-            "see attached", [str(good), str(missing)]
+            "see attached",
+            [str(good), str(missing)],
+            include_path_hints=True,
         )
         assert skipped == [str(missing)]
         text_part = next(p for p in parts if p.get("type") == "text")
         assert text_part["text"].count("[Image attached at:") == 1
         assert str(good) in text_part["text"]
         assert str(missing) not in text_part["text"]
+
+    def test_empty_text_path_hint_when_enabled(self, tmp_path: Path):
+        img = tmp_path / "scan.png"
+        img.write_bytes(_png_bytes())
+        parts, skipped = build_native_content_parts(
+            "",
+            [str(img)],
+            include_path_hints=True,
+        )
+        assert skipped == []
+        assert parts[0]["text"] == (
+            f"What do you see in this image?\n\n[Image attached at: {img}]"
+        )
 
     def test_multiple_images(self, tmp_path: Path):
         img1 = tmp_path / "a.png"
@@ -210,7 +249,22 @@ class TestBuildNativeContentParts:
         assert skipped == []
         image_parts = [p for p in parts if p.get("type") == "image_url"]
         assert len(image_parts) == 2
-        # Both paths surface in the text part, one per line.
+        text_part = next(p for p in parts if p.get("type") == "text")
+        assert text_part["text"] == "compare these"
+
+    def test_multiple_images_with_path_hints_enabled(self, tmp_path: Path):
+        img1 = tmp_path / "a.png"
+        img2 = tmp_path / "b.png"
+        img1.write_bytes(_png_bytes())
+        img2.write_bytes(_png_bytes())
+        parts, skipped = build_native_content_parts(
+            "compare these",
+            [str(img1), str(img2)],
+            include_path_hints=True,
+        )
+        assert skipped == []
+        image_parts = [p for p in parts if p.get("type") == "image_url"]
+        assert len(image_parts) == 2
         text_part = next(p for p in parts if p.get("type") == "text")
         assert text_part["text"].count("[Image attached at:") == 2
         assert str(img1) in text_part["text"]
@@ -284,3 +338,30 @@ class TestLargeImageHandling:
         assert len(parts) == 2
         assert parts[0]["type"] == "text"
         assert parts[1]["type"] == "image_url"
+
+
+# ─── Call-site wiring ────────────────────────────────────────────────────────
+
+
+class TestNativeVisionPathHintCallSites:
+    def test_production_call_sites_thread_path_hint_flag(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        files = [
+            repo_root / "cli.py",
+            repo_root / "gateway" / "run.py",
+            repo_root / "tui_gateway" / "server.py",
+        ]
+
+        for file_path in files:
+            tree = ast.parse(file_path.read_text(encoding="utf-8"), filename=str(file_path))
+            calls = [
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and getattr(node.func, "id", "") == "build_native_content_parts"
+            ]
+            assert calls, f"expected build_native_content_parts call in {file_path}"
+            for call in calls:
+                assert any(kw.arg == "include_path_hints" for kw in call.keywords), (
+                    f"{file_path} calls build_native_content_parts without include_path_hints"
+                )

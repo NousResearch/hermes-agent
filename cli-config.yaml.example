@@ -560,6 +560,19 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
+
+  # How user-attached images are presented to the main model.
+  #   auto:   attach natively when the current model supports vision; otherwise
+  #           pre-analyze with vision_analyze and inject a text description.
+  #   native: always attach pixels natively.
+  #   text:   always use vision_analyze text pre-analysis.
+  # image_input_mode: auto
+
+  # Native image turns do not expose local cache paths as text by default.
+  # Enable this when MCP/custom tools need the attached image path as a string
+  # argument. Trade-off: local paths are dynamic and may reduce prompt-cache
+  # reuse or expose host path details to the model provider.
+  # native_vision_path_hint: false
   
   # Enable verbose logging
   verbose: false

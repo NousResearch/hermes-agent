@@ -129,6 +129,31 @@ def decide_image_input_mode(
     return "text"
 
 
+def native_vision_path_hint_enabled(cfg: Optional[Dict[str, Any]]) -> bool:
+    """Return whether native image turns should expose local path hints.
+
+    This is intentionally opt-in. The path is useful when a tool expects an
+    ``image_url``/path string argument, but local cache paths are dynamic and
+    may reduce prompt-cache reuse or expose host path details to providers.
+    """
+    if not isinstance(cfg, dict):
+        return False
+    agent_cfg = cfg.get("agent") or {}
+    if not isinstance(agent_cfg, dict):
+        return False
+
+    raw = agent_cfg.get("native_vision_path_hint", False)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        val = raw.strip().lower()
+        if val in {"1", "true", "yes", "on"}:
+            return True
+        if val in {"", "0", "false", "no", "off"}:
+            return False
+    return False
+
+
 # Image size handling is REACTIVE rather than proactive: we attempt native
 # attachment at full size regardless of provider, and rely on
 # ``run_agent._try_shrink_image_parts_in_messages`` to shrink + retry if
@@ -230,22 +255,25 @@ def _file_to_data_url(path: Path) -> Optional[str]:
 def build_native_content_parts(
     user_text: str,
     image_paths: List[str],
+    *,
+    include_path_hints: bool = False,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Build an OpenAI-style ``content`` list for a user turn.
 
     Shape:
-      [{"type": "text", "text": "...\\n\\n[Image attached at: /local/path]"},
+      [{"type": "text", "text": "..."},
        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
        ...]
 
-    The local path of each successfully attached image is appended to the
-    text part as ``[Image attached at: <path>]``. The model still sees the
-    pixels via the ``image_url`` part (full native vision); the path note
-    just gives it a string handle so MCP/skill tools that take an image
-    path or URL argument can be invoked on the same image without an
-    extra round-trip. This parallels the text-mode hint produced by
-    ``Runner._enrich_message_with_vision`` (``vision_analyze using image_url:
-    <path>``) so behaviour is consistent across both image input modes.
+    When ``include_path_hints`` is true, the local path of each successfully
+    attached image is appended to the text part as
+    ``[Image attached at: <path>]``. The model still sees the pixels via the
+    ``image_url`` part (full native vision); the path note just gives it a
+    string handle so MCP/skill tools that take an image path or URL argument
+    can be invoked on the same image without an extra round-trip. This
+    parallels the text-mode hint produced by ``Runner._enrich_message_with_vision``
+    (``vision_analyze using image_url: <path>``) while remaining opt-in for
+    prompt-cache and local-path privacy reasons.
 
     Images are attached at their native size. If a provider rejects the
     request because an image is too large (e.g. Anthropic's 5 MB per-image
@@ -276,14 +304,17 @@ def build_native_content_parts(
 
     text = (user_text or "").strip()
 
-    # If at least one image attached, build a single text part that combines
-    # the user's caption (or a neutral default) with one path hint per image.
+    # If at least one image attached, build a single text part. If enabled,
+    # append one path hint per image that was actually attached.
     if attached_paths:
         base_text = text or "What do you see in this image?"
-        path_hints = "\n".join(
-            f"[Image attached at: {p}]" for p in attached_paths
-        )
-        combined_text = f"{base_text}\n\n{path_hints}"
+        if include_path_hints:
+            path_hints = "\n".join(
+                f"[Image attached at: {p}]" for p in attached_paths
+            )
+            combined_text = f"{base_text}\n\n{path_hints}"
+        else:
+            combined_text = base_text
         parts: List[Dict[str, Any]] = [{"type": "text", "text": combined_text}]
         parts.extend(image_parts)
         return parts, skipped
@@ -298,4 +329,5 @@ def build_native_content_parts(
 __all__ = [
     "decide_image_input_mode",
     "build_native_content_parts",
+    "native_vision_path_hint_enabled",
 ]

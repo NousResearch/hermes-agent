@@ -15127,10 +15127,26 @@ class GatewayRunner:
                 _native_imgs = self._consume_pending_native_image_paths(session_key)
                 if _native_imgs:
                     try:
-                        from agent.image_routing import build_native_content_parts
+                        from agent.image_routing import (
+                            build_native_content_parts,
+                            native_vision_path_hint_enabled,
+                        )
+                        from hermes_cli.config import load_config as _load_hermes_config
+
+                        try:
+                            _path_hint_cfg = _load_hermes_config()
+                        except Exception as _hint_exc:
+                            logger.debug(
+                                "Native image path-hint config read failed, using default false: %s",
+                                _hint_exc,
+                            )
+                            _path_hint_cfg = None
                         _parts, _skipped = build_native_content_parts(
                             message,
                             _native_imgs,
+                            include_path_hints=native_vision_path_hint_enabled(
+                                _path_hint_cfg
+                            ),
                         )
                         if _skipped:
                             logger.warning(

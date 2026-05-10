@@ -394,42 +394,68 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             pass
                     current_cmd = ""
         else:
-            result = subprocess.run(
-                ["ps", "-A", "eww", "-o", "pid=,command="],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                return []
-            for line in result.stdout.split("\n"):
-                stripped = line.strip()
-                if not stripped or "grep" in stripped:
-                    continue
+            # Try /proc first (works in Docker without procps installed),
+            # fall back to ps -A eww.
+            _found_via_proc = False
+            if os.path.isdir("/proc"):
+                try:
+                    my_pid = os.getpid()
+                    for entry in os.listdir("/proc"):
+                        if not entry.isdigit():
+                            continue
+                        pid = int(entry)
+                        if pid == my_pid or pid in exclude_pids:
+                            continue
+                        try:
+                            cmdline = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", errors="replace")
+                            cmdline = cmdline.replace("\x00", " ")
+                            if any(p in cmdline for p in patterns) and (
+                                all_profiles or _matches_current_profile(cmdline)
+                            ):
+                                _append_unique_pid(pids, pid, exclude_pids)
+                        except (OSError, PermissionError):
+                            continue
+                    _found_via_proc = True
+                except Exception:
+                    pass
 
-                pid = None
-                command = ""
+            if not _found_via_proc:
+                result = subprocess.run(
+                    ["ps", "-A", "eww", "-o", "pid=,command="],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode != 0:
+                    return []
+                for line in result.stdout.split("\n"):
+                    stripped = line.strip()
+                    if not stripped or "grep" in stripped:
+                        continue
 
-                parts = stripped.split(None, 1)
-                if len(parts) == 2:
-                    try:
-                        pid = int(parts[0])
-                        command = parts[1]
-                    except ValueError:
-                        pid = None
+                    pid = None
+                    command = ""
 
-                if pid is None:
-                    aux_parts = stripped.split()
-                    if len(aux_parts) > 10 and aux_parts[1].isdigit():
-                        pid = int(aux_parts[1])
-                        command = " ".join(aux_parts[10:])
+                    parts = stripped.split(None, 1)
+                    if len(parts) == 2:
+                        try:
+                            pid = int(parts[0])
+                            command = parts[1]
+                        except ValueError:
+                            pid = None
 
-                if pid is None:
-                    continue
-                if any(pattern in command for pattern in patterns) and (
-                    all_profiles or _matches_current_profile(command)
-                ):
-                    _append_unique_pid(pids, pid, exclude_pids)
+                    if pid is None:
+                        aux_parts = stripped.split()
+                        if len(aux_parts) > 10 and aux_parts[1].isdigit():
+                            pid = int(aux_parts[1])
+                            command = " ".join(aux_parts[10:])
+
+                    if pid is None:
+                        continue
+                    if any(pattern in command for pattern in patterns) and (
+                        all_profiles or _matches_current_profile(command)
+                    ):
+                        _append_unique_pid(pids, pid, exclude_pids)
     except (OSError, subprocess.TimeoutExpired):
         return []
 
@@ -633,6 +659,66 @@ def _probe_systemd_service_running(system: bool = False) -> tuple[bool, bool]:
     except (RuntimeError, subprocess.TimeoutExpired):
         return selected_system, False
     return selected_system, result.stdout.strip() == "active"
+
+
+def _read_systemd_unit_environment(system: bool = False) -> dict[str, str]:
+    """Parse the gateway unit's ``Environment=`` directives.
+
+    ``systemctl show -p Environment`` returns a single line of
+    space-separated ``KEY=VALUE`` pairs; values are not quoted in the output
+    even when the unit file quoted them. We split on whitespace and ``=``.
+    """
+    selected_system = _select_systemd_scope(system)
+    try:
+        result = _run_systemctl(
+            [
+                "show",
+                get_service_name(),
+                "--no-pager",
+                "--property",
+                "Environment",
+            ],
+            system=selected_system,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (RuntimeError, subprocess.TimeoutExpired, OSError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    parsed: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if not line.startswith("Environment="):
+            continue
+        body = line[len("Environment="):].strip()
+        for token in body.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            parsed[key] = value
+    return parsed
+
+
+def _sync_hermes_home_from_systemd_unit(system: bool) -> None:
+    """When acting on a system-scope unit, adopt its ``HERMES_HOME``.
+
+    Under ``sudo``, ``HERMES_HOME`` is stripped and ``HOME=/root``, so
+    :func:`get_hermes_home` falls back to ``/root/.hermes`` — the wrong
+    profile. The unit file pins ``HERMES_HOME`` for the actual gateway
+    process, so we mirror that into our own environment to make
+    ``read_runtime_status`` / ``get_running_pid`` read the correct files.
+    """
+    if not system:
+        return
+    env = _read_systemd_unit_environment(system=True)
+    unit_home = env.get("HERMES_HOME", "").strip()
+    if not unit_home:
+        return
+    current = os.environ.get("HERMES_HOME", "").strip()
+    if current == unit_home:
+        return
+    os.environ["HERMES_HOME"] = unit_home
 
 
 def _read_systemd_unit_properties(
@@ -1139,6 +1225,27 @@ def is_macos() -> bool:
 
 def is_windows() -> bool:
     return sys.platform == 'win32'
+
+
+def _windows_gateway_should_absorb_console_controls() -> bool:
+    """Return True for detached Windows gateway runs that should ignore Ctrl+C.
+
+    Foreground ``hermes gateway run`` must remain interruptible from
+    PowerShell/CMD. Detached service-style launches opt in via
+    ``HERMES_GATEWAY_DETACHED=1``; older wrappers without the env marker are
+    treated as detached when no interactive stdin is attached.
+    """
+    if not is_windows():
+        return False
+
+    detached = os.getenv("HERMES_GATEWAY_DETACHED", "").strip().lower()
+    if detached in {"1", "true", "yes", "on"}:
+        return True
+
+    try:
+        return not bool(sys.stdin and sys.stdin.isatty())
+    except (ValueError, OSError):
+        return True
 
 
 # =============================================================================
@@ -2149,7 +2256,30 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
-    unit_path.write_text(generate_systemd_unit(system=system, run_as_user=expected_user), encoding="utf-8")
+    new_unit = generate_systemd_unit(system=system, run_as_user=expected_user)
+
+    # ── Test-environment safety belt ─────────────────────────────────────
+    # The user-scope unit path resolves under ``Path.home()``, which is NOT
+    # sandboxed by the test conftest (only HERMES_HOME is). If a test
+    # exercises ``run_gateway()`` with a pytest-tmp HERMES_HOME, the freshly
+    # generated unit bakes that ``/tmp/pytest-of-.../hermes_test`` path into
+    # ``Environment="HERMES_HOME=..."``. Writing that to the developer's
+    # real user systemd unit file silently breaks their gateway on the next
+    # reboot (systemd loads the polluted env, the gateway looks at an empty
+    # tmp dir, and Telegram/Discord/etc. all show as "not configured").
+    # Refuse to write when the generated unit references a pytest tmpdir.
+    # Detection sniffs the unit body — tests that legitimately exercise the
+    # refresh flow patch ``generate_systemd_unit`` to return synthetic
+    # content (``"new unit\n"``) which doesn't contain these markers and
+    # still works.
+    if not system and (
+        "/pytest-of-" in new_unit
+        or "/hermes_test\"" in new_unit
+        or "/hermes_test/" in new_unit
+    ):
+        return False
+
+    unit_path.write_text(new_unit, encoding="utf-8")
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
     return True
@@ -2380,6 +2510,7 @@ def systemd_stop(system: bool = False):
     if system:
         _require_root_for_system_service("stop")
     _require_service_installed("stop", system=system)
+    _sync_hermes_home_from_systemd_unit(system=system)
     try:
         from gateway.status import get_running_pid, write_planned_stop_marker
         pid = get_running_pid(cleanup_stale=False)
@@ -2408,6 +2539,7 @@ def systemd_restart(system: bool = False):
         _preflight_user_systemd()
     _require_service_installed("restart", system=system)
     refresh_systemd_unit_if_needed(system=system)
+    _sync_hermes_home_from_systemd_unit(system=system)
     from gateway.status import get_running_pid
 
     pid = get_running_pid() or _systemd_main_pid(system=system)
@@ -2502,6 +2634,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print("✗ Gateway service is not installed")
         print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
         return
+
+    _sync_hermes_home_from_systemd_unit(system=system)
 
     if has_conflicting_systemd_units():
         print_systemd_scope_conflict_warning()
@@ -2978,34 +3112,17 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
 
-    # On Windows, when the gateway is launched as a detached background
-    # process (via ``hermes gateway install`` → Scheduled Task / Startup
-    # folder / direct pythonw.exe spawn) there is no console attached. In
-    # that case Windows can still deliver CTRL_C_EVENT / CTRL_BREAK_EVENT
-    # to the process group under some circumstances (e.g. when *another*
-    # process in the same group sends one), which Python 3.11 translates
-    # into KeyboardInterrupt inside asyncio.run(). The outer handler below
-    # catches that and exits cleanly — silently killing the gateway. On
-    # detached boots we must absorb those spurious signals so the gateway
-    # stays alive; real user Ctrl+C still comes through prompt_toolkit /
-    # the asyncio signal handler when running in a real console.
-    #
-    # IMPORTANT lesson (May 2026): we originally gated this on "stdin is
-    # NOT a TTY" assuming only detached pythonw runs would be vulnerable.
-    # Wrong. When the user runs `hermes gateway start` from a PowerShell
-    # console, the gateway inherits that console and stdin IS a TTY —
-    # but it's STILL vulnerable to CTRL_C_EVENT broadcast by any sibling
-    # `hermes` invocation (like `hermes gateway status` 30 seconds later)
-    # because Windows routes console events to all processes sharing the
-    # console. Every hermes CLI process after that sibling fires is a
-    # potential drive-by killer. So on Windows, for `gateway run`
-    # specifically (never interactive by design), always install the
-    # SIGINT absorber regardless of TTY state.
+    # Detached Windows gateway runs must ignore console-control broadcasts
+    # from sibling CLI processes, but foreground `hermes gateway run` still
+    # needs to obey the banner's "Press Ctrl+C to stop" contract.
+    # Service-style launchers set HERMES_GATEWAY_DETACHED=1; older wrappers
+    # without the marker are handled by the non-TTY fallback.
     try:
         _stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
     except (ValueError, OSError):
         _stdin_is_tty = False
-    if is_windows():
+    _absorb_windows_console_controls = _windows_gateway_should_absorb_console_controls()
+    if _absorb_windows_console_controls:
         try:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             if hasattr(signal, "SIGBREAK"):
@@ -3103,6 +3220,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         replace=replace,
         argv=sys.argv,
         stdin_is_tty=_stdin_is_tty,
+        absorb_windows_console_controls=_absorb_windows_console_controls,
     )
 
     def _atexit_hook() -> None:

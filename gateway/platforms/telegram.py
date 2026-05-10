@@ -180,18 +180,32 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
     if len(headers) < 2:
         return "\n".join(table_block)
 
+    # Detect row-label column: present when data rows have one more cell
+    # than the header row (the row-label column carries no header).
+    first_data_row = _split_markdown_table_row(table_block[2]) if len(table_block) > 2 else []
+    has_row_label_col = len(first_data_row) == len(headers) + 1
+
     rendered_rows: list[str] = []
     for index, row in enumerate(table_block[2:], start=1):
         cells = _split_markdown_table_row(row)
-        if len(cells) < len(headers):
-            cells.extend([""] * (len(headers) - len(cells)))
-        elif len(cells) > len(headers):
-            cells = cells[: len(headers)]
+        if has_row_label_col:
+            # First cell is the row-label (heading); remaining cells align with headers.
+            heading = cells[0] if cells and cells[0] else f"Row {index}"
+            data_cells = cells[1:]
+        else:
+            # No row-label column: use first non-empty cell as heading.
+            heading = next((cell for cell in cells if cell), f"Row {index}")
+            data_cells = cells
 
-        heading = next((cell for cell in cells if cell), f"Row {index}")
+        # Pad or trim data_cells to match headers length.
+        if len(data_cells) < len(headers):
+            data_cells.extend([""] * (len(headers) - len(data_cells)))
+        elif len(data_cells) > len(headers):
+            data_cells = data_cells[: len(headers)]
+
         rendered_rows.append(f"**{heading}**")
         rendered_rows.extend(
-            f"• {header}: {value}" for header, value in zip(headers, cells)
+            f"• {header}: {value}" for header, value in zip(headers, data_cells)
         )
 
     return "\n\n".join(rendered_rows)
@@ -305,6 +319,30 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Notification mode for message sends.
+        # "important" — only final responses, approvals, and slash confirmations
+        #               trigger notifications; tool progress, streaming, status
+        #               messages are delivered silently via disable_notification.
+        #               This is the default — Telegram users found per-tool-call
+        #               push notifications too noisy.
+        # "all"       — every message triggers a push notification (legacy
+        #               behavior; opt-in via display.platforms.telegram.notifications).
+        self._notifications_mode: str = "important"
+
+    def _notification_kwargs(
+        self, metadata: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Return disable_notification kwargs when the adapter is in silent mode.
+
+        In "important" mode, all message sends are silently delivered
+        (disable_notification=True) unless the caller explicitly requests a
+        notification by setting ``metadata["notify"] = True``.
+        """
+        if getattr(self, "_notifications_mode", "important") != "important":
+            return {}
+        if (metadata or {}).get("notify"):
+            return {}
+        return {"disable_notification": True}
 
     def _is_callback_user_authorized(
         self,
@@ -1400,6 +1438,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
+                                **self._notification_kwargs(metadata),
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -1413,6 +1452,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
+                                    **self._notification_kwargs(metadata),
                                 )
                             else:
                                 raise
@@ -1515,6 +1555,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         try:
+            if not finalize:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    text=content,
+                )
+                return SendResult(success=True, message_id=message_id)
+
             formatted = self.format_message(content)
             try:
                 await self._bot.edit_message_text(
@@ -2352,6 +2400,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **voice_thread_kwargs,
+                            **self._notification_kwargs(metadata),
                         },
                         metadata,
                         reply_to_id,
@@ -2376,6 +2425,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **audio_thread_kwargs,
+                            **self._notification_kwargs(metadata),
                         },
                         metadata,
                         reply_to_id,
@@ -2512,6 +2562,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "media": media,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._notification_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -2569,6 +2620,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._notification_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -2664,6 +2716,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._notification_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -2709,6 +2762,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._notification_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -2759,6 +2813,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **photo_thread_kwargs,
+                    **self._notification_kwargs(metadata),
                 },
                 metadata,
                 reply_to_id,
@@ -2794,6 +2849,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **upload_thread_kwargs,
+                        **self._notification_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -2839,6 +2895,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **animation_thread_kwargs,
+                    **self._notification_kwargs(metadata),
                 },
                 metadata,
                 reply_to_id,
@@ -3105,6 +3162,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
+    def _telegram_guest_mode(self) -> bool:
+        """Return whether non-allowlisted groups may trigger via direct @mention."""
+        configured = self.config.extra.get("guest_mode")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("TELEGRAM_GUEST_MODE", "false").lower() in ("true", "1", "yes", "on")
+
     def _telegram_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
@@ -3116,8 +3182,9 @@ class TelegramAdapter(BasePlatformAdapter):
     def _telegram_allowed_chats(self) -> set[str]:
         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
 
-        When non-empty, group messages from chats NOT in this set are silently
-        ignored — even if the bot is @mentioned.  DMs are never filtered.
+        When non-empty, group messages from chats NOT in this set are
+        silently ignored unless ``guest_mode`` is enabled and the bot is
+        explicitly @mentioned.  DMs are never filtered.
         Empty set means no restriction (fully backward compatible).
         """
         raw = self.config.extra.get("allowed_chats")
@@ -3264,6 +3331,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     return True
         return False
 
+    def _is_guest_mention(self, message: Message) -> bool:
+        """Return True for the narrow guest-mode bypass: explicit bot mention.
+
+        The caller (:meth:`_should_process_message`) has already verified
+        the message is a group chat, so that check is not repeated here.
+        """
+        return self._telegram_guest_mode() and self._message_mentions_bot(message)
+
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
         if not text or not self._bot or not getattr(self._bot, "username", None):
             return text
@@ -3275,16 +3350,18 @@ class TelegramAdapter(BasePlatformAdapter):
         """Apply Telegram group trigger rules.
 
         DMs remain unrestricted. Group/supergroup messages are accepted when:
-        - the chat passes the ``allowed_chats`` whitelist (when set)
+        - the chat passes the ``allowed_chats`` whitelist (when set), or
+          ``guest_mode`` is enabled and the bot is explicitly mentioned
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
 
-        When ``allowed_chats`` is non-empty, it acts as a hard gate — messages
-        from any chat not in the list are ignored regardless of the other
-        rules.  When ``require_mention`` is enabled, slash commands are not given
+        When ``allowed_chats`` is non-empty, it remains a hard gate except for
+        the narrow ``guest_mode`` bypass: group/supergroup messages that
+        explicitly @mention this bot. Replies and regex wake words do not bypass
+        ``allowed_chats``. When ``require_mention`` is enabled, slash commands are not given
         special treatment — they must pass the same mention/reply checks
         as any other group message.  Users can still trigger commands via
         the Telegram bot menu (``/command@botname``) or by explicitly
@@ -3293,14 +3370,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._is_group_chat(message):
             return True
-        # allowed_chats check (whitelist — must pass before other gating).
-        # When set, group messages from chats NOT in this whitelist are
-        # silently ignored, even if @mentioned.  DMs are already excluded above.
-        allowed = self._telegram_allowed_chats()
-        if allowed:
-            chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
-            if chat_id_str not in allowed:
-                return False
+
         thread_id = getattr(message, "message_thread_id", None)
         if thread_id is not None:
             try:
@@ -3308,13 +3378,31 @@ class TelegramAdapter(BasePlatformAdapter):
                     return False
             except (TypeError, ValueError):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
-        if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
+
+        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+
+        # Resolve guest-mode mention bypass once so _message_mentions_bot
+        # is not called redundantly in the normal flow below.
+        guest_mention = self._is_guest_mention(message)
+
+        # allowed_chats check (whitelist). When set, group messages from chats
+        # outside the whitelist are ignored unless guest_mode permits this
+        # exact message as an explicit direct mention. DMs are excluded above.
+        allowed = self._telegram_allowed_chats()
+        if allowed and chat_id_str not in allowed:
+            return guest_mention
+
+        if guest_mention:
+            return True
+        if chat_id_str in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():
             return True
         if self._is_reply_to_bot(message):
             return True
-        if self._message_mentions_bot(message):
+        # When guest_mode is True, _is_guest_mention already called
+        # _message_mentions_bot above — skip the redundant second call.
+        if not self._telegram_guest_mode() and self._message_mentions_bot(message):
             return True
         return self._message_matches_mention_patterns(message)
 
@@ -4004,12 +4092,28 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
         )
         
-        # Extract reply context if this message is a reply
+        # Extract reply context if this message is a reply.
+        # Prefer Telegram's native partial quote (message.quote, TextQuote)
+        # so a user replying to a single selected substring of a prior
+        # multi-section message doesn't get the whole replied-to message
+        # injected into the agent's context — which can cause the agent
+        # to act on unrelated actionable-looking text the user didn't
+        # quote (#22619). Fall back to the full replied-to message text
+        # / caption when no native quote is present.
         reply_to_id = None
         reply_to_text = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
-            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+            quote = getattr(message, "quote", None)
+            quote_text = getattr(quote, "text", None) if quote is not None else None
+            if quote_text:
+                reply_to_text = quote_text
+            else:
+                reply_to_text = (
+                    message.reply_to_message.text
+                    or message.reply_to_message.caption
+                    or None
+                )
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt

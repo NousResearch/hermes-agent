@@ -64,11 +64,27 @@ AUTHOR_MAP = {
     "ytchen0719@gmail.com": "liquidchen",
     "am@studio1.tailb672fe.ts.net": "subtract0",
     "axmaiqiu@gmail.com": "qWaitCrypto",
+    "44045911+kidonng@users.noreply.github.com": "kidonng",
+    "daniellsmarta@gmail.com": "DanielLSM",
+    "264291321+v1b3coder@users.noreply.github.com": "v1b3coder",
+    "silverchris@foxmail.com": "ming1523",
+    "maksesipov@gmail.com": "Qwinty",
+    "denisamania@gmail.com": "CalmProton",
+    "308068+mbac@users.noreply.github.com": "mbac",
+    "ninso112@proton.me": "Ninso112",
+    "wesleysimplicio@live.com": "wesleysimplicio",
+    "matthew.dean.cater@gmail.com": "SiliconID",
+    "xieniu@proton.me": "xieNniu",
+    "rw8143a@american.edu": "wali-reheman",
+    "egitimviscara@gmail.com": "uzunkuyruk",
+    "zhekinmaksim@gmail.com": "Zhekinmaksim",
+    "obafemiferanmi1999@gmail.com": "KvnGz",
     "159539633+MottledShadow@users.noreply.github.com": "MottledShadow",
     "aludwin+gh@gmail.com": "adamludwin",
     "ngusev@astralinux.ru": "NikolayGusev-astra",
     "liuguangyong201@hellobike.com": "liuguangyong93",
     "2093036+exiao@users.noreply.github.com": "exiao",
+    "20nik.nosov21@gmail.com": "nik1t7n",
     "thunderggnn@gmail.com": "ggnnggez",
     "haozhe4547@gmail.com": "ehz0ah",
     "kevyan1998@gmail.com": "kyan12",
@@ -143,6 +159,7 @@ AUTHOR_MAP = {
     "luwinyang@deepseek.com": "lsdsjy",
     "season.saw@gmail.com": "season179",
     "heathley@Heathley-MacBook-Air.local": "heathley",
+    "maliyldzhn@gmail.com": "heathley",
     "vlad19@gmail.com": "dandaka",
     "adamrummer@gmail.com": "cyclingwithelephants",
     # Temporary tool-progress cleanup salvage (May 2026)
@@ -166,6 +183,8 @@ AUTHOR_MAP = {
     "momowind@gmail.com": "momowind",
     "clockwork-codex@users.noreply.github.com": "misery-hl",
     "207811921+misery-hl@users.noreply.github.com": "misery-hl",
+    "20nik.nosov21@gmail.com": "nik1t7n",
+    "90299797+nik1t7n@users.noreply.github.com": "nik1t7n",
     "suncokret@protonmail.com": "suncokret12",
     "mio.imoto.ai@gmail.com": "mioimotoai-lgtm",
     "aamirjawaid@microsoft.com": "heyitsaamir",
@@ -216,6 +235,9 @@ AUTHOR_MAP = {
     "itonov@proton.me": "Ito-69",
     "glesstech@gmail.com": "georgeglessner",
     "maxim.smetanin@gmail.com": "maxims-oss",
+    # Codex Spark restoration salvage (May 2026)
+    "olegwn@gmail.com": "nederev",
+    "vesper@askclaw.dev": "askclaw-vesper",
     "nazirulhafiy@gmail.com": "nazirulhafiy",
     "CREWorx@users.noreply.github.com": "BadTechBandit",
     "yoimexex@gmail.com": "Yoimex",
@@ -679,6 +701,8 @@ AUTHOR_MAP = {
     "chenb19870707@gmail.com": "ms-alan",
     "276886827+WuTianyi123@users.noreply.github.com": "WuTianyi123",
     "22549957+li0near@users.noreply.github.com": "li0near",
+    "guoyu801@gmail.com": "li0near",
+    "ty@tmrtn.com": "tymrtn",
     "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
     "haimu0x0@proton.me": "haimu0x",
     "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",
@@ -822,6 +846,7 @@ AUTHOR_MAP = {
     "ntconguit@gmail.com": "0xharryriddle",
     "lhysdl@gmail.com": "lhysdl",
     "shemol@163.com": "SherlockShemol",
+    "enochlam2002@gmail.com": "eloklam",
     "clawdia@fmercurio-macstudio.local": "fmercurio",
     "ricardoporsche001@icloud.com": "Ricardo-M-L",
     "leozeli@qq.com": "leozeli",
@@ -912,6 +937,7 @@ AUTHOR_MAP = {
     "agentsmithlaor@gmail.com": "oferlaor",  # PR #22356 salvage (cron origin sender identity)
     "jhin.lee@unity3d.com": "leehack",  # PR #22053 salvage (telegram DM topic reply fallback)
     # pander: empty email, salvaged via PR #19665 from #16126 by @ms-alan
+    "ayman.a.kamal@hotmail.com": "A-kamal",  # PR #18678 (xAI image resolution fix)
 }
 
 

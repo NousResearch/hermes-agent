@@ -157,6 +157,9 @@ MEMORY_GUIDANCE = (
     "User preferences and recurring corrections matter more than procedural task details.\n"
     "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
     "state to memory; use session_search to recall those from past transcripts. "
+    "Specifically: do not record PR numbers, issue numbers, commit SHAs, 'fixed bug X', "
+    "'submitted PR Y', 'Phase N done', file counts, or any artifact that will be stale "
+    "in 7 days. If a fact will be stale in a week, it does not belong in memory. "
     "If you've discovered a new way to do something, solved a problem that could be "
     "necessary later, save it as a skill with the skill tool.\n"
     "Write memories as declarative facts, not instructions to yourself. "
@@ -563,6 +566,18 @@ PLATFORM_HINTS = {
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
         "code fences). Treat this like a conversation, not a document. Keep responses "
         "brief and natural."
+    ),
+    "webui": (
+        "You are in the Hermes WebUI, a browser-based chat interface. "
+        "Full Markdown rendering is supported — headings, bold, italic, code "
+        "blocks, tables, math (LaTeX), and Mermaid diagrams all render natively. "
+        "To display local or remote media/files inline, include "
+        "MEDIA:/absolute/path/to/file or MEDIA:https://... in your response. "
+        "Local file paths must be absolute. Images, audio (with playback speed "
+        "controls), video, PDFs, HTML, CSV, diffs/patches, and Excalidraw files "
+        "render as rich previews. Do not use Markdown image syntax like "
+        "![alt](/path) for local files; local paths are not served that way. "
+        "Use MEDIA:/absolute/path instead."
     ),
 }
 

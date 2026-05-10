@@ -2507,6 +2507,27 @@ def test_build_worker_context_caps_prior_attempts(kanban_home):
         conn.close()
 
 
+def test_build_worker_context_renders_author_with_safe_framing(kanban_home):
+    """Author rendering wraps the operator-controlled author in code fences
+    + "comment from worker" prefix so a misleading HERMES_PROFILE name
+    (e.g. "hermes-system", "operator") can't be misread as a system
+    directive above the comment body. Defense-in-depth — see #22452."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="t", assignee="worker")
+        kb.add_comment(conn, tid, author="hermes-system", body="some note")
+        ctx = kb.build_worker_context(conn, tid)
+
+        # No bold-author rendering anywhere in the context.
+        assert "**hermes-system**" not in ctx
+        # Explicit provenance prefix is present.
+        assert "comment from worker `hermes-system` at " in ctx
+        # The body still renders.
+        assert "some note" in ctx
+    finally:
+        conn.close()
+
+
 def test_build_worker_context_caps_comments(kanban_home):
     """Same cap for comments — comment-storm tasks stay bounded."""
     conn = kb.connect()
@@ -2516,10 +2537,15 @@ def test_build_worker_context_caps_comments(kanban_home):
             kb.add_comment(conn, tid, author=f"u{i % 3}", body=f"comment {i}")
         ctx = kb.build_worker_context(conn, tid)
         # Only _CTX_MAX_COMMENTS most-recent shown in full
-        comment_count = ctx.count("**u")
-        # 3 distinct authors u0/u1/u2 so the count is trickier; use the
-        # "comment N" body text to count.
-        body_count = sum(1 for line in ctx.splitlines() if line.startswith("comment "))
+        # Count by body text since author rendering uses code-fenced
+        # "comment from worker `<author>` at <ts>:" framing (#22452).
+        # Comment bodies are "comment 0".."comment 99" so we need to
+        # match the body specifically (digit suffix), not the author
+        # provenance line (which also starts with "comment ").
+        import re
+        body_count = sum(
+            1 for line in ctx.splitlines() if re.fullmatch(r"comment \d+", line)
+        )
         assert body_count == kb._CTX_MAX_COMMENTS, (
             f"expected {kb._CTX_MAX_COMMENTS} comments shown, got {body_count}"
         )

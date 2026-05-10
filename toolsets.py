@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # xAI native web search via Responses API web_search tool (gated on XAI_API_KEY)
+    "xai_web_search",
 ]
 
 
@@ -114,6 +116,17 @@ TOOLSETS = {
             "or keyboard focus. Works with any tool-capable model."
         ),
         "tools": ["computer_use"],
+        "includes": []
+    },
+
+    "xai_web_search": {
+        "description": (
+            "xAI-native web search via the Responses API web_search "
+            "built-in tool. Returns an answer grounded in citations; "
+            "alternative to the existing web_search tool when xAI is "
+            "available."
+        ),
+        "tools": ["xai_web_search"],
         "includes": []
     },
 

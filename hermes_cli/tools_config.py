@@ -76,6 +76,7 @@ CONFIGURABLE_TOOLSETS = [
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
+    ("xai_web_search",   "🌐 xAI Web Search",            "live web search via xAI Responses API web_search"),
 ]
 
 # Toolsets that are OFF by default for new installs.

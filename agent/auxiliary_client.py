@@ -2224,6 +2224,17 @@ def _refresh_provider_credentials(provider: str) -> bool:
                 return False
             _evict_cached_clients(normalized)
             return True
+        if normalized == "copilot":
+            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
+
+            token, _source = resolve_copilot_token()
+            if not str(token or "").strip():
+                return False
+            api_token = get_copilot_api_token(token)
+            if not str(api_token or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
     except Exception as exc:
         logger.debug("Auxiliary provider credential refresh failed for %s: %s", normalized, exc)
         return False

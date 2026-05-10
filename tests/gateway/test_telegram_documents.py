@@ -108,6 +108,7 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     msg.from_user.id = 1
     msg.from_user.full_name = "Test User"
     msg.message_thread_id = None
+    msg.reply_text = AsyncMock()
     return msg
 
 
@@ -339,8 +340,44 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
-        event = adapter.handle_message.call_args[0][0]
-        assert "Unsupported" in event.text
+
+        adapter.handle_message.assert_not_called()
+        msg.reply_text.assert_awaited_once()
+        notice = msg.reply_text.await_args.args[0]
+        assert "Unsupported document type" in notice
+        assert "Supported types" in notice
+
+    @pytest.mark.asyncio
+    async def test_unsupported_document_type_replies_without_agent_event(self, adapter):
+        """Gateway-generated unsupported-type text must not be forged as user text."""
+        doc = _make_document(file_name="book.epub", mime_type="application/epub+zip", file_size=100)
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        adapter.handle_message.assert_not_called()
+        msg.reply_text.assert_awaited_once()
+        notice = msg.reply_text.await_args.args[0]
+        assert "Unsupported document type '.epub'" in notice
+        assert "book.epub" in notice
+
+    @pytest.mark.asyncio
+    async def test_cache_failure_replies_without_empty_agent_event(self, adapter):
+        """Download/cache failures should be visible to Telegram and not sent as empty events."""
+        doc = _make_document(file_name="notes.md", mime_type="text/markdown", file_size=100)
+        doc.get_file = AsyncMock(side_effect=RuntimeError("Telegram CDN down"))
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        adapter.handle_message.assert_not_called()
+        msg.reply_text.assert_awaited_once()
+        notice = msg.reply_text.await_args.args[0]
+        assert "Couldn't download your attachment" in notice
+        assert "notes.md" in notice
+        assert "RuntimeError" in notice
 
     @pytest.mark.asyncio
     async def test_unicode_decode_error_handled(self, adapter):
@@ -383,16 +420,17 @@ class TestDocumentDownloadBlock:
 
     @pytest.mark.asyncio
     async def test_download_exception_handled(self, adapter):
-        """If get_file() raises, the handler logs the error without crashing."""
+        """If get_file() raises, the handler replies and does not send an empty event."""
         doc = _make_document(file_name="crash.pdf", file_size=100)
         doc.get_file = AsyncMock(side_effect=RuntimeError("Telegram API down"))
         msg = _make_message(document=doc)
         update = _make_update(msg)
 
-        # Should not raise
         await adapter._handle_media_message(update, MagicMock())
-        # handle_message should still be called (the handler catches the exception)
-        adapter.handle_message.assert_called_once()
+
+        adapter.handle_message.assert_not_called()
+        msg.reply_text.assert_awaited_once()
+        assert "Couldn't download your attachment" in msg.reply_text.await_args.args[0]
 
 
 class TestVideoDownloadBlock:

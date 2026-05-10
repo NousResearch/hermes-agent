@@ -4366,15 +4366,25 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
-                # Check if supported
+                # Check if supported. Unsupported attachments are a gateway
+                # notice, not user-authored text — reply in Telegram and stop
+                # instead of routing the error string into the agent pipeline.
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
                     supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
-                    event.text = (
-                        f"Unsupported document type '{ext or 'unknown'}'. "
+                    display_name = original_filename or ext or "unknown document"
+                    notice = (
+                        f"Unsupported document type '{ext or 'unknown'}' for {display_name}. "
                         f"Supported types: {supported_list}"
                     )
                     logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
-                    await self.handle_message(event)
+                    try:
+                        await msg.reply_text(notice)
+                    except Exception as reply_err:
+                        logger.warning(
+                            "[Telegram] Failed to notify user about unsupported document type: %s",
+                            reply_err,
+                            exc_info=True,
+                        )
                     return
 
                 # Download and cache
@@ -4407,6 +4417,19 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
+                display_name = original_filename or getattr(doc, "file_name", None) or "attachment"
+                try:
+                    await msg.reply_text(
+                        "⚠️ Couldn't download your attachment "
+                        f"({display_name}; {e.__class__.__name__}). Please retry."
+                    )
+                except Exception as reply_err:
+                    logger.warning(
+                        "[Telegram] Failed to notify user about document cache failure: %s",
+                        reply_err,
+                        exc_info=True,
+                    )
+                return
 
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:

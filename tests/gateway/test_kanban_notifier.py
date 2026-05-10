@@ -136,3 +136,39 @@ def test_kanban_db_path_is_test_isolated_from_real_home():
 
     assert kb.kanban_db_path().resolve().is_relative_to(hermes_home.resolve())
     assert kb.kanban_db_path().resolve() != production_db.resolve()
+
+
+class FailingAdapter:
+    """Adapter whose send() always raises, simulating a transient send error."""
+
+    def __init__(self):
+        self.attempts = 0
+
+    async def send(self, chat_id, text, metadata=None):
+        self.attempts += 1
+        raise RuntimeError("simulated send failure")
+
+
+def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
+    """A raising adapter rewinds the claim so the next tick can retry.
+
+    This is the second rewind path (distinct from the adapter-disconnect path
+    in test_kanban_notifier_rewinds_claim_if_adapter_disconnects). Here the
+    adapter is connected and the send call actually fires; the claim must
+    still rewind so the event isn't lost when send() raises mid-tick.
+    """
+    db_path = tmp_path / "send-failure.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid = _create_completed_subscription()
+
+    adapter = FailingAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    # Send was attempted (so we exercised the failure path, not just the
+    # disconnect path) and the claim was rewound — the unseen-events query
+    # still returns the event for retry on the next tick.
+    assert adapter.attempts >= 1, "send should have been attempted at least once"
+    assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]

@@ -633,22 +633,9 @@ class DingTalkAdapter(BasePlatformAdapter):
                     if resolved:
                         media_urls[idx] = resolved
 
-        # DEBUG: log ALL incoming message types and raw_data keys
-        raw_data_keys = list(raw_data.keys()) if isinstance(raw_data, dict) else "NOT_DICT"
-        with open("/tmp/dingtalk_debug.log", "a") as f:
-            f.write(f"DEBUG _on_message ENTRY: msg_type={getattr(message, 'message_type', '')}, raw_data_keys={raw_data_keys}\n")
-        logger.info("[DEBUG] msg_type=%s conversationType=%s raw_data_keys=%s text=%s",
-            getattr(message, "message_type", ""),
-            getattr(message, "conversation_type", ""),
-            raw_data_keys,
-            (str(message.text)[:100] if hasattr(message, "text") else "N/A"))
-        msg_type_str = getattr(message, "message_type", "") or ""
-        if msg_type_str == "file" and raw_data:
-            logger.info("[DEBUG] File message raw_data keys: %s", list(raw_data.keys()) if isinstance(raw_data, dict) else "NOT_DICT")
-            logger.info("[DEBUG] File info: %s", raw_data.get("file", "NO_FILE_KEY"))
-
         if not text and not media_urls:
-            logger.info("[DEBUG] Empty message, skipping. msg_type=%s media_urls=%s", msg_type_str, media_urls)
+            msg_type_str = getattr(message, "message_type", "") or ""
+            logger.info("Empty message, skipping. msg_type=%s media_urls=%s", msg_type_str, media_urls)
             return
 
         source = self.build_source(

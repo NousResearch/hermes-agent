@@ -282,11 +282,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
+        self._busy_text_policy = str(
+            config.extra.get("busy_text_policy")
+            or os.getenv("WHATSAPP_BUSY_TEXT_POLICY", "upsert_steer")
+        ).strip().lower()
         self._sessions_enabled = self._truthy_config(
             "enable_sessions", env_name="WHATSAPP_ENABLE_SESSIONS", default=True
         )
         session_idle_minutes = config.extra.get(
-            "session_idle_minutes", os.getenv("WHATSAPP_SESSION_IDLE_MINUTES", "60")
+            "session_idle_minutes", os.getenv("WHATSAPP_SESSION_IDLE_MINUTES", "1440")
         )
         self._session_idle_seconds = max(1, int(float(session_idle_minutes) * 60))
         self._session_max_live_per_chat = max(
@@ -789,6 +793,78 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return False
         body = str(data.get("body") or "")
         return any(pattern.search(body) for pattern in self._mention_patterns)
+
+    async def _handle_busy_text_as_steer(self, event: MessageEvent, session_key: str) -> bool:
+        """Busy-session handler: treat inbound text as /steer instead of interrupt/queue.
+
+        Fixes two WhatsApp UX problems:
+        1) Multiple user messages during a running turn used to overwrite
+           ``_pending_messages[session_key]`` so earlier messages were dropped.
+        2) /steer sent during an active session was previously queued/ignored
+           because /steer is not in the bypass-active-session command set.
+
+        When enabled (whatsapp.busy_text_policy: steer), this handler dispatches
+        /steer inline via the gateway runner, so the steer lands after the next
+        tool-call batch without interrupting.
+        """
+        if not self._message_handler:
+            return False
+
+        # Let real commands (other than /steer) fall through to the default
+        # active-session interrupt path and command bypass logic.
+        cmd = event.get_command()
+        if cmd and cmd != "steer":
+            return False
+
+        # Steer only supports text. Media needs the normal queue/interrupt path.
+        # Explicit /steer arrives as MessageType.COMMAND, so accept that one
+        # command inline; otherwise plain busy text must be MessageType.TEXT.
+        if event.media_urls:
+            return False
+        if cmd == "steer":
+            payload = event.get_command_args().strip()
+        elif self._busy_text_policy == "steer" and event.message_type == MessageType.TEXT:
+            payload = (event.text or "").strip()
+        else:
+            return False
+        if not payload:
+            return True  # nothing to do; treat as handled to avoid interrupt spam
+
+        # If the user replied to a specific message, preserve the disambiguation
+        # pointer. (gateway/run.py does this for normal turns, but /steer is an
+        # early-intercept command path, so we embed it here.)
+        if getattr(event, "reply_to_text", None) and getattr(event, "reply_to_message_id", None):
+            reply_snippet = str(event.reply_to_text)[:500]
+            payload = f'[Replying to: "{reply_snippet}"]\n\n{payload}'
+
+        steer_event = MessageEvent(
+            text=f"/steer {payload}",
+            message_type=MessageType.COMMAND,
+            source=event.source,
+            raw_message=event.raw_message,
+            message_id=event.message_id,
+            channel_prompt=event.channel_prompt,
+        )
+
+        try:
+            response = await self._message_handler(steer_event)
+        except Exception as exc:
+            logger.error("[%s] busy /steer dispatch failed: %s", self.name, exc, exc_info=True)
+            response = f"⚠️ Steer failed: {exc}"
+
+        if response:
+            thread_meta = {"thread_id": event.source.thread_id} if event.source and event.source.thread_id else None
+            try:
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=response,
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+            except Exception as send_exc:
+                logger.debug("[%s] busy /steer ack send failed: %s", self.name, send_exc)
+
+        return True
 
     def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
         if not text:

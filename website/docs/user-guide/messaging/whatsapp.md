@@ -147,7 +147,7 @@ Optional session-routing settings:
 ```yaml
 whatsapp:
   enable_sessions: true            # default: true; enables WhatsApp session routing
-  session_idle_minutes: 60         # expire inactive WhatsApp session routes after this many minutes
+  session_idle_minutes: 1440       # default: 24 hours; expire inactive WhatsApp session routes after this many minutes
   session_max_live_per_chat: 5     # cap remembered WhatsApp session routes per chat
 ```
 

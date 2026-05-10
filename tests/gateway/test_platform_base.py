@@ -324,6 +324,18 @@ class TestExtractMedia:
         assert "Here" in cleaned
         assert "After" in cleaned
 
+    def test_media_tag_ignores_regex_or_prose_after_media_colon(self):
+        content = r"Example parser: MEDIA:\s*(?P<path>`[^`\n]+`|\S+) should not send files."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+    def test_media_tag_strips_escaped_trailing_punctuation(self):
+        content = "MEDIA:/tmp/example.mp3\\\\\""
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/example.mp3", False)]
+        assert cleaned == ""
+
     def test_media_tag_supports_unquoted_flac_paths_with_spaces(self):
         content = "MEDIA:/tmp/Jane Doe/speech.flac"
         media, cleaned = BasePlatformAdapter.extract_media(content)

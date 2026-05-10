@@ -1505,3 +1505,223 @@ class TestCopilotACPStreamingDecision:
 
         assert _use_streaming is True
 
+
+class TestStreamStallKanbanFallback:
+    """Regression: when the streaming layer injects the partial-stream-stub
+    (HERMES_STREAM_RETRIES exhausted mid tool-call) inside a kanban
+    worker, the agent loop must record a ``stream_stall_fallback``
+    transition on the kanban task BEFORE clean exit. Without this
+    hook, the dispatcher's ``detect_crashed_workers`` flags the
+    rc=0 exit as a hardcoded-1-trip ``protocol_violation``.
+
+    Sister coverage on the dispatcher side lives in
+    ``tests/hermes_cli/test_kanban_core_functionality.py``.
+    """
+
+    def _make_agent(self):
+        from run_agent import AIAgent
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        return agent
+
+    def _make_stub_response(
+        self, *, content="...\n\n⚠ Stream stalled mid tool-call (write_file); the action was not executed.",
+    ):
+        """Build the SimpleNamespace shape ``_interruptible_streaming_api_call``
+        returns when the stream dies mid tool-call after partial delivery."""
+        msg = SimpleNamespace(
+            role="assistant", content=content, tool_calls=None,
+            reasoning_content=None,
+        )
+        return SimpleNamespace(
+            id="partial-stream-stub",
+            model="test/model",
+            choices=[SimpleNamespace(index=0, message=msg, finish_reason="stop")],
+            usage=None,
+        )
+
+    def test_no_op_outside_kanban_context(self, monkeypatch):
+        """Helper is a no-op when HERMES_KANBAN_TASK is unset (the common
+        non-worker case)."""
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        agent = self._make_agent()
+        result = agent._maybe_record_stream_stall_kanban_fallback(
+            self._make_stub_response()
+        )
+        assert result is False
+
+    def test_no_op_for_non_stub_response(self, monkeypatch):
+        """Helper is a no-op for normal (non-stub) responses even inside a
+        kanban worker — only response.id == 'partial-stream-stub' triggers
+        the fallback."""
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test123")
+        agent = self._make_agent()
+        normal_response = SimpleNamespace(
+            id="chatcmpl-real",
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=SimpleNamespace(
+                    role="assistant", content="hi", tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+        )
+        result = agent._maybe_record_stream_stall_kanban_fallback(
+            normal_response
+        )
+        assert result is False
+
+    def test_calls_record_stream_stall_fallback_on_stub(
+        self, monkeypatch, tmp_path,
+    ):
+        """When HERMES_KANBAN_TASK is set AND response.id is the stub id,
+        the helper opens a kanban DB connection and calls
+        ``record_stream_stall_fallback`` with the env-pinned run id."""
+        # Pin a kanban home so kb.connect() doesn't touch the real DB.
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+        # Initialize the DB and create a running task to operate on.
+        # connect() auto-initializes on first open.
+        import hermes_cli.kanban_db as kb
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(conn, title="stall test", assignee="worker")
+            kb.claim_task(conn, tid)
+            task = kb.get_task(conn, tid)
+            run_id = task.current_run_id
+            assert task.status == "running"
+        finally:
+            conn.close()
+
+        # Pin task id and run id to match what we just inserted.
+        monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+
+        agent = self._make_agent()
+        result = agent._maybe_record_stream_stall_kanban_fallback(
+            self._make_stub_response()
+        )
+        assert result is True, "fallback should be recorded successfully"
+
+        # Verify task state: ready, consecutive_failures=1, sentinel
+        # stamped on the closed run's error.
+        conn = kb.connect()
+        try:
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"first stall should leave task in ready (default budget=2), "
+                f"got status={task.status}"
+            )
+            assert task.consecutive_failures == 1
+            # last_failure_error carries the sentinel.
+            assert task.last_failure_error and (
+                task.last_failure_error.startswith(
+                    kb.STREAM_STALL_FALLBACK_SENTINEL
+                )
+            ), (
+                f"last_failure_error should start with the sentinel, "
+                f"got {task.last_failure_error!r}"
+            )
+
+            # An event with kind 'stream_stall_fallback' should have been
+            # appended.
+            events = kb.list_events(conn, tid)
+            kinds = [e.kind for e in events]
+            assert "stream_stall_fallback" in kinds, (
+                f"stream_stall_fallback event not found, kinds={kinds}"
+            )
+            # We did NOT call kanban_block, so no 'blocked' event yet.
+            assert "blocked" not in kinds, (
+                f"first stall should NOT block the task, got kinds={kinds}"
+            )
+        finally:
+            conn.close()
+
+    def test_breaker_trips_at_default_failure_limit(
+        self, monkeypatch, tmp_path,
+    ):
+        """Repeated stalls eventually trip the standard breaker at
+        DEFAULT_FAILURE_LIMIT (NOT the protocol-violation 1-trip)."""
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+
+        import hermes_cli.kanban_db as kb
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(conn, title="repeated stall", assignee="worker")
+        finally:
+            conn.close()
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+        agent = self._make_agent()
+
+        # Simulate DEFAULT_FAILURE_LIMIT consecutive stalls. Between each
+        # one the task transitions ready→running again (as the dispatcher
+        # would on respawn).
+        for attempt in range(kb.DEFAULT_FAILURE_LIMIT):
+            conn = kb.connect()
+            try:
+                kb.claim_task(conn, tid)
+                task = kb.get_task(conn, tid)
+                assert task.status == "running"
+                run_id = task.current_run_id
+            finally:
+                conn.close()
+            monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+            ok = agent._maybe_record_stream_stall_kanban_fallback(
+                self._make_stub_response()
+            )
+            assert ok, f"attempt {attempt + 1} should record successfully"
+
+        conn = kb.connect()
+        try:
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked", (
+                f"after {kb.DEFAULT_FAILURE_LIMIT} stalls the breaker "
+                f"should trip (status=blocked), got {task.status}"
+            )
+            assert task.consecutive_failures == kb.DEFAULT_FAILURE_LIMIT
+            events = kb.list_events(conn, tid)
+            kinds = [e.kind for e in events]
+            # Standard counter-based block emits 'gave_up', not
+            # 'protocol_violation'.
+            assert "gave_up" in kinds, (
+                f"expected 'gave_up' event after counter trip, kinds={kinds}"
+            )
+            assert "protocol_violation" not in kinds, (
+                f"stream_stall path should NEVER emit protocol_violation, "
+                f"kinds={kinds}"
+            )
+        finally:
+            conn.close()
+
+    def test_robust_to_db_failure(self, monkeypatch, tmp_path):
+        """If kanban_db.connect raises (e.g. DB locked or unreadable),
+        the helper swallows the exception and returns False — never
+        crashes the worker process. Worker continues to clean exit;
+        dispatcher's detect_crashed_workers fallback handles it."""
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_doesnotexist")
+        # Point at an unreadable HERMES_KANBAN_DB to force a connect failure.
+        bad_db = tmp_path / "nonexistent" / "no.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(bad_db))
+
+        agent = self._make_agent()
+        # Force record_stream_stall_fallback to raise via monkeypatch.
+        import hermes_cli.kanban_db as kb
+        monkeypatch.setattr(
+            kb, "record_stream_stall_fallback",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("simulated")),
+        )
+        result = agent._maybe_record_stream_stall_kanban_fallback(
+            self._make_stub_response()
+        )
+        assert result is False, (
+            "helper should return False on any kb error, never raise"
+        )
+

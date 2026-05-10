@@ -2557,6 +2557,99 @@ def block_task(
         return True
 
 
+def record_stream_stall_fallback(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: Optional[int] = None,
+    detail: Optional[str] = None,
+) -> bool:
+    """Record a stream-stall fallback transition on a kanban worker's task.
+
+    Called by the agent loop in ``run_agent.py`` when a partial-stream-stub
+    response is the terminal assistant message inside a kanban worker
+    (``HERMES_KANBAN_TASK`` is set). The worker exhausted
+    ``HERMES_STREAM_RETRIES`` mid tool-call and the streaming layer
+    injected the stub finish_reason='stop' message; without this hook the
+    process would exit cleanly while the task is still ``running``, which
+    ``detect_crashed_workers`` flags as a hardcoded-1-trip
+    ``protocol_violation``.
+
+    Semantics: closes the current run with ``outcome='crashed'`` (NOT
+    ``blocked``) so the run history reads as a normal transient crash,
+    transitions the task back to ``ready``, releases the claim, and
+    increments ``consecutive_failures`` via the standard
+    ``_record_task_failure`` path with the default ``failure_limit``
+    (NOT the protocol-violation 1-trip). On the first stall this leaves
+    the task in ``ready`` with ``consecutive_failures=1``; on the
+    ``DEFAULT_FAILURE_LIMIT``th stall the breaker trips and the task
+    moves to ``blocked`` with a ``gave_up`` event, same as any other
+    repeated transient crash.
+
+    The run's ``error`` and metadata both carry
+    ``STREAM_STALL_FALLBACK_SENTINEL`` so observability tooling and the
+    ``detect_crashed_workers`` belt-and-suspenders guard can distinguish
+    stream stalls from other crashes.
+
+    Returns True on success (status flipped, run closed). Returns False
+    when the row didn't update — task wasn't ``running``, or the
+    ``expected_run_id`` guard didn't match. Caller (the agent loop)
+    should treat False as best-effort: the dispatcher will eventually
+    reclaim/retry via the usual stale-claim path.
+    """
+    error_text = STREAM_STALL_FALLBACK_SENTINEL
+    if detail:
+        # Cap the detail so it fits inside the task's ``last_failure_error``
+        # column (500 char SQL truncation in ``_record_task_failure``).
+        clean = str(detail).strip()
+        if clean:
+            error_text = f"{STREAM_STALL_FALLBACK_SENTINEL}: {clean}"
+    metadata = {"sentinel": STREAM_STALL_FALLBACK_SENTINEL}
+    flipped = False
+    with write_txn(conn):
+        if expected_run_id is None:
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status = 'running'",
+                (task_id,),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+                (task_id, int(expected_run_id)),
+            )
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn, task_id,
+            outcome="crashed", status="crashed",
+            error=error_text,
+            metadata=metadata,
+        )
+        _append_event(
+            conn, task_id, "stream_stall_fallback",
+            dict(metadata, error=error_text),
+            run_id=run_id,
+        )
+        flipped = True
+    if flipped:
+        # Outside the main txn — increments consecutive_failures and
+        # may auto-block at DEFAULT_FAILURE_LIMIT (NOT 1).
+        _record_task_failure(
+            conn, task_id,
+            error=error_text,
+            outcome="crashed",
+            failure_limit=None,  # use default budget, not the 1-trip
+            release_claim=False,  # status is already ``ready``, claim cleared
+            end_run=False,        # run already closed above
+            event_payload_extra={"sentinel": STREAM_STALL_FALLBACK_SENTINEL},
+        )
+    return flipped
+
+
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Transition ``blocked -> ready``.
 
@@ -2808,6 +2901,21 @@ def set_workspace_path(
 DEFAULT_FAILURE_LIMIT = 2
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
+
+# Sentinel string a kanban worker uses to mark a stream-stall fallback
+# transition. Stamped on the run's ``error`` field, on the
+# ``stream_stall_fallback`` event payload, and on the ``last_failure_error``
+# task field by ``record_stream_stall_fallback`` below. The
+# ``detect_crashed_workers`` belt-and-suspenders guard greps for this prefix
+# on the most recent run's ``error`` so a worker that crashed AFTER stamping
+# the sentinel but BEFORE flipping status (atomicity escape hatch) still
+# gets classified as a normal crash, not a protocol violation.
+#
+# When changing the literal, update both producers (run_agent.py
+# ``_maybe_record_stream_stall_kanban_fallback`` and tests/run_agent/test_streaming.py)
+# and consumers (``record_stream_stall_fallback`` here and
+# ``detect_crashed_workers`` belt-and-suspenders).
+STREAM_STALL_FALLBACK_SENTINEL = "stream_stall_fallback"
 
 # Max bytes to keep in a single worker log file. The dispatcher truncates
 # and rotates on spawn if the file is larger than this at spawn time.
@@ -3258,17 +3366,58 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # ``running`` in the DB — it exited without calling
                 # ``kanban_complete`` / ``kanban_block``. Retrying won't
                 # help.
-                protocol_violation = True
-                error_text = (
-                    "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation"
-                )
-                event_kind = "protocol_violation"
-                event_payload = {
-                    "pid": pid,
-                    "claimer": row["claim_lock"],
-                    "exit_code": code,
-                }
+                #
+                # Belt-and-suspenders for stream-stall fallbacks: if the
+                # most recent run for this task carries the
+                # ``STREAM_STALL_FALLBACK_SENTINEL`` on its ``error``
+                # field, the worker reached
+                # ``record_stream_stall_fallback`` and stamped the
+                # sentinel but somehow left the task in ``running``
+                # (atomicity escape hatch — the txn that flips status
+                # back to ``ready`` is paired with the run-close, so
+                # this is unexpected, but we guard anyway). Treat as a
+                # plain crash so the failure consumes the default
+                # budget instead of the 1-trip protocol-violation
+                # path. Genuine clean-exit-without-transition (LLM
+                # answered conversationally without calling
+                # kanban_complete) keeps the protocol_violation
+                # classification.
+                last_run_error = ""
+                try:
+                    last_run_row = conn.execute(
+                        "SELECT error FROM task_runs WHERE task_id = ? "
+                        "ORDER BY id DESC LIMIT 1",
+                        (row["id"],),
+                    ).fetchone()
+                    if last_run_row and last_run_row["error"]:
+                        last_run_error = str(last_run_row["error"])
+                except sqlite3.Error:
+                    last_run_error = ""
+                if last_run_error.startswith(STREAM_STALL_FALLBACK_SENTINEL):
+                    protocol_violation = False
+                    error_text = (
+                        f"clean exit after stream-stall fallback "
+                        f"({last_run_error[:200]})"
+                    )
+                    event_kind = "crashed"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                        "stream_stall_fallback": True,
+                    }
+                else:
+                    protocol_violation = True
+                    error_text = (
+                        "worker exited cleanly (rc=0) without calling "
+                        "kanban_complete or kanban_block — protocol violation"
+                    )
+                    event_kind = "protocol_violation"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                    }
             else:
                 protocol_violation = False
                 if kind == "nonzero_exit":
@@ -3877,6 +4026,17 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+
+    # Belt-and-suspenders for stream-stall fallbacks: kanban workers
+    # respawn cheaply but every protocol_violation/crash burns a slot
+    # on a small failure budget (default DEFAULT_FAILURE_LIMIT=2). Bump
+    # HERMES_STREAM_RETRIES from its global default of 2 to 4 for
+    # dispatched workers so a single transient upstream stall mid
+    # tool-call almost never reaches the partial-stream-stub path.
+    # Only set it when the operator hasn't pinned a different value
+    # in their environment (so tests / forced low-retry debugging
+    # still work).
+    env.setdefault("HERMES_STREAM_RETRIES", "4")
 
     cmd = [
         *_resolve_hermes_argv(),

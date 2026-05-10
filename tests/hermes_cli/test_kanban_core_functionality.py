@@ -3965,3 +3965,326 @@ def test_reclaim_task_clears_failure_counter(kanban_home):
         assert task.status == "ready"
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Stream-stall fallback (record_stream_stall_fallback +
+# detect_crashed_workers belt-and-suspenders for STREAM_STALL_FALLBACK_SENTINEL)
+# ---------------------------------------------------------------------------
+
+def test_record_stream_stall_fallback_first_stall_keeps_ready(kanban_home):
+    """A worker that hit the stream-stall stub mid tool-call calls
+    record_stream_stall_fallback. First stall: status flips back to
+    ready, consecutive_failures=1, sentinel stamped on the closed run.
+
+    This is the criterion-3 path from the parent task: stream stalls
+    must consume the normal failure budget instead of the
+    protocol_violation 1-trip.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="stalled", assignee="worker")
+        kb.claim_task(conn, tid)
+        task_before = kb.get_task(conn, tid)
+        assert task_before.status == "running"
+        run_id = task_before.current_run_id
+
+        ok = kb.record_stream_stall_fallback(
+            conn, tid, expected_run_id=run_id,
+            detail="HERMES_STREAM_RETRIES exhausted mid tool-call (write_file)",
+        )
+        assert ok is True
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", (
+            f"first stall should leave task ready, got {task.status}"
+        )
+        assert task.consecutive_failures == 1
+        assert task.last_failure_error is not None
+        assert task.last_failure_error.startswith(
+            kb.STREAM_STALL_FALLBACK_SENTINEL
+        ), (
+            f"sentinel missing from last_failure_error: "
+            f"{task.last_failure_error!r}"
+        )
+
+        # Run closed with outcome=crashed and the sentinel error.
+        runs = list(conn.execute(
+            "SELECT outcome, error FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1", (tid,),
+        ))
+        assert runs[0]["outcome"] == "crashed"
+        assert kb.STREAM_STALL_FALLBACK_SENTINEL in (runs[0]["error"] or "")
+
+        # Stream-stall event was emitted, blocked event was NOT.
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "stream_stall_fallback" in kinds, kinds
+        assert "blocked" not in kinds, kinds
+        # 'crashed' event is a separate kind emitted by the standard
+        # _record_task_failure under-the-limit path? Actually no — the
+        # under-the-limit path with end_run=False/release_claim=False
+        # doesn't emit an additional event (see comment "Timeout/crash
+        # path's caller already emitted its own event").
+    finally:
+        conn.close()
+
+
+def test_record_stream_stall_fallback_repeated_stalls_trip_default_breaker(kanban_home):
+    """After DEFAULT_FAILURE_LIMIT consecutive stalls the task lands
+    in 'blocked' via the standard 'gave_up' path — never via
+    'protocol_violation'.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="repeatedly stalled", assignee="worker")
+
+        for attempt in range(kb.DEFAULT_FAILURE_LIMIT):
+            kb.claim_task(conn, tid)
+            task = kb.get_task(conn, tid)
+            assert task.status == "running"
+            run_id = task.current_run_id
+            ok = kb.record_stream_stall_fallback(
+                conn, tid, expected_run_id=run_id,
+            )
+            assert ok, f"attempt {attempt + 1} should succeed"
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"after {kb.DEFAULT_FAILURE_LIMIT} stalls the breaker "
+            f"should have tripped, got {task.status}"
+        )
+        assert task.consecutive_failures == kb.DEFAULT_FAILURE_LIMIT
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "gave_up" in kinds
+        assert "protocol_violation" not in kinds, (
+            f"stream_stall path should NEVER emit protocol_violation, "
+            f"kinds={kinds}"
+        )
+        assert kinds.count("stream_stall_fallback") == kb.DEFAULT_FAILURE_LIMIT
+    finally:
+        conn.close()
+
+
+def test_record_stream_stall_fallback_run_id_guard(kanban_home):
+    """Calling record_stream_stall_fallback with a stale expected_run_id
+    no-ops cleanly (returns False, doesn't touch the row).
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="run-id guard", assignee="worker")
+        kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        wrong_run_id = task.current_run_id + 99999
+
+        ok = kb.record_stream_stall_fallback(
+            conn, tid, expected_run_id=wrong_run_id,
+        )
+        assert ok is False, (
+            "stale run_id should make the helper a no-op (False)"
+        )
+
+        # Task untouched.
+        task_after = kb.get_task(conn, tid)
+        assert task_after.status == "running", (
+            f"task should still be running, got {task_after.status}"
+        )
+        assert task_after.consecutive_failures == 0
+    finally:
+        conn.close()
+
+
+def test_record_stream_stall_fallback_no_op_on_non_running_task(kanban_home):
+    """Helper returns False if the task isn't in 'running' (e.g. it
+    was already reclaimed by another dispatcher pass).
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="not running", assignee="worker")
+        # Task is in 'todo'/'ready', NOT 'running'.
+
+        ok = kb.record_stream_stall_fallback(conn, tid)
+        assert ok is False
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_clean_exit_with_sentinel_downgrades(kanban_home):
+    """Belt-and-suspenders: if a worker exits rc=0 while the task is
+    still in 'running' BUT the most recent run's error starts with the
+    stream_stall_fallback sentinel (atomicity escape: stamped sentinel
+    but failed to flip status back), the dispatcher classifies the
+    crash as a normal 'crashed' (default budget) — NOT a
+    'protocol_violation' (1-trip).
+
+    This is the dispatcher-side guard requested in the parent task.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="stall-then-crash", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999996
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # Synthesize a closed run carrying the sentinel on its error
+        # field, while the task itself is still 'running'. This models
+        # the (unlikely) atomicity escape where the worker's
+        # record_stream_stall_fallback partially completed.
+        with kb.write_txn(conn):
+            row = conn.execute(
+                "SELECT current_run_id FROM tasks WHERE id = ?", (tid,),
+            ).fetchone()
+            run_id = row["current_run_id"]
+            conn.execute(
+                "UPDATE task_runs SET error = ? WHERE id = ?",
+                (
+                    f"{kb.STREAM_STALL_FALLBACK_SENTINEL}: stream stalled "
+                    f"mid tool-call (write_file)",
+                    run_id,
+                ),
+            )
+
+        # Worker exited rc=0 (clean_exit) while task is still 'running'.
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in crashed
+        task = kb.get_task(conn, tid)
+        # Belt-and-suspenders downgraded to a normal crash → first
+        # failure leaves task 'ready' (default budget=2), NOT 'blocked'.
+        assert task.status == "ready", (
+            f"sentinel-marked clean_exit should downgrade to plain crash, "
+            f"got status={task.status}"
+        )
+        assert task.consecutive_failures == 1
+
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        # Standard 'crashed' event was emitted; protocol_violation was NOT.
+        assert "crashed" in kinds, kinds
+        assert "protocol_violation" not in kinds, kinds
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_clean_exit_without_sentinel_still_protocol_violation(kanban_home):
+    """Sanity check the inverse: a clean_exit on a task with NO sentinel
+    on its run error still trips protocol_violation. Otherwise we'd
+    be regressing the existing genuine-violation safety net.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="quiet-no-sentinel", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999995
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # No sentinel stamped on the run.
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in crashed
+        task = kb.get_task(conn, tid)
+        # Genuine protocol violations still trip the breaker.
+        assert task.status == "blocked", (
+            f"genuine clean_exit without sentinel should auto-block, "
+            f"got status={task.status}"
+        )
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "protocol_violation" in kinds
+        assert "gave_up" in kinds
+    finally:
+        conn.close()
+
+
+def test_default_spawn_sets_stream_retries_default(kanban_home, monkeypatch):
+    """Belt-and-suspenders #2: dispatcher-spawned workers get
+    HERMES_STREAM_RETRIES bumped from 2 (global default) to 4 unless
+    the operator pinned a different value in the dispatcher's
+    environment.
+
+    We don't actually spawn a process here — we patch subprocess.Popen
+    to capture the env dict and assert the value.
+    """
+    import hermes_cli.kanban_db as _kb
+    import subprocess
+
+    monkeypatch.delenv("HERMES_STREAM_RETRIES", raising=False)
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 12345
+
+    def _fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return _FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="spawn me", assignee="worker")
+        kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+    finally:
+        conn.close()
+
+    pid = _kb._default_spawn(task, str(kanban_home))
+    assert pid == 12345
+    env = captured.get("env", {})
+    assert env.get("HERMES_STREAM_RETRIES") == "4", (
+        f"dispatcher should bump HERMES_STREAM_RETRIES to 4 by default, "
+        f"got {env.get('HERMES_STREAM_RETRIES')!r}"
+    )
+
+
+def test_default_spawn_respects_operator_stream_retries(kanban_home, monkeypatch):
+    """If the operator pinned HERMES_STREAM_RETRIES in the dispatcher's
+    environment, _default_spawn should NOT clobber it (env.setdefault).
+    """
+    import hermes_cli.kanban_db as _kb
+    import subprocess
+
+    monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")  # forced low for testing
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 12346
+
+    monkeypatch.setattr(
+        subprocess, "Popen",
+        lambda cmd, **kw: (captured.update(env=kw.get("env", {})) or _FakeProc()),
+    )
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="spawn me 2", assignee="worker")
+        kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+    finally:
+        conn.close()
+
+    _kb._default_spawn(task, str(kanban_home))
+    assert captured["env"].get("HERMES_STREAM_RETRIES") == "0", (
+        "operator override of HERMES_STREAM_RETRIES must be preserved"
+    )

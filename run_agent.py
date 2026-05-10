@@ -4302,6 +4302,114 @@ class AIAgent:
             if isinstance(msg, dict) and msg.get("role") == "user":
                 msg["content"] = override
 
+    def _maybe_record_stream_stall_kanban_fallback(self, response) -> bool:
+        """Record a stream-stall fallback transition on the kanban task, if applicable.
+
+        Called from the no-tool-calls branch of the agent loop when the
+        terminal assistant message is the ``partial-stream-stub``
+        SimpleNamespace produced by ``_interruptible_streaming_api_call``
+        after exhausting ``HERMES_STREAM_RETRIES`` mid tool-call.
+
+        Without this hook, a kanban worker process exits cleanly while
+        the task is still ``running`` in the kanban DB. The dispatcher's
+        ``detect_crashed_workers`` then classifies the clean exit as a
+        ``protocol_violation`` and trips the breaker on the FIRST stall
+        (hardcoded ``failure_limit=1``). Stream stalls are transient
+        upstream issues that should consume the normal failure budget,
+        not the 1-trip path reserved for genuine LLM protocol violations
+        (model answered conversationally without calling
+        kanban_complete / kanban_block).
+
+        Behaviour:
+
+        * No-op (returns False) unless ``HERMES_KANBAN_TASK`` is set in
+          the environment AND ``response`` is the partial-stream stub
+          (id == "partial-stream-stub"). The stub id is the only stable
+          marker — finish_reason='stop' alone is too broad.
+        * On match: imports ``hermes_cli.kanban_db`` lazily and calls
+          ``record_stream_stall_fallback`` which closes the run with
+          outcome='crashed' + ``STREAM_STALL_FALLBACK_SENTINEL``,
+          transitions the task back to ``ready``, and increments
+          ``consecutive_failures`` via the standard counter (default
+          budget, NOT the 1-trip protocol-violation path).
+        * Always best-effort: catches every exception so a bookkeeping
+          failure never crashes the worker process. Returns True only
+          when the kanban DB call succeeded.
+
+        ``HERMES_KANBAN_RUN_ID`` (when set by the dispatcher at spawn
+        time, see ``_default_spawn`` in ``hermes_cli/kanban_db.py``)
+        is passed as ``expected_run_id`` so the SQL UPDATE no-ops if
+        another dispatcher pass already reclaimed the task.
+        """
+        task_id = os.environ.get("HERMES_KANBAN_TASK")
+        if not task_id:
+            return False
+        if getattr(response, "id", None) != "partial-stream-stub":
+            return False
+        try:
+            from hermes_cli import kanban_db as kb
+        except Exception:
+            logger.exception(
+                "Stream-stall stub detected for kanban task %s but "
+                "kanban_db import failed", task_id,
+            )
+            return False
+        # Pull the partial tool-call names (if any) out of the stub
+        # content so the dispatcher dashboard surfaces *what* was
+        # interrupted. The stub content carries the user-visible warning
+        # appended by ``_interruptible_streaming_api_call``; we just
+        # stamp a short detail string.
+        detail = "HERMES_STREAM_RETRIES exhausted mid tool-call"
+        try:
+            stub_msg = (response.choices[0].message
+                        if getattr(response, "choices", None) else None)
+            content = getattr(stub_msg, "content", None) or ""
+            # Grab the first 120 chars of the content as a hint.
+            snippet = content.strip().splitlines()[-1] if content.strip() else ""
+            if snippet:
+                detail = f"{detail} — {snippet[:120]}"
+        except Exception:
+            pass
+        try:
+            run_id_env = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+            expected_run_id = int(run_id_env) if run_id_env else None
+        except (TypeError, ValueError):
+            expected_run_id = None
+        try:
+            conn = kb.connect()
+            try:
+                ok = kb.record_stream_stall_fallback(
+                    conn, task_id,
+                    expected_run_id=expected_run_id,
+                    detail=detail,
+                )
+            finally:
+                conn.close()
+        except Exception:
+            logger.exception(
+                "record_stream_stall_fallback raised for task %s; "
+                "worker will exit cleanly and dispatcher will "
+                "classify based on the run/event log", task_id,
+            )
+            return False
+        if ok:
+            logger.warning(
+                "Stream-stall stub detected in kanban worker — "
+                "recorded stream_stall_fallback for task %s "
+                "(consecutive_failures incremented, task back to ready)",
+                task_id,
+            )
+        else:
+            # Most common False case: another dispatcher pass already
+            # reclaimed the task between the stub injection and now.
+            # Logging at INFO because it's expected churn, not a bug.
+            logger.info(
+                "record_stream_stall_fallback returned False for task %s "
+                "(task no longer running, or run_id mismatch); skipping",
+                task_id,
+            )
+        return ok
+
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
 
@@ -14561,7 +14669,21 @@ class AIAgent:
                 else:
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
-                    
+
+                    # ── Stream-stall kanban fallback ──────────────────
+                    # If we landed here because the streaming layer
+                    # injected the partial-stream-stub (HERMES_STREAM_RETRIES
+                    # exhausted mid tool-call), and we're running as a
+                    # kanban worker, record a stream_stall_fallback
+                    # transition on the kanban task BEFORE the loop
+                    # exits. Without this the worker process exits rc=0
+                    # while the task is still ``running``, and the
+                    # dispatcher's detect_crashed_workers flags it as a
+                    # protocol_violation (hardcoded 1-trip).
+                    # No-op for non-kanban contexts and for genuine final
+                    # responses. See helper docstring for rationale.
+                    self._maybe_record_stream_stall_kanban_fallback(response)
+
                     # Fix: unmute output when entering the no-tool-call branch
                     # so the user can see empty-response warnings and recovery
                     # status messages.  _mute_post_response was set during a

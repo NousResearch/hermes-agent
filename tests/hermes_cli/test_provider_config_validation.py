@@ -92,17 +92,29 @@ class TestNormalizeCustomProviderEntry:
         assert any("unknown config keys" in r.message.lower() for r in caplog.records)
 
     def test_timeout_keys_not_flagged_unknown(self, caplog):
-        """request_timeout_seconds and stale_timeout_seconds should not produce warnings."""
+        """Known provider tuning keys should not produce warnings."""
         entry = {
             "base_url": "https://api.example.com/v1",
             "api_key": "***",
             "request_timeout_seconds": 300,
             "stale_timeout_seconds": 900,
+            "max_output_tokens": 8192,
         }
         with caplog.at_level(logging.WARNING):
             result = _normalize_custom_provider_entry(entry, provider_key="test")
         assert result is not None
         assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
+        assert result["max_output_tokens"] == 8192
+
+    def test_camel_case_max_output_tokens_mapped(self):
+        """camelCase maxOutputTokens should be auto-mapped to max_output_tokens."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "maxOutputTokens": 16384,
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="myhost")
+        assert result is not None
+        assert result["max_output_tokens"] == 16384
 
     def test_camel_case_warning_logged(self, caplog):
         """camelCase alias mapping should produce a warning."""

@@ -519,6 +519,34 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
 
+    def test_providers_dict_preserves_max_output_tokens(self, tmp_path):
+        """Compatibility view must carry providers.max_output_tokens through."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "openai-direct": {
+                            "api": "https://api.openai.com/v1",
+                            "api_key": "test-key",
+                            "default_model": "gpt-5-mini",
+                            "max_output_tokens": 16384,
+                            "name": "OpenAI Direct",
+                            "transport": "codex_responses",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert len(compatible) == 1
+        assert compatible[0]["max_output_tokens"] == 16384
+
     def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
         """URL field precedence is base_url > url > api (PR #9332)."""
         config_path = tmp_path / "config.yaml"

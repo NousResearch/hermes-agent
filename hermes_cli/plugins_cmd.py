@@ -9,6 +9,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import shutil
@@ -21,6 +22,41 @@ from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_git_executable() -> Optional[str]:
+    """Resolve a git binary for subprocess use when ``PATH`` may be minimal.
+
+    Matches other Hermes subprocess resolution: :func:`shutil.which` first,
+    then common Git for Windows install paths and POSIX defaults.
+    """
+    found = shutil.which("git")
+    if found:
+        return found
+    if os.name == "nt":
+        prog = os.environ.get("ProgramFiles", r"C:\Program Files")
+        prog_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        local = os.environ.get("LOCALAPPDATA", "")
+        candidates = [
+            os.path.join(prog, "Git", "cmd", "git.exe"),
+            os.path.join(prog, "Git", "bin", "git.exe"),
+            os.path.join(prog_x86, "Git", "cmd", "git.exe"),
+            os.path.join(prog_x86, "Git", "bin", "git.exe"),
+        ]
+        if local:
+            candidates.extend(
+                (
+                    os.path.join(local, "Programs", "Git", "cmd", "git.exe"),
+                    os.path.join(local, "Programs", "Git", "bin", "git.exe"),
+                )
+            )
+    else:
+        candidates = ["/usr/bin/git", "/usr/local/bin/git", "/bin/git"]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return None
 
 
 class PluginOperationError(Exception):
@@ -127,7 +163,7 @@ def _read_manifest(plugin_dir: Path) -> dict:
     try:
         import yaml
 
-        with open(manifest_file) as f:
+        with open(manifest_file, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except Exception as e:
         logger.warning("Failed to read plugin.yaml in %s: %s", plugin_dir, e)
@@ -324,9 +360,13 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
     with tempfile.TemporaryDirectory() as tmp:
         tmp_target = Path(tmp) / "plugin"
 
+        git_exe = _resolve_git_executable()
+        if not git_exe:
+            raise PluginOperationError("git is not installed or not in PATH.")
+
         try:
             result = subprocess.run(
-                ["git", "clone", "--depth", "1", git_url, str(tmp_target)],
+                [git_exe, "clone", "--depth", "1", git_url, str(tmp_target)],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -703,7 +743,7 @@ def _discover_all_plugins() -> list:
             description = ""
             if yaml:
                 try:
-                    with open(manifest_file) as f:
+                    with open(manifest_file, encoding="utf-8") as f:
                         manifest = yaml.safe_load(f) or {}
                     name = manifest.get("name", d.name)
                     version = manifest.get("version", "")
@@ -1472,9 +1512,12 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        return False, "git is not installed or not in PATH."
     try:
         result = subprocess.run(
-            ["git", "pull", "--ff-only"],
+            [git_exe, "pull", "--ff-only"],
             capture_output=True,
             text=True,
             timeout=60,

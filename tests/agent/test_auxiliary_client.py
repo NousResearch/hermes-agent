@@ -3,7 +3,9 @@
 import json
 import logging
 import os
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -20,9 +22,11 @@ from agent.auxiliary_client import (
     _read_codex_access_token,
     _get_provider_chain,
     _is_payment_error,
+    _is_rate_limit_error,
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    _CodexCompletionsAdapter,
 )
 
 
@@ -54,6 +58,18 @@ def codex_auth_dir(tmp_path, monkeypatch):
         lambda: "codex-test-token-abc123",
     )
     return codex_dir
+
+
+class TestAuxiliaryMaxTokensParam:
+    def test_uses_max_completion_tokens_for_github_copilot_custom_base(self):
+        with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com", "key", None)), \
+             patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
+
+    def test_uses_max_completion_tokens_for_github_copilot_custom_base_path(self):
+        with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com/chat/completions", "key", None)), \
+             patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
 
 
 class TestNormalizeAuxProvider:
@@ -284,6 +300,52 @@ class TestBuildCodexClient:
         client, model = _build_codex_client("")
         assert client is None
         assert model is None
+
+    def test_cached_codex_client_rebuilds_when_pool_entry_changes(self):
+        import agent.auxiliary_client as aux
+
+        class _Entry:
+            def __init__(self, entry_id, token):
+                self.id = entry_id
+                self.runtime_api_key = token
+                self.runtime_base_url = "https://chatgpt.com/backend-api/codex"
+
+        class _Pool:
+            def __init__(self):
+                self.entry = _Entry("cred-a", "tok-a")
+
+            def has_credentials(self):
+                return True
+
+            def current(self):
+                return self.entry
+
+            def peek(self):
+                return self.entry
+
+            def select(self):
+                return self.entry
+
+        pool = _Pool()
+        client_a = MagicMock(name="codex-client-a")
+        client_b = MagicMock(name="codex-client-b")
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client.OpenAI", side_effect=[client_a, client_b]) as mock_openai,
+        ):
+            aux.shutdown_cached_clients()
+            try:
+                first_client, first_model = aux._get_cached_client("openai-codex", "gpt-5.4")
+                pool.entry = _Entry("cred-b", "tok-b")
+                second_client, second_model = aux._get_cached_client("openai-codex", "gpt-5.4")
+            finally:
+                aux.shutdown_cached_clients()
+
+        assert first_client is not second_client
+        assert first_model == "gpt-5.4"
+        assert second_model == "gpt-5.4"
+        assert mock_openai.call_count == 2
 
 
 class TestExpiredCodexFallback:
@@ -789,6 +851,65 @@ class TestIsPaymentError:
         assert _is_payment_error(exc) is False
 
 
+class TestIsRateLimitError:
+    """_is_rate_limit_error detects 429 rate-limit errors warranting fallback."""
+
+    def test_429_with_rate_limit_message(self):
+        exc = Exception("Rate limit exceeded, try again in 2 seconds")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_with_resets_in_message(self):
+        """Nous-style 429: 'resets in 3508s'."""
+        exc = Exception("Hold up for a bit, you've exceeded the rate limit on your API key")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_with_too_many_requests(self):
+        exc = Exception("Too many requests")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_without_billing_keywords_is_rate_limit(self):
+        """Generic 429 without billing keywords = likely a rate limit."""
+        exc = Exception("Something went wrong")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is True
+
+    def test_429_with_credits_message_is_not_rate_limit(self):
+        """Billing-related 429 should NOT be classified as rate limit."""
+        exc = Exception("insufficient credits remaining")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is False
+
+    def test_429_with_billing_message_is_not_rate_limit(self):
+        exc = Exception("you can only afford 1000 tokens")
+        exc.status_code = 429
+        assert _is_rate_limit_error(exc) is False
+
+    def test_402_is_not_rate_limit(self):
+        exc = Exception("Payment Required")
+        exc.status_code = 402
+        assert _is_rate_limit_error(exc) is False
+
+    def test_500_is_not_rate_limit(self):
+        exc = Exception("Internal Server Error")
+        exc.status_code = 500
+        assert _is_rate_limit_error(exc) is False
+
+    def test_openai_ratelimiterror_classname(self):
+        """OpenAI SDK RateLimitError may omit .status_code — detect by class name."""
+        class RateLimitError(Exception):
+            pass
+        exc = RateLimitError("rate limit exceeded")
+        # No status_code set, but class name matches
+        assert _is_rate_limit_error(exc) is True
+
+    def test_no_status_code_no_keywords_is_not_rate_limit(self):
+        exc = Exception("connection reset")
+        assert _is_rate_limit_error(exc) is False
+
+
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""
 
@@ -860,11 +981,16 @@ class TestTryPaymentFallback:
 
 
 class TestCallLlmPaymentFallback:
-    """call_llm() retries with a different provider on 402 / payment errors."""
+    """call_llm() retries with a different provider on 402 / payment / rate-limit errors."""
 
     def _make_402_error(self, msg="Payment Required: insufficient credits"):
         exc = Exception(msg)
         exc.status_code = 402
+        return exc
+
+    def _make_429_rate_limit_error(self, msg="Rate limit exceeded, try again in 60 seconds"):
+        exc = Exception(msg)
+        exc.status_code = 429
         return exc
 
     def test_non_payment_error_not_caught(self, monkeypatch):
@@ -885,6 +1011,32 @@ class TestCallLlmPaymentFallback:
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
                 )
+
+    def test_429_rate_limit_triggers_fallback(self, monkeypatch):
+        """429 rate-limit errors should trigger fallback to next provider."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        rate_err = self._make_429_rate_limit_error()
+        primary_client.chat.completions.create.side_effect = rate_err
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "xiaomi/mimo-v2-pro")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "xiaomi/mimo-v2-pro", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "fallback-model", "openrouter")):
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+        # Fallback client should have been used
+        assert fallback_client.chat.completions.create.called
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
@@ -1526,6 +1678,107 @@ class TestAuxiliaryAuthRefreshRetry:
         assert fresh_client.chat.completions.create.await_count == 1
 
 
+class TestAuxiliaryPoolRotationRetry:
+    def test_call_llm_rotates_explicit_codex_pool_on_429(self):
+        rate_err = Exception("usage limit reached")
+        rate_err.status_code = 429
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create.side_effect = [rate_err, rate_err]
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("rotated-sync")
+
+        class _Pool:
+            def __init__(self):
+                self.rotate_calls = []
+
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                self.rotate_calls.append(kwargs)
+                return SimpleNamespace(id="cred-b")
+
+        pool = _Pool()
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
+        ):
+            resp = call_llm(
+                task="compression",
+                provider="openai-codex",
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "rotated-sync"
+        assert stale_client.chat.completions.create.call_count == 2
+        assert fresh_client.chat.completions.create.call_count == 1
+        assert len(pool.rotate_calls) == 1
+        assert pool.rotate_calls[0]["status_code"] == 429
+        mock_fallback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_rotates_explicit_codex_pool_on_429(self):
+        rate_err = Exception("usage limit reached")
+        rate_err.status_code = 429
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create = AsyncMock(side_effect=[rate_err, rate_err])
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create = AsyncMock(return_value=_DummyResponse("rotated-async"))
+
+        class _Pool:
+            def __init__(self):
+                self.rotate_calls = []
+
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                self.rotate_calls.append(kwargs)
+                return SimpleNamespace(id="cred-b")
+
+        pool = _Pool()
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
+        ):
+            resp = await async_call_llm(
+                task="compression",
+                provider="openai-codex",
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "rotated-async"
+        assert stale_client.chat.completions.create.await_count == 2
+        assert fresh_client.chat.completions.create.await_count == 1
+        assert len(pool.rotate_calls) == 1
+        assert pool.rotate_calls[0]["status_code"] == 429
+        mock_fallback.assert_not_called()
+
+
 class TestCodexAdapterReasoningTranslation:
     """Verify _CodexCompletionsAdapter translates extra_body.reasoning
     into the Responses API's top-level reasoning + include fields, matching
@@ -1650,6 +1903,42 @@ class TestCodexAdapterReasoningTranslation:
         )
         assert "reasoning" not in captured
 
+    def test_reasoning_effort_null_falls_back_to_medium(self):
+        """Parity with agent/transports/codex.py::build_kwargs() — falsy
+        ``effort`` (None / empty / 0) keeps the default ``medium`` instead
+        of being forwarded to Codex.  Codex rejects ``{"effort": null}``
+        with HTTP 400 (Invalid value for parameter `reasoning.effort`)."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": None}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_reasoning_effort_empty_string_falls_back_to_medium(self):
+        """Empty-string effort (e.g. ``effort: ""`` in YAML) is falsy in
+        the main-agent path's truthy check; mirror that here so the same
+        config produces the same result."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": ""}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_reasoning_effort_zero_falls_back_to_medium(self):
+        """Numeric ``0`` is also falsy — the docstring lists it explicitly,
+        so cover the contract.  Codex would reject ``{"effort": 0}`` the
+        same way it rejects ``null``."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": 0}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
 
 
 class TestVisionAutoSkipsKimiCoding:
@@ -1753,6 +2042,85 @@ class TestVisionAutoSkipsKimiCoding:
             "kimi-coding",
             "kimi-coding-cn",
         })
+
+
+class TestCodexAuxiliaryAdapterTimeout:
+    def test_forwards_timeout_to_responses_stream(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="summary")],
+                    )],
+                    usage=None,
+                )
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def stream(self, **kwargs):
+                self.kwargs = kwargs
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "summarize this"}],
+            timeout=12.5,
+        )
+
+        assert fake_client.responses.kwargs["timeout"] == 12.5
+        assert response.choices[0].message.content == "summary"
+
+    def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
+        class SlowAliveStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                for _ in range(5):
+                    time.sleep(0.03)
+                    yield SimpleNamespace(type="response.in_progress")
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="late")],
+                    )],
+                    usage=None,
+                )
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return SlowAliveStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            adapter.create(
+                messages=[{"role": "user", "content": "summarize this"}],
+                timeout=0.05,
+            )
+
+        assert time.monotonic() - started < 0.14
 
 
 # ---------------------------------------------------------------------------
@@ -1893,3 +2261,53 @@ class TestOpenRouterExplicitApiKey:
             assert call_kwargs["api_key"] == "env-fallback-key", (
                 f"Expected env fallback key to be used when explicit_api_key is None, got: {call_kwargs['api_key']}"
             )
+
+
+class TestAnthropicExplicitApiKey:
+    """Test that explicit_api_key is correctly propagated to _try_anthropic().
+
+    Parity with the OpenRouter fix in #18768: resolve_provider_client() passes
+    explicit_api_key to _try_openrouter(), but the anthropic branch was not
+    updated — _try_anthropic() always fell back to resolve_anthropic_token()
+    even when an explicit key was supplied (e.g. from a fallback_model entry).
+    """
+
+    def test_try_anthropic_uses_explicit_api_key_over_env(self):
+        """_try_anthropic(explicit_api_key) must use the supplied key, not the env fallback."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-fallback-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic
+            client, model = _try_anthropic("explicit-pool-key")
+        assert client is not None
+        assert mock_build.call_args.args[0] == "explicit-pool-key", (
+            f"Expected explicit_api_key to be passed, got: {mock_build.call_args.args[0]}"
+        )
+        assert mock_build.call_args.args[0] != "env-fallback-key"
+
+    def test_try_anthropic_without_explicit_key_falls_back_to_resolve(self):
+        """Without explicit_api_key, _try_anthropic falls back to resolve_anthropic_token."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-fallback-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic
+            client, model = _try_anthropic()
+        assert client is not None
+        assert mock_build.call_args.args[0] == "env-fallback-key"
+
+    def test_resolve_provider_client_passes_explicit_api_key_to_anthropic(self):
+        """resolve_provider_client(provider='anthropic', explicit_api_key=...) must propagate the key."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="env-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            mock_build.return_value = MagicMock()
+            client, model = resolve_provider_client(
+                provider="anthropic",
+                explicit_api_key="explicit-fallback-key",
+            )
+        assert client is not None
+        assert mock_build.call_args.args[0] == "explicit-fallback-key", (
+            "resolve_provider_client must forward explicit_api_key to _try_anthropic()"
+        )

@@ -65,6 +65,8 @@ _HERMES_CORE_TOOLS = [
     # zero schema footprint. Gated via check_fn in tools/kanban_tools.py.
     "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
+    # Computer use (macOS, gated on cua-driver being installed via check_fn)
+    "computer_use",
 ]
 
 
@@ -101,7 +103,17 @@ TOOLSETS = {
         "tools": ["image_generate"],
         "includes": []
     },
-    
+
+    "computer_use": {
+        "description": (
+            "Background macOS desktop control via cua-driver — screenshots, "
+            "mouse, keyboard, scroll, drag. Does NOT steal the user's cursor "
+            "or keyboard focus. Works with any tool-capable model."
+        ),
+        "tools": ["computer_use"],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
@@ -521,13 +533,18 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
         None: If toolset not found
     """
     toolset = TOOLSETS.get(name)
-    if toolset:
-        return toolset
 
     try:
         from tools.registry import registry
     except Exception:
-        return None
+        return toolset if toolset else None
+
+    if toolset:
+        merged_tools = sorted(
+            set(toolset.get("tools", []))
+            | set(registry.get_tool_names_for_toolset(name))
+        )
+        return {**toolset, "tools": merged_tools}
 
     registry_toolset = name
     description = f"Plugin toolset: {name}"

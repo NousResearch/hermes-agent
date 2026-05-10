@@ -40,6 +40,52 @@ def _platform_name(platform) -> str:
     return str(value or "").lower()
 
 
+def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
+    """Build platform-aware thread metadata for adapter sends.
+
+    Most platforms route threaded sends with a generic ``thread_id`` metadata
+    value. Telegram private-chat topics created through Hermes' DM-topic helper
+    are exposed in updates as ``message_thread_id`` plus a reply anchor, but
+    outbound sends only render in the correct Telegram lane when the adapter
+    supplies both ``message_thread_id`` and ``reply_to_message_id``. Mark those
+    lanes so the Telegram adapter can avoid the known-bad partial routes.
+    """
+    thread_id = getattr(source, "thread_id", None)
+    if thread_id is None:
+        return None
+    metadata = {"thread_id": thread_id}
+    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+        metadata["telegram_dm_topic_reply_fallback"] = True
+        anchor = reply_to_message_id or getattr(source, "message_id", None)
+        if anchor is not None:
+            metadata["telegram_reply_to_message_id"] = str(anchor)
+    return metadata
+
+
+def _reply_anchor_for_event(event) -> str | None:
+    """Return reply_to id for platforms that need reply semantics.
+
+    Telegram forum/supergroup topics should be routed by topic metadata, not by
+    replying to the triggering message. Hermes-created Telegram private-chat
+    topic lanes are different: Bot API sends reject their ``message_thread_id``
+    and do not route with ``direct_messages_topic_id``. Those lanes only remain
+    visible when sent with both the private topic thread id and a reply to the
+    triggering user message.
+    """
+    source = getattr(event, "source", None)
+    platform = _platform_name(getattr(source, "platform", None))
+    thread_id = getattr(source, "thread_id", None)
+    if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
+        # Reply to the triggering user message. Replying to Telegram's earlier
+        # topic seed/anchor can render the bot response outside the active lane.
+        return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
+    if platform == "telegram" and thread_id:
+        return None
+    if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
+        return getattr(event, "reply_to_message_id", None)
+    return getattr(event, "message_id", None)
+
+
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
     """Return True when a media file should use the platform's audio sender.
 
@@ -1304,37 +1350,52 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_code = None
         self._fatal_error_message = None
         self._fatal_error_retryable = True
-        try:
-            from gateway.status import write_runtime_status
-            write_runtime_status(platform=self.platform.value, platform_state="connected", error_code=None, error_message=None)
-        except Exception:
-            pass
+        self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
 
     def _mark_disconnected(self) -> None:
         self._running = False
         if self.has_fatal_error:
             return
-        try:
-            from gateway.status import write_runtime_status
-            write_runtime_status(platform=self.platform.value, platform_state="disconnected", error_code=None, error_message=None)
-        except Exception:
-            pass
+        self._write_runtime_status_safe("disconnected", platform_state="disconnected", error_code=None, error_message=None)
 
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._running = False
         self._fatal_error_code = code
         self._fatal_error_message = message
         self._fatal_error_retryable = retryable
+        self._write_runtime_status_safe("fatal", platform_state="fatal", error_code=code, error_message=message)
+
+    def _write_runtime_status_safe(self, context: str, **kwargs) -> None:
+        """Write runtime status; log first failure per context at warning, rest at debug.
+
+        Status writes can fail on permissions, ENOSPC, missing status dir, etc.
+        A persistently failing status dir used to be silent (``except: pass``).
+        Logging every failure would spam the log on reconnect loops, so this
+        surfaces the first failure per (platform, context) at warning level and
+        downgrades subsequent failures to debug.
+        """
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(
-                platform=self.platform.value,
-                platform_state="fatal",
-                error_code=code,
-                error_message=message,
-            )
-        except Exception:
-            pass
+            write_runtime_status(platform=self.platform.value, **kwargs)
+        except Exception as exc:
+            # Use getattr so object.__new__(...) test harnesses that skip __init__
+            # don't blow up on attribute access.
+            logged = getattr(self, "_status_write_logged", None)
+            if logged is None:
+                logged = set()
+                try:
+                    self._status_write_logged = logged
+                except Exception:
+                    pass
+            key = (self.platform.value, context)
+            if key not in logged:
+                logger.warning(
+                    "Failed to write runtime status (%s) for %s: %s (further failures at debug level)",
+                    context, self.platform.value, exc,
+                )
+                logged.add(key)
+            else:
+                logger.debug("Failed to write runtime status (%s) for %s: %s", context, self.platform.value, exc)
 
     async def _notify_fatal_error(self) -> None:
         handler = self._fatal_error_handler
@@ -1704,7 +1765,7 @@ class BasePlatformAdapter(ABC):
         """
         # Fallback: send URL as text (subclasses override for native images)
         text = f"{caption}\n{image_url}" if caption else image_url
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
     
     async def send_animation(
         self,
@@ -1783,6 +1844,7 @@ class BasePlatformAdapter(ABC):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -1795,7 +1857,7 @@ class BasePlatformAdapter(ABC):
         text = f"🔊 Audio: {audio_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     async def play_tts(
         self,
@@ -1817,6 +1879,7 @@ class BasePlatformAdapter(ABC):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -1828,7 +1891,7 @@ class BasePlatformAdapter(ABC):
         text = f"🎬 Video: {video_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     async def send_document(
         self,
@@ -1837,6 +1900,7 @@ class BasePlatformAdapter(ABC):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -1848,7 +1912,7 @@ class BasePlatformAdapter(ABC):
         text = f"📎 File: {file_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     async def send_image_file(
         self,
@@ -1856,6 +1920,7 @@ class BasePlatformAdapter(ABC):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -1868,29 +1933,44 @@ class BasePlatformAdapter(ABC):
         text = f"🖼️ Image: {image_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
-        
+
         The TTS tool returns responses like:
             [[audio_as_voice]]
             MEDIA:/path/to/audio.ogg
-        
+
+        Skills that produce large/lossless images (e.g. info-graph, where a
+        rendered JPG is 1-2 MB but Telegram's sendPhoto recompresses to
+        ~200 KB at 1280px) can use ``[[as_document]]`` to request unmodified
+        delivery via sendDocument instead of sendPhoto/sendMediaGroup. The
+        directive is detected at the dispatch sites (which have access to the
+        original response); this method just strips it so it never leaks into
+        user-visible text. Per-file granularity is intentionally not exposed —
+        when an agent emits ``[[as_document]]`` once, every image path in the
+        same response is delivered as a document, mirroring the all-or-nothing
+        scope of ``[[audio_as_voice]]``.
+
         Args:
             content: The response text to scan.
-        
+
         Returns:
             Tuple of (list of (path, is_voice) pairs, cleaned content with tags removed).
         """
         media = []
         cleaned = content
-        
+
         # Check for [[audio_as_voice]] directive
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = cleaned.replace("[[audio_as_voice]]", "")
+        # Strip [[as_document]] directive — callers inspect the original
+        # ``content`` for it (so they can still react to it); here we just
+        # keep it out of the user-visible cleaned text.
+        cleaned = cleaned.replace("[[as_document]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
@@ -2096,9 +2176,52 @@ class BasePlatformAdapter(ABC):
 
         ``generation`` lets callers tie the callback to a specific gateway run
         generation so stale runs cannot clear callbacks owned by a fresher run.
+
+        If a callback for the same ``session_key`` (and generation, when set)
+        is already registered, the new callback is chained — both fire, in
+        registration order, with per-callback exception isolation. This lets
+        independent features (background-review release + temporary-bubble
+        cleanup) coexist without clobbering each other. Stale-generation
+        callers never overwrite a fresher generation's slot.
         """
         if not session_key or not callable(callback):
             return
+
+        existing = self._post_delivery_callbacks.get(session_key)
+        if existing is not None:
+            if isinstance(existing, tuple) and len(existing) == 2:
+                existing_gen, existing_cb = existing
+            else:
+                existing_gen, existing_cb = None, existing
+            # Stale-generation registrations never overwrite a fresher slot.
+            if (
+                existing_gen is not None
+                and generation is not None
+                and int(generation) < int(existing_gen)
+            ):
+                return
+            # Same-or-newer generation: chain with the existing callback so
+            # both fire in registration order.
+            if callable(existing_cb) and (
+                existing_gen is None
+                or generation is None
+                or int(existing_gen) == int(generation)
+            ):
+                _prev = existing_cb
+                _new = callback
+
+                def _chained() -> None:
+                    try:
+                        _prev()
+                    except Exception:
+                        logger.debug("Post-delivery callback failed", exc_info=True)
+                    try:
+                        _new()
+                    except Exception:
+                        logger.debug("Post-delivery callback failed", exc_info=True)
+
+                callback = _chained
+
         if generation is None:
             self._post_delivery_callbacks[session_key] = callback
         else:
@@ -2485,7 +2608,7 @@ class BasePlatformAdapter(ABC):
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
-        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
         try:
             response = await self._message_handler(event)
@@ -2506,7 +2629,7 @@ class BasePlatformAdapter(ABC):
                 _r = await self._send_with_retry(
                     chat_id=event.source.chat_id,
                     content=_text,
-                    reply_to=event.message_id,
+                    reply_to=_reply_anchor_for_event(event),
                     metadata=thread_meta,
                 )
                 if _eph_ttl > 0 and _r.success and _r.message_id:
@@ -2599,14 +2722,14 @@ class BasePlatformAdapter(ABC):
                     self.name, cmd, session_key,
                 )
                 try:
-                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     response = await self._message_handler(event)
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
                     if _text:
                         _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
                             content=_text,
-                            reply_to=event.message_id,
+                            reply_to=_reply_anchor_for_event(event),
                             metadata=_thread_meta,
                         )
                         if _eph_ttl > 0 and _r.success and _r.message_id:
@@ -2663,10 +2786,18 @@ class BasePlatformAdapter(ABC):
         mode = os.getenv("HERMES_HUMAN_DELAY_MODE", "off").lower()
         if mode == "off":
             return 0.0
-        min_ms = int(os.getenv("HERMES_HUMAN_DELAY_MIN_MS", "800"))
-        max_ms = int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", "2500"))
         if mode == "natural":
             min_ms, max_ms = 800, 2500
+            return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
+        # custom mode — tolerate malformed env vars instead of crashing.
+        try:
+            min_ms = int(os.getenv("HERMES_HUMAN_DELAY_MIN_MS", "800"))
+        except (TypeError, ValueError):
+            min_ms = 800
+        try:
+            max_ms = int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", "2500"))
+        except (TypeError, ValueError):
+            max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
@@ -2690,7 +2821,7 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
-        _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
         _keep_typing_kwargs = {"metadata": _thread_metadata}
         try:
             _keep_typing_sig = inspect.signature(self._keep_typing)
@@ -2752,13 +2883,21 @@ class BasePlatformAdapter(ABC):
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
+                # Capture [[as_document]] before extract_media strips it, so the
+                # dispatch partition below can route image-extension files
+                # through send_document instead of send_multiple_images. Used
+                # by skills that produce large/lossless images (e.g. info-graph)
+                # where Telegram's sendPhoto recompression destroys legibility.
+                force_document_attachments = "[[as_document]]" in response
+
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
-                
+
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
+                text_content = text_content.replace("[[as_document]]", "").strip()
                 text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
@@ -2810,10 +2949,23 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    _reply_anchor = _reply_anchor_for_event(event)
+                    # Mark final response messages for notification delivery.
+                    # Platform adapters that support per-message notification
+                    # control (e.g. Telegram's disable_notification) use this
+                    # flag to override silent-mode and ensure the final
+                    # response triggers a push notification.
+                    # Clone to avoid mutating the metadata shared with the
+                    # typing-indicator task (which must remain unmarked).
+                    if _thread_metadata is not None:
+                        _thread_metadata = dict(_thread_metadata)
+                        _thread_metadata["notify"] = True
+                    else:
+                        _thread_metadata = {"notify": True}
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
-                        reply_to=event.message_id,
+                        reply_to=_reply_anchor,
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)
@@ -2855,19 +3007,26 @@ class BasePlatformAdapter(ABC):
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
                 # Partition images out of media_files + local_files so they
-                # can be sent as a single batch (Signal RPC)
+                # can be sent as a single batch (Signal RPC). When
+                # ``[[as_document]]`` was set on the original response, image
+                # files skip the photo path and route to send_document below
+                # so they're delivered with original bytes (no Telegram
+                # sendPhoto recompression).
                 from urllib.parse import quote as _quote
                 _image_paths: list = []
                 _non_image_media: list = []
                 for media_path, is_voice in media_files:
                     _ext = Path(media_path).suffix.lower()
-                    if _ext in _IMAGE_EXTS and not is_voice:
+                    if (_ext in _IMAGE_EXTS
+                            and not is_voice
+                            and not force_document_attachments):
                         _image_paths.append(media_path)
                     else:
                         _non_image_media.append((media_path, is_voice))
                 _non_image_local: list = []
                 for file_path in local_files:
-                    if Path(file_path).suffix.lower() in _IMAGE_EXTS:
+                    if (Path(file_path).suffix.lower() in _IMAGE_EXTS
+                            and not force_document_attachments):
                         _image_paths.append(file_path)
                     else:
                         _non_image_local.append(file_path)
@@ -2995,7 +3154,7 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(
@@ -3033,7 +3192,9 @@ class BasePlatformAdapter(ABC):
                 _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
             if callable(_post_cb):
                 try:
-                    _post_cb()
+                    _post_result = _post_cb()
+                    if inspect.isawaitable(_post_result):
+                        await _post_result
                 except Exception:
                     pass
             # Stop typing indicator

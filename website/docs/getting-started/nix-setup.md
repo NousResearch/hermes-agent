@@ -122,7 +122,9 @@ services.hermes-agent.environmentFiles = [ "/var/lib/hermes/env" ];
 Setting `addToSystemPackages = true` does two things: puts the `hermes` CLI on your system PATH **and** sets `HERMES_HOME` system-wide so the interactive CLI shares state (sessions, skills, cron) with the gateway service. Without it, running `hermes` in your shell creates a separate `~/.hermes/` directory.
 :::
 
-:::info Container-aware CLI
+### Container-aware CLI
+
+:::info
 When `container.enable = true` and `addToSystemPackages = true`, **every** `hermes` command on the host automatically routes into the managed container. This means your interactive CLI session runs inside the same environment as the gateway service — with access to all container-installed packages and tools.
 
 - The routing is transparent: `hermes chat`, `hermes sessions list`, `hermes version`, etc. all exec into the container under the hood
@@ -690,15 +692,15 @@ A build-time collision check prevents plugin packages from shadowing core hermes
 
 ### Dev Shell
 
-The flake provides a development shell with Python 3.11, uv, Node.js, and all runtime tools:
+The flake provides a development shell with Python 3.12, uv, Node.js, and all runtime tools:
 
 ```bash
 cd hermes-agent
 nix develop
 
 # Shell provides:
-#   - Python 3.11 + uv (deps installed into .venv on first entry)
-#   - Node.js 20, ripgrep, git, openssh, ffmpeg on PATH
+#   - Python 3.12 + uv (deps installed into .venv on first entry)
+#   - Node.js 22, ripgrep, git, openssh, ffmpeg on PATH
 #   - Stamp-file optimization: re-entry is near-instant if deps haven't changed
 
 hermes setup
@@ -867,8 +869,8 @@ Same layout, mounted into the container:
 ## Updating
 
 ```bash
-# Update the flake input
-nix flake update hermes-agent --flake /etc/nixos
+# Update the flake input (run from the directory containing flake.nix)
+cd /etc/nixos && nix flake update hermes-agent
 
 # Rebuild
 sudo nixos-rebuild switch

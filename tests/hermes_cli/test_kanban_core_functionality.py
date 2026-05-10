@@ -2706,6 +2706,33 @@ def test_create_task_skills_rejects_toolset_names(kanban_home):
         conn.close()
 
 
+def test_create_task_skills_lists_all_toolset_typos(kanban_home):
+    """When several toolset names are passed, the error names every one.
+
+    Agents that confuse skills with toolsets usually pass several at once
+    (``skills=["web", "browser", "terminal"]``). Listing only the first
+    mistake forces serial fix-then-retry; listing all of them lets the
+    caller correct in one round-trip.
+    """
+    conn = kb.connect()
+    try:
+        with pytest.raises(ValueError) as exc_info:
+            kb.create_task(
+                conn,
+                title="three bad",
+                assignee="x",
+                skills=["web", "browser", "terminal"],
+            )
+        msg = str(exc_info.value)
+        assert "'web'" in msg
+        assert "'browser'" in msg
+        assert "'terminal'" in msg
+        # Plural noun form when multiple toolsets are flagged.
+        assert "are toolset names" in msg
+    finally:
+        conn.close()
+
+
 def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
     in addition to the built-in kanban-worker."""

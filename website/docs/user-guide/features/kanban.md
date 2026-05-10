@@ -393,7 +393,7 @@ These skills are **additive** to the built-in `kanban-worker` — the dispatcher
 
 ### The orchestrator skill
 
-A **well-behaved orchestrator does not do the work itself.** It decomposes the user's goal into tasks, links them, assigns each to a specialist, and steps back. The `kanban-orchestrator` skill encodes this as tool-call patterns: anti-temptation rules, a standard specialist roster (`researcher`, `writer`, `analyst`, `backend-eng`, `reviewer`, `ops`), and a decomposition playbook keyed on `kanban_create` / `kanban_link` / `kanban_comment`.
+A **well-behaved orchestrator does not do the work itself.** It decomposes the user's goal into tasks, links them, assigns each to one of the profiles you've set up, and steps back. The `kanban-orchestrator` skill encodes this as tool-call patterns: anti-temptation rules, a Step-0 profile-discovery prompt (the dispatcher silently fails on unknown assignee names, so the orchestrator must ground every card in profiles that actually exist on your machine), and a decomposition playbook keyed on `kanban_create` / `kanban_link` / `kanban_comment`.
 
 A canonical orchestrator turn (two parallel researchers handing off to a writer):
 

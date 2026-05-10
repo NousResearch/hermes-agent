@@ -908,6 +908,229 @@ class APIServerAdapter(BasePlatformAdapter):
             ],
         })
 
+    # ------------------------------------------------------------------
+    # /api/config/model — backend default model + provider read/write
+    # ------------------------------------------------------------------
+    #
+    # GET returns the resolved {primary, provider} pair from
+    # ~/.hermes/config.yaml so dashboards can show "what model the
+    # gateway will actually call". PUT persists a new {primary,
+    # provider} into config.yaml via hermes_cli.config.save_config so
+    # subsequent /v1/chat/completions / /v1/responses / /v1/runs
+    # requests pick it up on the next call (the gateway re-reads
+    # config.yaml each request through its mtime-keyed cache).
+    #
+    # Validation mirrors the persona/toolsets pattern (PR #19076):
+    # bounded length, conservative regex (no path traversal, shell
+    # metacharacters, or whitespace).
+
+    _MODEL_CONFIG_PRIMARY_RE = re.compile(r"^[A-Za-z0-9_./:-]+$")
+    _MODEL_CONFIG_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+    _MODEL_CONFIG_MAX_PRIMARY_LEN = 200
+    _MODEL_CONFIG_MAX_PROVIDER_LEN = 100
+
+    @staticmethod
+    def _resolve_model_config_view(cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Extract {primary, provider} from a config.yaml dict.
+
+        Tolerates the legacy `model: <string>` and `model: {model: ...}`
+        shapes that the loader may emit before normalisation.
+        """
+        if not isinstance(cfg, dict):
+            return {"primary": None, "provider": None}
+        section = cfg.get("model")
+        if isinstance(section, str):
+            return {"primary": section.strip() or None, "provider": None}
+        if not isinstance(section, dict):
+            return {"primary": None, "provider": None}
+        primary = section.get("default") or section.get("model")
+        if isinstance(primary, str):
+            primary = primary.strip() or None
+        else:
+            primary = None
+        provider = section.get("provider")
+        if isinstance(provider, str):
+            provider = provider.strip() or None
+        else:
+            provider = None
+        return {"primary": primary, "provider": provider}
+
+    async def _handle_model_config_get(self, request: "web.Request") -> "web.Response":
+        """GET /api/config/model — return current {primary, provider}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+        except Exception as exc:
+            logger.warning("[%s] /api/config/model GET failed to load config: %s", self.name, exc)
+            return web.json_response({"primary": None, "provider": None})
+
+        return web.json_response(self._resolve_model_config_view(cfg))
+
+    async def _handle_model_config_put(self, request: "web.Request") -> "web.Response":
+        """PUT /api/config/model — persist {primary, provider} into config.yaml."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"error": {"message": "invalid JSON body", "type": "invalid_request_error"}},
+                status=400,
+            )
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"error": {"message": "body must be a JSON object", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        primary_raw = body.get("primary")
+        provider_raw = body.get("provider")
+
+        if not isinstance(primary_raw, str):
+            return web.json_response(
+                {"error": {"message": "primary must be a string", "type": "invalid_request_error"}},
+                status=400,
+            )
+        primary = primary_raw.strip()
+        if not primary:
+            return web.json_response(
+                {"error": {"message": "primary must not be empty", "type": "invalid_request_error"}},
+                status=400,
+            )
+        if len(primary) > self._MODEL_CONFIG_MAX_PRIMARY_LEN:
+            return web.json_response(
+                {
+                    "error": {
+                        "message": f"primary exceeds {self._MODEL_CONFIG_MAX_PRIMARY_LEN} chars",
+                        "type": "invalid_request_error",
+                    }
+                },
+                status=400,
+            )
+        if not self._MODEL_CONFIG_PRIMARY_RE.match(primary):
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "primary contains disallowed characters",
+                        "type": "invalid_request_error",
+                    }
+                },
+                status=400,
+            )
+        # Defense-in-depth: even though the regex is conservative, reject
+        # obvious path-traversal markers and leading separators that would
+        # be syntactically legal under the character class.
+        if ".." in primary or primary.startswith((".", "/", "-")) or primary.endswith("/"):
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "primary contains disallowed sequence",
+                        "type": "invalid_request_error",
+                    }
+                },
+                status=400,
+            )
+
+        provider: Optional[str] = None
+        if provider_raw is not None:
+            if not isinstance(provider_raw, str):
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": "provider must be a string when provided",
+                            "type": "invalid_request_error",
+                        }
+                    },
+                    status=400,
+                )
+            provider = provider_raw.strip()
+            if not provider:
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": "provider must not be empty when provided",
+                            "type": "invalid_request_error",
+                        }
+                    },
+                    status=400,
+                )
+            if len(provider) > self._MODEL_CONFIG_MAX_PROVIDER_LEN:
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": f"provider exceeds {self._MODEL_CONFIG_MAX_PROVIDER_LEN} chars",
+                            "type": "invalid_request_error",
+                        }
+                    },
+                    status=400,
+                )
+            if not self._MODEL_CONFIG_PROVIDER_RE.match(provider):
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": "provider contains disallowed characters",
+                            "type": "invalid_request_error",
+                        }
+                    },
+                    status=400,
+                )
+
+        try:
+            from hermes_cli.config import load_config, save_config, is_managed
+        except Exception as exc:
+            return web.json_response(
+                {"error": {"message": f"config helpers unavailable: {exc}", "type": "config_save_error"}},
+                status=500,
+            )
+
+        try:
+            if is_managed():
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": "config is managed by an external profile and cannot be modified via API",
+                            "type": "config_locked",
+                        }
+                    },
+                    status=409,
+                )
+        except Exception:
+            pass
+
+        try:
+            cfg = load_config()
+            if not isinstance(cfg, dict):
+                cfg = {}
+            section = cfg.get("model")
+            if not isinstance(section, dict):
+                section = {}
+            section["default"] = primary
+            section.pop("model", None)
+            if provider is not None:
+                section["provider"] = provider
+            cfg["model"] = section
+            save_config(cfg)
+        except Exception as exc:
+            logger.exception("[%s] /api/config/model PUT failed", self.name)
+            return web.json_response(
+                {"error": {"message": f"failed to save config: {exc}", "type": "config_save_error"}},
+                status=500,
+            )
+
+        return web.json_response(
+            {
+                "ok": True,
+                "primary": primary,
+                "provider": section.get("provider"),
+            }
+        )
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -964,6 +1187,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                "model_config_get": {"method": "GET", "path": "/api/config/model"},
+                "model_config_put": {"method": "PUT", "path": "/api/config/model"},
             },
         })
 
@@ -3340,6 +3565,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/api/config/model", self._handle_model_config_get)
+            self._app.router.add_put("/api/config/model", self._handle_model_config_put)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

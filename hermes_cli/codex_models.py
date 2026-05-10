@@ -72,7 +72,13 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
 
 
 def _fetch_models_from_api(access_token: str) -> List[str]:
-    """Fetch available models from the Codex API. Returns visible models sorted by priority."""
+    """Fetch visible models from the live Codex API, preserving backend truth.
+
+    Unlike the local fallback path, the live ChatGPT Codex catalog should be
+    treated as authoritative for the current account. In particular we must
+    not synthesize older Codex variants that the backend does not list, or the
+    picker can offer models the account cannot actually use.
+    """
     try:
         import httpx
         resp = httpx.get(
@@ -108,7 +114,7 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         sortable.append((rank, slug))
 
     sortable.sort(key=lambda x: (x[0], x[1]))
-    return _add_forward_compat_models([slug for _, slug in sortable])
+    return [slug for _, slug in sortable]
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
@@ -180,7 +186,7 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models:
-            return _add_forward_compat_models(api_models)
+            return api_models
 
     # Fall back to local sources
     default_model = _read_default_model(codex_home)

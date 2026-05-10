@@ -25,7 +25,7 @@ def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch
 
     models = get_codex_model_ids()
 
-    assert models[0] == "gpt-5.2-codex"
+    assert "gpt-5.2-codex" in models
     assert "gpt-5.1-codex" in models
     assert "gpt-5.3-codex" in models
     # Codex CLI marks Spark unsupported in the public API, but the Codex
@@ -57,21 +57,15 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
     assert "gpt-5.3-codex-spark" in models
 
 
-def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
+def test_get_codex_model_ids_trusts_live_catalog_for_authenticated_accounts(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.codex_models._fetch_models_from_api",
-        lambda access_token: ["gpt-5.2-codex"],
+        lambda access_token: ["gpt-5.5", "gpt-5.3-codex"],
     )
 
     models = get_codex_model_ids(access_token="codex-access-token")
 
-    assert models == [
-        "gpt-5.2-codex",
-        "gpt-5.4-mini",
-        "gpt-5.4",
-        "gpt-5.3-codex",
-        "gpt-5.3-codex-spark",
-    ]
+    assert models == ["gpt-5.5", "gpt-5.3-codex"]
 
 
 def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
@@ -108,6 +102,27 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
     assert "gpt-5.5" in models
     assert "gpt-5.3-codex-spark" in models
     assert "gpt-5-internal" not in models
+
+
+def test_get_codex_model_ids_fallback_path_keeps_forward_compat_models(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "models_cache.json").write_text(
+        json.dumps({"models": [{"slug": "gpt-5.2-codex", "priority": 20}]})
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr("hermes_cli.codex_models._fetch_models_from_api", lambda access_token: [])
+
+    models = get_codex_model_ids(access_token="codex-access-token")
+
+    assert models[:6] == [
+        "gpt-5.2-codex",
+        "gpt-5.5",
+        "gpt-5.4-mini",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
+    ]
 
 
 def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):

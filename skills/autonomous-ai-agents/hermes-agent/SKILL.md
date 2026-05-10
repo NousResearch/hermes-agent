@@ -127,6 +127,11 @@ hermes skills browse        Browse all available skills
 hermes skills tap add REPO  Add a GitHub repo as skill source
 ```
 
+For shared-repo workflows, Hermes can also scan repo-owned skill folders through
+`skills.external_dirs` in `config.yaml` (for example a checked-in
+`.claude/skills/` directory). See the docs on repo-centric setup:
+https://hermes-agent.nousresearch.com/docs/user-guide/repo-centric-setup
+
 ### MCP Servers
 
 ```

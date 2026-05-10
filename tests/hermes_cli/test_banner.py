@@ -1,5 +1,7 @@
 """Tests for banner toolset name normalization and skin color usage."""
 
+import json
+
 from unittest.mock import patch
 
 from rich.console import Console
@@ -133,3 +135,43 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
     raw = buf.getvalue()
     assert "Hermes Agent v" in raw, "Version label missing from title"
     assert "\x1b]8;" not in raw, "OSC-8 hyperlink should not be emitted without a tag"
+
+
+def test_check_for_updates_uses_cached_result_when_local_head_matches(tmp_path, monkeypatch):
+    import hermes_cli.banner as _banner
+
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    monkeypatch.setattr(_banner, "get_hermes_home", lambda: tmp_path)
+    (tmp_path / ".update_check").write_text(json.dumps({"ts": 1000, "behind": 764, "rev": "head1234"}))
+
+    with (
+        patch.object(_banner.time, "time", return_value=1001),
+        patch.object(_banner, "_git_short_hash", return_value="head1234"),
+        patch.object(_banner, "_check_via_local_git") as check_local,
+    ):
+        behind = _banner.check_for_updates()
+
+    assert behind == 764
+    check_local.assert_not_called()
+
+
+def test_check_for_updates_invalidates_cache_when_local_head_changes(tmp_path, monkeypatch):
+    import hermes_cli.banner as _banner
+
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    monkeypatch.setattr(_banner, "get_hermes_home", lambda: tmp_path)
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": 1000, "behind": 764, "rev": "oldhead"}))
+
+    with (
+        patch.object(_banner.time, "time", return_value=1001),
+        patch.object(_banner, "_git_short_hash", return_value="newhead"),
+        patch.object(_banner, "_check_via_local_git", return_value=0) as check_local,
+    ):
+        behind = _banner.check_for_updates()
+
+    assert behind == 0
+    check_local.assert_called_once()
+    cached = json.loads(cache_file.read_text())
+    assert cached["behind"] == 0
+    assert cached["rev"] == "newhead"

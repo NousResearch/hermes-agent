@@ -876,10 +876,16 @@ class MemoryStore:
         file *before* the lock is acquired, creating a race window where
         concurrent readers see an empty file. Atomic rename avoids this:
         readers always see either the old complete file or the new one.
+
+        Preserves existing file permissions so group-shared deployments
+        (e.g. NixOS, Docker volumes) don't lose their permission bits
+        after every memory update (#22889).
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
-            atomic_write_text(path, content, tmp_prefix=".mem_")
+            atomic_write_text(
+                path, content, tmp_prefix=".mem_", preserve_mode=True
+            )
         except (OSError, IOError) as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
@@ -1242,7 +1248,5 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
 
 

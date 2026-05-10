@@ -106,13 +106,14 @@ Gordon maintains his personal wiki in markdown (`/opt/data/wiki/`). Convert and 
 
 ### Workflow
 
-**1. Update the markdown source** (in `/opt/data/wiki/`), then:
+**Gordon retired the markdown pipeline (2026-05-10). Wiki pages are now written directly in HTML.** The old md2html.py script exists but is no longer used. Do NOT write markdown and convert — edit HTML files directly and push.
 
-**2. Convert markdown → HTML:**
-```bash
-python3 /opt/data/scripts/md2html.py /opt/data/wiki
-```
-This generates:
+**Current workflow:**
+1. Edit HTML source directly (e.g. `/opt/data/hermes-pages-repo/wiki/...`)
+2. Commit and push: `cd /opt/data/hermes-pages-repo && git add <files> && git commit -m "..." && GIT_TERMINAL_PROMPT=0 git push origin main`
+3. Live on Cloudflare Pages in ~30 seconds
+
+### Wiki as HTML pages
 - `wiki/index.html` → **hub page** (auth check + page links, entry point at `/wiki/`)
 - `wiki/login.html` → **login page** (email + password, NO auth required, URL: `/wiki/login`)
 - `wiki/entities/<name>.html` → entity pages (auth check, nav links WITHOUT .html)
@@ -201,7 +202,7 @@ See `references/wiki-content-strategy.md` for the full guide. Key rules:
 
 ### Wiki index page structure
 
-**Prefer a plain vertical link list over a categorized/summarized index.** The index at `wiki/index.md` should just be `[[pagename]]` links, one per line. Keep it simple — the nav bar shows categories, the index doesn't need to. Gordon preferred the simple list over the structured/summarized version.
+The index is an HTML file (`wiki/index.html`), not markdown. When adding a new page, insert a link in the appropriate section using the same pattern as existing links. Don't create a summary or description — just a link.
 
 ### Nav bar organization
 

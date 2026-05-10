@@ -61,6 +61,15 @@ class _RecordingAdapter:
         return _R()
 
 
+class _CallbackRecordingAdapter(_RecordingAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.callbacks: dict = {}
+
+    def register_post_delivery_callback(self, session_key, callback, *, generation=None):
+        self.callbacks[session_key] = (generation, callback)
+
+
 def _make_runner_with_adapter(session_id: str = None):
     from gateway.run import GatewayRunner
     import uuid
@@ -121,6 +130,32 @@ async def test_goal_verdict_done_sent_via_adapter_send(hermes_home):
     assert msg["chat_id"] == "c1"
     assert "Goal achieved" in msg["content"]
     assert "the feature shipped" in msg["content"]
+
+
+@pytest.mark.asyncio
+async def test_goal_verdict_streamed_done_sends_status_immediately(hermes_home):
+    """When streaming already delivered the main body, the goal status must
+    be sent immediately instead of waiting for a post-delivery callback that
+    will never fire."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+    adapter = _CallbackRecordingAdapter()
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    from hermes_cli.goals import GoalManager
+
+    GoalManager(session_entry.session_id).set("ship the feature")
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "the feature shipped", False)):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="I shipped the feature.",
+            response_already_delivered=True,
+        )
+
+    assert len(adapter.sends) == 1
+    assert "Goal achieved" in adapter.sends[0]["content"]
+    assert adapter.callbacks == {}
 
 
 @pytest.mark.asyncio

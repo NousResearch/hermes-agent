@@ -642,3 +642,30 @@ class TestAdapterInit:
         assert asyncio.run(ad.get_chat_info("U123"))["type"] == "dm"
         assert asyncio.run(ad.get_chat_info("C123"))["type"] == "group"
         assert asyncio.run(ad.get_chat_info("R123"))["type"] == "channel"
+
+    def test_message_event_uses_base_source_builder(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+        from gateway.config import PlatformConfig
+
+        ad = LineAdapter(PlatformConfig(enabled=True))
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        ad.handle_message = _capture
+        event = {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "user", "userId": "U123"},
+            "message": {"type": "text", "id": "m1", "text": "hello"},
+        }
+
+        asyncio.run(ad._handle_message_event(event))
+
+        assert len(captured) == 1
+        assert captured[0].text == "hello"
+        assert captured[0].source.chat_id == "U123"
+        assert captured[0].source.user_id == "U123"
+        assert captured[0].source.chat_type == "dm"

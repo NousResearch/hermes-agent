@@ -27,20 +27,21 @@ summarizes, cross-references, files, and maintains consistency.
 
 Gordon wants the wiki maintained **passively** — he reads it in a browser at `https://hermes-pages.rouse-gordon.workers.dev/wiki/`, I file updates during our conversations without prompting. He doesn't want to be asked "should I add this?" every time.
 
-**How it works:**
-- Markdown source: `/opt/data/hermes-pages/gordons-llm-wiki/`
-- HTML output: `/opt/data/hermes-pages/wiki/` (served at the URL above)
-- HTML rendering: `python3 /opt/data/hermes-pages/scripts/md2html.py` converts `.md` to `.html`, push to `hermes-pages` repo, Cloudflare auto-deploys
-- See `references/wiki-setup.md` for the full two-repo publish sequence (clone, copy images, regenerate HTML, push)
+**How it works now for Gordon:**
+- Preferred homepage: `https://hermes-pages-d55.pages.dev/` (links to Wiki and Profession)
+- Static wiki HTML: `/opt/data/hermes-pages/wiki/`
+- Deploy mirror: `/opt/data/hermes-pages-files/wiki/`
+- Deploy command: `export PATH=/opt/data/.nvm/bin:$PATH && /opt/data/.npm-global/bin/wrangler pages deploy /opt/data/hermes-pages-files --project-name hermes-pages --branch main --commit-dirty=true`
 - Auth: email+password login required. Only `rouse.gordon@gmail.com` / `GordonWiki2026!`
-- Gordon views the rendered HTML in his browser; I maintain the markdown source files
-- When Gordon asks about something in the wiki, I query the markdown source files directly
+- Gordon views the rendered HTML in his browser; maintain static HTML directly unless Gordon explicitly asks for markdown regeneration.
+- Important: do **not** regenerate the wiki from `/opt/data/hermes-pages/gordons-llm-wiki/` by default; that previously overwrote richer static pages.
 
-**To update the wiki:**
-1. Edit/add markdown in `/opt/data/wiki/`
-2. Run `python3 /opt/data/scripts/md2html.py` to regenerate HTML
-3. `cd /opt/data/hermes-pages-repo && git add wiki/ && git commit -m "Update wiki" && GIT_TERMINAL_PROMPT=0 git push origin main`
-4. Live in ~30 seconds at the wiki URL
+**To update Gordon's wiki:**
+1. Edit/add static HTML in `/opt/data/hermes-pages/wiki/`
+2. Keep parent index/hub pages linked manually
+3. Copy wiki into deploy mirror: `rm -rf /opt/data/hermes-pages-files/wiki && cp -a /opt/data/hermes-pages/wiki /opt/data/hermes-pages-files/wiki`
+4. Run the direct Cloudflare Pages deploy command above
+5. Live in ~30 seconds at `https://hermes-pages-d55.pages.dev/wiki/`
 
 **To add the wiki to Obsidian later:** Clone `https://github.com/rousegordon-ops/hermes-pages`, point Obsidian at `gordons-llm-wiki/` subdirectory.
 
@@ -271,6 +272,21 @@ a `_meta/topic-map.md` that groups pages by theme for faster navigation.
 - Domain: [domain]
 - Structure created with SCHEMA.md, index.md, log.md
 ```
+
+## Wiki Gardener Policy — Agent-Inferred Taxonomy & Hierarchy
+
+Do not make the user define the taxonomy. Infer a reasonable structure from the content, then refactor as the wiki grows.
+
+Principles:
+- **Parent pages are maps, not dumping grounds.** Keep hub/index pages concise and navigable.
+- **Promote repeated or central topics to pages.** If a topic appears repeatedly, becomes a decision area, or the user asks for a deep dive, create a dedicated page.
+- **Use semantic containment for hierarchy:** broad domain → hub page; major bucket → child hub; specific idea/opportunity/company/source → child page.
+- **Create child pages for deep dives by default.** Example: `business-opportunities` → `business-opportunities/ai-consulting` → `business-opportunities/engineering-knowledge-base-rag`.
+- **Split large sections.** If a page section exceeds ~300–500 words, includes multiple independent subtopics, or would be painful to skim in 30 seconds, split it into child pages.
+- **Preserve navigation.** Add links from parent to child, child back to parent, and related links between sibling/adjacent pages.
+- **Prefer small composable pages over long monoliths.** The wiki should become more navigable over time, not just longer.
+- **Refactor without asking when the structure is obvious.** If uncertain, make a reasonable structure and note it can be adjusted later.
+- **Keep raw/source facts distinct from synthesized conclusions.** Sources are evidence; wiki pages are curated synthesis.
 
 ## Core Operations
 

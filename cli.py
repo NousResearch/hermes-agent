@@ -4502,7 +4502,7 @@ class HermesCLI:
                         else:
                             print(f"\n{diff}")
             else:
-                print(f"  ❌ {result['error']}")
+                print(f"  ❌ {result.get('error', 'Unknown error')}")
             return
 
         # Resolve checkpoint reference (number or hash)
@@ -4521,9 +4521,9 @@ class HermesCLI:
         result = mgr.restore(cwd, target_hash, file_path=file_path)
         if result["success"]:
             if file_path:
-                print(f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
+            print(f"  ✅ Restored {file_path} from checkpoint {result.get('restored_to', '?')}: {result.get('reason', '')}")
             else:
-                print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
+                print(f"  ✅ Restored to checkpoint {result.get('restored_to', '?')}: {result.get('reason', '')}")
             print("  A pre-rollback snapshot was saved automatically.")
 
             # Also undo the last conversation turn so the agent's context
@@ -4532,7 +4532,7 @@ class HermesCLI:
                 self.undo_last()
                 print("  Chat turn undone to match restored file state.")
         else:
-            print(f"  ❌ {result['error']}")
+            print(f"  ❌ {result.get('error', 'Unknown error')}")
 
     def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
         """Resolve a checkpoint number or hash to a full commit hash."""
@@ -6556,11 +6556,11 @@ class HermesCLI:
                 skills=skills or None,
             )
             if result.get("success"):
-                print(f"(^_^)b Created job: {result['job_id']}")
-                print(f"  Schedule: {result['schedule']}")
+                print(f"(^_^)b Created job: {result.get('job_id', '?')}")
+                print(f"  Schedule: {result.get('schedule', 'N/A')}")
                 if result.get("skills"):
-                    print(f"  Skills: {', '.join(result['skills'])}")
-                print(f"  Next run: {result['next_run_at']}")
+                    print(f"  Skills: {', '.join(result.get('skills', []))}")
+                print(f"  Next run: {result.get('next_run_at', 'N/A')}")
             else:
                 print(f"(x_x) Failed to create job: {result.get('error')}")
             return

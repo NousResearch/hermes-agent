@@ -1,83 +1,127 @@
 ---
 sidebar_position: 11
 title: "Plugin LLM Access"
-description: "How plugins run host-owned chat and structured completions via ctx.llm — no provider keys, schema-validated JSON, fail-closed trust gate."
+description: "Run a chat or structured completion from inside a plugin via ctx.llm — host-owned auth, fail-closed trust gate, optional JSON Schema validation."
 ---
 
 # Plugin LLM Access
 
-`ctx.llm` lets a trusted plugin run a one-shot chat or structured
-completion against the user's active model and auth — without ever
-seeing an OAuth token or API key. It's the supported lane for
-plugins that want to do something narrow and structured (extract
-fields from a receipt, classify an inbound message, normalise free
-text into a JSON record) without registering a tool the agent has
-to call.
+Most plugin work in Hermes is about *extending* the agent — adding a
+tool, a skill, a memory backend, a gateway adapter. `ctx.llm` is for
+the cases where a plugin needs to *make a decision on its own*. A
+hook that ranks an inbound message before the agent ever sees it. A
+gateway pre-filter that routes some events to one queue and the rest
+to another. A slash command that turns a paste into a typed record.
+A scheduled job that summarises overnight activity into a single
+field of a status board.
 
-Three things make this lane different from "just use the auxiliary
-client":
+These are jobs the agent shouldn't be in the loop on. They want one
+LLM call, a typed answer, and to be done.
 
-* **Bounded.** One sync or async call. No streaming, no tool loops,
-  no conversation state. The plugin states the input and gets back
-  one structured result.
-* **Host-owned.** The host resolves provider, model, auth, timeout,
-  fallback, and image-vs-text routing. The plugin gets a result with
-  attribution but no credentials.
-* **Fail-closed by default.** Plugins cannot override model, agent
-  binding, or auth profile unless an operator explicitly trusts them
-  in `config.yaml`.
+```python
+result = ctx.llm.complete_structured(
+    instructions="Score this support reply for urgency (0–1) and pick a category.",
+    input=[{"type": "text", "text": message_body}],
+    json_schema=TRIAGE_SCHEMA,
+    purpose="support.triage",
+    temperature=0.0,
+    max_tokens=128,
+)
+
+if result.parsed["urgency"] > 0.8:
+    await dispatch_to_oncall(result.parsed["category"], message_body)
+```
+
+That's the surface. No SDK initialisation, no "which provider should
+I use," no API key — `ctx.llm` borrows whatever the user has running
+right now. When they switch from OpenRouter to native Anthropic, the
+plugin follows them automatically. When their primary provider 5xxs,
+the host's fallback chain kicks in before the plugin sees the
+failure. When the input contains an image and the active text model
+is text-only, the host transparently routes to the configured vision
+model and back.
+
+## Three things that make this lane worth using
+
+* **Bounded.** Single sync or async call. No streaming, no tool
+  loops, no conversation state to manage. State the input, get the
+  result, return.
+* **Host-owned credentials.** OAuth tokens, refresh flows, the
+  credential pool, per-task aux overrides — every credential
+  concept Hermes already has applies. The plugin never sees a
+  token; the host attributes the call back through `result.audit`.
+* **Fail-closed trust.** A plugin you've never configured cannot
+  pick its own model, run against another agent, or select a
+  different stored credential. The default posture is "use what the
+  user is using." Operators opt in to specific overrides, per
+  plugin, in `config.yaml`.
 
 ## Quick start
 
 ```python
 def register(ctx):
     ctx.register_command(
-        name="receipt-extract",
-        handler=lambda raw_args: _extract(ctx, raw_args.strip()),
-        description="Extract a receipt into JSON.",
-        args_hint="<path>",
+        name="paste-to-tasks",
+        handler=lambda raw: _paste_to_tasks(ctx, raw),
+        description="Turn freeform meeting notes into structured tasks.",
+        args_hint="<text>",
     )
 
 
-_RECEIPT_SCHEMA = {
+_TASKS_SCHEMA = {
     "type": "object",
     "properties": {
-        "vendor":   {"type": "string"},
-        "total":    {"type": "number"},
-        "currency": {"type": "string"},
-        "tags":     {"type": "array", "items": {"type": "string"}},
+        "tasks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "owner":  {"type": "string"},
+                    "action": {"type": "string"},
+                    "due":    {"type": "string", "description": "ISO date or empty"},
+                },
+                "required": ["action"],
+            },
+        },
     },
-    "required": ["vendor", "total"],
+    "required": ["tasks"],
 }
 
 
-def _extract(ctx, path: str) -> str:
-    img_bytes = open(path, "rb").read()
+def _paste_to_tasks(ctx, raw_args: str) -> str:
+    if not raw_args.strip():
+        return "Usage: /paste-to-tasks <meeting notes>"
     result = ctx.llm.complete_structured(
-        instructions="Extract a structured receipt record.",
-        input=[{"type": "image", "data": img_bytes, "mime_type": "image/png"}],
-        json_schema=_RECEIPT_SCHEMA,
-        schema_name="receipt.record",
-        purpose="receipts.extract",
+        instructions=(
+            "Extract concrete action items from these meeting notes. "
+            "One task per actionable line. If no owner is named, leave 'owner' blank."
+        ),
+        input=[{"type": "text", "text": raw_args}],
+        json_schema=_TASKS_SCHEMA,
+        schema_name="meeting.tasks",
+        purpose="paste-to-tasks",
         temperature=0.0,
         max_tokens=512,
     )
-    return f"{result.parsed} (via {result.provider}/{result.model})"
+    if result.parsed is None:
+        return f"Couldn't parse a response. Raw output:\n{result.text}"
+    lines = [f"- [{t.get('owner') or '?'}] {t['action']}" for t in result.parsed["tasks"]]
+    return "\n".join(lines) or "(no tasks found)"
 ```
 
-That's the whole surface. The host runs the call against whatever
-provider+model the user has active. `result.parsed` is a Python dict
-when the response was valid JSON and matched the schema; otherwise
-it's `None` and `result.text` carries the raw response so you can
-log it.
+`result.parsed` is a Python dict matching the schema when everything
+worked, or `None` when the model couldn't produce valid JSON — the
+raw text is always preserved on `result.text` for fallback handling.
+The provider, model, token usage, and audit info come back attached
+to the same result object.
 
-A complete worked example ships in
+A second worked example with image input ships in
 [`plugins/plugin-llm-example/`](https://github.com/NousResearch/hermes-agent/tree/main/plugins/plugin-llm-example).
 
 ## API surface
 
 `ctx.llm` is an instance of `agent.plugin_llm.PluginLlm`. Two
-methods, plus async siblings:
+methods, plus async siblings.
 
 ### `complete()`
 
@@ -184,16 +228,15 @@ To trust a plugin, add a `plugins.entries.<plugin-id>.llm` block to
 ```yaml
 plugins:
   entries:
-    plugin-llm-example:
+    my-plugin:
       llm:
         # Allow the plugin to ask for a specific model.
         allow_model_override: true
 
         # Optionally restrict which models. Use ["*"] for any.
         allowed_models:
-          - openai/gpt-4o
           - openai/gpt-4o-mini
-          - anthropic/claude-3-5-sonnet
+          - anthropic/claude-3-5-haiku
 
         # Allow cross-agent calls (rare).
         allow_agent_id_override: false
@@ -274,6 +317,24 @@ don't have to:
 * **Cost.** The plugin runs against the user's paid provider. Don't
   loop on `complete_structured()` for every gateway message without
   thinking about token spend.
+
+## Where this fits in the plugin surface
+
+Existing `ctx.*` methods extend an existing Hermes subsystem:
+
+| `ctx.register_tool` | adds a tool the agent can call |
+| `ctx.register_platform` | wires a new gateway adapter |
+| `ctx.register_image_gen_provider` | replaces an image-gen backend |
+| `ctx.register_memory_provider` | replaces the memory backend |
+| `ctx.register_context_engine` | replaces the context compressor |
+| `ctx.register_hook` | observes a lifecycle event |
+
+`ctx.llm` is the first surface that lets a plugin run the same model
+the user is talking to, *out of band*, without any of the above.
+That's its only job. If your plugin needs to register a tool the
+agent invokes, use `register_tool`. If it needs to react to a
+lifecycle event, use `register_hook`. If it needs to make its own
+decision based on its own LLM call — `ctx.llm`.
 
 ## Reference
 

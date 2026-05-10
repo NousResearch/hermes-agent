@@ -65,7 +65,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `hermes-achievements` | dashboard tab | Steam-style collectible badges generated from your real Hermes session history |
 | `kanban/dashboard` | dashboard tab | Kanban board UI for the multi-agent dispatcher — tasks, comments, fan-out, board switching. See [Kanban Multi-Agent](./kanban.md). |
 | `example-dashboard` | dashboard example | Reference dashboard plugin for [Extending the Dashboard](./extending-the-dashboard.md) |
-| `plugin-llm-example` | slash command | Reference plugin demonstrating `ctx.llm.complete_structured()` — turns a receipt file (text or image) into structured JSON via the user's active model. See [Plugin LLM Access](/docs/developer-guide/plugin-llm-access). |
+| `plugin-llm-example` | slash command | Reference plugin for the `ctx.llm` surface — a minimal `/receipt-extract <path>` worked example showing structured input, JSON Schema validation, and trust-gate config. See [Plugin LLM Access](/docs/developer-guide/plugin-llm-access). |
 | `strike-freedom-cockpit` | dashboard skin | Sample custom dashboard skin |
 
 Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for the two long-running hooks-based plugins follows.

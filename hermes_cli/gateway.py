@@ -2230,7 +2230,30 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
-    unit_path.write_text(generate_systemd_unit(system=system, run_as_user=expected_user), encoding="utf-8")
+    new_unit = generate_systemd_unit(system=system, run_as_user=expected_user)
+
+    # ── Test-environment safety belt ─────────────────────────────────────
+    # The user-scope unit path resolves under ``Path.home()``, which is NOT
+    # sandboxed by the test conftest (only HERMES_HOME is). If a test
+    # exercises ``run_gateway()`` with a pytest-tmp HERMES_HOME, the freshly
+    # generated unit bakes that ``/tmp/pytest-of-.../hermes_test`` path into
+    # ``Environment="HERMES_HOME=..."``. Writing that to the developer's
+    # real user systemd unit file silently breaks their gateway on the next
+    # reboot (systemd loads the polluted env, the gateway looks at an empty
+    # tmp dir, and Telegram/Discord/etc. all show as "not configured").
+    # Refuse to write when the generated unit references a pytest tmpdir.
+    # Detection sniffs the unit body — tests that legitimately exercise the
+    # refresh flow patch ``generate_systemd_unit`` to return synthetic
+    # content (``"new unit\n"``) which doesn't contain these markers and
+    # still works.
+    if not system and (
+        "/pytest-of-" in new_unit
+        or "/hermes_test\"" in new_unit
+        or "/hermes_test/" in new_unit
+    ):
+        return False
+
+    unit_path.write_text(new_unit, encoding="utf-8")
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
     return True

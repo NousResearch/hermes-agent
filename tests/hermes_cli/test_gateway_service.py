@@ -234,6 +234,60 @@ class TestSystemdServiceRefresh:
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
 
+    def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
+        self, tmp_path, monkeypatch
+    ):
+        """Defense in depth: ``refresh_systemd_unit_if_needed()`` runs every
+        time ``run_gateway()`` starts. The user-scope unit path resolves
+        under ``Path.home()`` (NOT sandboxed by conftest), and
+        ``generate_systemd_unit()`` bakes ``HERMES_HOME`` into the unit's
+        ``Environment=`` line. Without this guard, any test that drives
+        ``run_gateway()`` end-to-end on a real Linux dev box silently
+        rewrites the developer's installed gateway unit with a
+        ``/tmp/pytest-of-.../hermes_test`` HERMES_HOME — silently breaking
+        their gateway on the next boot. The guard sniffs the generated
+        unit body for tmpdir markers and refuses the write. Tests that
+        legitimately exercise the refresh flow patch
+        ``generate_systemd_unit`` to return synthetic content that doesn't
+        carry those markers.
+        """
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+        # Realistic generated unit referencing a pytest tmpdir HERMES_HOME
+        polluted_unit = (
+            "[Service]\n"
+            'Environment="HERMES_HOME=/tmp/pytest-of-alice/pytest-42/'
+            'popen-gw0/test_x/hermes_test"\n'
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: polluted_unit,
+        )
+
+        # If the guard fails, daemon-reload would be called — record it.
+        ran = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            ran.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        result = gateway_cli.refresh_systemd_unit_if_needed(system=False)
+
+        assert result is False, "refresh should refuse to write a polluted unit"
+        assert (
+            unit_path.read_text(encoding="utf-8") == "old unit\n"
+        ), "installed unit must be left untouched"
+        assert not any(
+            "daemon-reload" in str(c) for c in ran
+        ), "daemon-reload must not run when write was refused"
+
 
 class TestRequireServiceInstalled:
     def test_exits_with_install_hint_when_unit_missing(self, tmp_path, monkeypatch, capsys):

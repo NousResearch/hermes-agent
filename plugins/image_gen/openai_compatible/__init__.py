@@ -35,6 +35,7 @@ from agent.image_gen_provider import (
     ImageGenProvider,
     error_response,
     resolve_aspect_ratio,
+    save_b64_image,
     success_response,
 )
 
@@ -390,16 +391,52 @@ class OpenAICompatibleImageGenProvider(ImageGenProvider):
         first = data[0]
         image_ref = None
         if isinstance(first, dict):
-            image_ref = first.get("url") or first.get("image_url")
+            image_ref = first.get("b64_json") or first.get("url") or first.get("image_url")
         if not image_ref:
             return error_response(
-                error="OpenAI-compatible image backend response contained neither url nor image_url",
+                error="OpenAI-compatible image backend response contained no image data (expected url, image_url, or b64_json)",
                 error_type="empty_response",
                 provider="openai-compatible",
                 model=model_id,
                 prompt=prompt,
                 aspect_ratio=aspect,
             )
+
+        # Decode base64 data URIs (e.g. "data:image/png;base64,...") to local files
+        # so the image_gen tool can deliver them as attachments.
+        if isinstance(image_ref, str) and image_ref.startswith("data:"):
+            try:
+                header, b64_payload = image_ref.split(",", 1)
+                ext = "png"
+                if "jpeg" in header or "jpg" in header:
+                    ext = "jpg"
+                elif "webp" in header:
+                    ext = "webp"
+                saved = save_b64_image(b64_payload, prefix="openai_compat", extension=ext)
+                image_ref = str(saved)
+            except Exception as exc:
+                return error_response(
+                    error=f"Failed to decode data URI from image backend: {exc}",
+                    error_type="decode_error",
+                    provider="openai-compatible",
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+        elif isinstance(first, dict) and first.get("b64_json"):
+            # Raw b64 without data URI wrapper
+            try:
+                saved = save_b64_image(first["b64_json"], prefix="openai_compat")
+                image_ref = str(saved)
+            except Exception as exc:
+                return error_response(
+                    error=f"Failed to decode b64_json from image backend: {exc}",
+                    error_type="decode_error",
+                    provider="openai-compatible",
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
 
         return success_response(
             image=str(image_ref),

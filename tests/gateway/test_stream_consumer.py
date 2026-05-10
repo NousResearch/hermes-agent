@@ -793,6 +793,151 @@ class TestSegmentBreakOnToolBoundary:
             "_send_fallback_final — the #10807 fix should prevent this"
         )
 
+    @pytest.mark.asyncio
+    async def test_fallback_final_deletes_partial_after_chunks_succeed(self):
+        """After fallback chunks land, the frozen partial must be deleted so
+        the user sees only the complete response (#16668)."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_new"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.delete_message = AsyncMock(return_value=None)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Seed the consumer as if it already edited a partial message that
+        # later got stuck (flood control etc.) — _message_id is the stale id.
+        consumer._message_id = "msg_partial"
+        consumer._last_sent_text = "Working on i"
+
+        await consumer._send_fallback_final("Working on it. Done!")
+
+        adapter.delete_message.assert_awaited_once_with("chat_123", "msg_partial")
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_does_not_delete_when_no_chunks_reach_user(self):
+        """If every fallback send fails, the partial is the only thing the
+        user has — must NOT be deleted."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="network down"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.delete_message = AsyncMock(return_value=None)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer._message_id = "msg_partial"
+        consumer._last_sent_text = "Working on i"
+
+        await consumer._send_fallback_final("Working on it. Done!")
+
+        adapter.delete_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_skips_delete_when_adapter_lacks_method(self):
+        """Platforms without delete_message must not crash the fallback path."""
+        adapter = MagicMock(spec=["send", "edit_message", "MAX_MESSAGE_LENGTH"])
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_new"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer._message_id = "msg_partial"
+        consumer._last_sent_text = "Working on i"
+
+        # Should not raise even though the adapter has no delete_message.
+        await consumer._send_fallback_final("Working on it. Done!")
+        assert consumer._final_response_sent is True
+
+
+class TestFinalResponseDeliveryGuard:
+    """Regression coverage for #10748 — _final_response_sent must reflect
+    actual delivery of the *current* chunked send, not the cumulative
+    `_already_sent` flag (which earlier tool-progress edits or fallback-mode
+    promotion can taint)."""
+
+    @pytest.mark.asyncio
+    async def test_split_overflow_failed_send_does_not_mark_final_sent(self):
+        """Split-overflow path: if every chunk send fails on done frame,
+        _final_response_sent must stay False so the gateway falls back."""
+        adapter = MagicMock()
+        # Every send fails — _send_new_chunk returns the passed-in reply_to.
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="network down"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 100
+        adapter.truncate_message = MagicMock(
+            side_effect=lambda text, limit: [text[:limit], text[limit:]],
+        )
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Simulate prior tool-progress edits that set _already_sent
+        consumer._already_sent = True
+
+        # Long text > MAX_MESSAGE_LENGTH, no existing message id (fresh send path)
+        long_text = "x" * 200
+        consumer.on_delta(long_text)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        assert consumer._final_response_sent is False, (
+            "_already_sent leaked into _final_response_sent — gateway will "
+            "wrongly suppress its fallback delivery (#10748)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_split_overflow_partial_send_marks_final_sent(self):
+        """Split-overflow path: if at least one chunk lands on done frame,
+        we did deliver the final answer — _final_response_sent must be True."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ])
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 100
+        adapter.truncate_message = MagicMock(
+            side_effect=lambda text, limit: [text[:limit], text[limit:]],
+        )
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        long_text = "x" * 200
+        consumer.on_delta(long_text)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        assert consumer._final_response_sent is True
+
 
 class TestInterimCommentaryMessages:
     @pytest.mark.asyncio

@@ -156,7 +156,12 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
     (fake_locales / "zh.yaml").write_text("# intentionally empty\n", encoding="utf-8")
     monkeypatch.setattr(i18n, "_locales_dir", lambda: fake_locales)
     i18n.reset_language_cache()
-    assert i18n.t("foo", lang="zh") == "English Foo"
+    try:
+        assert i18n.t("foo", lang="zh") == "English Foo"
+    finally:
+        # Clear the cache on teardown so subsequent tests don't see the
+        # fake "foo: English Foo" catalog instead of the real locales/*.yaml.
+        i18n.reset_language_cache()
 
 
 def test_t_unknown_language_uses_english():

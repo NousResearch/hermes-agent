@@ -13,15 +13,24 @@ reads run alongside the dispatcher's IMMEDIATE write transactions).
 
 Security note
 -------------
-The dashboard's HTTP auth middleware (``web_server.auth_middleware``)
-explicitly skips ``/api/plugins/`` — plugin routes are unauthenticated by
-design because the dashboard binds to localhost by default. For the
-WebSocket we still require the session token as a ``?token=`` query
-parameter (browsers cannot set the ``Authorization`` header on an upgrade
-request), matching the established pattern used by the in-browser PTY
-bridge in ``hermes_cli/web_server.py``. If you run the dashboard with
-``--host 0.0.0.0``, every plugin route — kanban included — becomes
-reachable from the network. Don't do that on a shared host.
+Plugin HTTP routes go through the dashboard's session-token auth middleware
+(``web_server.auth_middleware``) just like core API routes — every
+``/api/plugins/...`` request must present the session bearer token (or the
+session cookie set when you load the dashboard HTML). The token is the
+random per-process ``_SESSION_TOKEN`` printed at startup; the dashboard's
+own pages inject it via ``window.__HERMES_SESSION_TOKEN__`` so logged-in
+browsers don't have to handle it manually.
+
+For the ``/events`` WebSocket we still require the session token as a
+``?token=`` query parameter (browsers cannot set the ``Authorization``
+header on an upgrade request), matching the established pattern used by
+the in-browser PTY bridge in ``hermes_cli/web_server.py``.
+
+This means ``hermes dashboard --host 0.0.0.0`` is safe to run on a LAN:
+plugin routes are no longer an unauthenticated exception. The auth still
+isn't multi-user — anyone who can read the printed URL+token gets full
+dashboard access — but they can't ride along just because they can reach
+the port.
 """
 
 from __future__ import annotations
@@ -136,7 +145,10 @@ def _task_dict(
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
     # computing deltas client-side.
-    d["age"] = kanban_db.task_age(task)
+    try:
+        d["age"] = kanban_db.task_age(task)
+    except Exception:
+        d["age"] = {"created_age_seconds": None, "started_age_seconds": None, "time_to_complete_seconds": None}
     # Surface the latest non-null run summary so dashboards don't show
     # blank cards/drawers for tasks where the worker handed off via
     # ``task_runs.summary`` (the kanban-worker pattern) instead of

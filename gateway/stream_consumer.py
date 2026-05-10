@@ -92,6 +92,7 @@ class GatewayStreamConsumer:
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
         on_new_message: Optional[callable] = None,
+        initial_reply_to_id: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
@@ -105,6 +106,7 @@ class GatewayStreamConsumer:
         # the content, not edit the old bubble above it.
         # Called with no arguments. Exceptions are swallowed.
         self._on_new_message = on_new_message
+        self._initial_reply_to_id = initial_reply_to_id
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
@@ -362,13 +364,21 @@ class GatewayStreamConsumer:
                         chunks = self.adapter.truncate_message(
                             self._accumulated, _safe_limit
                         )
+                        chunks_delivered = False
+                        reply_to = self._message_id or self._initial_reply_to_id
                         for chunk in chunks:
-                            await self._send_new_chunk(chunk, self._message_id)
+                            new_id = await self._send_new_chunk(chunk, reply_to)
+                            if new_id is not None and new_id != reply_to:
+                                chunks_delivered = True
                         self._accumulated = ""
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
                         if got_done:
-                            self._final_response_sent = self._already_sent
+                            # Only claim final delivery if THESE chunks actually
+                            # landed.  ``_already_sent`` may be True from prior
+                            # tool-progress edits or fallback-mode promotion (#10748)
+                            # — that doesn't mean the final answer reached the user.
+                            self._final_response_sent = chunks_delivered
                             return
                         if got_segment_break:
                             self._message_id = None
@@ -411,7 +421,7 @@ class GatewayStreamConsumer:
                     # path below so we don't finalize here for it.
                     current_update_visible = await self._send_or_edit(
                         display_text,
-                        finalize=got_segment_break,
+                        finalize=(got_done or got_segment_break),
                     )
                     self._last_edit_time = time.monotonic()
 
@@ -640,6 +650,7 @@ class GatewayStreamConsumer:
         safe_limit = max(500, raw_limit - 100)
         chunks = self._split_text_chunks(continuation, safe_limit)
 
+        stale_message_id = self._message_id  # partial message to clean up
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False
@@ -686,6 +697,22 @@ class GatewayStreamConsumer:
             # Each fallback chunk is a fresh platform message — notify
             # so any stale tool-progress bubble gets closed off.
             self._notify_new_message()
+
+        # Remove the frozen partial message so the user only sees the
+        # complete fallback response.  Best-effort — if the platform doesn't
+        # implement ``delete_message``, the delete fails (flood control still
+        # active, bot lacks permission, message too old to delete), the
+        # partial remains but at least the full answer was delivered.
+        if stale_message_id and stale_message_id != last_message_id:
+            delete_fn = getattr(self.adapter, "delete_message", None)
+            if delete_fn is not None:
+                try:
+                    await delete_fn(self.chat_id, stale_message_id)
+                except Exception as e:
+                    logger.debug(
+                        "Fallback partial cleanup failed (%s): %s",
+                        stale_message_id, e,
+                    )
 
         self._message_id = last_message_id
         self._already_sent = True
@@ -979,10 +1006,12 @@ class GatewayStreamConsumer:
                     # The final response will be sent by the fallback path.
                     return False
             else:
-                # First message — send new
+                # First message — send new, threaded to the original user message
+                # so it lands in the correct topic/thread.
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
+                    reply_to=self._initial_reply_to_id,
                     metadata=self.metadata,
                 )
                 if result.success:

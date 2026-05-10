@@ -63,10 +63,7 @@ _XAI_ASPECT_RATIOS = {
 }
 
 # xAI resolutions
-_XAI_RESOLUTIONS = {
-    "1k": "1024",
-    "2k": "2048",
-}
+_XAI_RESOLUTIONS = {"1k", "2k"}
 
 DEFAULT_RESOLUTION = "1k"
 
@@ -177,7 +174,7 @@ class XAIImageGenProvider(ImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         xai_ar = _XAI_ASPECT_RATIOS.get(aspect, "1:1")
         resolution = _resolve_resolution()
-        xai_res = _XAI_RESOLUTIONS.get(resolution, "1024")
+        xai_res = resolution if resolution in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
 
         payload: Dict[str, Any] = {
             "model": API_MODEL,

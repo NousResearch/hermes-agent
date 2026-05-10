@@ -239,6 +239,28 @@ class TestGenerate:
         assert "Bearer test-key-12345" in headers["Authorization"]
         assert "Hermes-Agent" in headers["User-Agent"]
 
+    def test_payload_resolution_is_literal_1k_or_2k(self):
+        """Regression: xAI API rejects numeric resolutions ("1024"/"2048") with 422.
+
+        The endpoint expects the literal strings "1k" or "2k". Ensure the wire
+        payload carries that literal — not a numeric mapping. See PR #18678.
+        """
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"url": "https://xai.image/test.png"}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
+            provider = XAIImageGenProvider()
+            provider.generate(prompt="test")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["resolution"] in {"1k", "2k"}, (
+            f"resolution must be the literal '1k' or '2k', got {payload['resolution']!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Registration test

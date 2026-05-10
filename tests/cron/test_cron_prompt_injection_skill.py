@@ -128,6 +128,25 @@ class TestBuildJobPromptScansSkillContent:
         assert "news-digest" in prompt
         assert "Fetch the top 5 headlines" in prompt
 
+    def test_builtin_style_github_api_example_is_allowed(self, cron_env):
+        hermes_home, scheduler = cron_env
+        _plant_skill(
+            hermes_home,
+            "github-auth",
+            'Use this fallback:\n\ncurl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user',
+        )
+
+        job = {
+            "id": "job-gh-auth",
+            "name": "github auth check",
+            "prompt": "verify GitHub auth",
+            "skills": ["github-auth"],
+        }
+
+        prompt = scheduler._build_job_prompt(job)
+        assert prompt is not None
+        assert "Authorization: token $GITHUB_TOKEN" in prompt
+
     def test_skill_with_injection_payload_raises(self, cron_env):
         """The core attack: planted skill carries an injection payload.
 

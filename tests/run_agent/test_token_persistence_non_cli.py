@@ -1,5 +1,7 @@
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
+import json
+import sys
 
 from run_agent import AIAgent
 
@@ -61,3 +63,33 @@ def test_run_conversation_persists_tokens_for_cron_sessions():
     assert result["final_response"] == "done"
     session_db.update_token_counts.assert_called_once()
     assert session_db.update_token_counts.call_args.args[0] == "cron-session"
+
+
+def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeypatch):
+    sentinel_db = object()
+    captured = {}
+
+    class FakeSessionDB:
+        def __new__(cls):
+            return sentinel_db
+
+    hermes_state = ModuleType("hermes_state")
+    hermes_state.SessionDB = FakeSessionDB
+    monkeypatch.setitem(sys.modules, "hermes_state", hermes_state)
+
+    session_search_mod = ModuleType("tools.session_search_tool")
+
+    def fake_session_search(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"success": True, "results": []})
+
+    session_search_mod.session_search = fake_session_search
+    monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
+
+    agent = _make_agent(None, platform="acp")
+    result = json.loads(agent._invoke_tool("session_search", {"query": "Hermes"}, "task-id"))
+
+    assert result["success"] is True
+    assert captured["db"] is sentinel_db
+    assert captured["query"] == "Hermes"
+    assert agent._session_db is sentinel_db

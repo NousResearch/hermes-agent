@@ -993,7 +993,25 @@ class TestGetServicePids:
 class TestFindGatewayPidsExclude:
     """find_gateway_pids respects exclude_pids."""
 
+    @staticmethod
+    def _skip_proc_fallback_to_ps(monkeypatch):
+        """Linux ``_scan_gateway_pids`` reads ``/proc`` first; mocked ``ps``
+        output is only used when that path is skipped (mirrors slim CI images
+        without meaningful /proc parses for these asserts).
+        """
+        orig_isdir = gateway_cli.os.path.isdir
+
+        def isdir_skip_proc(path):
+            if isinstance(path, (str, os.PathLike)):
+                normalized = os.path.abspath(str(path)).replace("\\", "/").rstrip("/")
+                if normalized.endswith("/proc") or normalized == "/proc":
+                    return False
+            return orig_isdir(path)
+
+        monkeypatch.setattr(gateway_cli.os.path, "isdir", isdir_skip_proc)
+
     def test_excludes_specified_pids(self, monkeypatch):
+        self._skip_proc_fallback_to_ps(monkeypatch)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
 
         def fake_run(cmd, **kwargs):
@@ -1014,6 +1032,7 @@ class TestFindGatewayPidsExclude:
         assert 200 in pids
 
     def test_no_exclude_returns_all(self, monkeypatch):
+        self._skip_proc_fallback_to_ps(monkeypatch)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
 
         def fake_run(cmd, **kwargs):
@@ -1034,6 +1053,7 @@ class TestFindGatewayPidsExclude:
         assert 200 in pids
 
     def test_filters_to_current_profile(self, monkeypatch, tmp_path):
+        self._skip_proc_fallback_to_ps(monkeypatch)
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)

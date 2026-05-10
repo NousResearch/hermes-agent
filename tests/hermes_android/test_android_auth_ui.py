@@ -204,3 +204,14 @@ def test_settings_provider_switch_applies_selected_provider_defaults():
     assert 'runtimeConfigBaseUrl,' in auth_runtime_applier
     assert 'import com.nousresearch.hermesagent.data.ProviderPresets' in runtime_manager
     assert 'ProviderPresets.runtimeConfigBaseUrl(settings.provider, settings.baseUrl)' in runtime_manager
+
+
+def test_android_wheel_task_tracks_python_auth_sources():
+    build_gradle = (REPO_ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
+
+    assert 'tasks.register<Exec>("prepareHermesAndroidWheel")' in build_gradle
+    assert 'inputs.file(repoRoot.resolve("pyproject.toml"))' in build_gradle
+    assert 'inputs.files(fileTree(repoRoot.resolve(packageDir))' in build_gradle
+    assert '"hermes_android"' in build_gradle
+    assert '"hermes_cli"' in build_gradle
+    assert 'include("**/*.py")' in build_gradle

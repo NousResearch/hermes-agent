@@ -210,6 +210,31 @@ val prepareHermesAndroidWheel = tasks.register<Exec>("prepareHermesAndroidWheel"
     group = "python"
     description = "Build a no-deps Hermes wheel for the Android embedded runtime."
     val wheelDir = hermesWheelDir.get().asFile
+    inputs.file(repoRoot.resolve("pyproject.toml"))
+    inputs.file(repoRoot.resolve("README.md"))
+    listOf(
+        "agent",
+        "tools",
+        "hermes_cli",
+        "gateway",
+        "tui_gateway",
+        "cron",
+        "acp_adapter",
+        "plugins",
+        "providers",
+        "hermes_android",
+    ).forEach { packageDir ->
+        inputs.files(fileTree(repoRoot.resolve(packageDir)) {
+            include("**/*.py")
+            include("**/*.json")
+            include("**/*.yaml")
+            include("**/*.yml")
+            include("**/*.txt")
+            include("**/*.html")
+            include("**/*.js")
+            include("**/*.css")
+        })
+    }
     outputs.file(wheelDir.resolve(hermesWheelName()))
     doFirst {
         wheelDir.mkdirs()

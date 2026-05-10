@@ -55,7 +55,16 @@ def _cmd_status(args) -> int:
     print(f"curator: {status_line}")
     print(f"  runs:           {runs}")
     print(f"  last run:       {_fmt_ts(last_run)}")
-    print(f"  last summary:   {summary}")
+    # Summary may be multi-line when the curator archived skills (the rename
+    # map gets appended as `name → umbrella` lines). Indent continuation
+    # lines so the block reads as one logical field.
+    if "\n" in summary:
+        first, *rest = summary.splitlines()
+        print(f"  last summary:   {first}")
+        for line in rest:
+            print(f"                  {line}")
+    else:
+        print(f"  last summary:   {summary}")
     _report = state.get("last_report_path")
     if _report:
         suffix = "" if Path(_report).exists() else " (missing)"

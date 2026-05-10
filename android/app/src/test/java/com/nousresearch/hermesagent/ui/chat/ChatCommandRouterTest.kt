@@ -8,21 +8,6 @@ import org.junit.Test
 
 class ChatCommandRouterTest {
     @Test
-    fun signinOpenRouterStartsOAuthInAccounts() {
-        val host = RecordingCommandHost()
-
-        val result = ChatCommandRouter.execute("/signin openrouter", host.asHost())
-
-        assertTrue(result.handled)
-        assertEquals("openrouter", host.startedAuthMethods.single())
-        assertEquals(AppSection.Accounts, host.sections.single())
-        assertEquals(
-            "Opened OpenRouter OAuth in your browser. Approve Hermes to save a user-controlled API key, or paste an OpenRouter API key in Settings.",
-            result.feedback,
-        )
-    }
-
-    @Test
     fun signinRuntimeProvidersPrepareApiKeySetupInSettings() {
         val host = RecordingCommandHost()
 
@@ -32,37 +17,7 @@ class ChatCommandRouterTest {
         assertEquals("qwen", host.startedAuthMethods.single())
         assertEquals(AppSection.Settings, host.sections.single())
         assertEquals(
-            "Prepared qwen API-key/token setup in Settings and opened the provider setup page in your browser. Paste the provider credential there to power Hermes.",
-            result.feedback,
-        )
-    }
-
-    @Test
-    fun signinQwenCodingPlanAliasesPrepareApiKeySetupInSettings() {
-        val host = RecordingCommandHost()
-
-        val result = ChatCommandRouter.execute("/signin bailian", host.asHost())
-
-        assertTrue(result.handled)
-        assertEquals("qwen-coding-plan", host.startedAuthMethods.single())
-        assertEquals(AppSection.Settings, host.sections.single())
-        assertEquals(
-            "Prepared qwen-coding-plan API-key/token setup in Settings and opened the provider setup page in your browser. Paste the provider credential there to power Hermes.",
-            result.feedback,
-        )
-    }
-
-    @Test
-    fun signinOpenAiPreparesOpenAiApiKeySetupInSettings() {
-        val host = RecordingCommandHost()
-
-        val result = ChatCommandRouter.execute("/signin openai", host.asHost())
-
-        assertTrue(result.handled)
-        assertEquals("openai", host.startedAuthMethods.single())
-        assertEquals(AppSection.Settings, host.sections.single())
-        assertEquals(
-            "Prepared openai API-key/token setup in Settings and opened the provider setup page in your browser. Paste the provider credential there to power Hermes.",
+            "Prepared qwen API-key setup in Settings. Paste the provider key there to power Hermes.",
             result.feedback,
         )
     }
@@ -77,22 +32,7 @@ class ChatCommandRouterTest {
         assertEquals("zai", host.startedAuthMethods.single())
         assertEquals(AppSection.Settings, host.sections.single())
         assertEquals(
-            "Prepared zai API-key/token setup in Settings and opened the provider setup page in your browser. Paste the provider credential there to power Hermes.",
-            result.feedback,
-        )
-    }
-
-    @Test
-    fun signinQwenOauthAliasPreparesTokenSetupInSettings() {
-        val host = RecordingCommandHost()
-
-        val result = ChatCommandRouter.execute("/signin qwen-cli", host.asHost())
-
-        assertTrue(result.handled)
-        assertEquals("qwen-oauth", host.startedAuthMethods.single())
-        assertEquals(AppSection.Settings, host.sections.single())
-        assertEquals(
-            "Prepared legacy qwen-oauth token setup in Settings and opened the provider setup page in your browser. Qwen OAuth sign-ins were discontinued on 2026-04-15; use /signin qwen for new Qwen Cloud API-key setup.",
+            "Prepared zai API-key setup in Settings. Paste the provider key there to power Hermes.",
             result.feedback,
         )
     }

@@ -819,6 +819,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -867,6 +868,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
+            reasoning_callback=reasoning_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
@@ -906,25 +908,79 @@ class APIServerAdapter(BasePlatformAdapter):
             "pid": os.getpid(),
         })
 
+    def _get_exposed_models(self) -> list:
+        """Build the list of models to expose on /v1/models.
+
+        The primary model (``self._model_name``) is always included.
+        Additionally, all models declared in ``config.yaml`` provider entries'
+        ``models`` dicts and ``default_model`` fields are advertised so that
+        connected frontends (Open WebUI, LibreChat, ChatBox, etc.) can present
+        a meaningful model selector.
+        """
+        models = [
+            {
+                "id": self._model_name,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "hermes",
+                "permission": [],
+                "root": self._model_name,
+                "parent": None,
+            }
+        ]
+
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+            providers = config.get("providers", {})
+            seen = {self._model_name}
+            for _key, entry in providers.items():
+                if not isinstance(entry, dict):
+                    continue
+                # Collect models from provider's models dict
+                provider_models = entry.get("models")
+                if isinstance(provider_models, dict):
+                    for _alias, model_id in provider_models.items():
+                        mid = str(model_id)
+                        if mid not in seen:
+                            seen.add(mid)
+                            models.append({
+                                "id": mid,
+                                "object": "model",
+                                "created": int(time.time()),
+                                "owned_by": "hermes",
+                                "permission": [],
+                                "root": mid,
+                                "parent": self._model_name,
+                            })
+                # Also include default_model if present
+                default_model = entry.get("default_model")
+                if default_model and str(default_model) not in seen:
+                    mid = str(default_model)
+                    seen.add(mid)
+                    models.append({
+                        "id": mid,
+                        "object": "model",
+                        "created": int(time.time()),
+                        "owned_by": "hermes",
+                        "permission": [],
+                        "root": mid,
+                        "parent": self._model_name,
+                    })
+        except Exception:
+            pass
+
+        return models
+
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — return hermes-agent as an available model."""
+        """GET /v1/models — return available models from configured providers."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
         return web.json_response({
             "object": "list",
-            "data": [
-                {
-                    "id": self._model_name,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "hermes",
-                    "permission": [],
-                    "root": self._model_name,
-                    "parent": None,
-                }
-            ],
+            "data": self._get_exposed_models(),
         })
 
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
@@ -1119,6 +1175,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
+            def _on_reasoning(text):
+                """Forward reasoning/thinking content to the SSE stream.
+
+                Reasoning models (GLM, DeepSeek, Qwen, etc.) emit thinking
+                tokens via the agent's ``reasoning_callback``.  Tag them as
+                ``("__reasoning__", text)`` so the SSE writer can emit them
+                as ``delta.reasoning_content`` — the field Open WebUI and
+                other frontends use to render collapsible thinking blocks.
+                """
+                if text is not None:
+                    _stream_q.put(("__reasoning__", text))
+
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
             # (e.g. internal/filtered tools) is silently dropped instead of
@@ -1182,6 +1250,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                reasoning_callback=_on_reasoning,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
@@ -1355,24 +1424,37 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
+                Tagged tuples ``("__reasoning__", text)`` are sent as
+                ``delta.reasoning_content`` chunks — the standard OpenAI field
+                that frontends like Open WebUI use to render collapsible
+                thinking/reasoning blocks.
                 Tagged tuples ``("__tool_progress__", payload)`` are sent
                 as a custom ``event: hermes.tool.progress`` SSE event so
                 frontends can display them without storing the markers in
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
-                    await response.write(
-                        f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
-                    )
-                else:
-                    content_chunk = {
-                        "id": completion_id, "object": "chat.completion.chunk",
-                        "created": created, "model": model,
-                        "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
-                    }
-                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                if isinstance(item, tuple) and len(item) == 2:
+                    if item[0] == "__reasoning__":
+                        reasoning_chunk = {
+                            "id": completion_id, "object": "chat.completion.chunk",
+                            "created": created, "model": model,
+                            "choices": [{"index": 0, "delta": {"reasoning_content": item[1]}, "finish_reason": None}],
+                        }
+                        await response.write(f"data: {json.dumps(reasoning_chunk)}\n\n".encode())
+                        return time.monotonic()
+                    elif item[0] == "__tool_progress__":
+                        event_data = json.dumps(item[1])
+                        await response.write(
+                            f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                        )
+                        return time.monotonic()
+                content_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
+                }
+                await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
                 return time.monotonic()
 
             # Stream content chunks as they arrive from the agent
@@ -1780,18 +1862,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 to reduce Open WebUI re-render storms.  Tagged tuples
                 with ``__tool_started__`` / ``__tool_completed__``
                 prefixes are tool lifecycle events and flush the buffer
-                before emitting.
+                before emitting.  ``__reasoning__`` tagged tuples emit
+                reasoning/thinking content as text deltas.
                 """
                 nonlocal _batch_timer
                 if isinstance(it, tuple) and len(it) == 2 and isinstance(it[0], str):
                     tag, payload = it
-                    # Flush batched text before tool events
+                    # Flush batched text before tool/reasoning events
                     if _batch_buf:
                         await _flush_batch()
                     if tag == "__tool_started__":
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__reasoning__":
+                        await _emit_text_delta(payload)
                 elif isinstance(it, str):
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
@@ -2180,6 +2265,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
+            def _on_reasoning(text):
+                """Forward reasoning/thinking content to the Responses SSE stream."""
+                if text is not None:
+                    _stream_q.put(("__reasoning__", text))
+
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
                 """Queue non-start tool progress events if needed in future.
 
@@ -2213,6 +2303,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                reasoning_callback=_on_reasoning,
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
@@ -2704,6 +2795,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -2728,6 +2820,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
+                reasoning_callback=reasoning_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,

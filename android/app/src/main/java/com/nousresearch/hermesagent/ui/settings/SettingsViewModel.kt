@@ -61,10 +61,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun updateProvider(provider: String) {
         val preset = ProviderPresets.find(provider)
         _uiState.update {
+            val providerChanged = provider != it.provider
             it.copy(
                 provider = provider,
-                baseUrl = if (it.baseUrl.isBlank()) preset?.baseUrl.orEmpty() else it.baseUrl,
-                model = if (it.model.isBlank()) preset?.modelHint.orEmpty() else it.model,
+                baseUrl = if (providerChanged && provider != "custom") preset?.baseUrl.orEmpty() else it.baseUrl,
+                model = if (providerChanged && provider != "custom") preset?.modelHint.orEmpty() else it.model,
                 apiKey = if (provider == it.provider) it.apiKey else secretsStore.loadApiKey(provider),
             )
         }

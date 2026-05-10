@@ -119,6 +119,8 @@ object ProviderPresets {
         ),
     )
 
+    val androidSettingsDefaults = defaults.filterNot { it.id == "qwen-oauth" }
+
     fun find(id: String): ProviderPreset? = defaults.firstOrNull { it.id == id }
 
     fun modelSelections(providerId: String): List<ModelSelectionPreset> {

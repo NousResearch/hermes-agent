@@ -5300,6 +5300,34 @@ class HermesCLI:
         print()
         return True
 
+    def _handle_sessions_command(self):
+        """Handle /sessions — list recent sessions for browsing and resume."""
+        self._show_recent_sessions(reason="sessions", limit=20)
+
+    def _handle_indicator_command(self, cmd: str):
+        """Handle /indicator [kaomoji|emoji|unicode|ascii] — show or change
+        the TUI busy-indicator style."""
+        VALID_STYLES = ("kaomoji", "emoji", "unicode", "ascii")
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            # No argument — show current style
+            current = self.config.get("display", {}).get("tui_status_indicator", "kaomoji")
+            _cprint(f"  Busy indicator: {current}")
+            _cprint(f"  Usage: /indicator [{'|'.join(VALID_STYLES)}]")
+            return
+
+        style = parts[1].strip().lower()
+        if style not in VALID_STYLES:
+            _cprint(f"  {_DIM}Unknown style: {style}{_RST}")
+            _cprint(f"  {_DIM}Valid: {'|'.join(VALID_STYLES)}{_RST}")
+            return
+
+        if save_config_value("display.tui_status_indicator", style):
+            _cprint(f"  {_ACCENT}✓ Busy indicator → {style} (saved){_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ Busy indicator → {style}{_RST}")
+
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
@@ -6987,6 +7015,8 @@ class HermesCLI:
             self._handle_paste_command()
         elif canonical == "image":
             self._handle_image_command(cmd_original)
+        elif canonical == "indicator":
+            self._handle_indicator_command(cmd_original)
         elif canonical == "reload":
             from hermes_cli.config import reload_env
             count = reload_env()
@@ -7071,6 +7101,8 @@ class HermesCLI:
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "sessions":
+            self._handle_sessions_command()
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":

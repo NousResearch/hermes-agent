@@ -75,6 +75,23 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "frontmost app's window or the whole screen."
                 ),
             },
+            "max_elements": {
+                "type": "integer",
+                "description": (
+                    "Optional cap on the AX `elements` array returned by "
+                    "`action='capture'`. Default 100. Dense UIs (Electron "
+                    "apps such as Obsidian or VS Code, JetBrains IDEs) can "
+                    "publish 500+ AX nodes — capping prevents a single "
+                    "capture from blowing session context. When the cap "
+                    "trims the response, `total_elements` and "
+                    "`truncated_elements` are surfaced in the result so "
+                    "you can re-call with `app=` to narrow scope or raise "
+                    "`max_elements` when the full tree is required. Has no "
+                    "effect on `mode='som'` / `mode='vision'` (those return "
+                    "a screenshot, not the elements array)."
+                ),
+                "minimum": 1,
+            },
             # ── click / drag / scroll targeting ────────────────────
             "element": {
                 "type": "integer",

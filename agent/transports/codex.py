@@ -11,6 +11,18 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
 
+def _xai_supports_reasoning_effort(model: str) -> bool:
+    """Return whether xAI Responses should receive a reasoning effort payload.
+
+    Grok 4.1 variants currently reject ``reasoningEffort`` with HTTP 400, even
+    though newer xAI reasoning models accept it. Keep the gate narrow so small
+    fixes to older Grok routes do not hard-fail on every turn.
+    """
+    normalized = str(model or "").strip().lower().replace("_", "-")
+    normalized = normalized.replace("xai/", "").replace("x-ai/", "")
+    return not normalized.startswith(("grok-4-1", "grok-4.1"))
+
+
 class ResponsesApiTransport(ProviderTransport):
     """Transport for api_mode='codex_responses'.
 
@@ -105,7 +117,8 @@ class ResponsesApiTransport(ProviderTransport):
 
         if reasoning_enabled and is_xai_responses:
             kwargs["include"] = ["reasoning.encrypted_content"]
-            kwargs["reasoning"] = {"effort": reasoning_effort}
+            if _xai_supports_reasoning_effort(model):
+                kwargs["reasoning"] = {"effort": reasoning_effort}
         elif reasoning_enabled:
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")

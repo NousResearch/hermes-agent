@@ -160,6 +160,25 @@ class TestCodexBuildKwargs:
         assert kw.get("reasoning") == {"effort": "high"}
         assert "reasoning.encrypted_content" in kw.get("include", [])
 
+    def test_xai_grok_4_1_fast_skips_reasoning_effort(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4-1-fast", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw
+        assert "reasoning.encrypted_content" in kw.get("include", [])
+
+    def test_xai_prefixed_grok_4_1_skips_reasoning_effort(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="x-ai/grok-4.1-fast", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw
+
     def test_xai_reasoning_disabled_no_reasoning_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

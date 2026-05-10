@@ -6587,6 +6587,11 @@ def _install_psutil_android_compat(
 
     We patch only the extracted build tree used for this install attempt;
     nothing is persisted in the repository.
+
+    Stopgap: remove this once https://github.com/giampaolo/psutil/pull/2762
+    merges and ships in a release. ``scripts/install_psutil_android.py``
+    contains the same logic for ``scripts/install.sh`` (fresh installs).
+    Both copies should be removed together.
     """
     import tarfile
     import tempfile

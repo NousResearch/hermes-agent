@@ -154,7 +154,26 @@ class TestCompletionQueue:
             registry._move_to_finished(s)
 
         completion = registry.completion_queue.get_nowait()
-        assert len(completion["output"]) == 2000
+        assert len(completion["output"]) <= 2000
+        assert completion["output"].startswith("[output truncated: showing final lines]\n")
+
+    def test_truncated_output_prefers_line_boundary(self, registry):
+        """Completion previews should avoid starting mid-line when possible."""
+        output = "".join(f"line {i:03d}\n" for i in range(400))
+        s = _make_session(
+            notify_on_complete=True,
+            output=output,
+        )
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        completion = registry.completion_queue.get_nowait()
+        assert completion["output"].startswith("[output truncated: showing final lines]\n")
+        first_visible_line = completion["output"].splitlines()[1]
+        assert first_visible_line.startswith("line ")
 
     def test_multiple_completions_queued(self, registry):
         """Multiple notify processes all push to the same queue."""

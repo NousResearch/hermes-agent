@@ -186,6 +186,34 @@ class ProcessRegistry:
             lines.pop(0)
         return "\n".join(lines)
 
+    @staticmethod
+    def _format_completion_output(output_buffer: str, max_chars: int = 2000) -> str:
+        """Format completion output for gateway notifications.
+
+        Keep notifications compact, but when we have to truncate, try to start
+        at a line boundary and explicitly mark that we're only showing the tail.
+        """
+        from tools.ansi_strip import strip_ansi
+
+        if not output_buffer:
+            return ""
+
+        output_tail = strip_ansi(output_buffer)
+        if len(output_tail) <= max_chars:
+            return output_tail
+
+        marker = "[output truncated: showing final lines]\n"
+        tail_budget = max(0, max_chars - len(marker))
+        tail = output_tail[-tail_budget:]
+
+        first_newline = tail.find("\n")
+        if first_newline != -1:
+            line_aligned_tail = tail[first_newline + 1:]
+            if line_aligned_tail:
+                tail = line_aligned_tail
+
+        return marker + tail
+
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
         """Scan new output for watch patterns and queue notifications.
 
@@ -810,14 +838,12 @@ class ProcessRegistry:
         # this guard, kill_process() and the reader thread can both call
         # _move_to_finished(), producing duplicate [IMPORTANT: ...] messages.
         if was_running and session.notify_on_complete:
-            from tools.ansi_strip import strip_ansi
-            output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,
                 "command": session.command,
                 "exit_code": session.exit_code,
-                "output": output_tail,
+                "output": self._format_completion_output(session.output_buffer),
             })
 
     # ----- Query Methods -----

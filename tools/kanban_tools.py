@@ -611,6 +611,8 @@ def _handle_create(args: dict, **kw) -> str:
             )
         finally:
             conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_create: {e}")
     except Exception as e:
         logger.exception("kanban_create failed")
         return tool_error(f"kanban_create: {e}")

@@ -21,6 +21,7 @@ def test_localization_layer_covers_visible_chat_auth_portal_device_and_settings_
         'baseUrlLabel',
         'modelLabel',
         'apiKeyLabel',
+        'copyProviderSetupUrl',
         'toolProfileTitle',
         'deviceGuideTitle',
         'portalLoadingStatus',
@@ -223,6 +224,7 @@ def test_device_backend_exposes_deeper_radio_control_actions_and_status():
 def test_android_automation_exposes_operator_standby_history_for_remote_dispatch():
     bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAutomationBridge.kt").read_text(encoding="utf-8")
     store = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAutomationStore.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
     view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceViewModel.kt").read_text(encoding="utf-8")
     device = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceScreen.kt").read_text(encoding="utf-8")
 
@@ -231,6 +233,9 @@ def test_android_automation_exposes_operator_standby_history_for_remote_dispatch
     assert 'addRunEvent' in store
     assert 'listRunEvents' in store
     assert 'operator_standby_status' in bridge
+    assert 'operator_devices' in bridge
+    assert 'OpenGUI devices' in bridge
+    assert 'compatible_device_queries' in bridge
     assert 'operator_execution_status' in bridge
     assert 'OpenGUI /status [executionId]' in bridge
     assert 'run_history' in bridge
@@ -252,6 +257,8 @@ def test_android_automation_exposes_operator_standby_history_for_remote_dispatch
     assert 'remote_dispatch_count' in bridge
     assert 'last_dispatch_task_name' in bridge
     assert 'Tasker plugin' in bridge
+    assert 'operator_devices' in chat_client
+    assert 'standby device listing' in chat_client
     assert 'automationStandbyStatus' in view_model
     assert 'operatorStandbyReady' in view_model
     assert 'externalTriggerCount' in view_model

@@ -297,6 +297,15 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Open $providerLabel setup page"
     }
 
+    fun copyProviderSetupUrl(): String = when (language) {
+        AppLanguage.CHINESE -> "复制设置链接"
+        AppLanguage.SPANISH -> "Copiar URL de configuración"
+        AppLanguage.GERMAN -> "Setup-URL kopieren"
+        AppLanguage.PORTUGUESE -> "Copiar URL de configuração"
+        AppLanguage.FRENCH -> "Copier l’URL de configuration"
+        AppLanguage.ENGLISH -> "Copy setup URL"
+    }
+
     fun toolProfileTitle(): String = when (language) {
         AppLanguage.CHINESE -> "Android Alpha 工具配置"
         AppLanguage.SPANISH -> "Perfil de herramientas Android alpha"

@@ -270,6 +270,16 @@ class HermesAutomationInstrumentedTest {
         assertEquals("/standby", standby.getString("standby_namespace"))
         assertEquals("standby:heartbeat", standby.getString("standby_heartbeat_event"))
         assertTrue(standby.getJSONArray("compatible_dispatch_payloads").toString().contains("status"))
+
+        val devices = JSONObject(HermesAutomationBridge.performActionJson(app, "operator_devices"))
+        assertTrue(devices.toString(), devices.getBoolean("success"))
+        assertEquals(1, devices.getInt("device_count"))
+        assertEquals(1, devices.getInt("online_device_count"))
+        val device = devices.getJSONArray("devices").getJSONObject(0)
+        assertTrue(device.getBoolean("online"))
+        assertEquals(1, device.getInt("remote_dispatch_count"))
+        assertEquals("OpenGUI dispatch smoke", device.getString("last_dispatch_task_name"))
+        assertTrue(devices.getJSONArray("compatible_device_queries").toString().contains("OpenGUI devices"))
     }
 
     @Test

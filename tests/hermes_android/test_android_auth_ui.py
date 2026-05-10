@@ -160,11 +160,17 @@ def test_settings_opens_official_provider_key_pages():
 
     assert "providerPreset?.apiKeyUrl" in settings_screen
     assert "viewModel::openProviderKeyPage" in settings_screen
+    assert "viewModel::copyProviderKeyPage" in settings_screen
     assert "Intent.ACTION_VIEW" in settings_view_model
     assert "Uri.parse(target)" in settings_view_model
+    assert "Intent.createChooser" in settings_view_model
+    assert "ClipboardManager" in settings_view_model
+    assert "ClipData.newPlainText" in settings_view_model
     assert "addCategory(Intent.CATEGORY_BROWSABLE)" in settings_view_model
     assert "openProviderKeyPage(providerLabel)" in settings_screen
+    assert "copyProviderSetupUrl()" in settings_screen
     assert "Open $providerLabel setup page" in strings
+    assert "Copy setup URL" in strings
     assert "ProviderPresets.androidSettingsDefaults.forEach" in settings_screen
     assert "androidSettingsDefaults = defaults" in provider_presets
     assert "PasswordVisualTransformation()" in settings_screen

@@ -4,13 +4,15 @@ import unittest
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 class TestSplitGuard(unittest.TestCase):
     """Verify split()[0] guards exist in cli.py for empty/whitespace strings."""
 
     def test_split_zero_guard_exists(self):
         """cli.py must contain guards against empty split results."""
-        repo_root = Path(__file__).resolve().parents[2]
-        cli_path = repo_root / "cli.py"
+        cli_path = REPO_ROOT / "cli.py"
         with open(cli_path) as f:
             source = f.read()
         # Check for the guard pattern we added

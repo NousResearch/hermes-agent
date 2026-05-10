@@ -16,6 +16,34 @@ from gateway.restart import (
 )
 
 
+class TestSystemdUnitPath:
+    def test_user_unit_path_uses_login_home_when_profile_home_remaps_home(self, monkeypatch, tmp_path):
+        login_home = tmp_path / "login-home"
+        profile_home = tmp_path / "profile-home"
+        login_home.mkdir()
+        profile_home.mkdir()
+
+        monkeypatch.setenv("HOME", str(profile_home))
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway-kagura-vps")
+        monkeypatch.setattr(
+            pwd,
+            "getpwuid",
+            lambda uid: SimpleNamespace(pw_dir=str(login_home)),
+        )
+
+        assert gateway_cli.get_systemd_unit_path(system=False) == (
+            login_home / ".config" / "systemd" / "user" / "hermes-gateway-kagura-vps.service"
+        )
+
+    def test_system_unit_path_remains_global(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path / "profile-home"))
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway-kagura-vps")
+
+        assert gateway_cli.get_systemd_unit_path(system=True) == Path(
+            "/etc/systemd/system/hermes-gateway-kagura-vps.service"
+        )
+
+
 class TestUserSystemdPrivateSocketPreflight:
     def test_preflight_accepts_private_socket_without_dbus_bus(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: None)

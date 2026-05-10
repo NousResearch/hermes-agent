@@ -1626,10 +1626,58 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
+            # Set session title from the job name so cron sessions show
+            # a meaningful label in session browsers (Workspace, TUI).
+            # Includes the run date so each daily run gets a unique title.
+            # If multiple runs happen on the same day (manual trigger + cron),
+            # get_next_title_in_lineage handles the "Title #2" fallback.
+            try:
+                _cron_title_base = str(job.get("name") or job.get("prompt", "")[:60] or job_id or "Cron Job").strip()
+                if _cron_title_base:
+                    _cron_date = _cron_session_id.split("_")[-2] if "_" in _cron_session_id else ""
+                    if _cron_date and len(_cron_date) == 8:
+                        _cron_date_str = f"{_cron_date[:4]}-{_cron_date[4:6]}-{_cron_date[6:8]}"
+                        _cron_title = f"{_cron_title_base} · {_cron_date_str}"
+                    else:
+                        _cron_title = _cron_title_base
+                    if len(_cron_title) > SessionDB.MAX_TITLE_LENGTH:
+                        _cron_title = _cron_title[:SessionDB.MAX_TITLE_LENGTH]
+                    try:
+                        _session_db.set_session_title(_cron_session_id, _cron_title)
+                    except ValueError:
+                        # Title collision — same job ran twice today. Try numbered variant.
+                        try:
+                            _numbered = _session_db.get_next_title_in_lineage(_cron_title)
+                            if _numbered and _numbered != _cron_title:
+                                if len(_numbered) > SessionDB.MAX_TITLE_LENGTH:
+                                    _numbered = _numbered[:SessionDB.MAX_TITLE_LENGTH]
+                                _session_db.set_session_title(_cron_session_id, _numbered)
+                        except (ValueError, AttributeError):
+                            pass
+            except (ValueError, TypeError, AttributeError):
+                pass
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
+            
+            # Token usage tracking — log cron job sessions for optimization
+            try:
+                import sys
+                sys.path.insert(0, str(Path.home() / ".hermes" / "scripts" / "tracking"))
+                from token_reporter import log_cron_job
+                log_entry = log_cron_job(_cron_session_id, job_id)
+                if log_entry:
+                    logger.info(
+                        "Job '%s': tokens = input %d + output %d = total %d",
+                        job_name,
+                        log_entry["input_tokens"],
+                        log_entry["output_tokens"],
+                        log_entry["total_tokens"],
+                    )
+            except Exception as e:
+                logger.debug("Job '%s': failed to log token usage: %s", job_id, e)
+            
             try:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:

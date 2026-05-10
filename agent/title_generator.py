@@ -20,9 +20,24 @@ FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
 _TITLE_PROMPT = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+    "You are a session titler. Your output becomes the session label in a UI sidebar. "
+    "Generate a SHORT title (3-7 words) that summarizes what the conversation is about.\n\n"
+    "RULES:\n"
+    "- 3 to 7 words maximum. Never more.\n"
+    "- Do NOT quote or paraphrase the user's first message verbatim.\n"
+    "- Do NOT include markdown formatting (no **, no *, no `).\n"
+    "- Do NOT include the word \"Title:\" or any prefix.\n"
+    "- Do NOT end with punctuation.\n"
+    "- No quotes around the title.\n"
+    "- Capitalize like a headline.\n\n"
+    "EXAMPLES:\n"
+    "User: how do I set up Tailscale on my Raspberry Pi\n"
+    "Title: Tailscale Raspberry Pi Setup\n\n"
+    "User: can you help me understand the Hermes agent workflow\n"
+    "Title: Hermes Agent Workflow Walkthrough\n\n"
+    "User: the session in Hermes Workspace is not limited to 1M\n"
+    "Title: Workspace Session Limits\n\n"
+    "Now generate a 3-7 word title for this exchange. Return ONLY the title text."
 )
 
 
@@ -126,8 +141,25 @@ def auto_title_session(
                 title_callback(title)
             except Exception:
                 logger.debug("Auto-title callback failed", exc_info=True)
+    except ValueError:
+        # Title already in use — try a numbered variant ("Title #2")
+        logger.debug("Auto-title collision for '%s', trying numbered fallback", title)
+        try:
+            numbered = session_db.get_next_title_in_lineage(title)
+            if numbered and numbered != title:
+                session_db.set_session_title(session_id, numbered)
+                logger.debug("Auto-generated session title (numbered): %s", numbered)
+                if title_callback is not None:
+                    try:
+                        title_callback(numbered)
+                    except Exception:
+                        logger.debug("Auto-title callback failed (numbered)", exc_info=True)
+            else:
+                logger.debug("Could not generate numbered variant for title: %s", title)
+        except (ValueError, AttributeError) as e2:
+            logger.debug("Failed to set numbered session title: %s", e2)
     except Exception as e:
-        logger.debug("Failed to set auto-generated title: %s", e)
+        logger.debug("Failed to set auto-generated title: %s", e, exc_info=True)
 
 
 def maybe_auto_title(

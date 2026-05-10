@@ -1365,12 +1365,19 @@ def run_doctor(args):
             if base_url_host_matches(base, "api.kimi.com") and base.rstrip("/").endswith("/coding"):
                 base = base.rstrip("/") + "/v1"
             url = (base.rstrip("/") + "/models") if base else default_url
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "User-Agent": _HERMES_USER_AGENT,
-            }
-            if base_url_host_matches(base, "api.kimi.com"):
-                headers["User-Agent"] = "claude-code/0.1.0"
+            # Gemini / Google AI Studio requires x-goog-api-key, not Bearer
+            if base_url_host_matches(base, "generativelanguage.googleapis.com"):
+                headers = {
+                    "x-goog-api-key": key,
+                    "User-Agent": _HERMES_USER_AGENT,
+                }
+            else:
+                headers = {
+                    "Authorization": f"Bearer {key}",
+                    "User-Agent": _HERMES_USER_AGENT,
+                }
+                if base_url_host_matches(base, "api.kimi.com"):
+                    headers["User-Agent"] = "claude-code/0.1.0"
             r = httpx.get(url, headers=headers, timeout=10)
             if (
                 pname == "Alibaba/DashScope"

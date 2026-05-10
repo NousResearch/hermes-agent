@@ -290,6 +290,27 @@ class PluginContext:
     def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
         self.manifest = manifest
         self._manager = manager
+        # Lazy-built host-owned LLM facade — see ctx.llm property below.
+        self._llm: Any = None
+
+    # -- host-owned LLM access ----------------------------------------------
+
+    @property
+    def llm(self) -> Any:
+        """Return the plugin's :class:`agent.plugin_llm.PluginLlm` facade.
+
+        Lets trusted plugins run host-owned chat or structured completions
+        against the user's active model and auth without bringing their
+        own provider keys. Override capability (model, agent id, auth
+        profile) is fail-closed by default and gated through
+        ``plugins.entries.<plugin_id>.llm.*`` config keys.
+
+        See :mod:`agent.plugin_llm` for the full surface."""
+        if self._llm is None:
+            from agent.plugin_llm import PluginLlm
+            plugin_id = self.manifest.key or self.manifest.name
+            self._llm = PluginLlm(plugin_id=plugin_id)
+        return self._llm
 
     # -- tool registration --------------------------------------------------
 

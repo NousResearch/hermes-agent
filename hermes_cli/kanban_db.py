@@ -83,6 +83,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from toolsets import get_toolset_names
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -90,6 +92,7 @@ from typing import Any, Iterable, Optional
 
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -1272,6 +1275,12 @@ def create_task(
     if skills is not None:
         cleaned: list[str] = []
         seen: set[str] = set()
+        # Collect all toolset-name confusions up front so the user sees the
+        # whole list at once. Raising on the first hit is friendly when the
+        # input has one mistake, but agents that confuse skills with toolsets
+        # usually pass several at once (`skills=["web", "browser", "terminal"]`)
+        # and serial-correcting one per failure round-trips wastes tokens.
+        toolset_typos: list[str] = []
         for s in skills:
             if not s:
                 continue
@@ -1283,10 +1292,23 @@ def create_task(
                     f"skill name cannot contain comma: {name!r} "
                     f"(pass a list of separate names instead of a comma-joined string)"
                 )
+            if name.casefold() in KNOWN_TOOLSET_NAMES:
+                toolset_typos.append(name)
+                continue
             if name in seen:
                 continue
             seen.add(name)
             cleaned.append(name)
+        if toolset_typos:
+            quoted = ", ".join(repr(n) for n in toolset_typos)
+            noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
+            raise ValueError(
+                f"{quoted} {noun}, not skill name(s). "
+                "Put toolsets in the assignee profile's `toolsets:` config "
+                "instead of per-task skills. Skills are named skill bundles "
+                "(e.g. `kanban-worker`, `blogwatcher`); toolsets are runtime "
+                "capabilities (e.g. `web`, `browser`, `terminal`)."
+            )
         skills_list = cleaned
 
     # Idempotency check — return the existing task instead of creating a
@@ -3587,6 +3609,14 @@ def dispatch_once(
     failures the task is auto-blocked with the last error as its reason —
     prevents the dispatcher from thrashing forever on an unfixable task.
 
+    ``max_spawn`` is a **live concurrency cap**, not a per-tick spawn budget:
+    it counts tasks already in ``status='running'`` plus this tick's spawns
+    against the limit. So ``max_spawn=4`` means "at most 4 workers running
+    at any time across the whole board" — matching the gateway's stated
+    intent ("limit concurrent kanban tasks"). With a per-tick interpretation
+    a 60-second tick interval could grow concurrency by N every minute on a
+    busy board and accumulate without bound.
+
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
@@ -3638,6 +3668,21 @@ def dispatch_once(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
 
+    # Count tasks already running so max_spawn enforces concurrency rather
+    # than a per-tick spawn budget. See the docstring above for the full
+    # rationale; the short version is that a 60-second tick interval with a
+    # per-tick budget of N would grow concurrency by N every tick on a busy
+    # board, since "running" tasks aren't reclaimed by completion alone —
+    # they sit in status='running' until the worker calls
+    # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
+    running_count = 0
+    if max_spawn is not None:
+        running_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+            ).fetchone()[0]
+        )
+
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
@@ -3645,7 +3690,7 @@ def dispatch_once(
     ).fetchall()
     spawned = 0
     for row in ready_rows:
-        if max_spawn is not None and spawned >= max_spawn:
+        if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
@@ -3749,6 +3794,35 @@ def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
         pass
 
 
+def _resolve_hermes_argv() -> list[str]:
+    """Resolve the ``hermes`` invocation as argv parts for ``Popen``.
+
+    Tries in order:
+
+    1. ``shutil.which("hermes")`` — the console-script shim, the same form
+       that shows up in ``ps`` output and existing logs. Preferred so live
+       systems' diagnostics stay familiar.
+    2. ``sys.executable -m hermes_cli.main`` — fallback for setups where
+       Hermes is launched from a venv and the ``hermes`` shim is not on
+       the dispatcher's ``$PATH`` (cron, systemd ``User=`` services,
+       launchd jobs, detached processes, etc.). Goes through the running
+       interpreter so the result is independent of ``$PATH``.
+
+    Mirrors ``gateway.run._resolve_hermes_bin`` for the same reason. Kept
+    local (not imported from gateway) because ``hermes_cli`` sits below
+    ``gateway`` in the dependency order.
+    """
+    import shutil
+
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        return [hermes_bin]
+    # Fallback to the module form. ``hermes_cli.main`` is the actual
+    # console-script target declared in pyproject.toml, NOT a top-level
+    # ``hermes`` package — there is no ``hermes`` package to import.
+    return [sys.executable, "-m", "hermes_cli.main"]
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -3805,7 +3879,7 @@ def _default_spawn(
     env["HERMES_PROFILE"] = profile_arg
 
     cmd = [
-        "hermes",
+        *_resolve_hermes_argv(),
         "-p", profile_arg,
         # Auto-load the kanban-worker skill so every dispatched worker
         # has the pattern library (good summary/metadata shapes, retry
@@ -4161,16 +4235,26 @@ def board_stats(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _safe_int(val: Optional[str]) -> Optional[int]:
+    """Parse a timestamp field to int, returning None on garbage like '%s'."""
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
 def task_age(task: Task) -> dict:
     """Return age metrics for a single task. All values are seconds or None."""
     now = int(time.time())
-    age_since_created = now - int(task.created_at) if task.created_at else None
-    age_since_started = (
-        now - int(task.started_at) if task.started_at else None
-    )
+    created = _safe_int(task.created_at)
+    started = _safe_int(task.started_at)
+    completed = _safe_int(task.completed_at)
+    age_since_created = now - created if created else None
+    age_since_started = now - started if started else None
     time_to_complete = (
-        int(task.completed_at) - int(task.started_at or task.created_at)
-        if task.completed_at else None
+        completed - (started or created) if completed else None
     )
     return {
         "created_age_seconds": age_since_created,

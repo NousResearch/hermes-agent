@@ -262,8 +262,9 @@ class TestDefaultContextLengths:
 class TestCodexOAuthContextLength:
     """ChatGPT Codex OAuth imposes lower context limits than the direct
     OpenAI API for the same slugs. Verified Apr 2026 via live probe of
-    chatgpt.com/backend-api/codex/models: every model returns 272k, while
+    chatgpt.com/backend-api/codex/models: most models return 272k, while
     models.dev reports 1.05M for gpt-5.5/gpt-5.4 and 400k for the rest.
+    (Known exception: gpt-5.3-codex-spark is 128k.)
     """
 
     def setup_method(self):
@@ -277,25 +278,28 @@ class TestCodexOAuthContextLength:
         """
         from agent.model_metadata import get_model_context_length
 
+        expected = {
+            "gpt-5.5": 272_000,
+            "gpt-5.4": 272_000,
+            "gpt-5.4-mini": 272_000,
+            "gpt-5.3-codex": 272_000,
+            "gpt-5.3-codex-spark": 128_000,
+            "gpt-5.2-codex": 272_000,
+            "gpt-5.1-codex-max": 272_000,
+            "gpt-5.1-codex-mini": 272_000,
+        }
+
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
-            for model in (
-                "gpt-5.5",
-                "gpt-5.4",
-                "gpt-5.4-mini",
-                "gpt-5.3-codex",
-                "gpt-5.2-codex",
-                "gpt-5.1-codex-max",
-                "gpt-5.1-codex-mini",
-            ):
+            for model, expected_ctx in expected.items():
                 ctx = get_model_context_length(
                     model=model,
                     base_url="https://chatgpt.com/backend-api/codex",
                     api_key="",
                     provider="openai-codex",
                 )
-                assert ctx == 272_000, (
-                    f"Codex {model}: expected 272000 fallback, got {ctx} "
+                assert ctx == expected_ctx, (
+                    f"Codex {model}: expected {expected_ctx} fallback, got {ctx} "
                     "(models.dev leakage?)"
                 )
 

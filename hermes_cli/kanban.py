@@ -2136,6 +2136,29 @@ def _cmd_gc(args: argparse.Namespace) -> int:
 # Slash-command entry point (used by /kanban from CLI and gateway)
 # ---------------------------------------------------------------------------
 
+_SLASH_KANBAN_HELP = """\
+**/kanban** — manage the shared task board.
+
+Common subcommands:
+  `list` (alias `ls`)   List tasks on the current board
+  `show <id>`           Task details + comments + events
+  `stats`               Per-status / per-assignee counts
+  `create <title>…`     Create a task (auto-subscribes you to events)
+  `comment <id> <msg>`  Append a comment
+  `complete <id>…`      Mark task(s) done
+  `block <id> [reason]` Mark blocked; `unblock <id>` to revive
+  `assign <id> <profile>`  Reassign
+  `boards list`         Show all boards
+  `assignees`           Known profiles + counts
+  `context <id>`        Full worker-context dump
+  `runs <id>`           Attempt history
+  `log <id>`            Worker log
+
+Run `/kanban <subcommand> -h` for arguments. \
+Read-only commands are safe while an agent is running.\
+"""
+
+
 def run_slash(rest: str) -> str:
     """Execute a ``/kanban …`` string and return captured stdout/stderr.
 
@@ -2148,26 +2171,47 @@ def run_slash(rest: str) -> str:
 
     tokens = shlex.split(rest) if rest and rest.strip() else []
 
-    parser = argparse.ArgumentParser(prog="/kanban", add_help=False)
-    parser.exit_on_error = False  # type: ignore[attr-defined]
-    sub = parser.add_subparsers(dest="kanban_action")
-    # Reuse the argparse builder -- call it with a throwaway parent
-    # subparsers via a wrapping top-level parser.
-    wrap = argparse.ArgumentParser(prog="/", add_help=False)
-    wrap.exit_on_error = False  # type: ignore[attr-defined]
-    wrap_sub = wrap.add_subparsers(dest="_top")
-    build_parser(wrap_sub)
+    # Bare ``/kanban`` or ``/kanban help`` / ``--help`` / ``-h`` / ``?``:
+    # show the curated short-help block instead of dumping argparse's full
+    # usage tree (which is enormous and reads as garbage in a chat
+    # bubble).  Per-subcommand help still works via ``/kanban foo -h``.
+    if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:
+        return _SLASH_KANBAN_HELP
+
+    # Single argparse tree rooted at "/kanban".  build_parser() expects a
+    # subparsers action to attach to, so build a throwaway one and pull
+    # the kanban_parser back out — then drive it directly so usage/error
+    # text reads as ``/kanban`` (not ``/kanban-wrap kanban``).
+    _wrap = argparse.ArgumentParser(prog="/kanban-wrap", add_help=False)
+    _wrap.exit_on_error = False  # type: ignore[attr-defined]
+    _top_sub = _wrap.add_subparsers(dest="_top")
+    kanban_parser = build_parser(_top_sub)
+    kanban_parser.prog = "/kanban"
+    kanban_parser.exit_on_error = False  # type: ignore[attr-defined]
+    for _action in kanban_parser._actions:
+        if isinstance(_action, argparse._SubParsersAction):
+            for _name, _choice in _action.choices.items():
+                _choice.prog = f"/kanban {_name}"
+                _choice.exit_on_error = False  # type: ignore[attr-defined]
 
     buf_out = io.StringIO()
     buf_err = io.StringIO()
+    # ``-h`` / ``--help`` makes argparse print to stdout and SystemExit(0).
+    # Capture both streams so neither the help text nor the error text
+    # bypasses our buffer.
     try:
-        # Prepend the "kanban" token so our top-level subparser routes here.
-        argv = ["kanban", *tokens] if tokens else ["kanban"]
-        args = wrap.parse_args(argv)
+        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+            args = kanban_parser.parse_args(tokens)
     except SystemExit as exc:
-        return f"(usage error: {exc})"
+        out = buf_out.getvalue().rstrip()
+        err = buf_err.getvalue().rstrip()
+        # Help dump (exit 0) → return the captured help text directly.
+        if exc.code in (0, None) and out:
+            return out
+        body = err or out
+        return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
-        return f"(usage error: {exc})"
+        return f"⚠ /kanban usage error: {exc}"
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:

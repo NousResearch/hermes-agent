@@ -394,42 +394,68 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             pass
                     current_cmd = ""
         else:
-            result = subprocess.run(
-                ["ps", "-A", "eww", "-o", "pid=,command="],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                return []
-            for line in result.stdout.split("\n"):
-                stripped = line.strip()
-                if not stripped or "grep" in stripped:
-                    continue
+            # Try /proc first (works in Docker without procps installed),
+            # fall back to ps -A eww.
+            _found_via_proc = False
+            if os.path.isdir("/proc"):
+                try:
+                    my_pid = os.getpid()
+                    for entry in os.listdir("/proc"):
+                        if not entry.isdigit():
+                            continue
+                        pid = int(entry)
+                        if pid == my_pid or pid in exclude_pids:
+                            continue
+                        try:
+                            cmdline = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", errors="replace")
+                            cmdline = cmdline.replace("\x00", " ")
+                            if any(p in cmdline for p in patterns) and (
+                                all_profiles or _matches_current_profile(cmdline)
+                            ):
+                                _append_unique_pid(pids, pid, exclude_pids)
+                        except (OSError, PermissionError):
+                            continue
+                    _found_via_proc = True
+                except Exception:
+                    pass
 
-                pid = None
-                command = ""
+            if not _found_via_proc:
+                result = subprocess.run(
+                    ["ps", "-A", "eww", "-o", "pid=,command="],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode != 0:
+                    return []
+                for line in result.stdout.split("\n"):
+                    stripped = line.strip()
+                    if not stripped or "grep" in stripped:
+                        continue
 
-                parts = stripped.split(None, 1)
-                if len(parts) == 2:
-                    try:
-                        pid = int(parts[0])
-                        command = parts[1]
-                    except ValueError:
-                        pid = None
+                    pid = None
+                    command = ""
 
-                if pid is None:
-                    aux_parts = stripped.split()
-                    if len(aux_parts) > 10 and aux_parts[1].isdigit():
-                        pid = int(aux_parts[1])
-                        command = " ".join(aux_parts[10:])
+                    parts = stripped.split(None, 1)
+                    if len(parts) == 2:
+                        try:
+                            pid = int(parts[0])
+                            command = parts[1]
+                        except ValueError:
+                            pid = None
 
-                if pid is None:
-                    continue
-                if any(pattern in command for pattern in patterns) and (
-                    all_profiles or _matches_current_profile(command)
-                ):
-                    _append_unique_pid(pids, pid, exclude_pids)
+                    if pid is None:
+                        aux_parts = stripped.split()
+                        if len(aux_parts) > 10 and aux_parts[1].isdigit():
+                            pid = int(aux_parts[1])
+                            command = " ".join(aux_parts[10:])
+
+                    if pid is None:
+                        continue
+                    if any(pattern in command for pattern in patterns) and (
+                        all_profiles or _matches_current_profile(command)
+                    ):
+                        _append_unique_pid(pids, pid, exclude_pids)
     except (OSError, subprocess.TimeoutExpired):
         return []
 
@@ -2230,7 +2256,30 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
-    unit_path.write_text(generate_systemd_unit(system=system, run_as_user=expected_user), encoding="utf-8")
+    new_unit = generate_systemd_unit(system=system, run_as_user=expected_user)
+
+    # ── Test-environment safety belt ─────────────────────────────────────
+    # The user-scope unit path resolves under ``Path.home()``, which is NOT
+    # sandboxed by the test conftest (only HERMES_HOME is). If a test
+    # exercises ``run_gateway()`` with a pytest-tmp HERMES_HOME, the freshly
+    # generated unit bakes that ``/tmp/pytest-of-.../hermes_test`` path into
+    # ``Environment="HERMES_HOME=..."``. Writing that to the developer's
+    # real user systemd unit file silently breaks their gateway on the next
+    # reboot (systemd loads the polluted env, the gateway looks at an empty
+    # tmp dir, and Telegram/Discord/etc. all show as "not configured").
+    # Refuse to write when the generated unit references a pytest tmpdir.
+    # Detection sniffs the unit body — tests that legitimately exercise the
+    # refresh flow patch ``generate_systemd_unit`` to return synthetic
+    # content (``"new unit\n"``) which doesn't contain these markers and
+    # still works.
+    if not system and (
+        "/pytest-of-" in new_unit
+        or "/hermes_test\"" in new_unit
+        or "/hermes_test/" in new_unit
+    ):
+        return False
+
+    unit_path.write_text(new_unit, encoding="utf-8")
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
     return True

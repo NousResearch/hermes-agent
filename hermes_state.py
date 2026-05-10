@@ -1958,7 +1958,19 @@ class SessionDB:
             raw_query = query.strip('"').strip()
             cjk_count = self._count_cjk(raw_query)
 
-            if cjk_count >= 3:
+            # Per-token CJK length check (#20494): trigram needs >=3 CJK chars
+            # per token. A query like "广西 OR 桂林 OR 漓江" has cjk_count=6
+            # (>=3) but each individual token is only 2 chars — trigram returns 0.
+            # Route to LIKE when any non-operator CJK token is <3 CJK chars.
+            _tokens_for_check = [
+                t for t in raw_query.split()
+                if t.upper() not in ("AND", "OR", "NOT") and self._contains_cjk(t)
+            ]
+            _any_short_cjk = any(
+                self._count_cjk(t) < 3 for t in _tokens_for_check
+            )
+
+            if cjk_count >= 3 and not _any_short_cjk:
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
                 # operators (AND, OR, NOT) for multi-term queries.
@@ -2009,11 +2021,24 @@ class SessionDB:
                     else:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
             else:
-                # Short CJK query (1-2 chars) — trigram needs ≥3 CJK chars.
-                # Fall back to LIKE substring search.
-                escaped = raw_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                like_where = ["(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"]
-                like_params: list = [f"%{escaped}%", f"%{escaped}%", f"%{escaped}%"]
+                # Short / mixed CJK query: trigram cannot match tokens with
+                # <3 CJK chars. Fall back to LIKE substring search.
+                # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
+                # build one LIKE condition per non-operator token so each term
+                # is matched independently (#20494).
+                non_op_tokens = [
+                    t for t in raw_query.split()
+                    if t.upper() not in ("AND", "OR", "NOT")
+                ] or [raw_query]
+                token_clauses = []
+                like_params: list = []
+                for tok in non_op_tokens:
+                    esc = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    token_clauses.append(
+                        "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
+                    )
+                    like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
+                like_where = [f"({' OR '.join(token_clauses)})"]
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)
@@ -2037,8 +2062,8 @@ class SessionDB:
                     LIMIT ? OFFSET ?
                 """
                 like_params.extend([limit, offset])
-                # instr() parameter goes first in the bound list
-                like_params = [raw_query] + like_params
+                # instr() for snippet uses first search token
+                like_params = [non_op_tokens[0]] + like_params
                 with self._lock:
                     like_cursor = self._conn.execute(like_sql, like_params)
                     matches = [dict(row) for row in like_cursor.fetchall()]

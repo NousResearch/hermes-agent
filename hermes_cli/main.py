@@ -5744,6 +5744,92 @@ def _print_curator_first_run_notice() -> None:
     )
 
 
+def _print_curator_recent_run_notice() -> None:
+    """Print the most recent curator run summary, exactly once.
+
+    The curator runs in the background (gateway tick + CLI session start),
+    so users learn about skill consolidations only by stumbling into a
+    rename. ``hermes update`` is a high-attention surface — surface the
+    most recent run's rename map here, once.
+
+    Show-once: state stamps ``last_run_summary_shown_at`` after printing.
+    Subsequent ``hermes update`` invocations skip the block until a newer
+    curator run lands. Silent when the curator has never run, when the
+    most recent summary has already been shown, or when the summary has
+    no rename information to display (no archives).
+    """
+    try:
+        from agent import curator
+    except Exception:
+        return
+    try:
+        state = curator.load_state()
+    except Exception:
+        return
+
+    last_run_at = state.get("last_run_at")
+    if not last_run_at:
+        return  # no curator run yet — first-run notice handles this case
+
+    if state.get("last_run_summary_shown_at") == last_run_at:
+        return  # already shown for this run
+
+    summary = state.get("last_run_summary") or ""
+    if not summary:
+        return
+
+    # Only print when there's something interesting to show — i.e. the
+    # rename map block was appended (multi-line summary). A bare "auto:
+    # no changes; llm: no change" doesn't warrant interrupting the
+    # update flow.
+    if "\n" not in summary:
+        # Still stamp it shown so we don't reconsider it on every update.
+        try:
+            state["last_run_summary_shown_at"] = last_run_at
+            curator.save_state(state)
+        except Exception:
+            pass
+        return
+
+    # Format the timestamp as "Xh ago" for readability.
+    when = _format_time_ago(last_run_at)
+    print()
+    print(f"ℹ Skill curator — last run {when}")
+    for line in summary.splitlines():
+        print(f"  {line}")
+    print(
+        "  (This message shows once per curator run. "
+        "View anytime: hermes curator status)"
+    )
+
+    # Stamp shown so we don't repeat on the next update.
+    try:
+        state["last_run_summary_shown_at"] = last_run_at
+        curator.save_state(state)
+    except Exception:
+        pass
+
+
+def _format_time_ago(iso_ts: str) -> str:
+    """Render an ISO timestamp as `Xh ago` / `Xd ago` / `Xm ago`. Best effort."""
+    try:
+        from datetime import datetime, timezone
+        ts = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - ts
+        secs = int(delta.total_seconds())
+        if secs < 60:
+            return "just now"
+        if secs < 3600:
+            return f"{secs // 60}m ago"
+        if secs < 86400:
+            return f"{secs // 3600}h ago"
+        return f"{secs // 86400}d ago"
+    except Exception:
+        return "recently"
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
 ) -> None:
@@ -5989,6 +6075,10 @@ def _update_via_zip(args):
         _print_curator_first_run_notice()
     except Exception as e:
         logger.debug("Curator first-run notice failed: %s", e)
+    try:
+        _print_curator_recent_run_notice()
+    except Exception as e:
+        logger.debug("Curator recent-run notice failed: %s", e)
     _kill_stale_dashboard_processes()
 
 
@@ -6445,13 +6535,11 @@ def _invalidate_update_cache():
             pass
 
 
-def _load_installable_optional_extras() -> list[str]:
-    """Return the optional extras referenced by the ``all`` group.
+def _load_installable_optional_extras(group: str = "all") -> list[str]:
+    """Return optional extras referenced by a dependency group.
 
-    Only extras that ``[all]`` actually pulls in are retried individually.
-    Extras outside ``[all]`` (e.g. ``rl``, ``yc-bench``) are intentionally
-    excluded — they have heavy or platform-specific deps that most users
-    never installed.
+    ``group`` is usually ``all`` (desktop/server broad install) or
+    ``termux-all`` (Termux-compatible broad install).
     """
     try:
         import tomllib
@@ -6465,11 +6553,9 @@ def _load_installable_optional_extras() -> list[str]:
     if not isinstance(optional_deps, dict):
         return []
 
-    # Parse the [all] group to find which extras it references.
-    # Entries look like "hermes-agent[matrix]" or "package-name[extra]".
-    all_refs = optional_deps.get("all", [])
+    refs = optional_deps.get(group, [])
     referenced: list[str] = []
-    for ref in all_refs:
+    for ref in refs:
         if "[" in ref and "]" in ref:
             name = ref.split("[", 1)[1].split("]", 1)[0]
             if name in optional_deps:
@@ -6521,25 +6607,16 @@ def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
     env: dict[str, str] | None = None,
+    group: str = "all",
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports.
 
-    We intentionally do NOT pass ``--quiet`` to pip. On platforms without
-    prebuilt wheels for some extras (Termux/Android aarch64, older musl
-    distros, fresh Raspberry Pi) pip has to compile C/Rust extensions from
-    source, which can take several minutes with zero network activity.
-    Without progress output the call looks like a hang and users Ctrl+C it.
-    Pip's default output is proportional to actual work (one line per
-    Collecting/Building/Installing step), so keeping it visible costs
-    nothing on fast hardware and prevents the "hermes update hangs" reports
-    on slow hardware.
-
-    We also add periodic heartbeat lines in case the resolver/build backend is
-    itself silent for long stretches.
+    By default this targets ``.[all]``; Termux callers can pass
+    ``group='termux-all'`` to use the curated Android-compatible profile.
     """
     try:
         _run_install_with_heartbeat(
-            install_cmd_prefix + ["install", "-e", ".[all]"],
+            install_cmd_prefix + ["install", "-e", f".[{group}]"],
             env=env,
         )
         return
@@ -6555,7 +6632,7 @@ def _install_python_dependencies_with_optional_fallback(
 
     failed_extras: list[str] = []
     installed_extras: list[str] = []
-    for extra in _load_installable_optional_extras():
+    for extra in _load_installable_optional_extras(group=group):
         try:
             _run_install_with_heartbeat(
                 install_cmd_prefix + ["install", "-e", f".[{extra}]"],
@@ -6579,6 +6656,65 @@ def _is_termux_env(env: dict[str, str] | None = None) -> bool:
     check = env or os.environ
     prefix = str(check.get("PREFIX", ""))
     return "com.termux" in prefix or prefix.startswith("/data/data/com.termux/")
+
+
+def _is_android_python() -> bool:
+    return sys.platform == "android"
+
+
+def _install_psutil_android_compat(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Install psutil on Android by patching upstream platform detection.
+
+    psutil's setup currently gates Linux sources behind
+    ``sys.platform.startswith('linux')``. On Termux Python reports
+    ``sys.platform == 'android'``, so setup aborts with
+    "platform android is not supported" despite compiling fine when using the
+    Linux source path.
+
+    We patch only the extracted build tree used for this install attempt;
+    nothing is persisted in the repository.
+
+    Stopgap: remove this once https://github.com/giampaolo/psutil/pull/2762
+    merges and ships in a release. ``scripts/install_psutil_android.py``
+    contains the same logic for ``scripts/install.sh`` (fresh installs).
+    Both copies should be removed together.
+    """
+    import tarfile
+    import tempfile
+    import urllib.request
+
+    psutil_url = (
+        "https://files.pythonhosted.org/packages/aa/c6/"
+        "d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/"
+        "psutil-7.2.2.tar.gz"
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        archive = tmp_path / "psutil.tar.gz"
+        urllib.request.urlretrieve(psutil_url, archive)
+        with tarfile.open(archive) as tar:
+            tar.extractall(tmp_path)
+
+        src_root = next(
+            p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("psutil-")
+        )
+        common_py = src_root / "psutil" / "_common.py"
+        content = common_py.read_text(encoding="utf-8")
+        marker = 'LINUX = sys.platform.startswith("linux")'
+        replacement = 'LINUX = sys.platform.startswith(("linux", "android"))'
+        if marker not in content:
+            raise RuntimeError("psutil Android compatibility patch marker not found")
+        common_py.write_text(content.replace(marker, replacement), encoding="utf-8")
+
+        _run_install_with_heartbeat(
+            install_cmd_prefix + ["install", "--no-build-isolation", str(src_root)],
+            env=env,
+        )
 
 
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
@@ -7336,13 +7472,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("→ Updating Python dependencies...")
         pip_cmd = [sys.executable, "-m", "pip"]
         uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
+        install_group = "all"
+
         if uv_bin:
             uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)
+                install_group = "termux-all"
+                print("  → Termux detected: using uv + curated termux-all optional profile...")
+            if _is_termux_env(uv_env) and _is_android_python():
+                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+                _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
             _install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env
+                [uv_bin, "pip"], env=uv_env, group=install_group
             )
         else:
             # Use sys.executable to explicitly call the venv's pip module,
@@ -7363,7 +7506,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     cwd=PROJECT_ROOT,
                     check=True,
                 )
-            _install_python_dependencies_with_optional_fallback(pip_cmd)
+            if _is_termux_env():
+                install_group = "termux-all"
+                print("  → Termux detected: using curated termux-all optional profile...")
+            if _is_termux_env() and _is_android_python():
+                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+                _install_psutil_android_compat(pip_cmd)
+            _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
 
         _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
@@ -7542,6 +7691,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _print_curator_first_run_notice()
         except Exception as e:
             logger.debug("Curator first-run notice failed: %s", e)
+
+        # Most-recent curator run notice — show-once per run. Surfaces the
+        # rename map (`old-name → umbrella`) on the high-attention update
+        # surface so users learn about consolidations without having to
+        # check `hermes curator status`. Self-stamps after printing so it
+        # never repeats for the same run.
+        try:
+            _print_curator_recent_run_notice()
+        except Exception as e:
+            logger.debug("Curator recent-run notice failed: %s", e)
 
         # Repair RHEL-family root installs where /usr/local/bin isn't on PATH
         # for non-login interactive shells.  No-op on every other platform.

@@ -5867,7 +5867,13 @@ class HermesCLI:
             except (KeyboardInterrupt, EOFError):
                 pass
 
-        if self._app:
+        # run_in_terminal requires an asyncio event loop that only exists in
+        # the main prompt_toolkit thread.  When dispatched from a background
+        # thread (e.g. process_loop), run_in_terminal returns an unawaited
+        # coroutine and logs RuntimeWarning.  Mirror the guard from
+        # _run_curses_picker: fall back to a direct call off the main thread.
+        in_main_thread = threading.current_thread() is threading.main_thread()
+        if self._app and in_main_thread:
             from prompt_toolkit.application import run_in_terminal
             was_visible = self._status_bar_visible
             self._status_bar_visible = False

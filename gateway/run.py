@@ -10937,8 +10937,23 @@ class GatewayRunner:
             logger.error("Failed to create branch session: %s", e)
             return f"Failed to create branch: {e}"
 
-        # Copy conversation history to the new session
-        for msg in history:
+        # Copy conversation history to the new session.
+        # Load from DB with include_ancestors=True so that compression-
+        # truncated transcript doesn't lose earlier messages.  See #18870.
+        full_history: list = []
+        if self._session_db:
+            try:
+                full_history = self._session_db.get_messages_as_conversation(
+                    parent_session_id, include_ancestors=True,
+                )
+                full_history = [
+                    m for m in full_history if m.get("role") != "session_meta"
+                ]
+            except Exception:
+                full_history = []
+        if not full_history:
+            full_history = history
+        for msg in full_history:
             try:
                 self._session_db.append_message(
                     session_id=new_session_id,
@@ -10972,7 +10987,7 @@ class GatewayRunner:
         # Evict any cached agent for this session
         self._evict_cached_agent(session_key)
 
-        msg_count = len([m for m in history if m.get("role") == "user"])
+        msg_count = len([m for m in full_history if m.get("role") == "user"])
         return (
             f"⑂ Branched to **{branch_title}**"
             f" ({msg_count} message{'s' if msg_count != 1 else ''} copied)\n"

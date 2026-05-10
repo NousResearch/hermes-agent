@@ -5658,8 +5658,24 @@ class HermesCLI:
             _cprint(f"  Failed to create branch session: {e}")
             return
 
-        # Copy conversation history to the new session
-        for msg in self.conversation_history:
+        # Copy conversation history to the new session.
+        # Load from DB with include_ancestors=True so that compression-
+        # truncated in-memory history doesn't lose earlier messages.
+        # See #18870.
+        full_history: List[Dict[str, Any]] = []
+        if self._session_db:
+            try:
+                full_history = self._session_db.get_messages_as_conversation(
+                    parent_session_id, include_ancestors=True,
+                )
+                full_history = [
+                    m for m in full_history if m.get("role") != "session_meta"
+                ]
+            except Exception:
+                full_history = []
+        if not full_history:
+            full_history = self.conversation_history
+        for msg in full_history:
             try:
                 self._session_db.append_message(
                     session_id=new_session_id,
@@ -5723,7 +5739,7 @@ class HermesCLI:
             except Exception:
                 pass
 
-        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
+        msg_count = len([m for m in full_history if m.get("role") == "user"])
         _cprint(
             f"  ⑂ Branched session \"{branch_title}\""
             f" ({msg_count} user message{'s' if msg_count != 1 else ''})"

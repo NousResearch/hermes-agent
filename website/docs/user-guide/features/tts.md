@@ -429,16 +429,16 @@ stt:
   provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai"
   local:
     model: "base"             # tiny, base, small, medium, large-v3
-    language: ""              # optional ISO-639-1 hint (e.g. "en"); blank = auto-detect
+    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   groq:
-    language: ""              # optional ISO-639-1 hint (e.g. "en"); blank = auto-detect
+    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   openai:
     model: "whisper-1"        # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
   mistral:
     model: "voxtral-mini-latest"  # voxtral-mini-latest, voxtral-mini-2602
   xai:
     model: "grok-stt"         # xAI Grok STT
-    language: ""              # optional ISO-639-1 hint
+    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else "en"
 ```
 
 ### Provider Details

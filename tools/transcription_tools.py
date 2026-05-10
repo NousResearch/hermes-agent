@@ -1321,7 +1321,9 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         model_name = DEFAULT_GROQ_STT_MODEL
 
     groq_cfg = _load_stt_config().get("groq", {})
-    language = groq_cfg.get("language") or os.getenv(LOCAL_STT_LANGUAGE_ENV)
+    language = str(
+        groq_cfg.get("language") or os.getenv(LOCAL_STT_LANGUAGE_ENV) or ""
+    ).strip() or None
 
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError

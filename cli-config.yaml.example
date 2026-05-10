@@ -1128,7 +1128,7 @@ stt:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
   # groq:
-  #   language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
+  #   language: ""             # blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
     language: ""               # auto-detect; set to "en", "es", "fr", etc. to force

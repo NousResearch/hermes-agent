@@ -633,7 +633,12 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.dm_messages = True
             intents.guild_messages = True
             intents.members = (
-                any(not entry.isdigit() for entry in self._allowed_user_ids)
+                # ``"*"`` is the open-mode wildcard (honored in _is_allowed_user),
+                # not a username to resolve, so it must not pull in the privileged
+                # Server Members intent — exactly the migrate-from-OpenClaw path
+                # the wildcard fix targets would otherwise silently fail to come
+                # online when Members Intent isn't enabled in the Developer Portal.
+                any(entry != "*" and not entry.isdigit() for entry in self._allowed_user_ids)
                 or bool(self._allowed_role_ids)  # Need members intent for role lookup
             )
             intents.voice_states = True
@@ -2769,6 +2774,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
         for entry in self._allowed_user_ids:
             if entry.isdigit():
+                numeric_ids.add(entry)
+            elif entry == "*":
+                # Preserve the open-mode wildcard verbatim. It is not a
+                # username to resolve; without this branch it would land in
+                # ``to_resolve``, fail to match any guild member, and then be
+                # silently dropped from both ``self._allowed_user_ids`` and
+                # ``DISCORD_ALLOWED_USERS`` by the rewrite below — quietly
+                # undoing the wildcard fix in ``_is_allowed_user`` after the
+                # first ``on_ready``.
                 numeric_ids.add(entry)
             else:
                 to_resolve.add(entry.lower())

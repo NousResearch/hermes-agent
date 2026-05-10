@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -146,6 +147,15 @@ class SlowSyncBot(FakeBot):
         ("769524422783664158", False),
         ("abhey-gupta", True),
         ("769524422783664158,abhey-gupta", True),
+        # ``"*"`` is the open-mode wildcard, not a username to resolve, so it
+        # must not pull in the privileged Server Members intent. Requesting
+        # that intent without it being enabled in the Discord Developer Portal
+        # can prevent the bot from coming online at all (see comment block at
+        # the intents.members site in discord.py), so this matters most for
+        # exactly the migration-from-OpenClaw path that the wildcard fix
+        # targets — the bot would otherwise silently fail to connect.
+        ("*", False),
+        ("769524422783664158,*", False),
     ],
 )
 async def test_connect_only_requests_members_intent_when_needed(monkeypatch, allowed_users, expected_members_intent):
@@ -180,6 +190,49 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
     assert am.roles is False
 
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_allowed",
+    [
+        {"*"},
+        {"769524422783664158", "*"},
+    ],
+)
+async def test_resolve_allowed_usernames_preserves_wildcard(monkeypatch, initial_allowed):
+    """Regression: ``_resolve_allowed_usernames`` must not strip ``"*"``.
+
+    The method splits entries into numeric-IDs (kept) vs non-numeric (treated
+    as usernames to resolve), then rewrites ``self._allowed_user_ids`` and the
+    ``DISCORD_ALLOWED_USERS`` env var from the numeric set. Since ``"*"`` is
+    non-numeric, before this fix it ended up in the resolution bucket, failed
+    to match any guild member, and was silently dropped from both the in-memory
+    set and the env var on the first ``on_ready`` — quietly undoing the
+    wildcard fix in ``_is_allowed_user`` for every subsequent message.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._allowed_user_ids = set(initial_allowed)
+    adapter._client = SimpleNamespace(guilds=[])  # no guilds → no resolution work
+
+    monkeypatch.setenv(
+        "DISCORD_ALLOWED_USERS",
+        ",".join(sorted(initial_allowed)),
+    )
+
+    await adapter._resolve_allowed_usernames()
+
+    assert "*" in adapter._allowed_user_ids, (
+        "wildcard must survive _resolve_allowed_usernames; it is the open-mode "
+        "marker, not a username to resolve"
+    )
+    env_entries = {
+        e.strip() for e in os.environ.get("DISCORD_ALLOWED_USERS", "").split(",") if e.strip()
+    }
+    assert "*" in env_entries, (
+        "DISCORD_ALLOWED_USERS env must still contain '*' after resolution; "
+        "downstream readers (and any restart-time re-parse) rely on it"
+    )
 
 
 @pytest.mark.asyncio

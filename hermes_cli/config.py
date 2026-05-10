@@ -3894,9 +3894,10 @@ def _should_inherit(config_path: Path) -> Optional[Path]:
     is enabled, or None if the profile should use standalone config.
 
     Detection logic:
-    1. If config has explicit `inherit: false` flag → no inheritance
-    2. If config has `# This profile inherits` comment header → inheritance enabled
-    3. Otherwise → no inheritance (backward compatible)
+    1. If config has explicit `inherit: true` flag → inherit from default
+    2. If config has explicit `inherit: false` flag → no inheritance
+    3. Otherwise → no inheritance (backward compatible — existing profiles
+       with full configs remain standalone)
 
     Returns None if default config doesn't exist (graceful degradation).
     """
@@ -3905,7 +3906,6 @@ def _should_inherit(config_path: Path) -> Optional[Path]:
         default_path = get_default_config_path()
         return default_path if default_path.exists() else None
 
-    # Check for explicit inherit flag
     try:
         with open(config_path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
@@ -3915,15 +3915,14 @@ def _should_inherit(config_path: Path) -> Optional[Path]:
     if not isinstance(raw, dict):
         return None
 
-    # Explicit opt-out
-    if raw.get("inherit") is False:
-        return None
-
-    # Check for inheritance comment header (heuristic)
-    content = config_path.read_text(encoding="utf-8")
-    if "# This profile inherits" in content:
+    inherit_flag = raw.get("inherit")
+    if inherit_flag is True:
         default_path = get_default_config_path()
         return default_path if default_path.exists() else None
+
+    # Explicit opt-out
+    if inherit_flag is False:
+        return None
 
     # Default: no inheritance for existing configs (backward compatible)
     return None

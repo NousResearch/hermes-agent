@@ -3136,17 +3136,27 @@ def _apply_tool_search(
             # via the tool_search server tool), and Anthropic's server
             # hydrates the full schema from its registry when
             # tool_search returns the entry.
+            # Anthropic's API requires ``description`` and
+            # ``input_schema`` even on deferred entries (the validator
+            # 400s with "Field required" if either is missing). Send
+            # minimal placeholders so the wire entry stays small but
+            # passes schema validation. Empty string description (1
+            # byte) and ``{"type":"object"}`` schema (~17 bytes) keep
+            # each stub under ~120 bytes vs the original 1-5K.
+            #
+            # The model still sees the tool name in its available-
+            # tools list and can summon the full description + input
+            # schema via the tool_search server tool when it actually
+            # wants to use the tool. Anthropic hydrates the canonical
+            # schema from its own registry on the tool_search hit.
             stub: Dict[str, Any] = {
                 "name": name,
+                "description": "",
+                "input_schema": {"type": "object"},
                 "defer_loading": True,
             }
             # Preserve cache_control if the caller had set it; it
             # affects prompt-caching boundary placement and is cheap.
-            # NOTE: do NOT set ``type`` — custom (function) tool
-            # entries don't carry that field at all; Anthropic's API
-            # only accepts ``type`` for server-side tools (e.g.
-            # ``bash_20250124``) and rejects ``type: function`` with
-            # a validation 400.
             if "cache_control" in tool:
                 stub["cache_control"] = tool["cache_control"]
             transformed.append(stub)

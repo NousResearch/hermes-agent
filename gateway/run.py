@@ -5210,6 +5210,15 @@ class GatewayRunner:
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    @staticmethod
+    def _split_inline_command_payload(event: MessageEvent) -> tuple[MessageEvent, str]:
+        """Split a slash command's first line from an inline payload body."""
+        text = event.text or ""
+        command_line, sep, payload = text.partition("\n")
+        if not sep:
+            return event, ""
+        return dataclasses.replace(event, text=command_line.rstrip("\r")), payload.lstrip("\r\n")
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -5832,7 +5841,12 @@ class GatewayRunner:
         # honored, but handlers that return nothing behave exactly as
         # before (telemetry-style hooks keep working).
         if command and is_gateway_known_command(canonical):
-            raw_args = event.get_command_args().strip()
+            command_arg_event = (
+                self._split_inline_command_payload(event)[0]
+                if canonical == "model"
+                else event
+            )
+            raw_args = command_arg_event.get_command_args().strip()
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
@@ -5935,7 +5949,41 @@ class GatewayRunner:
             return await self._handle_yolo_command(event)
 
         if canonical == "model":
-            return await self._handle_model_command(event)
+            model_event, inline_payload = self._split_inline_command_payload(event)
+            model_response = await self._handle_model_command(model_event)
+            model_switched = (
+                isinstance(model_response, str)
+                and model_response.startswith("Model switched to")
+            )
+            if inline_payload.strip() and model_switched:
+                if model_response:
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        reply_anchor = self._reply_anchor_for_event(event)
+                        metadata = self._thread_metadata_for_source(
+                            source,
+                            reply_anchor,
+                        )
+                        send_with_retry = getattr(adapter, "_send_with_retry", None)
+                        if callable(send_with_retry):
+                            await send_with_retry(
+                                chat_id=source.chat_id,
+                                content=model_response,
+                                reply_to=reply_anchor,
+                                metadata=metadata,
+                            )
+                        else:
+                            await adapter.send(
+                                source.chat_id,
+                                model_response,
+                                reply_to=reply_anchor,
+                                metadata=metadata,
+                            )
+                event = dataclasses.replace(event, text=inline_payload)
+                command = None
+                canonical = None
+            else:
+                return model_response
 
         if canonical == "personality":
             return await self._handle_personality_command(event)
@@ -8248,7 +8296,7 @@ class GatewayRunner:
         )
         from hermes_cli.providers import get_label
 
-        raw_args = event.get_command_args().strip()
+        raw_args = self._split_inline_command_payload(event)[0].get_command_args().strip()
 
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)

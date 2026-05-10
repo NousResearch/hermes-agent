@@ -206,6 +206,8 @@ class MemoryStore:
 
             # Compute HRR vector after entity linking
             self._compute_hrr_vector(fact_id, content)
+            # Sync to sqlite-vec dense-vector table
+            self._sync_fact_vector(fact_id, content)
             self._rebuild_bank(category)
 
             return fact_id
@@ -516,6 +518,29 @@ class MemoryStore:
                 (hrr.phases_to_bytes(vector), fact_id),
             )
             self._conn.commit()
+            self._sync_fact_vector(fact_id, content)
+
+    def _sync_fact_vector(self, fact_id: int, content: str) -> None:
+        """Sync a fact's HRR vector to the sqlite-vec fact_vectors table."""
+        with self._lock:
+            if not self._vec_available:
+                return
+            row = self._conn.execute(
+                "SELECT hrr_vector FROM facts WHERE fact_id = ?", (fact_id,)
+            ).fetchone()
+            if not row or not row["hrr_vector"]:
+                return
+            import numpy as np
+            vec = hrr.bytes_to_phases(row["hrr_vector"])
+            arr = np.array(vec, dtype=np.float32)
+            try:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO fact_vectors(fact_id, description, embedding) VALUES(?, ?, ?)",
+                    (fact_id, f"fact_{fact_id}", arr),
+                )
+                self._conn.commit()
+            except Exception:
+                pass
 
     def _rebuild_bank(self, category: str) -> None:
         """Full rebuild of a category's memory bank from all its fact vectors."""

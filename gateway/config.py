@@ -766,10 +766,18 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
                 if "allow_from" in platform_cfg:
                     bridged["allow_from"] = platform_cfg["allow_from"]
+                if "allow_admin_from" in platform_cfg:
+                    bridged["allow_admin_from"] = platform_cfg["allow_admin_from"]
+                if "user_allowed_commands" in platform_cfg:
+                    bridged["user_allowed_commands"] = platform_cfg["user_allowed_commands"]
                 if "group_policy" in platform_cfg:
                     bridged["group_policy"] = platform_cfg["group_policy"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
+                if "group_allow_admin_from" in platform_cfg:
+                    bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
+                if "group_user_allowed_commands" in platform_cfg:
+                    bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
                 if plat in (Platform.DISCORD, Platform.SLACK) and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:

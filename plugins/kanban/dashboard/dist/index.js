@@ -2397,12 +2397,18 @@
           r.error
             ? h("div", { className: "hermes-kanban-run-error" }, r.error)
             : null,
-          r.metadata
-            ? h("div", { className: "hermes-kanban-run-meta-block" },
-                h("div", { className: "hermes-kanban-run-meta-label" }, "Metadata"),
-                h("code", { className: "hermes-kanban-run-meta" },
-                  JSON.stringify(r.metadata, null, 2)),
-              )
+          (r.metadata && Object.keys(r.metadata).length > 0)
+            ? (function () {
+                var json = JSON.stringify(r.metadata, null, 2);
+                var collapsed = json.length > 300;
+                return h("details", {
+                    className: "hermes-kanban-run-meta-block",
+                    open: !collapsed,
+                  },
+                  h("summary", { className: "hermes-kanban-run-meta-label" }, "Metadata"),
+                  h("code", { className: "hermes-kanban-run-meta" }, json),
+                );
+              })()
             : null,
         );
       }),

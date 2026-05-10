@@ -74,6 +74,42 @@ def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypat
     ]
 
 
+def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
+    """Regression: gpt-5.3-codex-spark is returned by the live Codex backend
+    with ``supported_in_api: false`` because it isn't in the public OpenAI
+    API. The Codex CLI / OAuth route still serves it for ChatGPT Pro
+    accounts, so we must not drop it on that flag. visibility=hidden is
+    the separate signal that *should* still filter entries out.
+    """
+    import sys
+    from hermes_cli import codex_models
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "models": [
+                    {"slug": "gpt-5.5", "priority": 0, "supported_in_api": True},
+                    {"slug": "gpt-5.3-codex-spark", "priority": 7, "supported_in_api": False},
+                    {"slug": "gpt-5-internal", "priority": 99, "visibility": "hidden"},
+                ]
+            }
+
+    class _FakeHttpx:
+        @staticmethod
+        def get(url, headers=None, timeout=None):
+            return _FakeResp()
+
+    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
+
+    models = codex_models._fetch_models_from_api(access_token="tok")
+
+    assert "gpt-5.5" in models
+    assert "gpt-5.3-codex-spark" in models
+    assert "gpt-5-internal" not in models
+
+
 def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
     from hermes_cli.main import _model_flow_openai_codex
 

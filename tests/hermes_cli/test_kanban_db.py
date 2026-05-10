@@ -1199,3 +1199,68 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
     # Running migration on an already-migrated schema must not raise.
     kb._migrate_add_optional_columns(conn)
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher spawn invocation — _resolve_hermes_argv()
+#
+# Workers spawned by the dispatcher must use a `hermes` invocation that does
+# not depend on PATH being set up correctly. cron jobs, systemd User= services,
+# launchd jobs, and other detached processes routinely run with a stripped
+# $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
+# spawn fails with FileNotFoundError and the task gets stuck. The resolver
+# prefers the PATH shim (familiar `ps` output) but falls back to the module
+# form so the spawn keeps working when PATH is missing the shim.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_hermes_argv_prefers_path_shim(monkeypatch):
+    """When `hermes` is on PATH, use the shim — preserves familiar ps output."""
+    import shutil
+    import hermes_cli.kanban_db as kb
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/hermes")
+    argv = kb._resolve_hermes_argv()
+    assert argv == ["/usr/local/bin/hermes"]
+
+
+def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeypatch):
+    """When the shim is not on PATH, fall back to `python -m hermes_cli.main`.
+
+    Pins the correct module name (NOT `hermes` — there is no top-level
+    `hermes` package). Regression for #23198: the original PR shipped
+    `python -m hermes` which fails with `No module named hermes` on every
+    invocation.
+    """
+    import shutil
+    import sys
+    import hermes_cli.kanban_db as kb
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    argv = kb._resolve_hermes_argv()
+    assert argv == [sys.executable, "-m", "hermes_cli.main"]
+
+
+def test_resolve_hermes_argv_module_actually_runs():
+    """The fallback module name must be importable + runnable.
+
+    A unit test that pins the literal string is necessary but not
+    sufficient — if `hermes_cli.main` ever loses `if __name__ == "__main__"`
+    handling or its argparse setup, `python -m hermes_cli.main --version`
+    would fail and so would every dispatcher spawn that hits the fallback.
+    Run it as a real subprocess to catch that regression.
+    """
+    import subprocess
+    import sys
+    import hermes_cli.kanban_db as kb
+    import shutil
+    import unittest.mock as mock
+
+    with mock.patch.object(shutil, "which", return_value=None):
+        argv = kb._resolve_hermes_argv()
+    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, (
+        f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
+        f"stderr={r.stderr[:200]!r}"
+    )
+    assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"

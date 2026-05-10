@@ -1264,3 +1264,138 @@ def test_resolve_hermes_argv_module_actually_runs():
         f"stderr={r.stderr[:200]!r}"
     )
     assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
+
+
+# ---------------------------------------------------------------------------
+# task_age — guard against corrupt timestamp values
+#
+# The Task dataclass declares ``created_at: int`` but rows come from sqlite
+# without coercion at the boundary. A row that ever held a non-int (e.g. an
+# unsubstituted ``'%s'`` from a logged format string, ``None``, an arbitrary
+# string, or a float-as-string) used to crash ``task_age`` with ``ValueError``
+# and turn ``GET /api/plugins/kanban/board`` into a 500 because the dashboard
+# calls ``task_age`` unguarded for every task in the response.
+#
+# After the fix, ``_safe_int`` returns ``None`` on bad input and ``task_age``
+# degrades gracefully (per-field ``None`` rather than a hard crash).
+# ---------------------------------------------------------------------------
+
+
+def _make_task(**overrides) -> "kb.Task":
+    """Minimal Task with all required fields filled in. Override anything."""
+    defaults = dict(
+        id="t_age",
+        title="x",
+        body=None,
+        assignee=None,
+        status="ready",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=None,
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+    defaults.update(overrides)
+    return kb.Task(**defaults)
+
+
+def test_safe_int_accepts_int_and_int_string():
+    """Sanity: well-typed values pass through."""
+    assert kb._safe_int(0) == 0
+    assert kb._safe_int(1700000000) == 1700000000
+    assert kb._safe_int("1700000000") == 1700000000
+
+
+def test_safe_int_returns_none_on_corrupt_inputs():
+    """All the failure modes that used to crash task_age."""
+    # None — common when the column was never written
+    assert kb._safe_int(None) is None
+    # Unsubstituted format string — the literal case the PR title cites
+    assert kb._safe_int("%s") is None
+    # Arbitrary non-numeric strings
+    assert kb._safe_int("abc") is None
+    assert kb._safe_int("") is None
+    # Float-ish strings: int("1.5") raises ValueError too — caller wants None.
+    assert kb._safe_int("1.5") is None
+    # Random object — covered by TypeError branch
+    assert kb._safe_int(object()) is None
+
+
+def test_task_age_handles_corrupt_created_at():
+    """Pre-fix this raised ValueError and 500'd /api/plugins/kanban/board."""
+    t = _make_task(created_at="%s")
+    age = kb.task_age(t)
+    assert age["created_age_seconds"] is None
+    assert age["started_age_seconds"] is None
+    assert age["time_to_complete_seconds"] is None
+
+
+def test_task_age_handles_corrupt_started_and_completed():
+    """All three timestamp fields share the same _safe_int treatment."""
+    t = _make_task(
+        created_at=1700000000,
+        started_at="garbage",
+        completed_at=None,
+    )
+    age = kb.task_age(t)
+    assert isinstance(age["created_age_seconds"], int)
+    assert age["started_age_seconds"] is None
+    assert age["time_to_complete_seconds"] is None
+
+
+def test_task_age_well_formed_task():
+    """Regression: the safe-int path must not change behavior for normal data."""
+    import time
+    now = int(time.time())
+    t = _make_task(
+        created_at=now - 60,
+        started_at=now - 30,
+        completed_at=now,
+    )
+    age = kb.task_age(t)
+    assert 55 <= age["created_age_seconds"] <= 65
+    assert 25 <= age["started_age_seconds"] <= 35
+    assert 25 <= age["time_to_complete_seconds"] <= 35
+
+
+def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
+    """Defense in depth: even if task_age ever raised, plugin_api must not 500.
+
+    The PR also added a try/except around the task_age call in
+    `plugins/kanban/dashboard/plugin_api.py::_task_dict`. Verify a single
+    corrupt row doesn't turn the whole board response into an error.
+    """
+    # Set up an isolated kanban home so we can write a corrupt created_at.
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    # Insert a row with a non-int created_at (simulates the historical
+    # bug that produced corrupt rows).
+    conn = kb.connect()
+    try:
+        good_id = kb.create_task(conn, title="good")
+        # Now write a row with corrupt created_at directly.
+        conn.execute(
+            "UPDATE tasks SET created_at = ? WHERE id = ?",
+            ("%s", good_id),
+        )
+    finally:
+        conn.close()
+
+    # Re-read and pass through task_age — must not raise.
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, good_id)
+    finally:
+        conn.close()
+    age = kb.task_age(task)
+    assert age["created_age_seconds"] is None

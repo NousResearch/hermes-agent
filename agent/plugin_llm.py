@@ -1,53 +1,56 @@
 """
-Plugin LLM facade — host-owned structured inference for trusted plugins.
-=======================================================================
+Plugin LLM facade — host-owned LLM access for trusted plugins.
+==============================================================
 
-Plugins built on Hermes Agent often need to run a one-shot LLM call to
-do something narrow and structured: extract vendor + total from a
-receipt image, summarise an inbound email into a CRM record, classify
-an inbound support message, normalise free-form text into a JSON
-record. Today they have three bad options:
+Plugins built on Hermes Agent often need to make their own LLM calls
+out-of-band — a hook that rewrites a tool error before the user sees
+it, a gateway adapter that translates inbound text, a slash command
+that summarises a paste, a scheduled job that scores yesterday's
+activity into a single line on a status board.
 
-  1. Bring their own provider keys — defeats the host's auth model and
-     puts secrets in plugin code.
-  2. Register a tool the agent has to call — bloats every API call's
-     tool schema and pulls the agent into a job that should run
-     out-of-band.
-  3. Reach into ``agent.auxiliary_client`` internals that aren't a
-     stable plugin surface.
+Today the only stable plugin surfaces extend an existing Hermes
+subsystem: ``register_tool``, ``register_platform``,
+``register_memory_provider``, etc. None of those help when the
+plugin's job is to make its own model call. This module is the
+supported lane for that case.
 
-This module is the supported fourth option. Plugins receive an
-``llm`` attribute on their :class:`~hermes_cli.plugins.PluginContext`
-that exposes:
+The plugin gets ``ctx.llm`` exposed on its
+:class:`~hermes_cli.plugins.PluginContext`:
 
-* ``complete(messages, ...)`` — text-only chat completion against the
-  user's active model + auth.
+* ``complete(messages, ...)`` — chat completion against the user's
+  active model + auth.
 * ``complete_structured(instructions=..., input=[...], json_schema=...)``
   — bounded structured inference with optional image inputs, JSON
   schema validation, and parsed JSON output.
 * async siblings ``acomplete()`` / ``acomplete_structured()`` for
   plugins running on asyncio loops (gateway adapters, hooks).
 
+Provider/model/agent_id/profile are explicit keyword arguments — no
+embedded slugs, no shorthands. This mirrors Hermes' main config
+shape (``model.provider`` + ``model.model``) so plugin authors who
+already understand the host config don't have to learn anything new.
+
 The host owns provider routing, auth resolution, timeouts, and
-fallback. The plugin never sees raw OAuth tokens or API keys. Model
-overrides, cross-agent calls, and auth-profile selection are gated
-behind explicit per-plugin trust flags in ``config.yaml``::
+fallback. The plugin never sees raw OAuth tokens or API keys. All
+override knobs (``provider=``, ``model=``, ``agent_id=``,
+``profile=``) are gated behind explicit per-plugin trust flags in
+``config.yaml``::
 
     plugins:
       entries:
-        my-receipts-plugin:
+        my-plugin:
           llm:
+            allow_provider_override: true
             allow_model_override: true
-            allowed_models:
-              - openai/gpt-4o
-              - anthropic/claude-3-5-sonnet
+            allowed_providers: [openrouter, anthropic]   # optional
+            allowed_models:    [openai/gpt-4o-mini]       # optional
             allow_agent_id_override: false
             allow_profile_override: false
 
 Untrusted plugins still get the default surface — they just can't
-steer model selection, agent binding, or which stored credentials
-the host uses. The trust gate is fail-closed: a missing config block
-means "no overrides," not "anything goes."
+steer provider, model, agent, or auth-profile selection. The trust
+gate is fail-closed: a missing config block means "no overrides,"
+not "anything goes."
 
 Backed by :func:`agent.auxiliary_client.call_llm`, which already
 handles every provider, fallback chain, and per-task override Hermes
@@ -162,6 +165,9 @@ class _TrustPolicy:
     """Resolved trust gate for one plugin's LLM access."""
 
     plugin_id: str
+    allow_provider_override: bool = False
+    allowed_providers: Optional[frozenset] = None  # None = no allowlist
+    allow_any_provider: bool = False  # True when allowed_providers == ["*"]
     allow_model_override: bool = False
     allowed_models: Optional[frozenset] = None  # None = no allowlist
     allow_any_model: bool = False  # True when allowed_models == ["*"]
@@ -169,9 +175,28 @@ class _TrustPolicy:
     allow_profile_override: bool = False
 
 
-def _normalize_model_ref(raw: str) -> str:
-    """Lower-case, strip whitespace. Used for allow-list matching."""
+def _normalize_ref(raw: str) -> str:
+    """Lower-case + strip whitespace. Used for allowlist matching."""
     return (raw or "").strip().lower()
+
+
+def _coerce_allowlist(raw: Any) -> tuple[Optional[frozenset], bool]:
+    """Coerce a YAML list into ``(frozenset_or_None, allow_any)``.
+
+    ``["*"]`` (or any list containing ``"*"``) → ``(frozenset(), True)``.
+    Any other list → ``(frozenset({...}), False)``.
+    Missing / non-list → ``(None, False)`` meaning "no allowlist."
+    """
+    if not isinstance(raw, list):
+        return None, False
+    normalized = [_normalize_ref(item) for item in raw if isinstance(item, str)]
+    allow_any = "*" in normalized
+    cleaned = {item for item in normalized if item and item != "*"}
+    if allow_any and not cleaned:
+        return frozenset(), True
+    if cleaned:
+        return frozenset(cleaned), allow_any
+    return frozenset(), allow_any
 
 
 def _resolve_trust_policy(plugin_id: str) -> _TrustPolicy:
@@ -203,40 +228,22 @@ def _resolve_trust_policy(plugin_id: str) -> _TrustPolicy:
     if not isinstance(llm_cfg, dict):
         return _TrustPolicy(plugin_id=plugin_id)
 
-    allowed_raw = llm_cfg.get("allowed_models")
-    allowed: Optional[frozenset] = None
-    allow_any = False
-    if isinstance(allowed_raw, list):
-        normalized = [_normalize_model_ref(m) for m in allowed_raw if isinstance(m, str)]
-        if "*" in normalized:
-            allow_any = True
-        cleaned = {m for m in normalized if m and m != "*"}
-        allowed = frozenset(cleaned) if cleaned or not allow_any else frozenset()
+    allowed_models, allow_any_model = _coerce_allowlist(llm_cfg.get("allowed_models"))
+    allowed_providers, allow_any_provider = _coerce_allowlist(
+        llm_cfg.get("allowed_providers")
+    )
 
     return _TrustPolicy(
         plugin_id=plugin_id,
+        allow_provider_override=bool(llm_cfg.get("allow_provider_override", False)),
+        allowed_providers=allowed_providers,
+        allow_any_provider=allow_any_provider,
         allow_model_override=bool(llm_cfg.get("allow_model_override", False)),
-        allowed_models=allowed,
-        allow_any_model=allow_any,
+        allowed_models=allowed_models,
+        allow_any_model=allow_any_model,
         allow_agent_id_override=bool(llm_cfg.get("allow_agent_id_override", False)),
         allow_profile_override=bool(llm_cfg.get("allow_profile_override", False)),
     )
-
-
-def _split_trailing_profile(model_ref: str) -> tuple[str, Optional[str]]:
-    """Split ``provider/model@profile`` into ``(provider/model, profile)``.
-
-    Mirrors the OpenAI/Anthropic-style ``model@profile`` shorthand some
-    providers accept. Returns ``(model, None)`` when no ``@`` is present.
-    A bare ``@`` (no profile) returns ``(model, None)`` as well.
-    """
-    if "@" not in model_ref:
-        return model_ref, None
-    head, _, tail = model_ref.rpartition("@")
-    tail = tail.strip()
-    if not head or not tail:
-        return model_ref, None
-    return head, tail
 
 
 class PluginLlmTrustError(PermissionError):
@@ -246,65 +253,62 @@ class PluginLlmTrustError(PermissionError):
 def _check_overrides(
     policy: _TrustPolicy,
     *,
+    requested_provider: Optional[str],
     requested_model: Optional[str],
     requested_agent_id: Optional[str],
     requested_profile: Optional[str],
-) -> tuple[Optional[str], Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Apply the trust gate. Returns the validated overrides as
-    ``(model, agent_id, profile)`` or raises :class:`PluginLlmTrustError`.
+    ``(provider, model, agent_id, profile)`` or raises
+    :class:`PluginLlmTrustError`.
 
-    The model ref is normalized to strip an embedded ``@profile`` suffix
-    before policy evaluation — bypassing the explicit profile gate via
-    ``model@profile`` is rejected.
+    Each override (``provider``, ``model``, ``agent_id``, ``profile``)
+    is independently gated. ``provider`` and ``model`` each have an
+    optional allowlist via ``allowed_providers`` / ``allowed_models``.
     """
+    final_provider: Optional[str] = None
     final_model: Optional[str] = None
     final_profile: Optional[str] = None
 
+    if requested_provider:
+        if not policy.allow_provider_override:
+            raise PluginLlmTrustError(
+                f"Plugin {policy.plugin_id!r} cannot override the provider "
+                f"(set plugins.entries.{policy.plugin_id}.llm.allow_provider_override "
+                f"to true to allow)."
+            )
+        normalized = _normalize_ref(requested_provider)
+        if (
+            not policy.allow_any_provider
+            and policy.allowed_providers is not None
+            and normalized not in policy.allowed_providers
+        ):
+            raise PluginLlmTrustError(
+                f"Plugin {policy.plugin_id!r} provider override "
+                f"{requested_provider!r} is not in plugins.entries."
+                f"{policy.plugin_id}.llm.allowed_providers."
+            )
+        final_provider = requested_provider.strip()
+
     if requested_model:
-        model_part, embedded_profile = _split_trailing_profile(requested_model.strip())
-        if embedded_profile and requested_profile and embedded_profile != requested_profile:
+        if not policy.allow_model_override:
             raise PluginLlmTrustError(
-                f"Plugin {policy.plugin_id!r} sent conflicting auth profiles in "
-                f"model and profile fields ({embedded_profile!r} vs {requested_profile!r})."
-            )
-        effective_profile = requested_profile or embedded_profile
-        if effective_profile and not policy.allow_profile_override:
-            raise PluginLlmTrustError(
-                f"Plugin {policy.plugin_id!r} cannot override the auth profile "
-                f"(set plugins.entries.{policy.plugin_id}.llm.allow_profile_override "
+                f"Plugin {policy.plugin_id!r} cannot override the model "
+                f"(set plugins.entries.{policy.plugin_id}.llm.allow_model_override "
                 f"to true to allow)."
             )
-        final_profile = effective_profile
-
-        if model_part:
-            if not policy.allow_model_override:
-                raise PluginLlmTrustError(
-                    f"Plugin {policy.plugin_id!r} cannot override the model "
-                    f"(set plugins.entries.{policy.plugin_id}.llm.allow_model_override "
-                    f"to true to allow)."
-                )
-            normalized = _normalize_model_ref(model_part)
-            if (
-                not policy.allow_any_model
-                and policy.allowed_models is not None
-                and normalized not in policy.allowed_models
-            ):
-                raise PluginLlmTrustError(
-                    f"Plugin {policy.plugin_id!r} model override "
-                    f"{model_part!r} is not in plugins.entries.{policy.plugin_id}."
-                    f"llm.allowed_models."
-                )
-            final_model = model_part
-
-    elif requested_profile:
-        # Profile-only override (no model change). Same gate as embedded.
-        if not policy.allow_profile_override:
+        normalized = _normalize_ref(requested_model)
+        if (
+            not policy.allow_any_model
+            and policy.allowed_models is not None
+            and normalized not in policy.allowed_models
+        ):
             raise PluginLlmTrustError(
-                f"Plugin {policy.plugin_id!r} cannot override the auth profile "
-                f"(set plugins.entries.{policy.plugin_id}.llm.allow_profile_override "
-                f"to true to allow)."
+                f"Plugin {policy.plugin_id!r} model override "
+                f"{requested_model!r} is not in plugins.entries."
+                f"{policy.plugin_id}.llm.allowed_models."
             )
-        final_profile = requested_profile
+        final_model = requested_model.strip()
 
     if requested_agent_id and not policy.allow_agent_id_override:
         raise PluginLlmTrustError(
@@ -313,7 +317,16 @@ def _check_overrides(
             f"llm.allow_agent_id_override to true to allow)."
         )
 
-    return final_model, requested_agent_id, final_profile
+    if requested_profile:
+        if not policy.allow_profile_override:
+            raise PluginLlmTrustError(
+                f"Plugin {policy.plugin_id!r} cannot override the auth profile "
+                f"(set plugins.entries.{policy.plugin_id}.llm.allow_profile_override "
+                f"to true to allow)."
+            )
+        final_profile = requested_profile.strip()
+
+    return final_provider, final_model, requested_agent_id, final_profile
 
 
 # ---------------------------------------------------------------------------
@@ -560,6 +573,7 @@ class PluginLlm:
         self,
         messages: List[Dict[str, Any]],
         *,
+        provider: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -570,19 +584,24 @@ class PluginLlm:
     ) -> PluginLlmCompleteResult:
         """Run a host-owned chat completion against the user's active model.
 
-        ``messages`` is the standard OpenAI shape. ``model``, ``agent_id``,
-        and ``profile`` overrides require explicit per-plugin trust in
-        ``config.yaml`` (see module docstring).
+        ``messages`` is the standard OpenAI shape. ``provider``,
+        ``model``, ``agent_id``, and ``profile`` follow the same
+        explicit shape as the host's main config (``model.provider``
+        + ``model.model``). Each is independently gated by
+        ``plugins.entries.<id>.llm.allow_*_override`` (see module
+        docstring).
         """
         policy = self._policy_loader(self._plugin_id)
-        eff_model, eff_agent, eff_profile = _check_overrides(
+        eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
             policy,
+            requested_provider=provider,
             requested_model=model,
             requested_agent_id=agent_id,
             requested_profile=profile,
         )
-        provider, real_model, response = self._invoke_sync(
+        real_provider, real_model, response = self._invoke_sync(
             messages=messages,
+            provider_override=eff_provider,
             model_override=eff_model,
             profile_override=eff_profile,
             temperature=temperature,
@@ -593,7 +612,7 @@ class PluginLlm:
         usage = _extract_usage(response)
         result = PluginLlmCompleteResult(
             text=text,
-            provider=provider,
+            provider=real_provider,
             model=real_model,
             agent_id=eff_agent or "default",
             usage=usage,
@@ -606,7 +625,8 @@ class PluginLlm:
         logger.info(
             "plugin_llm.complete plugin=%s provider=%s model=%s purpose=%s "
             "tokens=%d",
-            self._plugin_id, provider, real_model, purpose or "", usage.total_tokens,
+            self._plugin_id, real_provider, real_model, purpose or "",
+            usage.total_tokens,
         )
         return result
 
@@ -619,6 +639,7 @@ class PluginLlm:
         json_mode: bool = False,
         schema_name: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        provider: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -645,8 +666,9 @@ class PluginLlm:
             raise ValueError("complete_structured requires at least one input block")
 
         policy = self._policy_loader(self._plugin_id)
-        eff_model, eff_agent, eff_profile = _check_overrides(
+        eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
             policy,
+            requested_provider=provider,
             requested_model=model,
             requested_agent_id=agent_id,
             requested_profile=profile,
@@ -662,8 +684,9 @@ class PluginLlm:
         )
         extra_body = self._json_response_format(json_mode=json_mode, json_schema=json_schema)
 
-        provider, real_model, response = self._invoke_sync(
+        real_provider, real_model, response = self._invoke_sync(
             messages=messages,
+            provider_override=eff_provider,
             model_override=eff_model,
             profile_override=eff_profile,
             temperature=temperature,
@@ -678,7 +701,7 @@ class PluginLlm:
         )
         result = PluginLlmStructuredResult(
             text=text,
-            provider=provider,
+            provider=real_provider,
             model=real_model,
             agent_id=eff_agent or "default",
             usage=usage,
@@ -694,7 +717,7 @@ class PluginLlm:
         logger.info(
             "plugin_llm.complete_structured plugin=%s provider=%s model=%s "
             "purpose=%s content_type=%s tokens=%d",
-            self._plugin_id, provider, real_model, purpose or "",
+            self._plugin_id, real_provider, real_model, purpose or "",
             content_type, usage.total_tokens,
         )
         return result
@@ -705,6 +728,7 @@ class PluginLlm:
         self,
         messages: List[Dict[str, Any]],
         *,
+        provider: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -715,14 +739,16 @@ class PluginLlm:
     ) -> PluginLlmCompleteResult:
         """Async sibling of :meth:`complete`."""
         policy = self._policy_loader(self._plugin_id)
-        eff_model, eff_agent, eff_profile = _check_overrides(
+        eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
             policy,
+            requested_provider=provider,
             requested_model=model,
             requested_agent_id=agent_id,
             requested_profile=profile,
         )
-        provider, real_model, response = await self._invoke_async(
+        real_provider, real_model, response = await self._invoke_async(
             messages=messages,
+            provider_override=eff_provider,
             model_override=eff_model,
             profile_override=eff_profile,
             temperature=temperature,
@@ -733,7 +759,7 @@ class PluginLlm:
         usage = _extract_usage(response)
         return PluginLlmCompleteResult(
             text=text,
-            provider=provider,
+            provider=real_provider,
             model=real_model,
             agent_id=eff_agent or "default",
             usage=usage,
@@ -753,6 +779,7 @@ class PluginLlm:
         json_mode: bool = False,
         schema_name: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        provider: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -768,8 +795,9 @@ class PluginLlm:
             raise ValueError("acomplete_structured requires at least one input block")
 
         policy = self._policy_loader(self._plugin_id)
-        eff_model, eff_agent, eff_profile = _check_overrides(
+        eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
             policy,
+            requested_provider=provider,
             requested_model=model,
             requested_agent_id=agent_id,
             requested_profile=profile,
@@ -783,8 +811,9 @@ class PluginLlm:
             system_prompt=system_prompt,
         )
         extra_body = self._json_response_format(json_mode=json_mode, json_schema=json_schema)
-        provider, real_model, response = await self._invoke_async(
+        real_provider, real_model, response = await self._invoke_async(
             messages=messages,
+            provider_override=eff_provider,
             model_override=eff_model,
             profile_override=eff_profile,
             temperature=temperature,
@@ -799,7 +828,7 @@ class PluginLlm:
         )
         return PluginLlmStructuredResult(
             text=text,
-            provider=provider,
+            provider=real_provider,
             model=real_model,
             agent_id=eff_agent or "default",
             usage=usage,
@@ -841,6 +870,7 @@ class PluginLlm:
         self,
         *,
         messages: List[Dict[str, Any]],
+        provider_override: Optional[str],
         model_override: Optional[str],
         profile_override: Optional[str],
         temperature: Optional[float],
@@ -848,11 +878,13 @@ class PluginLlm:
         timeout: Optional[float],
         extra_body: Optional[Dict[str, Any]] = None,
     ) -> tuple[str, str, Any]:
-        """Resolve the host's call_llm / async_call_llm (lazy-imported to
-        avoid circular deps at plugin discovery time) and invoke it."""
+        """Invoke the host's ``call_llm``. Lazy-imports
+        ``agent.auxiliary_client`` to avoid circular deps at plugin
+        discovery time."""
         if self._sync_caller is not None:
             return self._sync_caller(
                 messages=messages,
+                provider_override=provider_override,
                 model_override=model_override,
                 profile_override=profile_override,
                 temperature=temperature,
@@ -861,26 +893,30 @@ class PluginLlm:
                 extra_body=extra_body,
             )
         from agent.auxiliary_client import call_llm
-        provider, model = self._resolve_target(model_override)
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
         response = call_llm(
             task=None,
-            provider=provider,
-            model=model,
+            provider=provider_override,
+            model=model_override,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=merged_extra or None,
         )
-        return provider or "auto", model or "default", response
+        return (
+            provider_override or "auto",
+            model_override or "default",
+            response,
+        )
 
     async def _invoke_async(
         self,
         *,
         messages: List[Dict[str, Any]],
+        provider_override: Optional[str],
         model_override: Optional[str],
         profile_override: Optional[str],
         temperature: Optional[float],
@@ -891,6 +927,7 @@ class PluginLlm:
         if self._async_caller is not None:
             return await self._async_caller(
                 messages=messages,
+                provider_override=provider_override,
                 model_override=model_override,
                 profile_override=profile_override,
                 temperature=temperature,
@@ -899,34 +936,24 @@ class PluginLlm:
                 extra_body=extra_body,
             )
         from agent.auxiliary_client import async_call_llm
-        provider, model = self._resolve_target(model_override)
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
         response = await async_call_llm(
             task=None,
-            provider=provider,
-            model=model,
+            provider=provider_override,
+            model=model_override,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=merged_extra or None,
         )
-        return provider or "auto", model or "default", response
-
-    @staticmethod
-    def _resolve_target(model_override: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-        """Split a ``provider/model`` override into its parts. Returns
-        ``(None, None)`` when no override was supplied — the auxiliary
-        client falls back to the user's active main model."""
-        if not model_override:
-            return None, None
-        ref = model_override.strip()
-        if "/" in ref:
-            provider, _, model = ref.partition("/")
-            return provider.strip() or None, model.strip() or None
-        return None, ref
+        return (
+            provider_override or "auto",
+            model_override or "default",
+            response,
+        )
 
 
 # ---------------------------------------------------------------------------

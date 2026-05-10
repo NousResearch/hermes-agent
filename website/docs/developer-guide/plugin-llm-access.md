@@ -19,9 +19,24 @@ that scores yesterday's activity and writes one line to a status
 board. A pre-filter that decides whether a message is worth waking
 the agent up for at all.
 
+These are jobs the agent shouldn't be in the loop on. They want one
+LLM call, a typed answer, and to be done.
+
+## The smallest possible call
+
 ```python
-# The simplest form — a plain chat completion against the user's
-# active model. No keys, no provider config, no SDK init.
+result = ctx.llm.complete(messages=[{"role": "user", "content": "ping"}])
+return result.text
+```
+
+That's the whole API in one line. No keys, no provider config, no
+SDK initialisation. The plugin runs against whatever provider and
+model the user is currently using — when they switch providers, the
+plugin follows them automatically.
+
+## A more complete chat example
+
+```python
 result = ctx.llm.complete(
     messages=[
         {"role": "system", "content": "Rewrite errors as one short sentence a non-engineer can act on."},
@@ -33,12 +48,15 @@ result = ctx.llm.complete(
 return result.text
 ```
 
+`purpose` is a free-form audit string — it shows up in `agent.log`
+and in `result.audit` so operators can see which plugin made which
+call. Optional but recommended for anything that fires often.
+
+## Structured output
+
 When the plugin needs a typed answer, switch to the structured lane:
 
 ```python
-# The same surface, with a JSON Schema. The host requests JSON output,
-# parses it locally, validates against your schema, and hands back a
-# Python object.
 result = ctx.llm.complete_structured(
     instructions="Score this support reply for urgency (0–1) and pick a category.",
     input=[{"type": "text", "text": message_body}],
@@ -52,18 +70,18 @@ if result.parsed["urgency"] > 0.8:
     await dispatch_to_oncall(result.parsed["category"], message_body)
 ```
 
-In both cases the plugin never sees an API key. When the user
-switches from OpenRouter to native Anthropic, the plugin follows
-them automatically. When their primary provider 5xxs, the host's
-fallback chain kicks in before the plugin sees the failure. When
-the input contains an image and the active text model is text-only,
-the host transparently routes to the configured vision model.
+The host requests JSON output from the provider, parses it locally
+as a fallback, validates against your schema if `jsonschema` is
+installed, and hands back a Python object on `result.parsed`. If the
+model couldn't produce valid JSON, `result.parsed` is `None` and
+`result.text` carries the raw response.
 
 ## What this lane gives you
 
-* **One call, four shapes.** `complete()` for chat, `complete_structured()`
-  for typed JSON, `acomplete()` and `acomplete_structured()` for
-  asyncio. Same arguments, same result objects.
+* **One call, four shapes.** `complete()` for chat,
+  `complete_structured()` for typed JSON, `acomplete()` and
+  `acomplete_structured()` for asyncio. Same arguments, same result
+  objects.
 * **Host-owned credentials.** OAuth tokens, refresh flows, the
   credential pool, per-task aux overrides — every credential
   concept Hermes already has applies. The plugin never sees a
@@ -72,10 +90,9 @@ the host transparently routes to the configured vision model.
   loops, no conversation state to manage. State the input, get the
   result, return.
 * **Fail-closed trust.** A plugin you've never configured cannot
-  pick its own model, run against another agent, or select a
-  different stored credential. The default posture is "use what the
-  user is using." Operators opt in to specific overrides, per
-  plugin, in `config.yaml`.
+  pick its own provider, model, agent, or stored credential. The
+  default posture is "use what the user is using." Operators opt in
+  to specific overrides, per plugin, in `config.yaml`.
 
 ## Quick start
 
@@ -112,9 +129,8 @@ def _tldr(ctx, raw_args: str) -> str:
     return result.text
 ```
 
-That's it. `result.text` is the model's response; `result.usage`
-carries token counts; `result.provider` and `result.model` carry
-attribution.
+`result.text` is the model's response; `result.usage` carries token
+counts; `result.provider` and `result.model` carry attribution.
 
 ### Structured extraction — `/paste-to-tasks`
 
@@ -169,10 +185,6 @@ def _paste_to_tasks(ctx, raw_args: str) -> str:
     return "\n".join(lines) or "(no tasks found)"
 ```
 
-`result.parsed` is a Python dict matching the schema when everything
-worked, or `None` when the model couldn't produce valid JSON. The
-raw text is always preserved on `result.text` for fallback handling.
-
 A third worked example, this time with image input, ships in
 [`plugins/plugin-llm-example/`](https://github.com/NousResearch/hermes-agent/tree/main/plugins/plugin-llm-example).
 
@@ -186,7 +198,7 @@ A third worked example, this time with image input, ships in
 | Image-or-text input with a typed dict back | `complete_structured()` |
 | The same call from async code (gateway adapters, async hooks) | `acomplete()` / `acomplete_structured()` |
 
-Everything else — model selection, provider routing, auth, fallback,
+Everything else — provider selection, model resolution, auth, fallback,
 timeout, vision routing — is the same across all four.
 
 ## API surface
@@ -198,12 +210,13 @@ timeout, vision routing — is the same across all four.
 ```python
 result = ctx.llm.complete(
     messages=[{"role": "user", "content": "Hi"}],
-    model=None,           # optional, gated
+    provider=None,         # optional, gated — Hermes provider id (e.g. "openrouter")
+    model=None,            # optional, gated — whatever string that provider expects
     temperature=None,
     max_tokens=None,
-    timeout=None,         # seconds
-    agent_id=None,        # optional, gated
-    profile=None,         # optional, gated
+    timeout=None,          # seconds
+    agent_id=None,         # optional, gated
+    profile=None,          # optional, gated — explicit auth-profile name
     purpose="optional-audit-string",
 )
 # → PluginLlmCompleteResult(text, provider, model, agent_id, usage, audit)
@@ -213,6 +226,12 @@ Plain chat completion. `messages` is the standard OpenAI shape — a
 list of `{"role": "...", "content": "..."}` dicts. Multi-turn
 prompts (system + few-shot user/assistant pairs + final user) work
 exactly as they would with the OpenAI SDK.
+
+`provider=` and `model=` are independent and follow the same shape
+as the host's main config (`model.provider` + `model.model`). Set
+just `model=` to use the user's active provider with a different
+model on it. Set both to switch providers entirely. Either argument
+without operator opt-in raises `PluginLlmTrustError`.
 
 ### `complete_structured()`
 
@@ -224,11 +243,12 @@ result = ctx.llm.complete_structured(
         {"type": "image", "data": b"...", "mime_type": "image/png"},
         {"type": "image", "url":  "https://..."},
     ],
-    json_schema={...},    # optional — triggers parsed result + validation
-    json_mode=False,      # set True without a schema to ask for JSON anyway
-    schema_name=None,     # optional human-readable schema name
+    json_schema={...},     # optional — triggers parsed result + validation
+    json_mode=False,       # set True without a schema to ask for JSON anyway
+    schema_name=None,      # optional human-readable schema name
     system_prompt=None,
-    model=None,
+    provider=None,         # optional, gated
+    model=None,            # optional, gated
     temperature=None,
     max_tokens=None,
     timeout=None,
@@ -268,8 +288,8 @@ already running on an asyncio loop.
 @dataclass
 class PluginLlmCompleteResult:
     text: str                    # the assistant's response
-    provider: str                # e.g. "openai", "anthropic"
-    model: str                   # e.g. "gpt-4o", "claude-3-5-sonnet"
+    provider: str                # e.g. "openrouter", "anthropic"
+    model: str                   # whatever the provider returned for this call
     agent_id: str                # whose model/auth was used
     usage: PluginLlmUsage        # tokens + cache + cost estimate
     audit: Dict[str, Any]        # plugin_id, purpose, profile
@@ -290,26 +310,42 @@ provider returns those fields.
 The default behaviour is fail-closed. With no `plugins.entries`
 config block, a plugin can:
 
-* run any of the four methods against the user's active model and auth,
+* run any of the four methods against the user's active provider
+  and model,
 * set request-shaping arguments (`temperature`, `max_tokens`,
   `timeout`, `system_prompt`, `purpose`, `messages`, `instructions`,
   `input`, `json_schema`),
 
-…and that's it. `model=`, `agent_id=`, and `profile=` arguments
-raise `PluginLlmTrustError` until the operator opts in.
+…and that's it. `provider=`, `model=`, `agent_id=`, and `profile=`
+arguments raise `PluginLlmTrustError` until the operator opts in.
 
-To trust a plugin, add a `plugins.entries.<plugin-id>.llm` block to
-`~/.hermes/config.yaml`:
+**Most plugins never need this section.** A plugin that just calls
+`ctx.llm.complete(messages=...)` with no overrides runs against
+whatever the user has active and works zero-config. The block below
+is only relevant when a plugin specifically wants to pin to a
+different model or provider than the user.
 
 ```yaml
 plugins:
   entries:
     my-plugin:
       llm:
-        # Allow the plugin to ask for a specific model.
+        # Allow this plugin to choose a different Hermes provider
+        # (must be one Hermes already knows about — same names as
+        # `hermes model` and config.yaml model.provider).
+        allow_provider_override: true
+
+        # Optionally restrict which providers. Use ["*"] for any.
+        allowed_providers:
+          - openrouter
+          - anthropic
+
+        # Allow this plugin to ask for a specific model.
         allow_model_override: true
 
         # Optionally restrict which models. Use ["*"] for any.
+        # Models are matched literally against whatever string the
+        # plugin sends — Hermes does not look anything up.
         allowed_models:
           - openai/gpt-4o-mini
           - anthropic/claude-3-5-haiku
@@ -328,29 +364,30 @@ path-derived key for nested plugins (`image_gen/openai`,
 
 ### What the gate enforces
 
-| Override               | Default | Config key                     |
-| ---------------------- | ------- | ------------------------------ |
-| `model="..."`          | denied  | `allow_model_override: true`   |
-| `model="..."` allowlist| —       | `allowed_models: [...]`        |
-| `agent_id="..."`       | denied  | `allow_agent_id_override: true`|
-| `profile="..."`        | denied  | `allow_profile_override: true` |
-| `model="x@profile"`    | denied  | requires both flags above      |
+| Override        | Default | Config key                       |
+| --------------- | ------- | -------------------------------- |
+| `provider=`     | denied  | `allow_provider_override: true`  |
+| ↳ allowlist     | —       | `allowed_providers: [...]`       |
+| `model=`        | denied  | `allow_model_override: true`     |
+| ↳ allowlist     | —       | `allowed_models: [...]`          |
+| `agent_id=`     | denied  | `allow_agent_id_override: true`  |
+| `profile=`      | denied  | `allow_profile_override: true`   |
 
-The `model@profile` shorthand goes through the same gate as
-explicit `profile=`, so an embedded suffix can't bypass the
-auth-profile policy. Conflicting explicit and embedded profiles
-fail closed.
+Each override is independently gated. Granting `allow_model_override`
+does **not** also grant `allow_provider_override` — a plugin trusted
+to pick a model is still pinned to the user's active provider unless
+it gets the provider gate as well.
 
 ### What the gate does NOT need to enforce
 
 * Request-shaping arguments — `temperature`, `max_tokens`,
   `timeout`, `system_prompt`, `purpose`, `messages`, `instructions`,
   `input`, `json_schema`, `schema_name`, `json_mode` — are always
-  allowed; they don't pick credentials or models.
+  allowed; they don't pick credentials or routes.
 * The default deny posture means an unconfigured plugin can still do
-  useful work — it just runs against the active model. Operators
-  only need to think about `plugins.entries` for plugins that want
-  finer routing.
+  useful work — it just runs against the active provider and model.
+  Operators only need to think about `plugins.entries` for plugins
+  that want finer routing.
 
 ## What the host owns
 
@@ -358,7 +395,7 @@ A complete list of the things `ctx.llm` does for the plugin so you
 don't have to:
 
 * **Provider resolution.** Reads `model.provider` + `model.model`
-  from the user's config (or the explicit override when trusted).
+  from the user's config (or the explicit overrides when trusted).
 * **Auth.** Pulls API keys, OAuth tokens, or refresh tokens from
   `~/.hermes/auth.json` / env, including the credential pool when
   one is configured. The plugin never sees them.

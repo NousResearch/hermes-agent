@@ -405,7 +405,23 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             continue
         expected = prop_schema.get("type")
         if not expected:
-            continue
+            # Handle anyOf/oneOf union schemas where type lives inside
+            # variants rather than at the top level.  e.g.
+            # {"anyOf": [{"type": "string"}, {"type": "array"}]}
+            # Extract the list of concrete types so _coerce_value can try
+            # each variant in order.
+            for _union_key in ("anyOf", "oneOf"):
+                variants = prop_schema.get(_union_key)
+                if isinstance(variants, list) and variants:
+                    variant_types = [
+                        v.get("type") for v in variants
+                        if isinstance(v, dict) and v.get("type")
+                    ]
+                    if variant_types:
+                        expected = variant_types
+                        break
+            if not expected:
+                continue
         coerced = _coerce_value(value, expected)
         if coerced is not value:
             args[key] = coerced

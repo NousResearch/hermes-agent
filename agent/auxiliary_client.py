@@ -9,10 +9,12 @@ Resolution order for text tasks (auto mode):
      aggregators, direct API-key providers, native Anthropic, Codex, etc.)
   2. OpenRouter  (OPENROUTER_API_KEY)
   3. Nous Portal (~/.hermes/auth.json active provider)
-  4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-  7. None
+  4. Named custom providers (config.yaml ``custom_providers:`` list — each
+     entry tried in declaration order)
+  5. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
+  6. Native Anthropic
+  7. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  8. None
 
 Resolution order for vision/multimodal tasks (auto mode):
   1. Selected main provider, if it is one of the supported vision backends below
@@ -1777,6 +1779,7 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 _AUTO_PROVIDER_LABELS = {
     "_try_openrouter": "openrouter",
     "_try_nous": "nous",
+    "_try_named_custom_providers": "named-custom",
     "_try_custom_endpoint": "local/custom",
     "_resolve_api_key_provider": "api-key",
 }
@@ -1799,6 +1802,68 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     return normalized
 
 
+def _try_named_custom_providers() -> Tuple[Optional[Any], Optional[str]]:
+    """Enumerate ``custom_providers[]`` entries from config.yaml as a fallback.
+
+    The legacy ``_try_custom_endpoint`` only looks at the single-slot
+    ``model.base_url`` (or ``OPENAI_BASE_URL`` env), so users who declare
+    their endpoint exclusively as a named entry under ``custom_providers:``
+    were unreachable from the auto chain.  This step iterates each named
+    custom provider and tries it via the same router used by explicit
+    ``provider: custom:<name>`` configs.
+
+    Returns the first working ``(client, model)`` pair, or ``(None, None)``
+    when no entry yields one.  Per-entry failures are logged at debug only.
+    """
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+    except ImportError:
+        return None, None
+
+    try:
+        config = load_config()
+    except Exception as exc:
+        logger.debug("Auxiliary named-custom: load_config failed: %s", exc)
+        return None, None
+
+    entries = get_compatible_custom_providers(config) if config else []
+    if not entries:
+        return None, None
+
+    # Skip the entry already attempted as the main provider in Step 1 of
+    # _resolve_auto, so we don't waste a second roundtrip on the same
+    # endpoint that just failed.  Match by normalized name only — it's the
+    # cheap, reliable signal.
+    main_provider = (_read_main_provider() or "").strip().lower()
+    main_named = ""
+    if main_provider.startswith("custom:"):
+        main_named = main_provider.split(":", 1)[1].strip()
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = (entry.get("name") or "").strip()
+        if not name:
+            continue
+        if main_named and name.lower() == main_named.lower():
+            continue
+        try:
+            client, model = resolve_provider_client(f"custom:{name}", model=None)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug(
+                "Auxiliary named-custom: resolve_provider_client(custom:%s) raised %s",
+                name, exc,
+            )
+            continue
+        if client is not None:
+            logger.debug(
+                "Auxiliary named-custom: using custom_providers[name=%s] (%s)",
+                name, model or "default",
+            )
+            return client, model
+    return None, None
+
+
 def _get_provider_chain() -> List[tuple]:
     """Return the ordered provider detection chain.
 
@@ -1815,6 +1880,7 @@ def _get_provider_chain() -> List[tuple]:
     return [
         ("openrouter", _try_openrouter),
         ("nous", _try_nous),
+        ("named-custom", _try_named_custom_providers),
         ("local/custom", _try_custom_endpoint),
         ("api-key", _resolve_api_key_provider),
     ]

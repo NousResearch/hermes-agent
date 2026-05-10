@@ -317,7 +317,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
         cap = backend.capture(mode=mode, app=args.get("app"))
-        return _capture_response(cap)
+        return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
     if action == "wait":
         seconds = float(args.get("seconds", 1.0))
@@ -416,16 +416,50 @@ def _text_response(res: ActionResult) -> str:
     return json.dumps(payload)
 
 
-def _capture_response(cap: CaptureResult) -> Any:
+# Default cap for the AX `elements` array returned by capture. Dense UIs
+# (Electron apps, Obsidian, JetBrains IDEs) can publish 500+ AX nodes, which
+# can exhaust session context after a single capture. The model-facing
+# `max_elements` argument lets callers raise this when they need the full tree.
+_DEFAULT_MAX_ELEMENTS = 100
+
+
+def _coerce_max_elements(value: Any) -> int:
+    """Validate the caller-supplied ``max_elements``.
+
+    Falls back to :data:`_DEFAULT_MAX_ELEMENTS` for missing / non-integer /
+    sub-1 inputs so the cap can never be silently disabled by a malformed
+    tool-call argument.
+    """
+    if value is None:
+        return _DEFAULT_MAX_ELEMENTS
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_ELEMENTS
+    if n < 1:
+        return _DEFAULT_MAX_ELEMENTS
+    return n
+
+
+def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
+    total_elements = len(cap.elements)
+    visible_elements = cap.elements[:max_elements]
+    truncated_elements = max(0, total_elements - len(visible_elements))
+
     element_index = _format_elements(cap.elements)
     summary_lines = [
         f"capture mode={cap.mode} {cap.width}x{cap.height}"
         + (f" app={cap.app}" if cap.app else "")
         + (f" window={cap.window_title!r}" if cap.window_title else ""),
-        f"{len(cap.elements)} interactable element(s):",
+        f"{total_elements} interactable element(s):",
     ]
     if element_index:
         summary_lines.extend(element_index)
+    if truncated_elements:
+        summary_lines.append(
+            f"  (response truncated to {len(visible_elements)} of {total_elements} elements; "
+            f"raise max_elements or pass app= to narrow)"
+        )
     summary = "\n".join(summary_lines)
 
     if cap.png_b64 and cap.mode != "ax":
@@ -458,18 +492,22 @@ def _capture_response(cap: CaptureResult) -> Any:
             ],
             "text_summary": summary,
             "meta": {"mode": cap.mode, "width": cap.width, "height": cap.height,
-                     "elements": len(cap.elements), "png_bytes": cap.png_bytes_len},
+                     "elements": total_elements, "png_bytes": cap.png_bytes_len},
         }
     # AX-only (or image missing): text path.
-    return json.dumps({
+    payload: Dict[str, Any] = {
         "mode": cap.mode,
         "width": cap.width,
         "height": cap.height,
         "app": cap.app,
         "window_title": cap.window_title,
-        "elements": [_element_to_dict(e) for e in cap.elements],
+        "elements": [_element_to_dict(e) for e in visible_elements],
+        "total_elements": total_elements,
         "summary": summary,
-    })
+    }
+    if truncated_elements:
+        payload["truncated_elements"] = truncated_elements
+    return json.dumps(payload)
 
 
 # ---------------------------------------------------------------------------

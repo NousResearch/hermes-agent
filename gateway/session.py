@@ -675,6 +675,7 @@ class SessionStore:
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
+        self._pending_save = False
         
         # Initialize SQLite session database
         self._db = None
@@ -711,6 +712,9 @@ class SessionStore:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
         self._loaded = True
+        # Flush any deferred writes from a previous run that may not have
+        # been persisted (e.g. metadata updates before an unclean shutdown).
+        self.flush_pending_save()
     
     def _save(self) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""
@@ -734,7 +738,22 @@ class SessionStore:
             except OSError as e:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
-    
+
+    def _save_deferred(self) -> None:
+        """Schedule a deferred save. The actual I/O is coalesced until
+        flush_pending_save() is called (e.g. after a batch of metadata updates).
+        Critical state changes (resume_pending, suspended, switch, reset) must
+        still use _save() for immediate persistence.
+        Must be called with self._lock held."""
+        self._pending_save = True
+
+    def flush_pending_save(self) -> None:
+        """Flush any deferred writes to disk. Safe to call without the lock;
+        _save() acquires it internally via the caller if needed."""
+        if self._pending_save:
+            self._pending_save = False
+            self._save()
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
@@ -894,7 +913,7 @@ class SessionStore:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
                     entry.updated_at = now
-                    self._save()
+                    self._save_deferred()
                     return entry
                 else:
                     # Session is being auto-reset.
@@ -962,7 +981,7 @@ class SessionStore:
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
-                self._save()
+                self._save_deferred()
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

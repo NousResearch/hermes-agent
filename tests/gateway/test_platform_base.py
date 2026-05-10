@@ -1,5 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import base64
+import json
 import os
 from unittest.mock import patch
 
@@ -250,6 +252,43 @@ class TestExtractImages:
         assert images[0][0] == "https://fal.media/cat.png"
         # The PDF link must survive in cleaned content
         assert "![report](https://example.com/report.pdf)" in cleaned
+
+
+class TestExtractBase64Images:
+    def test_image_base64_json_saved_and_redacted(self, tmp_path, monkeypatch):
+        raw_png = b"\x89PNG\r\n\x1a\n" + b"fake-png-bytes"
+        b64 = base64.b64encode(raw_png).decode("ascii")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        payload = json.dumps({
+            "type": "generated_image",
+            "mime_type": "image/png",
+            "filename": "sample.png",
+            "image_base64": b64,
+        })
+
+        paths, cleaned = BasePlatformAdapter.extract_base64_images(payload)
+
+        assert len(paths) == 1
+        assert paths[0].endswith("sample.png")
+        with open(paths[0], "rb") as f:
+            assert f.read() == raw_png
+        assert b64 not in cleaned
+        assert "[omitted; sent as image attachment]" in cleaned
+
+    def test_data_image_url_saved_and_redacted(self, tmp_path, monkeypatch):
+        raw_jpeg = b"\xff\xd8\xff" + b"fake-jpeg-bytes"
+        b64 = base64.b64encode(raw_jpeg).decode("ascii")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        content = f"Here: ![x](data:image/jpeg;base64,{b64})"
+
+        paths, cleaned = BasePlatformAdapter.extract_base64_images(content)
+
+        assert len(paths) == 1
+        assert paths[0].endswith(".jpg")
+        with open(paths[0], "rb") as f:
+            assert f.read() == raw_jpeg
+        assert b64 not in cleaned
+        assert "data:image/jpeg;base64,[omitted; sent as image attachment]" in cleaned
 
 
 # ---------------------------------------------------------------------------

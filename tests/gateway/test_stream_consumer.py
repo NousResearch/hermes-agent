@@ -84,6 +84,21 @@ class TestCleanForDisplay:
         # But "media:" is lowercase so won't match either
         assert result == text
 
+    def test_image_base64_payload_redacted(self):
+        """Streaming must not push megabytes of image_base64 text to chat APIs."""
+        b64 = "A" * 5000
+        text = f'{{"mime_type":"image/png","image_base64":"{b64}"}}'
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert b64 not in result
+        assert "[omitted; sent as image attachment]" in result
+
+    def test_data_image_url_payload_redacted(self):
+        b64 = "A" * 5000
+        text = f"![image](data:image/png;base64,{b64})"
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert b64 not in result
+        assert "data:image/png;base64,[omitted; sent as image attachment]" in result
+
 
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
 

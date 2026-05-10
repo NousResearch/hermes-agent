@@ -130,6 +130,27 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
 END;
 ```
 
+### Disabling the trigram FTS5 index
+
+The `messages_fts_trigram` index is only used to serve CJK substring queries
+with three or more characters. On instances that never run such queries it
+typically accounts for **~50% of `state.db` size** because trigram tokens
+expand more aggressively for CJK text than porter stemming does for English.
+For deployments that don't need CJK substring search, the index can be
+opted out:
+
+- **Fresh databases** — set `HERMES_DISABLE_FTS_TRIGRAM=1` before creating
+  `state.db`. The trigram virtual table and its triggers are skipped, and
+  `search_messages()` automatically falls back to `LIKE` for CJK queries.
+- **Existing databases** — call `SessionDB.drop_fts_trigram()` to drop the
+  trigram table, its triggers, and run `VACUUM` to reclaim the freed pages.
+  After this, the database behaves as if it had been created with the env
+  var set. The operation is idempotent.
+
+Re-enabling the index later requires upgrading from a database that pre-dates
+v10; the v10 backfill path will recreate it. (Manually re-creating the
+trigram virtual table and re-indexing every message is also possible but
+not exposed as a public API.)
 
 ## Schema Version and Migrations
 

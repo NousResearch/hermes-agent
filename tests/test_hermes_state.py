@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import os
 import time
 import pytest
 from pathlib import Path
@@ -2942,4 +2943,139 @@ class TestFTS5ToolCallMigration:
             assert version == 11
         finally:
             session_db.close()
+
+
+# =========================================================================
+# Optional trigram FTS5 index — issue #22478
+# =========================================================================
+
+class TestFTS5TrigramOptional:
+    """Regression tests for ``HERMES_DISABLE_FTS_TRIGRAM`` and
+    ``drop_fts_trigram()`` (issue #22478).
+
+    The trigram FTS5 index roughly doubles state.db size and is only
+    useful for CJK substring search.  Pure-English deployments can opt
+    out via the env var or by dropping the existing index.
+    """
+
+    @pytest.fixture()
+    def disabled_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", "1")
+        db_path = tmp_path / "state_no_trigram.db"
+        session_db = SessionDB(db_path=db_path)
+        try:
+            yield session_db
+        finally:
+            session_db.close()
+
+    @staticmethod
+    def _trigram_table_exists(session_db: SessionDB) -> bool:
+        row = session_db._conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='messages_fts_trigram'"
+        ).fetchone()
+        return row is not None
+
+    def test_env_var_skips_trigram_table(self, disabled_db):
+        """``HERMES_DISABLE_FTS_TRIGRAM=1`` prevents the trigram virtual
+        table from being created on a fresh database."""
+        assert not self._trigram_table_exists(disabled_db)
+        assert disabled_db._has_fts_trigram() is False
+
+    def test_env_var_skips_trigram_triggers(self, disabled_db):
+        """No trigram triggers should exist when the index is opted out."""
+        rows = disabled_db._conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='trigger' AND name LIKE 'messages_fts_trigram_%'"
+        ).fetchall()
+        assert rows == []
+
+    def test_porter_fts_still_works_when_trigram_disabled(self, disabled_db):
+        """English FTS path is unaffected by disabling the trigram index."""
+        disabled_db.create_session(session_id="s1", source="cli")
+        disabled_db.append_message(
+            "s1", role="user", content="docker deployment notes"
+        )
+        results = disabled_db.search_messages("deployment")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_cjk_search_falls_back_to_like_when_trigram_disabled(
+        self, disabled_db
+    ):
+        """CJK queries with ≥3 characters should fall back to LIKE rather
+        than crash when the trigram index is opted out."""
+        disabled_db.create_session(session_id="s1", source="cli")
+        disabled_db.create_session(session_id="s2", source="cli")
+        disabled_db.append_message(
+            "s1", role="user", content="记忆系统已经设计完成"
+        )
+        disabled_db.append_message(
+            "s2", role="user", content="今天的天气真好"
+        )
+        results = disabled_db.search_messages("记忆系统")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_short_cjk_search_works_when_trigram_disabled(self, disabled_db):
+        """1-2 char CJK queries already use LIKE; that path must still work."""
+        disabled_db.create_session(session_id="s1", source="cli")
+        disabled_db.append_message("s1", role="user", content="昨晚讨论了记忆系统")
+        results = disabled_db.search_messages("昨晚")
+        assert len(results) == 1
+
+    def test_inserts_dont_write_to_missing_trigram_table(self, disabled_db):
+        """When the trigram triggers don't exist, INSERTs must not fail."""
+        disabled_db.create_session(session_id="s1", source="cli")
+        # Should not raise.
+        disabled_db.append_message("s1", role="user", content="hello world")
+        disabled_db.append_message(
+            "s1", role="assistant", content="", tool_name="web_search",
+        )
+        results = disabled_db.search_messages("hello")
+        assert len(results) == 1
+
+    def test_drop_fts_trigram_removes_table_and_triggers(self, db):
+        """``drop_fts_trigram()`` removes the trigram table and its triggers."""
+        # Sanity: the index exists by default.
+        assert self._trigram_table_exists(db)
+        db.drop_fts_trigram()
+        assert not self._trigram_table_exists(db)
+        rows = db._conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='trigger' AND name LIKE 'messages_fts_trigram_%'"
+        ).fetchall()
+        assert rows == []
+        assert db._has_fts_trigram() is False
+
+    def test_drop_fts_trigram_is_idempotent(self, disabled_db):
+        """Calling ``drop_fts_trigram()`` on a DB without the index is a no-op."""
+        # Should not raise even though the table never existed.
+        disabled_db.drop_fts_trigram()
+        assert not self._trigram_table_exists(disabled_db)
+
+    def test_search_after_drop_fts_trigram_routes_cjk_to_like(self, db):
+        """After dropping the trigram index, long CJK queries still return results
+        via the LIKE fallback."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="项目管理系统的设计文档")
+        # Verify the trigram path works first.
+        results = db.search_messages("项目管理")
+        assert len(results) == 1
+
+        db.drop_fts_trigram()
+
+        # After dropping, LIKE fallback handles the same CJK query.
+        results = db.search_messages("项目管理")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_vacuum_runs_without_error(self, db):
+        """``vacuum()`` should not raise on a small fresh database."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="hello")
+        db.vacuum()  # must not raise
+        # The DB should still be usable after VACUUM.
+        results = db.search_messages("hello")
+        assert len(results) == 1
 

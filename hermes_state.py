@@ -16,6 +16,7 @@ Key design decisions:
 
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -28,6 +29,27 @@ from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str) -> bool:
+    """Return True when env var *name* is set to a truthy value.
+
+    Recognizes ``1``, ``true``, ``yes``, ``on`` (case-insensitive). Any
+    other value — including the env var being unset — returns False.
+    """
+    val = os.environ.get(name)
+    if val is None:
+        return False
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _fts_trigram_disabled() -> bool:
+    """The trigram FTS5 index doubles state.db size to support CJK substring
+    search. Pure-English deployments don't need it. Setting
+    ``HERMES_DISABLE_FTS_TRIGRAM=1`` skips creating the index and falls back
+    to ``LIKE`` for CJK queries. See issue #22478.
+    """
+    return _env_flag("HERMES_DISABLE_FTS_TRIGRAM")
 
 T = TypeVar("T")
 
@@ -332,6 +354,9 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
+        # Cached probe for the trigram FTS5 table — populated lazily by
+        # ``_has_fts_trigram()`` and invalidated by ``drop_fts_trigram()``.
+        self._fts_trigram_available: Optional[bool] = None
         try:
             self._conn = sqlite3.connect(
                 str(self.db_path),
@@ -441,6 +466,72 @@ class SessionDB:
                     )
         except Exception:
             pass  # Best effort — never fatal.
+
+    def _has_fts_trigram(self) -> bool:
+        """Whether the trigram FTS5 table is present in this database.
+
+        Cached after first probe.  Invalidated by ``drop_fts_trigram()``.
+        ``search_messages`` uses this to route CJK queries to LIKE when
+        the index has been opted out via ``HERMES_DISABLE_FTS_TRIGRAM=1``.
+        """
+        if self._fts_trigram_available is not None:
+            return self._fts_trigram_available
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "SELECT 1 FROM messages_fts_trigram LIMIT 0"
+                )
+            self._fts_trigram_available = True
+        except sqlite3.OperationalError:
+            self._fts_trigram_available = False
+        return self._fts_trigram_available
+
+    def drop_fts_trigram(self) -> None:
+        """Drop the trigram FTS5 index and its triggers, then VACUUM.
+
+        Reclaims the ~half-of-state.db that the trigram index occupies on
+        instances that never run CJK substring searches. After this call,
+        ``search_messages`` falls back to LIKE for CJK queries with 3+
+        characters, exactly as it does when ``HERMES_DISABLE_FTS_TRIGRAM=1``
+        was set before the database was first created. Safe to call on a
+        database that has already had the index dropped — no-op in that
+        case. See issue #22478.
+        """
+        def _drop(conn: sqlite3.Connection) -> None:
+            for trig in (
+                "messages_fts_trigram_insert",
+                "messages_fts_trigram_delete",
+                "messages_fts_trigram_update",
+            ):
+                try:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+                except sqlite3.OperationalError:
+                    pass
+            try:
+                conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+            except sqlite3.OperationalError:
+                pass
+
+        self._execute_write(_drop)
+        self._fts_trigram_available = False
+        # VACUUM cannot run inside a transaction. Run on the bare
+        # connection without our BEGIN IMMEDIATE wrapper.
+        try:
+            with self._lock:
+                self._conn.execute("VACUUM")
+        except sqlite3.OperationalError as exc:
+            logger.debug("VACUUM after drop_fts_trigram failed: %s", exc)
+
+    def vacuum(self) -> None:
+        """Run SQLite ``VACUUM`` to reclaim free pages and defragment the
+        database file. Useful after large session deletions or after
+        ``drop_fts_trigram()``. Cannot run inside a transaction.
+        """
+        try:
+            with self._lock:
+                self._conn.execute("VACUUM")
+        except sqlite3.OperationalError as exc:
+            logger.debug("VACUUM failed: %s", exc)
 
     def close(self):
         """Close the database connection.
@@ -584,11 +675,14 @@ class SessionDB:
             # backfills, index changes tied to a specific version step) stay
             # in a version-gated chain. Column additions are handled by
             # _reconcile_columns() above and no longer need entries here.
-            if current_version < 10:
+            if current_version < 10 and not _fts_trigram_disabled():
                 # v10: trigram FTS5 table for CJK/substring search. The
                 # virtual table + triggers are created unconditionally via
                 # FTS_TRIGRAM_SQL below, but existing rows need a one-time
                 # backfill into the FTS index.
+                #
+                # When ``HERMES_DISABLE_FTS_TRIGRAM=1`` we skip the migration
+                # entirely; ``search_messages`` falls back to LIKE for CJK.
                 try:
                     cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
                     _fts_trigram_exists = True
@@ -607,14 +701,16 @@ class SessionDB:
                 # overwrite, so we drop them explicitly and let the post-migration
                 # existence checks (below) recreate them from FTS_SQL /
                 # FTS_TRIGRAM_SQL, then backfill every message row. Fixes #16751.
-                for _trig in (
+                _trigram_off = _fts_trigram_disabled()
+                _triggers_to_drop = [
                     "messages_fts_insert",
                     "messages_fts_delete",
                     "messages_fts_update",
                     "messages_fts_trigram_insert",
                     "messages_fts_trigram_delete",
                     "messages_fts_trigram_update",
-                ):
+                ]
+                for _trig in _triggers_to_drop:
                     try:
                         cursor.execute(f"DROP TRIGGER IF EXISTS {_trig}")
                     except sqlite3.OperationalError:
@@ -627,7 +723,6 @@ class SessionDB:
                 # Recreate virtual tables + triggers with the new inline-mode
                 # schema that indexes content || tool_name || tool_calls.
                 cursor.executescript(FTS_SQL)
-                cursor.executescript(FTS_TRIGRAM_SQL)
                 # Backfill both indexes from every existing messages row.
                 cursor.execute(
                     "INSERT INTO messages_fts(rowid, content) "
@@ -637,14 +732,16 @@ class SessionDB:
                     "COALESCE(tool_calls, '') "
                     "FROM messages"
                 )
-                cursor.execute(
-                    "INSERT INTO messages_fts_trigram(rowid, content) "
-                    "SELECT id, "
-                    "COALESCE(content, '') || ' ' || "
-                    "COALESCE(tool_name, '') || ' ' || "
-                    "COALESCE(tool_calls, '') "
-                    "FROM messages"
-                )
+                if not _trigram_off:
+                    cursor.executescript(FTS_TRIGRAM_SQL)
+                    cursor.execute(
+                        "INSERT INTO messages_fts_trigram(rowid, content) "
+                        "SELECT id, "
+                        "COALESCE(content, '') || ' ' || "
+                        "COALESCE(tool_name, '') || ' ' || "
+                        "COALESCE(tool_calls, '') "
+                        "FROM messages"
+                    )
             if current_version < SCHEMA_VERSION:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -666,11 +763,17 @@ class SessionDB:
         except sqlite3.OperationalError:
             cursor.executescript(FTS_SQL)
 
-        # Trigram FTS5 for CJK/substring search
-        try:
-            cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_TRIGRAM_SQL)
+        # Trigram FTS5 for CJK/substring search.
+        # Skipped when ``HERMES_DISABLE_FTS_TRIGRAM=1`` — the trigram index
+        # roughly doubles state.db size on top of the porter index and is
+        # only useful for CJK substring queries with ≥3 characters. See
+        # issue #22478. ``search_messages`` falls back to LIKE when the
+        # table is absent.
+        if not _fts_trigram_disabled():
+            try:
+                cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
+            except sqlite3.OperationalError:
+                cursor.executescript(FTS_TRIGRAM_SQL)
 
         self._conn.commit()
 
@@ -1950,9 +2053,13 @@ class SessionDB:
         # missing exact phrase matches.
         #
         # For queries with 3+ CJK characters, we use the trigram FTS5 table
-        # (indexed substring matching with ranking and snippets).  For shorter
-        # CJK queries (1-2 chars), trigram can't match (it needs ≥9 UTF-8
-        # bytes = 3 CJK chars), so we fall back to LIKE.
+        # (indexed substring matching with ranking and snippets) when it is
+        # available.  When it has been opted out via
+        # ``HERMES_DISABLE_FTS_TRIGRAM=1`` (issue #22478) or dropped via
+        # ``drop_fts_trigram()``, we fall back to the LIKE substring path
+        # used for short queries below.  For shorter CJK queries (1-2 chars),
+        # trigram can't match (it needs ≥9 UTF-8 bytes = 3 CJK chars), so we
+        # always use LIKE.
         is_cjk = self._contains_cjk(query)
         if is_cjk:
             raw_query = query.strip('"').strip()
@@ -1970,7 +2077,10 @@ class SessionDB:
                 self._count_cjk(t) < 3 for t in _tokens_for_check
             )
 
-            if cjk_count >= 3 and not _any_short_cjk:
+            # Also route to LIKE when the trigram FTS5 table is absent —
+            # opted out via ``HERMES_DISABLE_FTS_TRIGRAM=1`` (issue #22478)
+            # or removed via ``drop_fts_trigram()``.
+            if cjk_count >= 3 and not _any_short_cjk and self._has_fts_trigram():
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
                 # operators (AND, OR, NOT) for multi-term queries.
@@ -2021,8 +2131,11 @@ class SessionDB:
                     else:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
             else:
-                # Short / mixed CJK query: trigram cannot match tokens with
-                # <3 CJK chars. Fall back to LIKE substring search.
+                # Short / mixed CJK query, or trigram FTS5 absent: trigram
+                # cannot match tokens with <3 CJK chars; trigram is also
+                # skipped when opted out via ``HERMES_DISABLE_FTS_TRIGRAM=1``
+                # / removed via ``drop_fts_trigram()`` (issue #22478). Fall
+                # back to LIKE substring search.
                 # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
                 # build one LIKE condition per non-operator token so each term
                 # is matched independently (#20494).

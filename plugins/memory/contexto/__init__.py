@@ -49,6 +49,7 @@ class ContextoMemoryProvider(MemoryProvider):
         self._client = None
         self._agent_slug = "hermes"
         self._user_id: str | None = None
+        self._agent_context = "primary"
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: threading.Thread | None = None
@@ -83,8 +84,14 @@ class ContextoMemoryProvider(MemoryProvider):
         self._client = ContextoClient(base_url=base_url)
         self._agent_slug = kwargs.get("agent_identity") or "hermes"
         self._user_id = kwargs.get("user_id") or None
-        # Idempotent: register the agent slug if it doesn't exist.
-        self._client.register_agent(self._agent_slug, name=self._agent_slug)
+        self._agent_context = kwargs.get("agent_context") or "primary"
+        # Only the primary agent registers the slug and writes — subagents,
+        # cron, and flush share the parent's slug but must not ingest (their
+        # turns are tool-output-heavy and would corrupt recall + blow the
+        # extract timeout). Subagent RESULTS still reach memory via
+        # on_delegation on the parent.
+        if self._agent_context == "primary":
+            self._client.register_agent(self._agent_slug, name=self._agent_slug)
 
     def system_prompt_block(self) -> str:
         scope = f"agent={self._agent_slug}"
@@ -108,6 +115,9 @@ class ContextoMemoryProvider(MemoryProvider):
         return f"## Contexto Memory\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        if self._agent_context != "primary":
+            return
+
         def _run():
             block = self._client.get_context_for_turn(
                 query, agent=self._agent_slug, user_id=self._user_id, max_results=5
@@ -119,6 +129,9 @@ class ContextoMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+        if self._agent_context != "primary":
+            return
+
         messages = [
             {"role": "user", "content": user_content},
             {"role": "assistant", "content": assistant_content},
@@ -155,6 +168,21 @@ class ContextoMemoryProvider(MemoryProvider):
             for it in items[:max_results]
         ]
         return json.dumps({"results": snippets, "count": len(snippets)})
+
+    def on_delegation(self, task: str, result: str, *,
+                      child_session_id: str = "", **kwargs) -> None:
+        """Capture (delegation prompt, subagent result) as one parent turn.
+
+        Subagents are silenced for ingest (their raw turns are noise), but
+        the curated task→result pair represents real work done on the user's
+        behalf and IS worth recalling. Tagged so extraction can see the
+        delegation framing.
+        """
+        if self._agent_context != "primary" or not task or not result:
+            return
+        framed_user = f"[delegated subtask] {task}"
+        framed_assistant = f"[delegation result] {result}"
+        self.sync_turn(framed_user, framed_assistant, session_id=child_session_id)
 
     def shutdown(self) -> None:
         for t in (self._prefetch_thread, self._sync_thread):

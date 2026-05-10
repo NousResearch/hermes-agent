@@ -3609,6 +3609,14 @@ def dispatch_once(
     failures the task is auto-blocked with the last error as its reason —
     prevents the dispatcher from thrashing forever on an unfixable task.
 
+    ``max_spawn`` is a **live concurrency cap**, not a per-tick spawn budget:
+    it counts tasks already in ``status='running'`` plus this tick's spawns
+    against the limit. So ``max_spawn=4`` means "at most 4 workers running
+    at any time across the whole board" — matching the gateway's stated
+    intent ("limit concurrent kanban tasks"). With a per-tick interpretation
+    a 60-second tick interval could grow concurrency by N every minute on a
+    busy board and accumulate without bound.
+
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
@@ -3660,6 +3668,13 @@ def dispatch_once(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
 
+    # Count tasks already running so max_spawn enforces concurrency rather
+    # than a per-tick spawn budget. See the docstring above for the full
+    # rationale; the short version is that a 60-second tick interval with a
+    # per-tick budget of N would grow concurrency by N every tick on a busy
+    # board, since "running" tasks aren't reclaimed by completion alone —
+    # they sit in status='running' until the worker calls
+    # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
     running_count = 0
     if max_spawn is not None:
         running_count = int(

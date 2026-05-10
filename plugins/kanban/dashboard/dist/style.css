@@ -1417,3 +1417,51 @@
   color: #ff8b6b;
   border: 1px solid rgba(255, 107, 61, 0.3);
 }
+/* ---- Partial failure highlight --------------------------------------- */
+.hermes-kanban-card--failed :where(.hermes-kanban-card-content) {
+  box-shadow: 0 0 0 2px var(--color-destructive, #d14a4a) inset,
+              0 0 8px color-mix(in srgb, var(--color-destructive, #d14a4a) 30%, transparent);
+}
+
+/* ---- Larger checkbox hit target -------------------------------------- */
+.hermes-kanban-card-check-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: -0.3rem;
+  cursor: pointer;
+}
+.hermes-kanban-card-check {
+  width: 0.95rem;
+  height: 0.95rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--color-ring);
+}
+
+/* ---- Column select-all checkbox -------------------------------------- */
+.hermes-kanban-col-check {
+  width: 0.9rem;
+  height: 0.9rem;
+  margin: 0 0.15rem 0 0;
+  cursor: pointer;
+  accent-color: var(--color-ring);
+}
+
+/* ---- Bulk action bar extras ------------------------------------------ */
+.hermes-kanban-bulk-priority {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+.hermes-kanban-bulk-reclaim-first {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+}

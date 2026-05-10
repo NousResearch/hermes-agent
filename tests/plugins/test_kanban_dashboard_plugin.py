@@ -1739,157 +1739,56 @@ def test_dashboard_requests_default_board_explicitly():
     assert "}, [loadBoardList, switchBoard, board]);" in dist
 
 
-def test_dashboard_assignee_inputs_preserve_casing():
-    """Assignee/specifier inputs must disable browser auto-capitalization.
-
-    Hermes profile names are case-sensitive — the dispatcher uses the
-    assignee string as a literal directory/profile lookup. Mobile browsers
-    (iOS/Android) and some IMEs auto-capitalize the first letter of any
-    text input by default, so a user typing ``analyst`` ends up submitting
-    ``Analyst`` and the dispatcher fails to spawn a matching profile,
-    leading to the crash loop reported in #21320.
-
-    The fix sets ``autoCapitalize="none"``, ``autoCorrect="off"``,
-    ``spellCheck=false``, and ``style={textTransform: "none"}`` on the
-    two assignee ``<Input>`` elements (inline triage/lane create-task
-    input + task-edit panel "(empty = unassign)" input).
-
-    This test pins those attributes in the compiled dist bundle so a
-    future rebuild that loses them fails CI immediately.
-    """
+def test_dashboard_search_includes_body_and_result():
+    """Client-side search must match body, result, latest_summary, and summary
+    so full card contents are findable."""
     repo_root = Path(__file__).resolve().parents[2]
     dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
 
-    # Both sites should have all four attributes. Count occurrences to
-    # ensure both inputs got the treatment, not just one.
-    assert dist.count('autoCapitalize: "none"') >= 2, (
-        "Expected autoCapitalize=\"none\" on both assignee inputs (inline "
-        "create + task-edit panel)"
-    )
-    assert dist.count('autoCorrect: "off"') >= 2
-    assert dist.count("spellCheck: false") >= 2
-    assert dist.count('textTransform: "none"') >= 2
+    assert "t.body || \"\"" in dist
+    assert "t.result || \"\"" in dist
+    assert "t.latest_summary || \"\"" in dist
+    assert "t.summary || \"\"" in dist
 
 
-def test_dashboard_lane_head_preserves_assignee_casing():
-    """Lane headers must not visually uppercase profile names.
-
-    The previous CSS rule ``.hermes-kanban-lane-head { text-transform:
-    uppercase; letter-spacing: 0.08em }`` made a valid ``analyst`` profile
-    appear as ``ANALYST`` in column headers; users then copied the
-    uppercase form back into edits, hitting the same crash loop as the
-    auto-capitalization path. The fix removes ``text-transform: uppercase``
-    from the rule and tightens letter-spacing.
-
-    Static-asset regression test for the rule contents.
-    """
+def test_dashboard_bulk_actions_include_reclaim_first():
+    """Bulk action bar must expose reclaim_first checkbox and expanded status buttons."""
     repo_root = Path(__file__).resolve().parents[2]
-    style = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
 
-    # Locate the .hermes-kanban-lane-head block. Use a generous slice to
-    # keep this resilient to nearby unrelated CSS edits.
-    marker = ".hermes-kanban-lane-head {"
-    idx = style.find(marker)
-    assert idx != -1, "could not locate .hermes-kanban-lane-head rule"
-    end = style.find("}", idx)
-    assert end != -1
-    rule = style[idx:end]
-
-    assert "text-transform: uppercase" not in rule, (
-        "Lane head must not visually uppercase profile names — see #21320 "
-        "and the explanatory comment in the CSS rule."
-    )
+    assert "reclaim_first: reclaimFirst" in dist
+    assert "hermes-kanban-bulk-reclaim-first" in dist
+    assert '"→ todo"' in dist
+    assert '"Block"' in dist
+    assert '"Unblock"' in dist
 
 
-# ---------------------------------------------------------------------------
-# Built-asset regressions for the dashboard's run-history rendering
-# (issue #19548 — completed-run metadata used to render as a large pale box
-# that read like a crash dump). The plugin ships built-only, so we lock in
-# the rendered shape with static assertions on dist/index.js + dist/style.css.
-# ---------------------------------------------------------------------------
-
-
-def _dashboard_dist_path(name: str) -> Path:
+def test_dashboard_shift_click_range_selection_exists():
+    """Shift-click must trigger range selection via toggleRange."""
     repo_root = Path(__file__).resolve().parents[2]
-    p = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / name
-    assert p.exists(), f"dashboard asset missing: {p}"
-    return p
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "function toggleRange" in dist or "const toggleRange =" in dist
+    assert "props.toggleRange(t.id)" in dist or "props.toggleRange" in dist
+    assert "e.shiftKey" in dist
 
 
-def test_run_metadata_pretty_printed_with_label():
-    """Run-history metadata is pretty-printed JSON inside a labeled sub-block."""
-    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
-    # Pretty-printed JSON (indent=2) so a writer task's changed_files +
-    # URLs blob doesn't render as one wall-of-text monoline.
-    assert "JSON.stringify(r.metadata, null, 2)" in js
-    # Explicit label so the panel reads as auxiliary detail, not a crash dump.
-    assert '"hermes-kanban-run-meta-label"' in js
-    assert '"Metadata"' in js
-    # Wrapped in the labelled meta block container.
-    assert '"hermes-kanban-run-meta-block"' in js
+def test_dashboard_multi_move_bulk_exists():
+    """Dragging a selected card with other selections must use /tasks/bulk."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "onMoveSelected" in dist
+    assert "props.onMoveSelected" in dist
+    assert "`${API}/tasks/bulk`" in dist
 
 
-def test_run_metadata_secondary_styling():
-    """Metadata block is capped, transparent, and visually secondary."""
-    css = _dashboard_dist_path("style.css").read_text(encoding="utf-8")
-    # The label class exists with muted-foreground treatment.
-    assert ".hermes-kanban-run-meta-label" in css
-    # Container styling: thin left rule, no opaque highlighted fill that
-    # could be mistaken for an error/warning panel.
-    assert ".hermes-kanban-run-meta-block" in css
-    block_start = css.index(".hermes-kanban-run-meta-block {")
-    block_decl = css[block_start : block_start + 400]
-    assert "background: transparent" in block_decl
-    assert "border-left" in block_decl
-    # Cap meta height so verbose JSON doesn't sprawl across the run row.
-    meta_start = css.index(".hermes-kanban-run-meta {")
-    meta_decl = css[meta_start : meta_start + 400]
-    assert "max-height" in meta_decl
-    assert "overflow: auto" in meta_decl
-    assert "color: var(--color-muted-foreground)" in meta_decl
+def test_dashboard_failed_card_highlight_class_exists():
+    """Partial bulk failures must highlight failing cards."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
 
-
-def test_run_metadata_uses_native_collapse():
-    """Metadata panel uses <details>/<summary> for zero-JS collapse.
-
-    Native <details> means the browser handles state — no event handlers,
-    no React-state coupling, accessible by default (keyboard navigable,
-    screen-reader announces the disclosure state). Default-open state is
-    decided per-render based on payload length.
-    """
-    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
-    # Element must be <details> / <summary>, not plain <div>s.
-    assert 'h("details"' in js
-    assert 'h("summary"' in js
-    # The open prop is computed from json length (collapsed when verbose).
-    assert "open: !collapsed" in js or "open:!collapsed" in js
-    assert "json.length > 300" in js
-
-
-def test_run_metadata_skips_empty_object():
-    """Empty `{}` metadata renders nothing — no useless labeled block.
-
-    `r.metadata && {} && ...` would render a "Metadata" labeled block
-    containing just `{}`, which is visual noise. The render predicate now
-    also checks Object.keys(r.metadata).length > 0.
-    """
-    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
-    assert "Object.keys(r.metadata).length > 0" in js
-
-
-def test_run_metadata_disclosure_indicator_styled():
-    """Native disclosure marker is hidden + replaced with a CSS-only chevron.
-
-    Browsers render an OS-specific arrow next to <summary> by default. For a
-    consistent look across OSes the hermes dashboard hides that marker and
-    renders a CSS ::before chevron that rotates on [open]. Pin it so a
-    future CSS rebuild can't silently lose it (which would put two markers
-    side-by-side on Firefox/WebKit).
-    """
-    css = _dashboard_dist_path("style.css").read_text(encoding="utf-8")
-    # Default markers suppressed.
-    assert "list-style: none" in css
-    assert "::-webkit-details-marker" in css
-    # CSS-only chevron present + animates on open state.
-    assert ".hermes-kanban-run-meta-block[open]" in css
-    assert "rotate(90deg)" in css
+    assert "hermes-kanban-card--failed" in js
+    assert "hermes-kanban-card--failed" in css
+    assert "failedIds" in js

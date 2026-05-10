@@ -867,12 +867,31 @@
  * sub-block with a thin left rule, capped height, and muted treatment so
  * a verbose JSON blob (e.g. changed_files + URLs from a writer task) does
  * not visually swamp the parent run row or get mistaken for a crash dump.
+ * Uses a native <details>/<summary> pair so collapse is browser-handled
+ * (zero JS); large blobs default collapsed via the open=false attribute.
  * See issue #19548. */
 .hermes-kanban-run-meta-block {
   margin-top: 0.4rem;
   padding: 0.25rem 0.5rem;
   border-left: 2px solid var(--color-border);
   background: transparent;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label {
+  cursor: pointer;
+  list-style: none;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label::-webkit-details-marker {
+  display: none;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label::before {
+  content: "▶ ";
+  display: inline-block;
+  font-size: 0.6rem;
+  margin-right: 0.25rem;
+  transition: transform 120ms ease;
+}
+.hermes-kanban-run-meta-block[open] > summary.hermes-kanban-run-meta-label::before {
+  transform: rotate(90deg);
 }
 .hermes-kanban-run-meta-label {
   font-size: 0.65rem;

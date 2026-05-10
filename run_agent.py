@@ -37,6 +37,7 @@ import concurrent.futures
 import contextvars
 import copy
 import hashlib
+import inspect
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -9927,12 +9928,55 @@ class AIAgent:
             focus_topic,
         )
 
+        memory_context = ""
+        if self._memory_manager:
+            try:
+                memory_context = self._memory_manager.on_pre_compress(messages) or ""
+            except Exception as exc:
+                logger.debug("Memory on_pre_compress failed before compression: %s", exc)
+                memory_context = ""
+
+        compress_kwargs = {"current_tokens": approx_tokens}
+        signature_available = True
         try:
-            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
-        except TypeError:
-            # Plugin context engine with strict signature that doesn't accept
-            # focus_topic — fall back to calling without it.
-            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+            signature = inspect.signature(self.context_compressor.compress)
+        except (TypeError, ValueError):
+            signature_available = False
+
+        if signature_available:
+            params = signature.parameters
+            accepts_kwargs = any(
+                param.kind == inspect.Parameter.VAR_KEYWORD
+                for param in params.values()
+            )
+            if accepts_kwargs or "focus_topic" in params:
+                compress_kwargs["focus_topic"] = focus_topic
+            if accepts_kwargs or "memory_context" in params:
+                compress_kwargs["memory_context"] = memory_context
+            compressed = self.context_compressor.compress(messages, **compress_kwargs)
+        else:
+            # Some plugin/c-extension callables cannot be introspected. In
+            # that rare case, preserve the historical focus_topic fallback and
+            # retry by removing only optional kwargs.
+            fallback_attempts = [
+                {
+                    "current_tokens": approx_tokens,
+                    "focus_topic": focus_topic,
+                    "memory_context": memory_context,
+                },
+                {"current_tokens": approx_tokens, "memory_context": memory_context},
+                {"current_tokens": approx_tokens, "focus_topic": focus_topic},
+                {"current_tokens": approx_tokens},
+            ]
+            last_type_error = None
+            for fallback_kwargs in fallback_attempts:
+                try:
+                    compressed = self.context_compressor.compress(messages, **fallback_kwargs)
+                    break
+                except TypeError as exc:
+                    last_type_error = exc
+            else:
+                raise last_type_error
 
         summary_validation_failed = (
             getattr(self.context_compressor, "_last_summary_validation_failed", False) is True
@@ -9978,15 +10022,6 @@ class AIAgent:
                         f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
                         "check auxiliary.compression.model in config.yaml."
                     )
-
-        # Notify external memory provider before compression discards context.
-        # Validation aborts return above, so memory providers do not observe a
-        # compression boundary when the original context is preserved intact.
-        if self._memory_manager:
-            try:
-                self._memory_manager.on_pre_compress(messages)
-            except Exception:
-                pass
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:

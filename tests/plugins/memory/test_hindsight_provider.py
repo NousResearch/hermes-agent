@@ -647,6 +647,125 @@ class TestPrefetch:
 # ---------------------------------------------------------------------------
 
 
+class TestPreCompressCheckpoint:
+    def _messages(self):
+        return [
+            {"role": "user", "content": "Please finish Slice 7 memory bridge."},
+            {
+                "role": "assistant",
+                "content": "I will inspect the compression path.",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "shell", "arguments": "{\"cmd\":\"pytest\"}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "tool_name": "shell",
+                "content": "pytest failed because API_KEY=sk-hindsightcheckpoint1234567890 appeared in output\n"
+                + ("line\n" * 200),
+            },
+            {"role": "assistant", "content": "I found the missing memory_context bridge."},
+        ]
+
+    def test_on_pre_compress_returns_bounded_redacted_checkpoint(self, provider):
+        provider._auto_retain = False
+
+        checkpoint = provider.on_pre_compress(self._messages())
+
+        assert 0 < len(checkpoint) <= 12_000
+        assert "test-session" in checkpoint
+        assert "Please finish Slice 7 memory bridge" in checkpoint
+        assert "shell" in checkpoint
+        assert "pytest failed" in checkpoint
+        assert "sk-hin...7890" not in checkpoint
+        assert "API_KEY=" in checkpoint
+
+    def test_checkpoint_preview_preserves_structured_newlines(self, provider):
+        preview = provider._checkpoint_text_preview(
+            "Traceback (most recent call last):\n"
+            "  File \"app.py\", line 7\n"
+            "    raise RuntimeError('boom')"
+        )
+
+        assert "Traceback (most recent call last):\n" in preview
+        assert "  File \"app.py\", line 7\n" in preview
+        assert "    raise RuntimeError('boom')" in preview
+
+    def test_on_pre_compress_caps_large_checkpoint(self, provider):
+        provider._auto_retain = False
+        messages = []
+        for idx in range(30):
+            messages.append({"role": "user", "content": f"request {idx} " + ("u" * 2_000)})
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_name": "shell",
+                    "content": f"result {idx} " + ("x" * 2_000),
+                }
+            )
+
+        checkpoint = provider.on_pre_compress(messages)
+
+        assert len(checkpoint) <= 12_000
+        assert "[truncated pre-compress checkpoint]" in checkpoint
+
+    def test_on_pre_compress_enqueues_one_retain_when_auto_retain_enabled(self, provider):
+        provider._ensure_writer = MagicMock()
+        provider._register_atexit = MagicMock()
+
+        checkpoint = provider.on_pre_compress(self._messages())
+
+        assert checkpoint
+        provider._ensure_writer.assert_called_once()
+        provider._register_atexit.assert_called_once()
+        assert provider._retain_queue.qsize() == 1
+
+        job = provider._retain_queue.get_nowait()
+        try:
+            job()
+        finally:
+            provider._retain_queue.task_done()
+
+        provider._client.aretain_batch.assert_called_once()
+        call_kwargs = provider._client.aretain_batch.call_args.kwargs
+        assert call_kwargs["bank_id"] == "test-bank"
+        assert call_kwargs["retain_async"] is True
+        item = call_kwargs["items"][0]
+        assert item["content"] == checkpoint
+        assert item["context"] == "pre-compress checkpoint before Hermes context compression"
+        assert "pre_compress" in item["tags"]
+        assert "session:test-session" in item["tags"]
+        assert item["metadata"]["checkpoint_type"] == "pre_compress"
+        assert item["metadata"]["session_id"] == "test-session"
+
+    @pytest.mark.parametrize("auto_retain,shutting_down", [(False, False), (True, True)])
+    def test_on_pre_compress_skips_enqueue_when_disabled_or_shutting_down(
+        self,
+        provider_with_config,
+        auto_retain,
+        shutting_down,
+    ):
+        provider = provider_with_config(auto_retain=auto_retain)
+        provider._ensure_writer = MagicMock()
+        if shutting_down:
+            provider._shutting_down.set()
+
+        checkpoint = provider.on_pre_compress(self._messages())
+
+        assert provider._retain_queue.empty()
+        provider._ensure_writer.assert_not_called()
+        provider._client.aretain_batch.assert_not_called()
+        if shutting_down:
+            assert checkpoint == ""
+        else:
+            assert "Please finish Slice 7 memory bridge" in checkpoint
+
+
 class TestSyncTurn:
     def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config):
         p = provider_with_config(
@@ -1548,4 +1667,3 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
-

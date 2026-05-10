@@ -26,7 +26,7 @@ Lifecycle:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 class ContextEngine(ABC):
@@ -79,6 +79,7 @@ class ContextEngine(ABC):
         messages: List[Dict[str, Any]],
         current_tokens: int = None,
         focus_topic: str = None,
+        memory_context: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Compact the message list and return the new message list.
 
@@ -93,6 +94,9 @@ class ContextEngine(ABC):
                 Engines that support guided compression should prioritise
                 preserving information related to this topic.  Engines that
                 don't support it may simply ignore this argument.
+            memory_context: Optional source text produced by memory providers
+                immediately before compression. Engines may use it as
+                preservation source material, not as active user instructions.
         """
 
     # -- Optional: pre-flight check ----------------------------------------

@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from agent.redact import redact_sensitive_text
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
@@ -52,6 +53,7 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.4.22"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+_DEFAULT_PRE_COMPRESS_CHECKPOINT_MAX_CHARS = 12_000
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -570,6 +572,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_every_n_turns = 1
         self._retain_async = True
         self._retain_context = "conversation between Hermes Agent and the User"
+        self._pre_compress_checkpoint_max_chars = _DEFAULT_PRE_COMPRESS_CHECKPOINT_MAX_CHARS
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
 
@@ -1173,6 +1176,13 @@ class HindsightMemoryProvider(MemoryProvider):
         self._auto_retain = self._config.get("auto_retain", True)
         self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
+        self._pre_compress_checkpoint_max_chars = max(
+            1,
+            _parse_int_setting(
+                self._config.get("pre_compress_checkpoint_max_chars"),
+                _DEFAULT_PRE_COMPRESS_CHECKPOINT_MAX_CHARS,
+            ),
+        )
 
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
@@ -1402,6 +1412,154 @@ class HindsightMemoryProvider(MemoryProvider):
         if merged_tags:
             kwargs["tags"] = merged_tags
         return kwargs
+
+    @staticmethod
+    def _checkpoint_text_preview(value: Any, *, max_chars: int = 900) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            text = value
+        else:
+            try:
+                text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                text = str(value)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = "\n".join(line.rstrip() for line in text.split("\n")).strip()
+        while "\n\n\n\n" in text:
+            text = text.replace("\n\n\n\n", "\n\n\n")
+        if len(text) > max_chars:
+            return text[:max_chars].rstrip() + "..."
+        return text
+
+    def _build_pre_compress_checkpoint(self, messages: List[Dict[str, Any]]) -> str:
+        lines: list[str] = ["Hindsight pre-compress checkpoint"]
+        if self._session_id:
+            lines.append(f"Session: {self._session_id}")
+        if self._parent_session_id:
+            lines.append(f"Parent session: {self._parent_session_id}")
+        if self._platform:
+            lines.append(f"Platform: {self._platform}")
+        if self._user_id or self._user_name:
+            user_label = self._user_name or self._user_id
+            lines.append(f"User: {user_label}")
+        lines.append(f"Message count considered: {len(messages or [])}")
+
+        recent = list(messages or [])[-24:]
+        user_requests: list[str] = []
+        assistant_notes: list[str] = []
+        tool_calls: list[str] = []
+        tool_results: list[str] = []
+
+        for msg in recent:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            content = self._checkpoint_text_preview(msg.get("content"))
+            if role == "user" and content:
+                user_requests.append(content)
+            elif role == "assistant":
+                calls = msg.get("tool_calls") or []
+                for call in calls:
+                    if not isinstance(call, dict):
+                        continue
+                    function = call.get("function") or {}
+                    if isinstance(function, dict):
+                        name = function.get("name") or call.get("name")
+                        args = function.get("arguments", "")
+                    else:
+                        name = call.get("name")
+                        args = ""
+                    label = str(name or "unknown_tool")
+                    preview = self._checkpoint_text_preview(args, max_chars=240)
+                    tool_calls.append(f"{label}({preview})" if preview else label)
+                if content:
+                    assistant_notes.append(content)
+            elif role == "tool":
+                name = msg.get("tool_name") or msg.get("name") or msg.get("tool_call_id") or "tool"
+                if content:
+                    tool_results.append(f"{name}: {content}")
+
+        if user_requests:
+            lines.append("Recent user requests:")
+            for item in user_requests[-6:]:
+                lines.append(f"- {item}")
+        if tool_calls:
+            lines.append("Assistant tool calls:")
+            for item in tool_calls[-10:]:
+                lines.append(f"- {item}")
+        if tool_results:
+            lines.append("Tool results summarized:")
+            for item in tool_results[-10:]:
+                lines.append(f"- {item}")
+        if assistant_notes:
+            lines.append("Recent assistant notes:")
+            for item in assistant_notes[-6:]:
+                lines.append(f"- {item}")
+
+        checkpoint = redact_sensitive_text("\n".join(lines)).strip()
+        max_chars = self._pre_compress_checkpoint_max_chars or _DEFAULT_PRE_COMPRESS_CHECKPOINT_MAX_CHARS
+        if len(checkpoint) > max_chars:
+            marker = "\n[truncated pre-compress checkpoint]"
+            if max_chars <= len(marker):
+                return marker[:max_chars]
+            body_limit = max(0, max_chars - len(marker))
+            checkpoint = checkpoint[:body_limit].rstrip() + marker
+        return checkpoint
+
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """Build and optionally retain a bounded checkpoint before compaction."""
+        if self._mode == "disabled" or self._shutting_down.is_set():
+            return ""
+        try:
+            checkpoint = self._build_pre_compress_checkpoint(messages)
+            if not checkpoint:
+                return ""
+            if not self._auto_retain:
+                return checkpoint
+
+            lineage_tags: list[str] = ["pre_compress"]
+            if self._session_id:
+                lineage_tags.append(f"session:{self._session_id}")
+            if self._parent_session_id:
+                lineage_tags.append(f"parent:{self._parent_session_id}")
+
+            metadata_snapshot = self._build_metadata(
+                message_count=len(messages or []),
+                turn_index=self._turn_index,
+            )
+            metadata_snapshot["checkpoint_type"] = "pre_compress"
+            document_id, update_mode = self._resolve_retain_target(self._document_id)
+            bank_id = self._bank_id
+            retain_async_flag = self._retain_async
+
+            def _do_retain() -> None:
+                item = self._build_retain_kwargs(
+                    checkpoint,
+                    context="pre-compress checkpoint before Hermes context compression",
+                    metadata=metadata_snapshot,
+                    tags=lineage_tags,
+                )
+                item.pop("bank_id", None)
+                item.pop("retain_async", None)
+                if update_mode is not None:
+                    item["update_mode"] = update_mode
+                self._run_hindsight_operation(
+                    lambda client: client.aretain_batch(
+                        bank_id=bank_id,
+                        items=[item],
+                        document_id=document_id,
+                        retain_async=retain_async_flag,
+                    )
+                )
+
+            self._ensure_writer()
+            self._register_atexit()
+            self._retain_queue.put(_do_retain)
+            return checkpoint
+        except Exception as e:
+            logger.debug("Hindsight pre-compress checkpoint failed: %s", e, exc_info=True)
+            return ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Enqueue a retain for the current turn. Non-blocking.

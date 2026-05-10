@@ -39,6 +39,9 @@ object HermesAutomationBridge {
             "create_uri_task", "create_open_uri_task", "open_uri_task" -> createIntentTaskJson(context, arguments, "open_uri")
             "create_broadcast_task", "create_send_broadcast_task", "broadcast_task" -> createIntentTaskJson(context, arguments, "send_broadcast")
             "create_activity_task", "create_start_activity_task", "launch_activity_task" -> createIntentTaskJson(context, arguments, "start_activity")
+            "open_uri", "open_url", "browse_url", "open_browser", "launch_browser" -> performIntentNowJson(context, arguments, "open_uri")
+            "start_activity", "launch_activity", "send_intent" -> performIntentNowJson(context, arguments, "start_activity")
+            "send_broadcast", "broadcast_intent" -> performIntentNowJson(context, arguments, "send_broadcast")
             "create_shizuku_action_task", "create_shizuku_action", "create_privileged_action_task", "privileged_action_task" -> createShizukuActionTaskJson(context, arguments)
             "create_sunrise_sunset_task", "create_sun_task", "create_solar_task" -> createSunriseSunsetTaskJson(context, arguments)
             "create_notification_task", "create_notify_task", "create_notify", "notify_task" -> createNotificationTaskJson(context, arguments)
@@ -585,6 +588,37 @@ object HermesAutomationBridge {
     }
 
     fun createIntentTaskJson(context: Context, arguments: JSONObject, defaultIntentTaskAction: String? = null): String {
+        val payloadResult = intentPayloadFromArguments(arguments, defaultIntentTaskAction)
+        if (payloadResult.error.isNotBlank()) {
+            return errorJson(payloadResult.error)
+        }
+        val payload = payloadResult.payload
+        val validation = HermesIntentBridge.performIntentJson(context, JSONObject(payload.toString()).put("__validate_only", true))
+        if (!validation.optBoolean("success", false) && validation.optInt("exit_code", 1) == 64) {
+            return errorJson(validation.optString("error").ifBlank { "Invalid Android intent automation payload" })
+        }
+
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_INTENT,
+            payload = payload.toString(),
+            defaultLabel = "Hermes Android intent automation",
+        )
+    }
+
+    fun performIntentNowJson(context: Context, arguments: JSONObject, defaultIntentTaskAction: String? = null): String {
+        val payloadResult = intentPayloadFromArguments(arguments, defaultIntentTaskAction)
+        if (payloadResult.error.isNotBlank()) {
+            return errorJson(payloadResult.error)
+        }
+        return HermesIntentBridge.performIntentJson(context, payloadResult.payload).toString()
+    }
+
+    private fun intentPayloadFromArguments(
+        arguments: JSONObject,
+        defaultIntentTaskAction: String? = null,
+    ): IntentPayloadResult {
         val rawIntentTaskAction = stringArgument(
             arguments,
             "intent_task_action",
@@ -596,7 +630,9 @@ object HermesAutomationBridge {
             defaultIntentTaskAction ?: inferIntentTaskAction(arguments)
         }
         val intentTaskAction = HermesIntentBridge.normalizeIntentTaskAction(rawIntentTaskAction)
-            ?: return errorJson("Unsupported Android intent task action: $rawIntentTaskAction. Use start_activity, open_uri, or send_broadcast")
+            ?: return IntentPayloadResult(
+                error = "Unsupported Android intent task action: $rawIntentTaskAction. Use start_activity, open_uri, or send_broadcast",
+            )
         val payload = JSONObject().put("intent_task_action", intentTaskAction)
         putOptionalExpandedPayloadString(
             payload,
@@ -624,19 +660,7 @@ object HermesAutomationBridge {
         copyStringArrayPayload(payload, arguments, "categories", "categories", "intent_categories")
         copyExtrasPayload(payload, arguments)
 
-        val validation = HermesIntentBridge.performIntentJson(context, payload.put("__validate_only", true))
-        payload.remove("__validate_only")
-        if (!validation.optBoolean("success", false) && validation.optInt("exit_code", 1) == 64) {
-            return errorJson(validation.optString("error").ifBlank { "Invalid Android intent automation payload" })
-        }
-
-        return createRecordJson(
-            context = context,
-            arguments = arguments,
-            actionType = ACTION_TYPE_INTENT,
-            payload = payload.toString(),
-            defaultLabel = "Hermes Android intent automation",
-        )
+        return IntentPayloadResult(payload = payload)
     }
 
     fun createShizukuActionTaskJson(context: Context, arguments: JSONObject): String {
@@ -4788,6 +4812,12 @@ object HermesAutomationBridge {
         "create_ui_action_task",
         "create_app_launch_task",
         "create_intent_task",
+        "open_uri",
+        "open_url",
+        "open_browser",
+        "launch_browser",
+        "start_activity",
+        "send_broadcast",
         "create_shizuku_action_task",
         "create_sunrise_sunset_task",
         "create_notification_task",
@@ -5031,6 +5061,10 @@ object HermesAutomationBridge {
         "shizuku_missing" to TRIGGER_SHIZUKU_UNAVAILABLE,
         "shizuku_not_running" to TRIGGER_SHIZUKU_UNAVAILABLE,
         "shizuku_permission_missing" to TRIGGER_SHIZUKU_UNAVAILABLE,
+    )
+    private data class IntentPayloadResult(
+        val payload: JSONObject = JSONObject(),
+        val error: String = "",
     )
     private data class TimeParseResult(val minutes: Int?, val error: String? = null)
     private data class DaysParseResult(val daysCsv: String, val error: String? = null)

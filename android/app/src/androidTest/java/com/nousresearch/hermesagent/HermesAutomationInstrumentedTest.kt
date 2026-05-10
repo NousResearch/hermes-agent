@@ -832,6 +832,31 @@ class HermesAutomationInstrumentedTest {
     }
 
     @Test
+    fun intentAutomationCanOpenGeneratedHermesHtmlFileImmediatelyWhenBrowserIsAvailable() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val htmlFile = File(workspace, "hermes-flappy-browser-direct.html").apply {
+            writeText(
+                "<!doctype html><html><head><title>Hermes Flappy Direct</title></head>" +
+                    "<body><canvas id=\"game\" width=\"240\" height=\"160\"></canvas>" +
+                    "<script>document.body.dataset.hermes='flappy-direct';</script></body></html>",
+            )
+        }
+
+        val opened = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "open_uri",
+                JSONObject().put("data_uri", htmlFile.absolutePath),
+            )
+        )
+
+        assertTrue(opened.toString(), opened.getBoolean("success"))
+        assertEquals("open_uri", opened.getString("action"))
+        assertEquals(htmlFile.absolutePath, opened.getString("data_uri"))
+    }
+
+    @Test
     fun intentAutomationRejectsUnsafeDefinitions() {
         val missingUri = JSONObject(
             HermesAutomationBridge.performActionJson(

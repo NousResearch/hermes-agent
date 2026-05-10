@@ -75,6 +75,35 @@ class NativeAgentToolAccessInstrumentedTest {
     }
 
     @Test
+    fun nativeChatToolLoopCanWriteHtmlThenOpenBrowserAcrossSequentialToolTurns() {
+        val linuxState = HermesLinuxSubsystemBridge.ensureInstalled(app)
+        val workspace = File(linuxState.getString("home_path"))
+        val htmlFile = File(workspace, "hermes-sequential-flappy.html").apply { delete() }
+
+        val port = freePort()
+        val server = SequentialBrowserChatServer(port)
+        server.start(30_000, false)
+        try {
+            val result = NativeToolCallingChatClient(app).send(
+                baseUrl = "http://127.0.0.1:$port",
+                modelName = "scripted-sequential-browser-model",
+                sessionId = "native-tool-sequential-browser-smoke",
+                userText = "Create a Flappy Bird HTML game file and open it in the browser.",
+            )
+
+            assertEquals(2, result.executedToolCalls)
+            assertTrue(result.content, result.content.contains("flappy html opened"))
+            assertTrue("Expected ${htmlFile.absolutePath}", htmlFile.isFile)
+            assertTrue(htmlFile.readText(), htmlFile.readText().contains("<canvas id=\"game\""))
+            assertEquals(3, server.requests.size)
+            assertTrue(server.requests[1].toString(), server.requests[1].toString().contains("hermes-sequential-flappy.html"))
+            assertTrue(server.requests[2].toString(), server.requests[2].toString().contains("Started Android intent"))
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
     fun cronLifecycleAndBackgroundRuntimeActionsWorkInsideAndroidRuntime() {
         HermesLinuxSubsystemBridge.ensureInstalled(app)
         HermesRuntimeManager.ensurePythonStarted(app)
@@ -204,6 +233,109 @@ class NativeAgentToolAccessInstrumentedTest {
                 .put("object", "chat.completion")
                 .put("created", System.currentTimeMillis() / 1000)
                 .put("model", "scripted-tool-model")
+                .put(
+                    "choices",
+                    JSONArray().put(
+                        JSONObject()
+                            .put("index", 0)
+                            .put("message", message)
+                            .put("finish_reason", finishReason),
+                    ),
+                )
+        }
+    }
+
+    private class SequentialBrowserChatServer(port: Int) : NanoHTTPD("127.0.0.1", port) {
+        val requests = mutableListOf<JSONObject>()
+
+        override fun serve(session: IHTTPSession): Response {
+            return if (session.method == Method.POST && session.uri == "/v1/chat/completions") {
+                val files = HashMap<String, String>()
+                session.parseBody(files)
+                requests += JSONObject(files["postData"].orEmpty().ifBlank { "{}" })
+                val payload = when (requests.size) {
+                    1 -> fileWritePayload()
+                    2 -> openBrowserPayload()
+                    else -> finalPayload()
+                }
+                newFixedLengthResponse(Response.Status.OK, "application/json", payload.toString())
+            } else {
+                newFixedLengthResponse(Response.Status.NOT_FOUND, "application/json", JSONObject().put("error", "not found").toString())
+            }
+        }
+
+        private fun fileWritePayload(): JSONObject {
+            val html = "<!doctype html><html><head><title>Hermes Flappy</title></head>" +
+                "<body><canvas id=\"game\" width=\"320\" height=\"180\"></canvas>" +
+                "<script>window.HERMES_FLAPPY='ok';</script></body></html>"
+            return completionPayload(
+                JSONObject()
+                    .put("role", "assistant")
+                    .put("content", JSONObject.NULL)
+                    .put(
+                        "tool_calls",
+                        JSONArray().put(
+                            toolCall(
+                                "call_write_html",
+                                "file_write_tool",
+                                JSONObject()
+                                    .put("path", "hermes-sequential-flappy.html")
+                                    .put("content", html),
+                            ),
+                        ),
+                    ),
+                "tool_calls",
+            )
+        }
+
+        private fun openBrowserPayload(): JSONObject {
+            return completionPayload(
+                JSONObject()
+                    .put("role", "assistant")
+                    .put("content", JSONObject.NULL)
+                    .put(
+                        "tool_calls",
+                        JSONArray().put(
+                            toolCall(
+                                "call_open_html",
+                                "android_automation_tool",
+                                JSONObject()
+                                    .put("action", "open_uri")
+                                    .put("data_uri", "hermes-sequential-flappy.html"),
+                            ),
+                        ),
+                    ),
+                "tool_calls",
+            )
+        }
+
+        private fun finalPayload(): JSONObject {
+            return completionPayload(
+                JSONObject()
+                    .put("role", "assistant")
+                    .put("content", "flappy html opened"),
+                "stop",
+            )
+        }
+
+        private fun toolCall(id: String, name: String, arguments: JSONObject): JSONObject {
+            return JSONObject()
+                .put("id", id)
+                .put("type", "function")
+                .put(
+                    "function",
+                    JSONObject()
+                        .put("name", name)
+                        .put("arguments", arguments.toString()),
+                )
+        }
+
+        private fun completionPayload(message: JSONObject, finishReason: String): JSONObject {
+            return JSONObject()
+                .put("id", "chatcmpl-native-sequential-browser")
+                .put("object", "chat.completion")
+                .put("created", System.currentTimeMillis() / 1000)
+                .put("model", "scripted-sequential-browser-model")
                 .put(
                     "choices",
                     JSONArray().put(

@@ -70,37 +70,46 @@ class NativeToolCallingChatClient(
             maxTokens = NATIVE_TOOL_MAX_TOKENS,
         )
 
-        if (assistant.toolCalls.isEmpty()) {
-            val content = assistant.content.ifBlank {
-                latestToolResult.ifBlank { "Done." }
+        repeat(MAX_NATIVE_TOOL_ROUNDS) {
+            if (assistant.toolCalls.isEmpty()) {
+                val content = assistant.content.ifBlank {
+                    latestToolResult.ifBlank { "Done." }
+                }
+                return Result(content = content, executedToolCalls = executedToolCalls)
             }
-            return Result(content = content, executedToolCalls = executedToolCalls)
-        }
 
-        messages.put(assistant.toJsonMessage())
-        assistant.toolCalls.forEach { toolCall ->
-            val toolResult = executeToolCall(toolCall)
-            executedToolCalls += 1
-            latestToolResult = toolResult
-            messages.put(
-                JSONObject()
-                    .put("role", "tool")
-                    .put("tool_call_id", toolCall.id)
-                    .put("name", toolCall.name)
-                    .put("content", toolResult)
+            messages.put(assistant.toJsonMessage())
+            assistant.toolCalls.forEach { toolCall ->
+                val toolResult = executeToolCall(toolCall)
+                executedToolCalls += 1
+                latestToolResult = toolResult
+                messages.put(
+                    JSONObject()
+                        .put("role", "tool")
+                        .put("tool_call_id", toolCall.id)
+                        .put("name", toolCall.name)
+                        .put("content", toolResult)
+                )
+            }
+
+            val followUp = postChatCompletion(
+                normalizedBaseUrl = normalizedBaseUrl,
+                modelName = modelName,
+                sessionId = sessionId,
+                messages = messages,
+                toolSpecs = null,
+                maxTokens = NATIVE_TOOL_MAX_TOKENS,
             )
+            if (followUp.toolCalls.isEmpty()) {
+                return Result(
+                    content = followUp.content.ifBlank { toolCompletionReply(latestToolResult) },
+                    executedToolCalls = executedToolCalls,
+                )
+            }
+            assistant = followUp
         }
-
-        val followUp = postChatCompletion(
-            normalizedBaseUrl = normalizedBaseUrl,
-            modelName = modelName,
-            sessionId = sessionId,
-            messages = messages,
-            toolSpecs = null,
-            maxTokens = NATIVE_TOOL_MAX_TOKENS,
-        )
         return Result(
-            content = followUp.content.ifBlank { toolCompletionReply(latestToolResult) },
+            content = toolCompletionReply(latestToolResult),
             executedToolCalls = executedToolCalls,
         )
     }
@@ -448,15 +457,18 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_automation_tool",
-                    description = "Create, run, manage, import, or trigger saved Hermes/Tasker-style Android automations.",
+                    description = "Open URLs/files immediately or create, run, manage, import, or trigger saved Hermes/Tasker-style Android automations.",
                     properties = JSONObject()
-                        .put("action", stringProp("list, run, delete, enable, disable, export/import, import_tasker_xml, create_*_task, set/get/delete_variable, watcher status/start/stop/scan, run_*_trigger, widget/tile actions."))
+                        .put("action", stringProp("open_uri/open_url/open_browser for immediate browser/file launch; list, run, delete, enable, disable, export/import, import_tasker_xml, create_*_task, set/get/delete_variable, watcher status/start/stop/scan, run_*_trigger, widget/tile actions."))
                         .put("id", stringProp("Automation id."))
                         .put("label", stringProp("Automation label."))
                         .put("command", stringProp("Shell/system/intent command."))
                         .put("path", stringProp("Workspace path."))
                         .put("content", stringProp("File content."))
                         .put("append", boolProp("Append file content."))
+                        .put("intent_task_action", stringProp("Intent mode: open_uri, start_activity, or send_broadcast."))
+                        .put("data_uri", stringProp("URL or Hermes workspace file path for open_uri/open_browser."))
+                        .put("intent_action", stringProp("Android intent action."))
                         .put("system_action", stringProp("Safe Android system action."))
                         .put("ui_action", stringProp("Saved UI action."))
                         .put("shizuku_action", stringProp("Saved Shizuku/Sui action."))
@@ -1782,6 +1794,7 @@ class NativeToolCallingChatClient(
         private const val TOOL_TIMEOUT_SECONDS = 60
         private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L
         private const val NATIVE_TOOL_MAX_TOKENS = 1024
+        private const val MAX_NATIVE_TOOL_ROUNDS = 3
         private const val PRIVILEGED_TOOL_TIMEOUT_SECONDS = 30
         private const val MAX_TOOL_RESULT_CHARS = 12_000
         private const val MAX_NATIVE_ERROR_CHARS = 360

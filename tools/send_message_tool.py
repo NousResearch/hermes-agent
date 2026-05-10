@@ -840,6 +840,48 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         chat_id=int_chat_id, text=plain,
                         parse_mode=None, **thread_kwargs
                     )
+                elif (
+                    effective_thread_id is not None
+                    and "thread not found" in str(md_error).lower()
+                ):
+                    # Bot API 10.0+: sending to a private DM topic with bare
+                    # message_thread_id fails.  Work around by sending a
+                    # placeholder anchor message first, then using it as the
+                    # reply_to_message_id so the actual message lands in the
+                    # topic.  The placeholder is deleted immediately after.
+                    logger.info(
+                        "[Telegram] thread not found with message_thread_id=%s — "
+                        "retrying with reply anchor (DM topic workaround)",
+                        effective_thread_id,
+                    )
+                    try:
+                        placeholder = await _send_telegram_message_with_retry(
+                            bot, chat_id=int_chat_id, text=".", attempts=1,
+                        )
+                        thread_kwargs["reply_to_message_id"] = placeholder.message_id
+                        last_msg = await _send_telegram_message_with_retry(
+                            bot,
+                            chat_id=int_chat_id, text=formatted,
+                            parse_mode=send_parse_mode, **thread_kwargs,
+                        )
+                        try:
+                            await bot.delete_message(
+                                chat_id=int_chat_id,
+                                message_id=placeholder.message_id,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "[Telegram] Failed to delete placeholder anchor",
+                                exc_info=True,
+                            )
+                    except Exception as anchor_error:
+                        logger.warning(
+                            "[Telegram] DM topic anchor retry also failed: %s",
+                            _sanitize_error_text(anchor_error),
+                        )
+                        # Re-raise the original error to preserve the trace
+                        raise md_error from anchor_error
+                    thread_kwargs.pop("reply_to_message_id", None)
                 else:
                     raise
 

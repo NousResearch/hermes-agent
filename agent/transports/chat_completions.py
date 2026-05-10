@@ -517,12 +517,28 @@ class ChatCompletionsTransport(ProviderTransport):
         """
         choice = response.choices[0]
         msg = choice.message
+        if msg is None:
+            return NormalizedResponse(
+                content=None,
+                tool_calls=None,
+                finish_reason=choice.finish_reason or "stop",
+            )
         finish_reason = choice.finish_reason or "stop"
 
         tool_calls = None
-        if msg.tool_calls:
+        raw_tool_calls = getattr(msg, "tool_calls", None)
+        if raw_tool_calls:
             tool_calls = []
-            for tc in msg.tool_calls:
+            for tc in raw_tool_calls:
+                if tc is None:
+                    continue
+                function = getattr(tc, "function", None)
+                if function is None:
+                    continue
+                name = getattr(function, "name", None)
+                arguments = getattr(function, "arguments", None)
+                if not name or arguments is None:
+                    continue
                 # Preserve provider-specific extras on the tool call.
                 # Gemini 3 thinking models attach extra_content with
                 # thought_signature — without replay on the next turn the API
@@ -538,14 +554,14 @@ class ChatCompletionsTransport(ProviderTransport):
                         except Exception:
                             pass
                     tc_provider_data["extra_content"] = extra
-                tool_calls.append(
-                    ToolCall(
-                        id=tc.id,
-                        name=tc.function.name,
-                        arguments=tc.function.arguments,
-                        provider_data=tc_provider_data or None,
-                    )
-                )
+                tool_calls.append(ToolCall(
+                    id=getattr(tc, "id", None),
+                    name=name,
+                    arguments=arguments,
+                    provider_data=tc_provider_data or None,
+                ))
+            if not tool_calls:
+                tool_calls = None
 
         usage = None
         if hasattr(response, "usage") and response.usage:

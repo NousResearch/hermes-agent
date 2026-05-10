@@ -91,6 +91,34 @@ def test_gmi_base_url_picks_up_profile_user_agent(mock_openai):
 
 
 @patch("run_agent.OpenAI")
+def test_gmi_profile_headers_are_applied_to_create_openai_client_copy(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://api.gmi-serving.com/v1",
+        model="test/model",
+        provider="gmi",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._client_kwargs = {
+        "api_key": "test-key-value",
+        "base_url": "https://api.gmi-serving.com/v1",
+    }
+
+    agent._create_openai_client(
+        agent._client_kwargs,
+        reason="profile-default-headers",
+        shared=True,
+    )
+
+    headers = mock_openai.call_args.kwargs.get("default_headers", {})
+    assert headers.get("User-Agent", "").startswith("HermesAgent/")
+    assert "default_headers" not in agent._client_kwargs
+
+
+@patch("run_agent.OpenAI")
 def test_unknown_base_url_clears_default_headers(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(

@@ -1114,6 +1114,11 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        # Structured config objects (take precedence over individual params above)
+        provider_config: "agent.config.ProviderConfig" = None,
+        session_config: "agent.config.SessionConfig" = None,
+        budget_config: "agent.config.BudgetConfig" = None,
+        callback_config: "agent.config.CallbackConfig" = None,
     ):
         """
         Initialize the AI Agent.
@@ -1164,6 +1169,121 @@ class AIAgent:
                 remain skipped.
         """
         _install_safe_stdio()
+
+        # -----------------------------------------------------------------
+        # Config object resolution: structured configs override individual
+        # params.  This preserves full backward compatibility while allowing
+        # new callers to pass a single ProviderConfig / SessionConfig / etc.
+        # -----------------------------------------------------------------
+        if provider_config is not None:
+            from agent.config import ProviderConfig as _PC
+            if not isinstance(provider_config, _PC):
+                raise TypeError(f"provider_config must be a ProviderConfig, got {type(provider_config).__name__}")
+            base_url = provider_config.base_url or base_url
+            api_key = provider_config.api_key or api_key
+            provider = provider_config.provider or provider
+            model = provider_config.model or model
+            if provider_config.api_mode:
+                api_mode = provider_config.api_mode
+            max_iterations = provider_config.max_iterations
+            if provider_config.fallback_model is not None:
+                fallback_model = provider_config.fallback_model
+            if provider_config.credential_pool is not None:
+                credential_pool = provider_config.credential_pool
+            if provider_config.service_tier is not None:
+                service_tier = provider_config.service_tier
+            if provider_config.providers_allowed is not None:
+                providers_allowed = provider_config.providers_allowed
+            if provider_config.providers_ignored is not None:
+                providers_ignored = provider_config.providers_ignored
+            if provider_config.providers_order is not None:
+                providers_order = provider_config.providers_order
+            if provider_config.provider_sort is not None:
+                provider_sort = provider_config.provider_sort
+            if provider_config.openrouter_min_coding_score is not None:
+                openrouter_min_coding_score = provider_config.openrouter_min_coding_score
+            if provider_config.acp_command is not None:
+                acp_command = provider_config.acp_command
+            if provider_config.acp_args is not None:
+                acp_args = provider_config.acp_args
+
+        if session_config is not None:
+            from agent.config import SessionConfig as _SC
+            if not isinstance(session_config, _SC):
+                raise TypeError(f"session_config must be a SessionConfig, got {type(session_config).__name__}")
+            if session_config.session_id is not None:
+                session_id = session_config.session_id
+            if session_config.platform is not None:
+                platform = session_config.platform
+            if session_config.user_id is not None:
+                user_id = session_config.user_id
+            if session_config.user_name is not None:
+                user_name = session_config.user_name
+            if session_config.chat_id is not None:
+                chat_id = session_config.chat_id
+            if session_config.chat_name is not None:
+                chat_name = session_config.chat_name
+            if session_config.chat_type is not None:
+                chat_type = session_config.chat_type
+            if session_config.thread_id is not None:
+                thread_id = session_config.thread_id
+            if session_config.gateway_session_key is not None:
+                gateway_session_key = session_config.gateway_session_key
+            if session_config.parent_session_id is not None:
+                parent_session_id = session_config.parent_session_id
+            skip_context_files = session_config.skip_context_files
+            load_soul_identity = session_config.load_soul_identity
+            pass_session_id = session_config.pass_session_id
+
+        if budget_config is not None:
+            from agent.config import BudgetConfig as _BC
+            if not isinstance(budget_config, _BC):
+                raise TypeError(f"budget_config must be a BudgetConfig, got {type(budget_config).__name__}")
+            max_iterations = budget_config.max_iterations
+            save_trajectories = budget_config.save_trajectories
+            if budget_config.max_tokens is not None:
+                max_tokens = budget_config.max_tokens
+            if budget_config.reasoning_config is not None:
+                reasoning_config = budget_config.reasoning_config
+            if budget_config.request_overrides is not None:
+                request_overrides = budget_config.request_overrides
+            if budget_config.prefill_messages is not None:
+                prefill_messages = budget_config.prefill_messages
+            checkpoints_enabled = budget_config.checkpoints_enabled
+            checkpoint_max_snapshots = budget_config.checkpoint_max_snapshots
+            checkpoint_max_total_size_mb = budget_config.checkpoint_max_total_size_mb
+            checkpoint_max_file_size_mb = budget_config.checkpoint_max_file_size_mb
+
+        if callback_config is not None:
+            from agent.config import CallbackConfig as _CC
+            if not isinstance(callback_config, _CC):
+                raise TypeError(f"callback_config must be a CallbackConfig, got {type(callback_config).__name__}")
+            if callback_config.tool_progress_callback is not None:
+                tool_progress_callback = callback_config.tool_progress_callback
+            if callback_config.tool_start_callback is not None:
+                tool_start_callback = callback_config.tool_start_callback
+            if callback_config.tool_complete_callback is not None:
+                tool_complete_callback = callback_config.tool_complete_callback
+            if callback_config.thinking_callback is not None:
+                thinking_callback = callback_config.thinking_callback
+            if callback_config.reasoning_callback is not None:
+                reasoning_callback = callback_config.reasoning_callback
+            if callback_config.clarify_callback is not None:
+                clarify_callback = callback_config.clarify_callback
+            if callback_config.step_callback is not None:
+                step_callback = callback_config.step_callback
+            if callback_config.stream_delta_callback is not None:
+                stream_delta_callback = callback_config.stream_delta_callback
+            if callback_config.interim_assistant_callback is not None:
+                interim_assistant_callback = callback_config.interim_assistant_callback
+            if callback_config.tool_gen_callback is not None:
+                tool_gen_callback = callback_config.tool_gen_callback
+            if callback_config.status_callback is not None:
+                status_callback = callback_config.status_callback
+
+        # -----------------------------------------------------------------
+        # Original initialization (unchanged below this line)
+        # -----------------------------------------------------------------
 
         self.model = model
         self.max_iterations = max_iterations

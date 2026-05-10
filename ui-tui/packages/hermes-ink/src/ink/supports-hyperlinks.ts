@@ -40,10 +40,14 @@ export function supportsHyperlinks(options?: SupportsHyperlinksOptions): boolean
     return true
   }
 
-  // Kitty sets TERM=xterm-kitty
+  // Kitty sets TERM=xterm-kitty; Ghostty sets TERM=xterm-ghostty
   const term = env['TERM']
 
   if (term?.includes('kitty')) {
+    return true
+  }
+
+  if (term?.includes('ghostty')) {
     return true
   }
 

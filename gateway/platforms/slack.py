@@ -679,6 +679,41 @@ class SlackAdapter(BasePlatformAdapter):
             if lock_acquired and not self._running:
                 self._release_platform_lock()
 
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a Slack thread anchor for a session handoff.
+
+        Slack threads are anchored to a parent message (``thread_ts``), not
+        a channel-level construct. So we post a seed message into the home
+        channel and return its ``ts`` — the watcher uses that as the
+        ``thread_id`` for subsequent sends.
+
+        Returns the seed message ts as a string, or ``None`` on failure.
+        """
+        if not self._app:
+            return None
+        try:
+            client = self._get_client(parent_chat_id)
+            if client is None:
+                return None
+            seed_text = f":thread: Hermes handoff — *{(name or 'session').strip()[:80]}*"
+            result = await client.chat_postMessage(
+                channel=parent_chat_id,
+                text=seed_text,
+            )
+            ts = result.get("ts") if isinstance(result, dict) else getattr(result, "get", lambda _k, _d=None: None)("ts")
+            if ts:
+                return str(ts)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Handoff thread: seed-post failed for channel %s: %s",
+                self.name, parent_chat_id, exc,
+            )
+        return None
+
     async def disconnect(self) -> None:
         """Disconnect from Slack."""
         if self._handler:

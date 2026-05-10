@@ -1,25 +1,33 @@
-"""Tests for session handoff (CLI to gateway platform)."""
+"""Tests for session handoff (CLI to gateway platform).
+
+The handoff state machine lives on the ``sessions`` table:
+
+    None  → "pending" → "running" → ("completed" | "failed")
+
+CLI side calls ``request_handoff`` and poll-waits on ``get_handoff_state``.
+Gateway side iterates ``list_pending_handoffs``, calls ``claim_handoff`` to
+flip pending → running, and finishes with ``complete_handoff`` or
+``fail_handoff``.
+"""
 
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
 import pytest
 
 from hermes_state import SessionDB
 
 
-class TestHandoffDB:
-    """Test the handoff columns and helper methods on SessionDB."""
+class TestHandoffStateDB:
+    """Test the handoff schema + helper methods on SessionDB."""
 
     @pytest.fixture
     def db(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
-        db = SessionDB(db_path=home / "state.db")
-        yield db
+        return SessionDB(db_path=home / "state.db")
 
     def _make_session(self, db, session_id, source="cli", title=None):
         """Insert a session row directly for testing."""
@@ -31,83 +39,152 @@ class TestHandoffDB:
             )
         db._execute_write(_do)
 
-    def test_handoff_columns_exist(self, db):
-        """Verify handoff columns are in the sessions table after init."""
-        db._conn.execute("SELECT handoff_pending, handoff_platform FROM sessions LIMIT 0")
+    def test_columns_exist(self, db):
+        db._conn.execute(
+            "SELECT handoff_state, handoff_platform, handoff_error "
+            "FROM sessions LIMIT 0"
+        )
 
-    def test_set_handoff_pending(self, db):
-        """Mark a session for handoff."""
-        session_id = "test-session-001"
-        self._make_session(db, session_id)
-        ok = db.set_handoff_pending(session_id, "telegram")
-        assert ok is True
-
-        session = db.get_session(session_id)
-        assert session["handoff_pending"] == 1
-        assert session["handoff_platform"] == "telegram"
-
-    def test_set_handoff_pending_no_double_mark(self, db):
-        """Re-marking an already-pending session returns False."""
-        session_id = "test-session-002"
-        self._make_session(db, session_id)
-        ok1 = db.set_handoff_pending(session_id, "telegram")
-        assert ok1 is True
-        ok2 = db.set_handoff_pending(session_id, "discord")
-        assert ok2 is False  # already pending
-
-    def test_find_pending_handoff(self, db):
-        """Find a session pending handoff for a given platform."""
-        sid = "test-session-003"
+    def test_request_handoff_marks_pending(self, db):
+        sid = "sess-1"
         self._make_session(db, sid)
-        db.set_handoff_pending(sid, "telegram")
 
-        handoff = db.find_pending_handoff("telegram")
-        assert handoff is not None
-        assert handoff["id"] == sid
+        assert db.request_handoff(sid, "telegram") is True
 
-        # Should not find for other platforms
-        assert db.find_pending_handoff("discord") is None
+        state = db.get_handoff_state(sid)
+        assert state == {
+            "state": "pending",
+            "platform": "telegram",
+            "error": None,
+        }
 
-    def test_clear_handoff_pending(self, db):
-        """Clear the handoff flag."""
-        sid = "test-session-004"
+    def test_request_handoff_rejects_in_flight(self, db):
+        sid = "sess-2"
         self._make_session(db, sid)
-        db.set_handoff_pending(sid, "telegram")
-        db.clear_handoff_pending(sid)
 
-        session = db.get_session(sid)
-        assert session["handoff_pending"] == 0
+        assert db.request_handoff(sid, "telegram") is True
+        # Still pending → reject re-request
+        assert db.request_handoff(sid, "discord") is False
 
-    def test_full_handoff_flow(self, db):
-        """End-to-end: mark → find → load messages → clear."""
-        sid = "test-session-005"
+        # And after gateway claims it (running) → still rejected
+        assert db.claim_handoff(sid) is True
+        assert db.request_handoff(sid, "discord") is False
+
+    def test_request_handoff_after_terminal_state_resets_error(self, db):
+        sid = "sess-3"
+        self._make_session(db, sid)
+        db.request_handoff(sid, "telegram")
+        db.claim_handoff(sid)
+        db.fail_handoff(sid, "earlier failure")
+
+        # User retries — should be allowed and clear the prior error.
+        assert db.request_handoff(sid, "discord") is True
+        state = db.get_handoff_state(sid)
+        assert state["state"] == "pending"
+        assert state["platform"] == "discord"
+        assert state["error"] is None
+
+    def test_list_pending_handoffs_excludes_running_and_terminal(self, db):
+        a, b, c, d = "sess-a", "sess-b", "sess-c", "sess-d"
+        for sid in (a, b, c, d):
+            self._make_session(db, sid)
+
+        db.request_handoff(a, "telegram")
+        db.request_handoff(b, "discord")
+        db.request_handoff(c, "telegram")
+        db.claim_handoff(c)  # c is now running, not pending
+        db.request_handoff(d, "slack")
+        db.claim_handoff(d)
+        db.complete_handoff(d)  # d is terminal
+
+        pending = db.list_pending_handoffs()
+        ids = [r["id"] for r in pending]
+        assert set(ids) == {a, b}
+
+    def test_claim_handoff_is_atomic(self, db):
+        sid = "sess-claim"
+        self._make_session(db, sid)
+        db.request_handoff(sid, "telegram")
+
+        # First claim wins
+        assert db.claim_handoff(sid) is True
+        # Second claim is a no-op (state is now "running", not "pending")
+        assert db.claim_handoff(sid) is False
+        assert db.get_handoff_state(sid)["state"] == "running"
+
+    def test_complete_handoff_clears_error(self, db):
+        sid = "sess-complete"
+        self._make_session(db, sid)
+        db.request_handoff(sid, "telegram")
+        db.claim_handoff(sid)
+        db.fail_handoff(sid, "transient")
+        # User retries; mock the watcher path
+        db.request_handoff(sid, "telegram")
+        db.claim_handoff(sid)
+        db.complete_handoff(sid)
+
+        state = db.get_handoff_state(sid)
+        assert state["state"] == "completed"
+        assert state["error"] is None
+
+    def test_fail_handoff_records_reason(self, db):
+        sid = "sess-fail"
+        self._make_session(db, sid)
+        db.request_handoff(sid, "telegram")
+        db.claim_handoff(sid)
+        db.fail_handoff(sid, "no home channel for telegram")
+
+        state = db.get_handoff_state(sid)
+        assert state["state"] == "failed"
+        assert state["error"] == "no home channel for telegram"
+
+    def test_fail_handoff_truncates_long_reasons(self, db):
+        sid = "sess-fail-long"
+        self._make_session(db, sid)
+        db.request_handoff(sid, "telegram")
+        db.claim_handoff(sid)
+
+        # 1000-character error string
+        big_err = "x" * 1000
+        db.fail_handoff(sid, big_err)
+
+        state = db.get_handoff_state(sid)
+        assert len(state["error"]) <= 500
+
+    def test_get_handoff_state_for_unknown_session(self, db):
+        assert db.get_handoff_state("does-not-exist") is None
+
+    def test_full_pending_to_completed_flow(self, db):
+        """End-to-end sequence the CLI + gateway watcher follow."""
+        sid = "sess-flow"
         self._make_session(db, sid, title="my session")
         db.append_message(sid, "user", "Hello")
         db.append_message(sid, "assistant", "Hi there!")
 
-        # CLI side: mark for handoff
-        ok = db.set_handoff_pending(sid, "telegram")
-        assert ok is True
+        # CLI: request handoff
+        assert db.request_handoff(sid, "telegram") is True
+        assert db.get_handoff_state(sid)["state"] == "pending"
 
-        # Gateway side: find pending handoff
-        handoff = db.find_pending_handoff("telegram")
-        assert handoff is not None
-        assert handoff["id"] == sid
-        assert handoff["title"] == "my session"
+        # Gateway watcher: discover + claim
+        pending = db.list_pending_handoffs()
+        assert len(pending) == 1
+        assert pending[0]["id"] == sid
+        assert db.claim_handoff(sid) is True
+        assert db.get_handoff_state(sid)["state"] == "running"
 
-        # Load messages for context
+        # Gateway uses get_messages to load the transcript (real flow uses
+        # session_store.switch_session which reads the same table).
         messages = db.get_messages(sid)
-        assert len(messages) == 2
-        assert messages[0]["role"] == "user"
-        assert messages[1]["role"] == "assistant"
+        assert [m["role"] for m in messages] == ["user", "assistant"]
 
-        # Clear after injecting
-        db.clear_handoff_pending(sid)
-        assert db.find_pending_handoff("telegram") is None
+        # Gateway: mark completed
+        db.complete_handoff(sid)
+        assert db.get_handoff_state(sid)["state"] == "completed"
+        assert db.list_pending_handoffs() == []
 
 
-class TestHandoffCommand:
-    """Test the CLI /handoff command handler."""
+class TestHandoffCommandRegistration:
+    """Slash-command surface checks."""
 
     def test_command_registered(self):
         from hermes_cli.commands import resolve_command
@@ -116,8 +193,10 @@ class TestHandoffCommand:
         assert cmd.name == "handoff"
         assert cmd.category == "Session"
 
-    def test_invalid_platform(self):
-        """Test that unknown platforms are rejected."""
-        supported = {"telegram", "discord", "slack", "whatsapp", "signal", "matrix"}
-        assert "telegram" in supported
-        assert "foo" not in supported
+    def test_command_is_cli_only(self):
+        """`/handoff` is initiated from the CLI; gateway shouldn't expose it."""
+        from hermes_cli.commands import resolve_command, GATEWAY_KNOWN_COMMANDS
+        cmd = resolve_command("handoff")
+        assert cmd is not None
+        assert cmd.cli_only is True
+        assert "handoff" not in GATEWAY_KNOWN_COMMANDS

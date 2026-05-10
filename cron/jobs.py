@@ -407,12 +407,27 @@ def load_jobs() -> List[Dict[str, Any]]:
     try:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
+            # Guard against malformed shapes (bare list, null, scalar, string)
+            if not isinstance(data, dict):
+                if isinstance(data, list):
+                    logger.warning("jobs.json is a bare list — auto-migrating to dict shape")
+                    save_jobs(data)
+                    return data
+                logger.error("Malformed jobs.json: expected dict, got %s", type(data).__name__)
+                return []
             return data.get("jobs", [])
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
+                if not isinstance(data, dict):
+                    if isinstance(data, list):
+                        logger.warning("jobs.json is a bare list — auto-migrating to dict shape")
+                        save_jobs(data)
+                        return data
+                    logger.error("Malformed jobs.json: expected dict, got %s", type(data).__name__)
+                    return []
                 jobs = data.get("jobs", [])
                 if jobs:
                     # Auto-repair: rewrite with proper escaping

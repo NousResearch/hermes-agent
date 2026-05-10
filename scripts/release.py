@@ -235,6 +235,9 @@ AUTHOR_MAP = {
     "itonov@proton.me": "Ito-69",
     "glesstech@gmail.com": "georgeglessner",
     "maxim.smetanin@gmail.com": "maxims-oss",
+    # Codex Spark restoration salvage (May 2026)
+    "olegwn@gmail.com": "nederev",
+    "vesper@askclaw.dev": "askclaw-vesper",
     "nazirulhafiy@gmail.com": "nazirulhafiy",
     "CREWorx@users.noreply.github.com": "BadTechBandit",
     "yoimexex@gmail.com": "Yoimex",

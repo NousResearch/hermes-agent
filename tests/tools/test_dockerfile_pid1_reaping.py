@@ -143,6 +143,18 @@ def test_dockerfile_exposes_venv_cli_on_runtime_path(dockerfile_text):
     )
 
 
+def test_dockerfile_preserves_venv_cli_in_login_shells(dockerfile_text):
+    assert "/etc/profile.d/hermes-path.sh" in dockerfile_text, (
+        "Dockerfile must install a profile.d PATH hook so login shells keep "
+        "/opt/hermes/.venv/bin after /etc/profile resets PATH. See issues "
+        "#9792 and #18673."
+    )
+    assert "export PATH=\"/opt/data/.local/bin:/opt/hermes/.venv/bin:$PATH\"" in dockerfile_text, (
+        "Dockerfile login-shell PATH hook must restore /opt/hermes/.venv/bin so "
+        "`docker exec ... bash -l -c \"hermes\"` works without an absolute path."
+    )
+
+
 def test_dockerfile_materializes_local_tui_ink_package(dockerfile_text):
     # ``hermes-ink`` is a bundled workspace package referenced from
     # ``ui-tui/package.json`` via ``file:`` — not pulled from the npm

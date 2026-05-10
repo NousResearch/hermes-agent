@@ -4,7 +4,10 @@ import android.content.Context
 import android.net.Uri
 import org.json.JSONObject
 
-class AuthSessionStore(context: Context) {
+class AuthSessionStore(
+    context: Context,
+    private val secureSecretsStore: AuthSessionSecretStore = SecureSecretsStore(context.applicationContext),
+) {
     private val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     data class AuthCallbackEvaluation(
@@ -21,7 +24,12 @@ class AuthSessionStore(context: Context) {
         val raw = preferences.getString(sessionKey(methodId), null) ?: return null
         return runCatching {
             val json = JSONObject(raw)
-            AuthSession(
+            val legacyAccessToken = json.optString("accessToken")
+            val legacyRefreshToken = json.optString("refreshToken")
+            val legacySessionToken = json.optString("sessionToken")
+            val legacyApiKey = json.optString("apiKey")
+            val secureSecrets = secureSecretsStore.loadAuthSessionSecrets(methodId)
+            val session = AuthSession(
                 methodId = json.optString("methodId", methodId),
                 label = json.optString("label", AuthCatalog.find(methodId)?.label.orEmpty()),
                 scope = json.optString("scope", AuthScope.AppAccount.name)
@@ -32,18 +40,50 @@ class AuthSessionStore(context: Context) {
                 email = json.optString("email"),
                 phone = json.optString("phone"),
                 displayName = json.optString("displayName"),
-                accessToken = json.optString("accessToken"),
-                refreshToken = json.optString("refreshToken"),
-                sessionToken = json.optString("sessionToken"),
-                apiKey = json.optString("apiKey"),
+                accessToken = secureSecrets.accessToken.ifBlank { legacyAccessToken },
+                refreshToken = secureSecrets.refreshToken.ifBlank { legacyRefreshToken },
+                sessionToken = secureSecrets.sessionToken.ifBlank { legacySessionToken },
+                apiKey = secureSecrets.apiKey.ifBlank { legacyApiKey },
                 baseUrl = json.optString("baseUrl"),
                 model = json.optString("model"),
                 updatedAtEpochMs = json.optLong("updatedAtEpochMs", 0),
             )
+            if (hasLegacySessionSecrets(json)) {
+                if (session.signedIn) {
+                    secureSecretsStore.saveAuthSessionSecrets(
+                        session.methodId,
+                        AuthSessionSecrets(
+                            accessToken = session.accessToken,
+                            refreshToken = session.refreshToken,
+                            sessionToken = session.sessionToken,
+                            apiKey = session.apiKey,
+                        ),
+                    )
+                }
+                saveSessionMetadata(session)
+            }
+            session
         }.getOrNull()
     }
 
     fun saveSession(session: AuthSession) {
+        if (session.signedIn) {
+            secureSecretsStore.saveAuthSessionSecrets(
+                session.methodId,
+                AuthSessionSecrets(
+                    accessToken = session.accessToken,
+                    refreshToken = session.refreshToken,
+                    sessionToken = session.sessionToken,
+                    apiKey = session.apiKey,
+                ),
+            )
+        } else {
+            secureSecretsStore.clearAuthSessionSecrets(session.methodId)
+        }
+        saveSessionMetadata(session)
+    }
+
+    private fun saveSessionMetadata(session: AuthSession) {
         val json = JSONObject()
             .put("methodId", session.methodId)
             .put("label", session.label)
@@ -54,10 +94,6 @@ class AuthSessionStore(context: Context) {
             .put("email", session.email)
             .put("phone", session.phone)
             .put("displayName", session.displayName)
-            .put("accessToken", session.accessToken)
-            .put("refreshToken", session.refreshToken)
-            .put("sessionToken", session.sessionToken)
-            .put("apiKey", session.apiKey)
             .put("baseUrl", session.baseUrl)
             .put("model", session.model)
             .put("updatedAtEpochMs", session.updatedAtEpochMs)
@@ -65,6 +101,7 @@ class AuthSessionStore(context: Context) {
     }
 
     fun clearSession(methodId: String) {
+        secureSecretsStore.clearAuthSessionSecrets(methodId)
         preferences.edit().remove(sessionKey(methodId)).apply()
     }
 
@@ -271,6 +308,13 @@ class AuthSessionStore(context: Context) {
         }
 
         private fun sessionKey(methodId: String): String = "session_${methodId.lowercase()}"
+
+        private fun hasLegacySessionSecrets(json: JSONObject): Boolean {
+            return json.has("accessToken") ||
+                json.has("refreshToken") ||
+                json.has("sessionToken") ||
+                json.has("apiKey")
+        }
 
         private fun defaultSession(option: AuthOption): AuthSession {
             return AuthSession(

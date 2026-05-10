@@ -26,7 +26,9 @@ from tools.skills_hub import (
     append_audit_log,
     _skill_meta_to_dict,
     quarantine_bundle,
+    install_from_quarantine,
 )
+from tools.skills_guard import ScanResult
 
 
 # ---------------------------------------------------------------------------
@@ -1674,3 +1676,53 @@ class TestDownloadDirectoryRecursive:
 
         assert "SKILL.md" in files
         assert "scripts/run.py" not in files  # lost due to rate limit
+
+
+class TestInstallFromQuarantine:
+    def test_force_install_replaces_symlink_destination(self, tmp_path, monkeypatch):
+        import tools.skills_hub as hub
+
+        hermes_home = tmp_path / "hermes-home"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        monkeypatch.setattr(hub, "HERMES_HOME", hermes_home)
+        monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(hub, "HUB_DIR", skills_dir / ".hub")
+        monkeypatch.setattr(hub, "LOCK_FILE", skills_dir / ".hub" / "lock.json")
+        monkeypatch.setattr(hub, "QUARANTINE_DIR", skills_dir / ".hub" / "quarantine")
+
+        quarantine = (skills_dir / ".hub" / "quarantine" / "browserbase")
+        quarantine.mkdir(parents=True)
+        (quarantine / "SKILL.md").write_text("# Browserbase\n", encoding="utf-8")
+
+        external_target = tmp_path / "external-browserbase"
+        external_target.mkdir()
+        install_dir = skills_dir / "browserbase"
+        install_dir.symlink_to(external_target, target_is_directory=True)
+
+        bundle = SkillBundle(
+            name="browserbase",
+            files={"SKILL.md": "# Browserbase\n"},
+            source="github",
+            identifier="skills-sh/browserbase",
+            trust_level="trusted",
+            metadata={"description": "test skill"},
+        )
+
+        install_path = install_from_quarantine(
+            quarantine,
+            "browserbase",
+            None,
+            bundle,
+            ScanResult(
+                skill_name="browserbase",
+                source="github",
+                trust_level="trusted",
+                verdict="safe",
+            ),
+        )
+
+        assert install_path == install_dir
+        assert install_dir.is_dir()
+        assert not install_dir.is_symlink()
+        assert (install_dir / "SKILL.md").read_text(encoding="utf-8") == "# Browserbase\n"

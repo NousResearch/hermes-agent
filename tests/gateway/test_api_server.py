@@ -649,6 +649,28 @@ class TestChatCompletionsEndpoint:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_trailing_assistant_message_returns_400(self, adapter):
+        """The terminal chat/completions turn must come from the user."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [
+                            {"role": "user", "content": "1+1=?"},
+                            {"role": "assistant", "content": "2"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert "No user message found" in data["error"]["message"]
+            mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):
         """stream=true returns SSE format with the full response."""
         app = _create_app(adapter)
@@ -1316,6 +1338,28 @@ class TestResponsesEndpoint:
             assert resp.status == 200
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["ephemeral_system_prompt"] == "Talk like a pirate."
+
+    @pytest.mark.asyncio
+    async def test_input_with_trailing_assistant_message_returns_400(self, adapter):
+        """The terminal responses input item must come from the user."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {"role": "user", "content": "1+1=?"},
+                            {"role": "assistant", "content": "2"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert "No user message found" in data["error"]["message"]
+            mock_run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_previous_response_id_chaining(self, adapter):

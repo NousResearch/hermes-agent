@@ -256,6 +256,24 @@ def _normalize_multimodal_content(content: Any) -> Any:
     return normalized_parts
 
 
+def _extract_terminal_user_turn(
+    messages: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], Any]:
+    """Split a request message list into history and the terminal user turn.
+
+    OpenAI-style request/response APIs expect the last actionable turn to come
+    from the user. Earlier user/assistant messages become conversation history;
+    a trailing assistant turn is invalid and must not be forwarded as the next
+    prompt to the agent.
+    """
+    if not messages:
+        return [], ""
+    last = messages[-1]
+    if str(last.get("role", "")).strip().lower() != "user":
+        return [], None
+    return messages[:-1], last.get("content", "")
+
+
 def _content_has_visible_payload(content: Any) -> bool:
     """True when content has any text or image attachment.  Used to reject empty turns."""
     if isinstance(content, str):
@@ -1010,12 +1028,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
                 conversation_messages.append({"role": role, "content": content})
 
-        # Extract the last user message as the primary input
-        user_message: Any = ""
-        history = []
-        if conversation_messages:
-            user_message = conversation_messages[-1].get("content", "")
-            history = conversation_messages[:-1]
+        history, user_message = _extract_terminal_user_turn(conversation_messages)
 
         if not _content_has_visible_payload(user_message):
             return web.json_response(
@@ -2126,12 +2139,8 @@ class APIServerAdapter(BasePlatformAdapter):
             if instructions is None:
                 instructions = stored.get("instructions")
 
-        # Append new input messages to history (all but the last become history)
-        for msg in input_messages[:-1]:
-            conversation_history.append(msg)
-
-        # Last input message is the user_message
-        user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
+        input_history, user_message = _extract_terminal_user_turn(input_messages)
+        conversation_history.extend(input_history)
         if not _content_has_visible_payload(user_message):
             return web.json_response(_openai_error("No user message found in input"), status=400)
 

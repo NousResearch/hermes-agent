@@ -5,7 +5,6 @@ import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
 def _make_author(*, bot: bool = False, is_self: bool = False):
     """Create a mock Discord author."""
     author = MagicMock()
@@ -23,6 +22,7 @@ def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
     msg.content = content
     msg.attachments = []
     msg.mentions = mentions or []
+    msg.raw_mentions = [getattr(m, "id", m) for m in msg.mentions]
     if is_dm:
         import discord
         msg.channel = MagicMock(spec=discord.DMChannel)
@@ -52,7 +52,18 @@ class TestDiscordBotFilter(unittest.TestCase):
             if allow == "none":
                 return False
             elif allow == "mentions":
-                if not client_user or client_user not in message.mentions:
+                user_id = getattr(client_user, "id", None)
+                raw_mentions = getattr(message, "raw_mentions", None)
+                explicit = bool(
+                    client_user
+                    and user_id is not None
+                    and (
+                        any(str(mid) == str(user_id) for mid in raw_mentions or [])
+                        or f"<@{user_id}>" in getattr(message, "content", "")
+                        or f"<@!{user_id}>" in getattr(message, "content", "")
+                    )
+                )
+                if not explicit:
                     return False
             # "all" falls through
         
@@ -95,8 +106,16 @@ class TestDiscordBotFilter(unittest.TestCase):
         """With allow_bots=mentions, bot messages with @mention are accepted."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot, mentions=[our_user])
+        msg = _make_message(author=bot, content=f"<@{our_user.id}> please handle this", mentions=[our_user])
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_allow_bots_mentions_rejects_reply_ping_only(self):
+        """Implicit reply pings must not count as bot-to-bot handoffs."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="replying to you", mentions=[our_user])
+        msg.raw_mentions = []
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""

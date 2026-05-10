@@ -134,6 +134,10 @@ def read_provider_auth_bundle(provider: str) -> dict[str, Any]:
     }
 
 
+def read_provider_auth_bundle_json(provider: str) -> str:
+    return json.dumps(read_provider_auth_bundle(provider), sort_keys=True)
+
+
 
 def write_provider_api_key(provider: str, api_key: str) -> dict[str, Any]:
     normalized = str(provider or "").strip().lower()

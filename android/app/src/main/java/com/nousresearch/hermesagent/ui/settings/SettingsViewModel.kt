@@ -18,11 +18,14 @@ import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.ProviderPresets
 import com.nousresearch.hermesagent.data.SecureSecretsStore
 import com.nousresearch.hermesagent.ui.i18n.AppLanguage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 data class SettingsUiState(
     val provider: String = "openrouter",
@@ -127,6 +130,104 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun copyProviderKeyPage(url: String) {
         copyProviderKeyPage(url, updateSuccessStatus = true)
+    }
+
+    fun importSavedProviderCredential() {
+        val snapshot = _uiState.value
+        val preset = ProviderPresets.find(snapshot.provider)
+        val providerLabel = preset?.label ?: snapshot.provider
+        if (snapshot.provider.isBlank() || snapshot.provider == "custom") {
+            _uiState.update { it.copy(status = "Choose a saved provider before importing a Hermes credential.") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(status = "Checking saved Hermes credential for $providerLabel…") }
+            val bundleResult = runCatching {
+                withContext(Dispatchers.IO) {
+                    val app = getApplication<Application>()
+                    HermesRuntimeManager.ensurePythonStarted(app)
+                    Python.getInstance()
+                        .getModule("hermes_android.auth_bridge")
+                        .callAttr("read_provider_auth_bundle_json", snapshot.provider)
+                        .toString()
+                }
+            }
+            val payload = bundleResult.getOrElse { error ->
+                _uiState.update {
+                    it.copy(status = "Unable to read saved Hermes credential (${error::class.java.simpleName}).")
+                }
+                return@launch
+            }
+            val json = runCatching { JSONObject(payload) }.getOrElse {
+                _uiState.update { it.copy(status = "Saved Hermes credential for $providerLabel could not be decoded.") }
+                return@launch
+            }
+            val apiKey = listOf(
+                json.optString("api_key"),
+                json.optString("access_token"),
+                json.optString("session_token"),
+            ).firstOrNull { it.isNotBlank() }.orEmpty()
+            val configured = json.optBoolean("configured", false) || apiKey.isNotBlank()
+            if (!configured || apiKey.isBlank()) {
+                _uiState.update { it.copy(status = "No saved Hermes credential found for $providerLabel.") }
+                return@launch
+            }
+
+            val resolvedBaseUrl = json.optString("base_url")
+                .ifBlank { snapshot.baseUrl }
+                .ifBlank { preset?.baseUrl.orEmpty() }
+            val resolvedModel = snapshot.model.ifBlank { preset?.modelHint.orEmpty() }
+            val runtimeConfigBaseUrl = ProviderPresets.runtimeConfigBaseUrl(snapshot.provider, resolvedBaseUrl)
+            val existingSettings = settingsStore.load()
+            val updatedSettings = AppSettings(
+                provider = snapshot.provider,
+                baseUrl = resolvedBaseUrl,
+                model = resolvedModel,
+                corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
+                dataSaverMode = existingSettings.dataSaverMode,
+                onDeviceBackend = existingSettings.onDeviceBackend,
+                languageTag = existingSettings.languageTag,
+            )
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val app = getApplication<Application>()
+                    HermesRuntimeManager.ensurePythonStarted(app)
+                    val python = Python.getInstance()
+                    python.getModule("hermes_android.auth_bridge").callAttr(
+                        "write_provider_auth_bundle",
+                        snapshot.provider,
+                        apiKey,
+                        json.optString("access_token"),
+                        json.optString("session_token"),
+                        json.optString("refresh_token"),
+                        resolvedBaseUrl,
+                    )
+                    python.getModule("hermes_android.config_bridge").callAttr(
+                        "write_runtime_config",
+                        snapshot.provider,
+                        resolvedModel,
+                        runtimeConfigBaseUrl,
+                    )
+                }
+                settingsStore.save(updatedSettings)
+                secretsStore.saveApiKey(snapshot.provider, apiKey)
+                HermesRuntimeManager.stop()
+                HermesRuntimeManager.ensureStarted(getApplication())
+            }.onSuccess {
+                _uiState.update {
+                    it.copy(
+                        baseUrl = resolvedBaseUrl,
+                        model = resolvedModel,
+                        apiKey = apiKey,
+                        status = "Imported saved Hermes credential for $providerLabel and restarted the runtime.",
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(status = "Saved Hermes credential import failed (${error::class.java.simpleName}).")
+                }
+            }
+        }
     }
 
     private fun copyProviderKeyPage(url: String, updateSuccessStatus: Boolean) {

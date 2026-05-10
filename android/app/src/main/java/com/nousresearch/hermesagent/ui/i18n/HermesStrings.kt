@@ -306,6 +306,15 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Copy setup URL"
     }
 
+    fun importSavedProviderCredential(): String = when (language) {
+        AppLanguage.CHINESE -> "使用已保存的 Hermes 凭据"
+        AppLanguage.SPANISH -> "Usar credencial Hermes guardada"
+        AppLanguage.GERMAN -> "Gespeicherte Hermes-Zugangsdaten nutzen"
+        AppLanguage.PORTUGUESE -> "Usar credencial Hermes salva"
+        AppLanguage.FRENCH -> "Utiliser l’identifiant Hermes enregistré"
+        AppLanguage.ENGLISH -> "Use saved Hermes credential"
+    }
+
     fun copyAuthSignInUrl(): String = when (language) {
         AppLanguage.CHINESE -> "复制登录链接"
         AppLanguage.SPANISH -> "Copiar URL de inicio de sesión"

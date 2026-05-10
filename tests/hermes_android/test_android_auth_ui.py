@@ -185,12 +185,35 @@ def test_settings_opens_official_provider_key_pages():
     assert "addCategory(Intent.CATEGORY_BROWSABLE)" in settings_view_model
     assert "openProviderKeyPage(providerLabel)" in settings_screen
     assert "copyProviderSetupUrl()" in settings_screen
+    assert "importSavedProviderCredential()" in settings_screen
+    assert "Use saved Hermes credential" in strings
     assert "Open $providerLabel setup page" in strings
     assert "Copy setup URL" in strings
     assert "ProviderPresets.androidSettingsDefaults.forEach" in settings_screen
     assert "androidSettingsDefaults = defaults" in provider_presets
     assert "PasswordVisualTransformation()" in settings_screen
     assert "KeyboardType.Password" in settings_screen
+
+
+def test_settings_can_import_saved_python_provider_credentials_without_blank_overwrite():
+    settings_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    auth_bridge = (REPO_ROOT / "hermes_android/auth_bridge.py").read_text(encoding="utf-8")
+
+    assert "onImportProviderCredential = viewModel::importSavedProviderCredential" in settings_screen
+    assert "status = uiState.status" in settings_screen
+    assert "if (status.isNotBlank())" in settings_screen
+    assert "fun importSavedProviderCredential()" in settings_view_model
+    assert "read_provider_auth_bundle_json" in settings_view_model
+    assert "HermesRuntimeManager.ensurePythonStarted(app)" in settings_view_model
+    assert "secretsStore.saveApiKey(snapshot.provider, apiKey)" in settings_view_model
+    assert "write_provider_auth_bundle" in settings_view_model
+    assert "write_runtime_config" in settings_view_model
+    assert "No saved Hermes credential found for $providerLabel" in settings_view_model
+    assert "Imported saved Hermes credential for $providerLabel" in settings_view_model
+    assert "def read_provider_auth_bundle_json(provider: str) -> str:" in auth_bridge
+    assert '"zai": {' in auth_bridge
+    assert 'if normalized == "qwen-oauth":' in auth_bridge
 
 
 def test_settings_provider_switch_applies_selected_provider_defaults():

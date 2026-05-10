@@ -95,12 +95,14 @@ fun SettingsScreen(
                         baseUrl = uiState.baseUrl,
                         model = uiState.model,
                         apiKey = uiState.apiKey,
+                        status = uiState.status,
                         onSelectProvider = viewModel::updateProvider,
                         onBaseUrlChange = viewModel::updateBaseUrl,
                         onModelChange = viewModel::updateModel,
                         onApiKeyChange = viewModel::updateApiKey,
                         onOpenProviderKeyPage = viewModel::openProviderKeyPage,
                         onCopyProviderKeyPage = viewModel::copyProviderKeyPage,
+                        onImportProviderCredential = viewModel::importSavedProviderCredential,
                         onSave = viewModel::save,
                         strings = strings,
                     )
@@ -150,12 +152,14 @@ private fun RemoteFallbackCard(
     baseUrl: String,
     model: String,
     apiKey: String,
+    status: String,
     onSelectProvider: (String) -> Unit,
     onBaseUrlChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onApiKeyChange: (String) -> Unit,
     onOpenProviderKeyPage: (String) -> Unit,
     onCopyProviderKeyPage: (String) -> Unit,
+    onImportProviderCredential: () -> Unit,
     onSave: () -> Unit,
     strings: com.nousresearch.hermesagent.ui.i18n.HermesStrings,
 ) {
@@ -203,6 +207,12 @@ private fun RemoteFallbackCard(
                         Text(strings.copyProviderSetupUrl())
                     }
                 }
+            }
+            Button(onClick = onImportProviderCredential) {
+                Text(strings.importSavedProviderCredential())
+            }
+            if (status.isNotBlank()) {
+                Text(status, style = MaterialTheme.typography.bodySmall)
             }
             OutlinedTextField(
                 value = baseUrl,

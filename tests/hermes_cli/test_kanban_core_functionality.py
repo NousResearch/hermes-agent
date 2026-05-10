@@ -681,6 +681,73 @@ def test_cli_archive_bulk(kanban_home):
         conn.close()
 
 
+def test_cli_archive_with_dependent_children_refused_non_interactive(kanban_home):
+    # Without --cascade or --unlink-children the CLI must refuse rather
+    # than silently leave children stranded in 'todo' (#23180).
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+    finally:
+        conn.close()
+    out = run_slash(f"archive {parent}")
+    assert "refusing" in out.lower() or "skipped" in out.lower()
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, parent).status != "archived"
+        assert kb.get_task(conn, child).status == "todo"
+    finally:
+        conn.close()
+
+
+def test_cli_archive_unlink_children_promotes_child(kanban_home):
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+    finally:
+        conn.close()
+    out = run_slash(f"archive {parent} --unlink-children")
+    assert "Archived" in out
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, parent).status == "archived"
+        # With its only parent unlinked, child has no open parents and
+        # recompute_ready (called by unlink_tasks) flipped it to 'ready'.
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.parent_ids(conn, child) == []
+    finally:
+        conn.close()
+
+
+def test_cli_archive_cascade_archives_subtree(kanban_home):
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        grandchild = kb.create_task(conn, title="grand", parents=[child])
+    finally:
+        conn.close()
+    out = run_slash(f"archive {parent} --cascade")
+    assert "Archived" in out
+    conn = kb.connect()
+    try:
+        for tid in (parent, child, grandchild):
+            assert kb.get_task(conn, tid).status == "archived"
+    finally:
+        conn.close()
+
+
+def test_cli_archive_flags_are_mutually_exclusive(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x")
+    finally:
+        conn.close()
+    out = run_slash(f"archive {tid} --cascade --unlink-children")
+    assert "usage error" in out.lower() or "not allowed" in out.lower()
+
+
 def test_cli_unblock_bulk(kanban_home):
     conn = kb.connect()
     try:

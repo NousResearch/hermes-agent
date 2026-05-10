@@ -436,6 +436,20 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
     p_archive.add_argument("task_ids", nargs="+")
+    # When a task has non-archived children, archiving silently leaves them
+    # stuck in 'todo' (recompute_ready only promotes when parents are 'done').
+    # These flags let callers pick an outcome non-interactively; without one,
+    # an interactive shell prompts and a non-interactive shell refuses.
+    p_archive_children = p_archive.add_mutually_exclusive_group()
+    p_archive_children.add_argument(
+        "--cascade", action="store_true",
+        help="Also archive every non-archived descendant of each task",
+    )
+    p_archive_children.add_argument(
+        "--unlink-children", action="store_true",
+        help="Remove dependency edges to non-archived children, then archive "
+             "the parent (children proceed once their other parents are done)",
+    )
 
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
@@ -1625,15 +1639,106 @@ def _cmd_archive(args: argparse.Namespace) -> int:
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
+    cascade = bool(getattr(args, "cascade", False))
+    unlink = bool(getattr(args, "unlink_children", False))
     failed: list[str] = []
     with kb.connect() as conn:
         for tid in ids:
-            if not kb.archive_task(conn, tid):
+            children = kb.dependent_child_ids(conn, tid)
+            if children:
+                if cascade:
+                    action = "cascade"
+                elif unlink:
+                    action = "unlink"
+                else:
+                    action = _prompt_archive_with_children(tid, children)
+            else:
+                action = "archive"
+
+            if action == "cancel":
+                failed.append(tid)
+                print(f"skipped {tid} (has dependent children)", file=sys.stderr)
+                continue
+            if action == "unlink":
+                _unlink_children(conn, tid, children)
+                ok = kb.archive_task(conn, tid)
+            elif action == "cascade":
+                ok = _cascade_archive(conn, tid)
+            else:
+                ok = kb.archive_task(conn, tid)
+
+            if ok:
+                print(f"Archived {tid}")
+            else:
                 failed.append(tid)
                 print(f"cannot archive {tid}", file=sys.stderr)
-            else:
-                print(f"Archived {tid}")
     return 0 if not failed else 1
+
+
+def _prompt_archive_with_children(tid: str, children: list[str]) -> str:
+    """Ask the user how to handle non-archived dependent children.
+
+    Returns one of ``"unlink"``, ``"cascade"``, ``"cancel"``. When stdin is
+    not a TTY we cannot prompt safely, so we return ``"cancel"`` and tell
+    the caller to re-run with ``--cascade`` or ``--unlink-children``.
+    """
+    preview = ", ".join(children[:5])
+    if len(children) > 5:
+        preview += f", … (+{len(children) - 5} more)"
+    if not sys.stdin.isatty():
+        print(
+            f"refusing to archive {tid}: {len(children)} dependent child task(s) "
+            f"({preview}) would be stranded in 'todo'. "
+            "Re-run with --cascade or --unlink-children.",
+            file=sys.stderr,
+        )
+        return "cancel"
+    print(
+        f"\nTask {tid} has {len(children)} dependent child task(s): {preview}\n"
+        "What should happen to them?\n"
+        "  [u] Unlink — remove the dependency on this task\n"
+        "  [a] Archive — also archive every non-archived descendant\n"
+        "  [c] Cancel — leave this task as-is",
+    )
+    try:
+        reply = input("Choice [u/a/c]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\n(cancelled)")
+        return "cancel"
+    if reply in ("u", "unlink"):
+        return "unlink"
+    if reply in ("a", "archive"):
+        return "cascade"
+    return "cancel"
+
+
+def _unlink_children(conn, parent_id: str, children: list[str]) -> None:
+    for child in children:
+        kb.unlink_tasks(conn, parent_id, child)
+
+
+def _cascade_archive(conn, root_id: str) -> bool:
+    """Archive ``root_id`` and every non-archived descendant.
+
+    Walks the subtree once, archives leaves first so each ``archive_task``
+    call sees a consistent picture, then archives the root last.
+    """
+    order: list[str] = []
+    seen: set[str] = set()
+    stack = [root_id]
+    while stack:
+        node = stack.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        order.append(node)
+        stack.extend(kb.dependent_child_ids(conn, node))
+    # Archive descendants first (deepest -> shallowest), root last.
+    for tid in reversed(order):
+        if tid == root_id:
+            continue
+        kb.archive_task(conn, tid)
+    return kb.archive_task(conn, root_id)
 
 
 def _cmd_tail(args: argparse.Namespace) -> int:

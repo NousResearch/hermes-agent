@@ -1587,6 +1587,24 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return [r["child_id"] for r in rows]
 
 
+def dependent_child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Return ids of non-archived children of ``task_id``.
+
+    Used by archive flows: ``recompute_ready`` only promotes a child when
+    every parent is ``done``, so an ``archived`` parent leaves its children
+    stranded in ``todo``. Callers check this before archiving so they can
+    surface a choice (unlink the children, cascade-archive them, or abort).
+    """
+    rows = conn.execute(
+        "SELECT l.child_id FROM task_links l "
+        "JOIN tasks t ON t.id = l.child_id "
+        "WHERE l.parent_id = ? AND t.status != 'archived' "
+        "ORDER BY l.child_id",
+        (task_id,),
+    ).fetchall()
+    return [r["child_id"] for r in rows]
+
+
 def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Optional[str]]]:
     """Return ``(parent_id, result)`` for every done parent of ``task_id``."""
     rows = conn.execute(

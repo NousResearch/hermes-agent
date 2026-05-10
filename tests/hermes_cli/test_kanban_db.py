@@ -454,6 +454,38 @@ def test_archive_hides_from_default_list(kanban_home):
         assert len(kb.list_tasks(conn, include_archived=True)) == 1
 
 
+def test_dependent_child_ids_returns_only_non_archived(kanban_home):
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="parent")
+        b = kb.create_task(conn, title="b", parents=[a])
+        c = kb.create_task(conn, title="c", parents=[a])
+        d = kb.create_task(conn, title="d", parents=[a])
+        # Archive one child; it should drop out of the dependent set.
+        kb.archive_task(conn, d)
+        deps = kb.dependent_child_ids(conn, a)
+    assert deps == sorted([b, c])
+
+
+def test_dependent_child_ids_empty_when_no_links(kanban_home):
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="solo")
+        assert kb.dependent_child_ids(conn, a) == []
+
+
+def test_archive_parent_strands_children_without_intervention(kanban_home):
+    # Reproducer: with no unlink/cascade, archiving a parent leaves dependent
+    # children stuck in 'todo' because recompute_ready only promotes when
+    # parents are 'done'. The CLI surfaces a choice; this asserts the raw
+    # DB behavior the helper exists to detect.
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="parent")
+        b = kb.create_task(conn, title="child", parents=[a])
+        assert kb.get_task(conn, b).status == "todo"
+        assert kb.archive_task(conn, a)
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, b).status == "todo"
+
+
 # ---------------------------------------------------------------------------
 # Comments / events / worker context
 # ---------------------------------------------------------------------------

@@ -24,7 +24,7 @@ from utils import normalize_proxy_url
 logger = logging.getLogger(__name__)
 
 
-def _apply_text_hooks(text: str, event: "MessageEvent", session_id: Optional[str] = None) -> tuple[str, str]:
+def _apply_text_hooks(text: str, event: "MessageEvent", session_id: str | None = None) -> tuple[str, str]:
     """Apply pre_gateway_text_send hooks. Returns (action, text).
     action is 'allow', 'block', or 'rewrite'.
     """

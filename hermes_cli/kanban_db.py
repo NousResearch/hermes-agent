@@ -1826,7 +1826,7 @@ def _synthesize_ended_run(
 # ---------------------------------------------------------------------------
 
 def recompute_ready(conn: sqlite3.Connection) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done``.
+    """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
@@ -1844,7 +1844,7 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] == "done" for p in parents):
+            if all(p["status"] in ("done", "archived") for p in parents):
                 conn.execute(
                     "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
                     (task_id,),
@@ -1885,7 +1885,7 @@ def claim_task(
         undone = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
             (task_id,),
         ).fetchone()
         if undone:

@@ -1865,18 +1865,18 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 
 
 def _preserve_ctrl_enter_newline() -> bool:
-    """Detect environments where Ctrl+Enter must produce a newline, not submit.
+    """Detect environments where Ctrl+Enter/Ctrl+J must newline, not submit.
 
-    Native Windows, WSL, SSH sessions, and Windows Terminal all send Ctrl+Enter
-    as bare LF (c-j). On those terminals c-j must NOT be bound to submit;
-    binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
-    submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
-    some thin PTYs without SSH) still need c-j bound to submit, so we keep
-    that binding for those.
+    Native Windows, macOS, WSL, SSH sessions, and Windows Terminal all need
+    bare LF (c-j) preserved for multiline input. On those terminals c-j must
+    NOT be bound to submit; binding it to submit makes Ctrl+Enter/Ctrl+J
+    (intended as 'newline like Alt+Enter') submit instead. Bare local Linux
+    TTYs that deliver Enter as LF (docker exec, some thin PTYs without SSH)
+    still need c-j bound to submit, so we keep that binding for those.
 
     See issue #22379.
     """
-    if sys.platform == "win32":
+    if sys.platform in {"win32", "darwin"}:
         return True
     if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
         return True
@@ -1898,16 +1898,17 @@ def _preserve_ctrl_enter_newline() -> bool:
 def _bind_prompt_submit_keys(kb, handler) -> None:
     """Bind terminal Enter forms to the submit handler.
 
-    Enter is always submit. On POSIX we also bind c-j (LF) to submit because
-    some thin PTYs (docker exec, certain SSH flavors) deliver Enter as LF
-    instead of CR — without this, Enter appears dead on those terminals.
+    Enter is always submit. On bare local Linux/POSIX we also bind c-j (LF)
+    to submit because some thin PTYs (docker exec, certain SSH flavors) deliver
+    Enter as LF instead of CR — without this, Enter appears dead on those
+    terminals.
 
-    Exception: on Windows, WSL, SSH sessions, and Windows Terminal,
-    c-j is the wire encoding of Ctrl+Enter (a distinct keystroke from
-    plain Enter / c-m). We leave c-j unbound there so the c-j newline
-    handler registered separately can fire — giving the user an
-    Enter-involving newline keystroke without terminal settings changes.
-    See _preserve_ctrl_enter_newline() and issue #22379.
+    Exception: on macOS, Windows, WSL, SSH sessions, and Windows Terminal,
+    c-j is reserved for the newline binding registered separately. On Windows
+    Terminal it is the wire encoding of Ctrl+Enter; on macOS it is the user's
+    Ctrl+J newline shortcut. Leaving it unbound here lets the multiline handler
+    fire without conflicting with submit. See _preserve_ctrl_enter_newline()
+    and issue #22379.
     """
     kb.add("enter")(handler)
     if sys.platform != "win32" and not _preserve_ctrl_enter_newline():
@@ -5035,7 +5036,7 @@ class HermesCLI:
                 )
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
+        _cprint(f"  {_DIM}Multi-line: Ctrl+J or Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
         if _is_termux_environment():
             _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
@@ -11041,26 +11042,22 @@ class HermesCLI:
         def handle_alt_enter(event):
             """Alt+Enter inserts a newline for multi-line input.
 
-            Works on mac/Linux/WSL. On Windows Terminal this keystroke is
-            intercepted at the terminal layer (toggles fullscreen) and never
-            reaches here — Windows users get newline via Ctrl+Enter instead
-            (bound below as c-j, since WT delivers Ctrl+Enter as LF).
+            Works on mac/Linux/WSL. Ctrl+J is also reserved for the same
+            newline handler on macOS, Windows Terminal, WSL, and SSH sessions
+            where c-j should not submit the prompt.
             """
             event.current_buffer.insert_text('\n')
 
         if _preserve_ctrl_enter_newline():
             @kb.add('c-j')
             def handle_ctrl_enter_newline(event):
-                """Ctrl+Enter inserts a newline on Windows, WSL, SSH, and WT.
+                """Ctrl+J/Ctrl+Enter inserts a newline in preserved environments.
 
                 Windows Terminal (incl. WSL/SSH sessions through it) delivers
-                Ctrl+Enter as LF (c-j), distinct from plain Enter (c-m). This
-                binding makes Ctrl+Enter the equivalent of Alt+Enter on those
-                terminals, giving an Enter-involving newline keystroke
-                without requiring terminal settings changes. Ctrl+J (the raw
-                LF keystroke) also triggers this by virtue of being the same
-                key code — a harmless side effect since Ctrl+J has no
-                conflicting Hermes binding. See issue #22379.
+                Ctrl+Enter as LF (c-j), distinct from plain Enter (c-m). macOS
+                users can press Ctrl+J directly for a newline. This binding
+                makes those keystrokes the equivalent of Alt+Enter without
+                requiring terminal settings changes. See issue #22379.
                 """
                 event.current_buffer.insert_text('\n')
 

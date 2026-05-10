@@ -168,9 +168,9 @@ class TestPromptToolkitTerminalCompatibility:
 
         On a bare local POSIX TTY (no SSH/WSL/WT) we keep c-j → submit so
         Enter works on thin PTYs (docker exec, certain ssh configurations).
-        On Windows, WSL, SSH sessions, and Windows Terminal we leave c-j
-        unbound here so it can be used as the Ctrl+Enter newline keystroke
-        without conflicting with submit. See issue #22379.
+        On macOS, Windows, WSL, SSH sessions, and Windows Terminal we leave
+        c-j unbound here so it can be used as the Ctrl+J/Ctrl+Enter newline
+        keystroke without conflicting with submit. See issue #22379.
         """
         import sys as _sys
         import os as _os
@@ -197,6 +197,15 @@ class TestPromptToolkitTerminalCompatibility:
         with _patch.object(_sys, "platform", "linux"), \
              _patch.dict(_os.environ, {"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22"}, clear=True), \
              _patch("builtins.open", side_effect=OSError("no /proc")):
+            kb = KeyBindings()
+            _bind_prompt_submit_keys(kb, submit_handler)
+            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+            assert bindings[("c-m",)] is submit_handler
+            assert ("c-j",) not in bindings
+
+        # macOS: Ctrl+J is a distinct newline shortcut, not submit.
+        with _patch.object(_sys, "platform", "darwin"), \
+             _patch.dict(_os.environ, {}, clear=True):
             kb = KeyBindings()
             _bind_prompt_submit_keys(kb, submit_handler)
             bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}

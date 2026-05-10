@@ -457,6 +457,89 @@ class CDPSupervisor:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         return {"ok": True, "dialog": snapshot_copy.to_dict()}
 
+    def evaluate_runtime(
+        self,
+        expression: str,
+        *,
+        return_by_value: bool = True,
+        await_promise: bool = True,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Evaluate ``expression`` in the page's Runtime context over the live WS.
+
+        Reuses the supervisor's already-connected WebSocket — zero subprocess
+        startup cost vs the agent-browser CLI ``eval`` command (which does
+        fork+exec+Node-startup+CDP-setup on every call).
+
+        Returns a dict shaped like ``{"ok": True, "result": <value>, "result_type": "..."}``
+        on success, or ``{"ok": False, "error": "..."}`` on failure.
+
+        ``return_by_value=True`` asks the browser to JSON-serialize the result
+        before sending it back, matching DevTools-console semantics for
+        primitive / plain-object expressions. For DOM nodes or non-serializable
+        objects, the browser returns a description string in ``result_type``.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return {"ok": False, "error": "supervisor loop is not running"}
+
+        with self._state_lock:
+            if not self._active:
+                return {"ok": False, "error": "supervisor is not active"}
+            session_id = self._page_session_id
+
+        if not session_id:
+            return {"ok": False, "error": "supervisor has no attached page session"}
+
+        async def _do_eval() -> Dict[str, Any]:
+            return await self._cdp(
+                "Runtime.evaluate",
+                {
+                    "expression": expression,
+                    "returnByValue": return_by_value,
+                    "awaitPromise": await_promise,
+                    # userGesture matters for things like clipboard / fullscreen
+                    # APIs that require a user-activation context.
+                    "userGesture": True,
+                },
+                session_id=session_id,
+                timeout=timeout,
+            )
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(_do_eval(), loop)
+            response = fut.result(timeout=timeout + 1)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        # Runtime.evaluate response shape:
+        #   {"id": N, "result": {"result": {"type": "...", "value": ..., ...},
+        #                         "exceptionDetails": {...} (only on error)}}
+        result_payload = response.get("result", {}) if isinstance(response, dict) else {}
+        exception_details = result_payload.get("exceptionDetails")
+        if exception_details:
+            # Surface the JS-side exception with a clean message.
+            exc_text = exception_details.get("text") or "JavaScript exception"
+            exc_obj = exception_details.get("exception") or {}
+            description = exc_obj.get("description")
+            if description:
+                exc_text = f"{exc_text}: {description}"
+            return {"ok": False, "error": exc_text}
+
+        result_obj = result_payload.get("result", {})
+        result_type = result_obj.get("type", "undefined")
+
+        if "value" in result_obj:
+            value = result_obj["value"]
+        elif result_type == "undefined":
+            value = None
+        else:
+            # Non-serializable (functions, DOM nodes, etc.) — return the
+            # browser's string description so the model gets *something*.
+            value = result_obj.get("description") or result_obj.get("unserializableValue")
+
+        return {"ok": True, "result": value, "result_type": result_type}
+
     # ── Supervisor loop internals ────────────────────────────────────────────
 
     def _thread_main(self) -> None:

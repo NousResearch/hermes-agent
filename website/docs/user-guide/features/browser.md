@@ -423,6 +423,15 @@ Check the browser console for any JavaScript errors
 
 Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
 
+`browser_console` also evaluates JavaScript when called with an `expression` argument — same shape as DevTools console, the result comes back parsed (JSON-serialized objects become dicts; primitive values stay primitive).
+
+```
+browser_console(expression="document.querySelector('h1').textContent")
+browser_console(expression="JSON.stringify(performance.timing)")
+```
+
+When a CDP supervisor is active for the current session (typical for any session that's run `browser_navigate` against a CDP-capable backend), evaluation runs over the supervisor's persistent WebSocket — no subprocess startup cost. Falls through to the standard agent-browser CLI path otherwise. Behaviour is identical either way; only latency changes.
+
 ### `browser_cdp`
 
 Raw Chrome DevTools Protocol passthrough — the escape hatch for browser operations not covered by the other tools. Use for native dialog handling, iframe-scoped evaluation, cookie/network control, or any CDP verb the agent needs.

@@ -4446,6 +4446,8 @@ def _resolve_name(name: str) -> str:
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
     name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
+    if len(name) > 4096 or len(arg) > 4096:
+        return _err(rid, 4000, "input too long")
     resolved = _resolve_name(name)
     if resolved != name:
         name = resolved
@@ -6527,6 +6529,8 @@ def _(rid, params: dict) -> dict:
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")
+    if len(cmd) > 4096:
+        return _err(rid, 4000, "input too long")
     try:
         from tools.approval import detect_dangerous_command
 

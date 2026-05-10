@@ -41,6 +41,7 @@ import hashlib
 import json
 import logging
 logger = logging.getLogger(__name__)
+import math
 import os
 import random
 import re
@@ -1646,12 +1647,9 @@ class AIAgent:
         except Exception:
             pass
 
-        # Iteration budget: the LLM is only notified when it actually exhausts
-        # the iteration budget (api_call_count >= max_iterations).  At that
-        # point we inject ONE message, allow one final API call, and if the
-        # model doesn't produce a text response, force a user-message asking
-        # it to summarise.  No intermediate pressure warnings — they caused
-        # models to "give up" prematurely on complex tasks (#7915).
+        # Iteration budget: warn as the turn approaches exhaustion, then inject
+        # one hard-stop summary request when max_iterations is reached.
+        self._budget_pressure_enabled = True
         self._budget_exhausted_injected = False
         self._budget_grace_call = False
 
@@ -14253,6 +14251,56 @@ class AIAgent:
         _inject_budget_warning = getattr(self, "_inject_budget_warning_into_last_tool_result", None)
         if _inject_budget_warning is not None:
             _inject_budget_warning(messages, api_call_count)
+
+    def _get_budget_warning(self, api_call_count: int) -> Optional[str]:
+        """Return an in-band warning when the current turn is close to its cap."""
+        if not getattr(self, "_budget_pressure_enabled", True):
+            return None
+        try:
+            max_iterations = float(self.max_iterations)
+        except (TypeError, ValueError):
+            return None
+        if max_iterations <= 0 or not math.isfinite(max_iterations):
+            return None
+
+        total = int(max_iterations)
+        used = max(0, int(api_call_count))
+        ratio = used / total if total else 0
+        if ratio < 0.70:
+            return None
+
+        remaining = max(total - used, 0)
+        if ratio >= 0.90:
+            return (
+                f"[BUDGET WARNING: {remaining} iteration(s) left. "
+                "Provide your final response NOW if you have enough information.]"
+            )
+        return (
+            f"[BUDGET: {remaining} iterations left. "
+            "Prioritize remaining work and avoid unnecessary tool calls.]"
+        )
+
+    def _inject_budget_warning_into_last_tool_result(self, messages: list, api_call_count: int) -> None:
+        warning = self._get_budget_warning(api_call_count)
+        if not warning or not messages:
+            return
+        last = messages[-1]
+        if not isinstance(last, dict) or last.get("role") != "tool":
+            return
+
+        content = last.get("content", "")
+        if isinstance(content, str):
+            try:
+                parsed = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                if warning not in content:
+                    last["content"] = content + f"\n\n{warning}"
+                return
+            if isinstance(parsed, dict):
+                parsed.setdefault("_budget_warning", warning)
+                last["content"] = json.dumps(parsed, ensure_ascii=False)
+                return
+        last["content"] = f"{content}\n\n{warning}"
 
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""

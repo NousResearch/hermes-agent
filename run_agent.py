@@ -1435,18 +1435,17 @@ class AIAgent:
             logger.info("Verbose logging enabled (third-party library logs suppressed)")
         else:
             if self.quiet_mode:
-                # In quiet mode (CLI default), suppress all tool/infra log
-                # noise on the *console*. The TUI has its own rich display
-                # for status; logger INFO/WARNING messages just clutter it.
-                # File handlers (agent.log, errors.log) still capture everything.
-                for quiet_logger in [
-                    'tools',               # all tools.* (terminal, browser, web, file, etc.)
-                    'run_agent',            # agent runner internals
-                    'trajectory_compressor',
-                    'cron',                 # scheduler (only relevant in daemon mode)
-                    'hermes_cli',           # CLI helpers
-                ]:
-                    logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+                # In quiet mode (CLI default), keep console output clean —
+                # but DO NOT raise per-logger levels. Doing so prevents the
+                # root logger's file handlers (agent.log, errors.log) from
+                # ever seeing the records, because Python checks
+                # logger.isEnabledFor() before handler propagation. We rely
+                # on the fact that hermes_logging.setup_logging() does not
+                # install a console StreamHandler in quiet mode — so INFO
+                # records flow to the file handlers but never reach a
+                # console. Any future noise reduction belongs at the
+                # handler level inside hermes_logging.py, not here.
+                pass
         
         # Internal stream callback (set during streaming TTS).
         # Initialized here so _vprint can reference it before run_conversation.
@@ -2822,6 +2821,90 @@ class AIAgent:
                 self.status_callback("warn", message)
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
+
+    def _log_stream_retry(
+        self,
+        *,
+        kind: str,
+        error: BaseException,
+        attempt: int,
+        max_attempts: int,
+        mid_tool_call: bool,
+    ) -> None:
+        """Record a transient stream-drop and retry to ``agent.log``.
+
+        Always logs a structured WARNING so users have a breadcrumb regardless
+        of UI verbosity.  Subagents in particular benefit because their
+        retries no longer spam the parent's terminal — but the file log keeps
+        full detail (provider, error class, attempt, base_url, subagent_id).
+        """
+        try:
+            try:
+                _summary = self._summarize_api_error(error)
+            except Exception:
+                _summary = str(error)
+            if _summary and len(_summary) > 240:
+                _summary = _summary[:240] + "…"
+            logger.warning(
+                "Stream %s on attempt %s/%s — retrying. "
+                "subagent_id=%s depth=%s provider=%s base_url=%s "
+                "error_type=%s error=%s",
+                kind,
+                attempt,
+                max_attempts,
+                getattr(self, "_subagent_id", None) or "-",
+                getattr(self, "_delegate_depth", 0),
+                self.provider or "-",
+                self.base_url or "-",
+                type(error).__name__,
+                _summary,
+                extra={"mid_tool_call": mid_tool_call},
+            )
+        except Exception:
+            logger.debug("stream-retry log emit failed", exc_info=True)
+
+    def _emit_stream_drop(
+        self,
+        *,
+        error: BaseException,
+        attempt: int,
+        max_attempts: int,
+        mid_tool_call: bool,
+    ) -> None:
+        """Emit a single user-visible line for a stream drop+retry.
+
+        Both top-level agents and subagents announce drops in the UI — the
+        parent prefixes subagent lines with ``[subagent-N]`` via ``log_prefix``
+        so they're easy to attribute.  All cases also write a structured
+        WARNING to ``agent.log`` via :meth:`_log_stream_retry` with the full
+        diagnostic detail (subagent_id, provider, base_url, error_type) for
+        post-hoc analysis.
+
+        Replaces the older two-line ``⚠️ Connection dropped …`` +
+        ``🔄 Reconnected …`` pair with a single information-dense line that
+        names the provider (so multi-provider sessions can tell who dropped)
+        and the error class without ambiguity.
+        """
+        kind = "drop mid tool-call" if mid_tool_call else "drop"
+        self._log_stream_retry(
+            kind=kind,
+            error=error,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            mid_tool_call=mid_tool_call,
+        )
+        provider = self.provider or "provider"
+        try:
+            self._emit_status(
+                f"⚠️ {provider} stream {kind} ({type(error).__name__}) "
+                f"— reconnecting, retry {attempt}/{max_attempts}"
+            )
+            self._touch_activity(
+                f"stream retry {attempt}/{max_attempts} "
+                f"after {type(error).__name__}"
+            )
+        except Exception:
+            pass
 
     def _emit_auxiliary_failure(self, task: str, exc: BaseException) -> None:
         """Surface a compact warning for failed auxiliary work."""
@@ -7719,17 +7802,9 @@ class AIAgent:
                             # retry silently.  Clear per-attempt state so the
                             # next stream starts clean.  Fire a "reconnecting"
                             # marker so the user sees why the preamble is
-                            # about to be re-streamed.
-                            logger.info(
-                                "Streaming attempt %s/%s died mid tool-call "
-                                "(%s: %s) after user-visible text; retrying "
-                                "silently to avoid losing the action. "
-                                "Preamble will re-stream.",
-                                _stream_attempt + 1,
-                                _max_stream_retries + 1,
-                                type(e).__name__,
-                                e,
-                            )
+                            # about to be re-streamed.  Structured WARNING is
+                            # emitted by ``_emit_stream_drop`` below; no
+                            # additional INFO line needed.
                             try:
                                 self._fire_stream_delta(
                                     "\n\n⚠ Connection dropped mid tool-call; "
@@ -7751,14 +7826,11 @@ class AIAgent:
                             result["partial_tool_names"] = []
                             deltas_were_sent["yes"] = False
                             first_delta_fired["done"] = False
-                            self._emit_status(
-                                f"⚠️ Connection dropped mid tool-call "
-                                f"({type(e).__name__}). Reconnecting… "
-                                f"(attempt {_stream_attempt + 2}/{_max_stream_retries + 1})"
-                            )
-                            self._touch_activity(
-                                f"stream retry {_stream_attempt + 2}/{_max_stream_retries + 1} "
-                                f"mid tool-call after {type(e).__name__}"
+                            self._emit_stream_drop(
+                                error=e,
+                                attempt=_stream_attempt + 2,
+                                max_attempts=_max_stream_retries + 1,
+                                mid_tool_call=True,
                             )
                             stale = request_client_holder.get("client")
                             if stale is not None:
@@ -7772,7 +7844,6 @@ class AIAgent:
                                 )
                             except Exception:
                                 pass
-                            self._emit_status("🔄 Reconnected — resuming…")
                             continue
 
                         # SSE error events from proxies (e.g. OpenRouter sends
@@ -7809,22 +7880,11 @@ class AIAgent:
                             # Transient network / timeout error. Retry the
                             # streaming request with a fresh connection first.
                             if _stream_attempt < _max_stream_retries:
-                                logger.info(
-                                    "Streaming attempt %s/%s failed (%s: %s), "
-                                    "retrying with fresh connection...",
-                                    _stream_attempt + 1,
-                                    _max_stream_retries + 1,
-                                    type(e).__name__,
-                                    e,
-                                )
-                                self._emit_status(
-                                    f"⚠️ Connection to provider dropped "
-                                    f"({type(e).__name__}). Reconnecting… "
-                                    f"(attempt {_stream_attempt + 2}/{_max_stream_retries + 1})"
-                                )
-                                self._touch_activity(
-                                    f"stream retry {_stream_attempt + 2}/{_max_stream_retries + 1} "
-                                    f"after {type(e).__name__}"
+                                self._emit_stream_drop(
+                                    error=e,
+                                    attempt=_stream_attempt + 2,
+                                    max_attempts=_max_stream_retries + 1,
+                                    mid_tool_call=False,
                                 )
                                 # Close the stale request client before retry
                                 stale = request_client_holder.get("client")
@@ -7841,18 +7901,27 @@ class AIAgent:
                                     )
                                 except Exception:
                                     pass
-                                self._emit_status("🔄 Reconnected — resuming…")
                                 continue
+                            # Retries exhausted. Log the final failure with
+                            # full diagnostic detail and surface a status
+                            # line — subagent lines get the ``[subagent-N]``
+                            # log_prefix so the parent can attribute them.
+                            logger.warning(
+                                "Streaming exhausted %s retries on transient "
+                                "error: subagent_id=%s depth=%s provider=%s "
+                                "error_type=%s error=%s",
+                                _max_stream_retries + 1,
+                                getattr(self, "_subagent_id", None) or "-",
+                                getattr(self, "_delegate_depth", 0),
+                                self.provider or "-",
+                                type(e).__name__,
+                                e,
+                            )
                             self._emit_status(
                                 "❌ Connection to provider failed after "
                                 f"{_max_stream_retries + 1} attempts. "
                                 "The provider may be experiencing issues — "
                                 "try again in a moment."
-                            )
-                            logger.warning(
-                                "Streaming exhausted %s retries on transient error: %s",
-                                _max_stream_retries + 1,
-                                e,
                             )
                         else:
                             _err_lower = str(e).lower()

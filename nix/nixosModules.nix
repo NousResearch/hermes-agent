@@ -843,6 +843,9 @@
       # MODE A: Native systemd service (default)
       # ══════════════════════════════════════════════════════════════════
       (lib.mkIf (!cfg.container.enable) {
+        # Enable nix-ld so pre-compiled binaries (agent-browser, etc.) work
+        programs.nix-ld.enable = lib.mkDefault true;
+
         systemd.services.hermes-agent = {
           description = "Hermes Agent Gateway";
           wantedBy = [ "multi-user.target" ];

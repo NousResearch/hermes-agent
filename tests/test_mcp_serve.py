@@ -1237,3 +1237,180 @@ class TestEventBridgePollE2E:
         """Verify the poll interval constant."""
         from mcp_serve import POLL_INTERVAL
         assert POLL_INTERVAL == 0.2
+
+
+# ---------------------------------------------------------------------------
+# Regression: EventBridge._poll_once must hold self._lock when touching
+# _last_poll_timestamps (issue #23096).
+#
+# Every other method on EventBridge (_enqueue, poll_events, wait_for_event,
+# list_pending_approvals, respond_to_approval) acquires self._lock before
+# reading or mutating shared state. _poll_once was an outlier: it read at
+# line 386 and wrote at line 443 from the background poll thread without
+# any lock, racing with the foreground methods. These tests pin that
+# invariant by replacing _last_poll_timestamps with a wrapper that fails
+# fast when the bridge's lock is not held by the current thread.
+# ---------------------------------------------------------------------------
+
+class TestEventBridgePollOnceLockInvariant:
+    """Pin the lock-discipline invariant for EventBridge._poll_once."""
+
+    @staticmethod
+    def _instrument(bridge):
+        """Swap bridge state for instrumented versions that fail when
+        ``bridge._lock`` is not owned by the current thread on access.
+
+        Uses ``threading.RLock`` (instead of the default ``threading.Lock``)
+        purely so the test can introspect ownership via ``_is_owned``.
+        Production code only ever uses ``with self._lock:`` — both lock
+        flavors are interchangeable for that contract.
+        """
+        bridge._lock = threading.RLock()
+
+        class LockEnforcedDict(dict):
+            """Dict that asserts ``bridge._lock`` is held on every access."""
+
+            def _assert_held(self, op):
+                assert bridge._lock._is_owned(), (
+                    f"_last_poll_timestamps {op} happened without holding "
+                    "bridge._lock — see issue #23096"
+                )
+
+            def __getitem__(self, key):
+                self._assert_held("__getitem__")
+                return super().__getitem__(key)
+
+            def __setitem__(self, key, value):
+                self._assert_held("__setitem__")
+                super().__setitem__(key, value)
+
+            def get(self, key, default=None):
+                self._assert_held("get")
+                return super().get(key, default)
+
+        bridge._last_poll_timestamps = LockEnforcedDict()
+        return bridge
+
+    def _seed_session_with_messages(self, tmp_path, session_id, messages):
+        """Create a sessions.json + state.db pair that _poll_once will scan."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir(exist_ok=True)
+        db_path = tmp_path / "state.db"
+
+        sessions_data = {
+            f"agent:main:telegram:dm:{session_id}": {
+                "session_key": f"agent:main:telegram:dm:{session_id}",
+                "session_id": session_id,
+                "platform": "telegram",
+                "updated_at": "2026-03-29T15:00:05",
+                "origin": {"platform": "telegram", "chat_id": session_id},
+            }
+        }
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+        _create_test_db(db_path, session_id, messages)
+        return sessions_dir, db_path
+
+    @staticmethod
+    def _stub_db(db_path):
+        class _StubDB:
+            def get_messages(self, sid):
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                    (sid,),
+                ).fetchall()
+                conn.close()
+                return [dict(r) for r in rows]
+        return _StubDB()
+
+    def test_read_and_write_hold_lock(self, tmp_path, monkeypatch):
+        """A single _poll_once that exercises both the read at line 386 and
+        the write at line 443 must hold the lock for both."""
+        import mcp_serve
+        session_id = "20260329_150000_lock_rw"
+        sessions_dir, db_path = self._seed_session_with_messages(
+            tmp_path,
+            session_id,
+            [
+                {"role": "user", "content": "Hi",
+                 "timestamp": "2026-03-29T15:00:01"},
+                {"role": "assistant", "content": "Hello",
+                 "timestamp": "2026-03-29T15:00:02"},
+            ],
+        )
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        bridge = self._instrument(mcp_serve.EventBridge())
+        bridge._poll_once(self._stub_db(db_path))
+
+    def test_repeated_polls_keep_lock_invariant(self, tmp_path, monkeypatch):
+        """Multiple _poll_once calls (read-only and read-then-write) keep
+        the invariant. The first poll seeds _last_poll_timestamps, later
+        polls re-read it; both paths must stay under the lock."""
+        import mcp_serve
+        session_id = "20260329_150000_lock_repeat"
+        sessions_dir, db_path = self._seed_session_with_messages(
+            tmp_path,
+            session_id,
+            [{"role": "user", "content": "Hi",
+              "timestamp": "2026-03-29T15:00:01"}],
+        )
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        bridge = self._instrument(mcp_serve.EventBridge())
+        db = self._stub_db(db_path)
+
+        bridge._poll_once(db)
+
+        # Touch the DB so the second poll re-enters the loop body instead of
+        # short-circuiting on the unchanged-mtime guard.
+        os.utime(db_path, None)
+        bridge._poll_once(db)
+
+    def test_concurrent_polls_do_not_race(self, tmp_path, monkeypatch):
+        """Hammer _poll_once concurrently and confirm the lock invariant
+        survives — i.e. the dict is never read or mutated outside the lock
+        even under heavy contention from the foreground bridge API."""
+        import mcp_serve
+        session_id = "20260329_150000_lock_concurrent"
+        sessions_dir, db_path = self._seed_session_with_messages(
+            tmp_path,
+            session_id,
+            [{"role": "user", "content": "Hi",
+              "timestamp": "2026-03-29T15:00:01"}],
+        )
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        bridge = self._instrument(mcp_serve.EventBridge())
+        db = self._stub_db(db_path)
+
+        errors: list[BaseException] = []
+
+        def hammer_poll():
+            try:
+                for _ in range(20):
+                    bridge._poll_once(db)
+                    os.utime(db_path, None)
+            except BaseException as exc:  # pragma: no cover - capture for assert
+                errors.append(exc)
+
+        def hammer_foreground():
+            try:
+                for _ in range(50):
+                    bridge.poll_events(after_cursor=0)
+                    bridge.list_pending_approvals()
+            except BaseException as exc:  # pragma: no cover
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=hammer_poll),
+            threading.Thread(target=hammer_poll),
+            threading.Thread(target=hammer_foreground),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"Race detected under concurrent _poll_once: {errors}"

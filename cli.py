@@ -2647,10 +2647,18 @@ class HermesCLI:
             pass
 
     def _recover_after_resize(self, app, original_on_resize) -> None:
-        """Recover a resized classic CLI without desynchronizing cursor state."""
-        self._clear_prompt_toolkit_screen(app, rebuild_scrollback=True)
-        _replay_output_history()
-        original_on_resize()
+        """Recover a resized classic CLI without wiping banner scrollback."""
+        try:
+            original_on_resize()
+        finally:
+            try:
+                app.renderer.reset(leave_alternate_screen=False)
+            except Exception:
+                pass
+            try:
+                app.invalidate()
+            except Exception:
+                pass
 
     def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.12) -> None:
         """Debounce resize redraws so footer chrome is not stamped into scrollback."""
@@ -12264,10 +12272,10 @@ class HermesCLI:
         # It's not just column-shrink: widening, row-shrinking, and
         # multiplexer-driven SIGWINCH-less redraws (cmux / tmux tab switch)
         # all produce the same class of drift, where the renderer's tracked
-        # _cursor_pos.y no longer matches terminal reality. The only reliable
-        # recovery is a full screen-clear (\x1b[2J\x1b[H) before the next
-        # redraw, so we force one on every resize rather than trying to
-        # compute the exact drift.
+        # _cursor_pos.y no longer matches terminal reality. We still need a
+        # hard renderer reset after each resize, but we must not wipe the
+        # physical scrollback here or we erase the startup banner/tool
+        # summary that was printed before prompt_toolkit owned the prompt.
         _original_on_resize = app._on_resize
 
         def _resize_clear_ghosts():

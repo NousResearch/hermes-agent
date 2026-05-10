@@ -5597,6 +5597,32 @@ class HermesCLI:
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 
+    def _handle_sessions_command(self) -> None:
+        """Handle /sessions by browsing prior sessions and relaunching into the selection."""
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
+            return
+
+        sessions = self._session_db.list_sessions_rich(
+            source=None, exclude_sources=["tool"], limit=500
+        )
+        if not sessions:
+            print("No sessions found.")
+            return
+
+        from hermes_cli.main import _session_browse_picker
+
+        selected_id = _session_browse_picker(sessions)
+        if not selected_id:
+            print("Cancelled.")
+            return
+
+        print(f"Resuming session: {selected_id}")
+        from hermes_cli.relaunch import relaunch
+
+        relaunch(["--resume", selected_id])
+
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy.
 
@@ -6922,6 +6948,8 @@ class HermesCLI:
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "sessions":
+            self._handle_sessions_command()
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "gquota":

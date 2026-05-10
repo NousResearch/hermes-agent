@@ -486,3 +486,46 @@ class TestProviderResolution:
         cli = _make_cli()
         assert isinstance(cli.model, str)
         assert isinstance(cli.model, str) and '/' in cli.model
+
+
+class TestSessionsCommand:
+    def test_sessions_command_relaunches_selected_session(self, capsys):
+        cli = _make_cli()
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [{"id": "session-abc"}]
+
+        with patch("hermes_cli.main._session_browse_picker", return_value="session-abc") as mock_picker, \
+             patch("hermes_cli.relaunch.relaunch") as mock_relaunch:
+            assert cli.process_command("/sessions") is True
+
+        cli._session_db.list_sessions_rich.assert_called_once_with(
+            source=None,
+            exclude_sources=["tool"],
+            limit=500,
+        )
+        mock_picker.assert_called_once_with([{"id": "session-abc"}])
+        mock_relaunch.assert_called_once_with(["--resume", "session-abc"])
+        assert "Resuming session: session-abc" in capsys.readouterr().out
+
+    def test_sessions_command_cancel_does_not_relaunch(self, capsys):
+        cli = _make_cli()
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [{"id": "session-abc"}]
+
+        with patch("hermes_cli.main._session_browse_picker", return_value=None), \
+             patch("hermes_cli.relaunch.relaunch") as mock_relaunch:
+            assert cli.process_command("/sessions") is True
+
+        mock_relaunch.assert_not_called()
+        assert "Cancelled." in capsys.readouterr().out
+
+    def test_sessions_command_prints_when_no_sessions_exist(self, capsys):
+        cli = _make_cli()
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = []
+
+        with patch("hermes_cli.main._session_browse_picker") as mock_picker:
+            assert cli.process_command("/sessions") is True
+
+        mock_picker.assert_not_called()
+        assert "No sessions found." in capsys.readouterr().out

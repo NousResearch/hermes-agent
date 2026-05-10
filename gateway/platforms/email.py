@@ -65,6 +65,24 @@ MAX_MESSAGE_LENGTH = 50_000
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
+
+def _safe_int_env(name: str, default: int) -> int:
+    """Parse an integer env var, falling back to the documented default."""
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "[Email] Invalid %s=%r; falling back to %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+
+
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID command identifying this client.
 
@@ -251,10 +269,10 @@ class EmailAdapter(BasePlatformAdapter):
         self._address = os.getenv("EMAIL_ADDRESS", "")
         self._password = os.getenv("EMAIL_PASSWORD", "")
         self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
-        self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
+        self._imap_port = _safe_int_env("EMAIL_IMAP_PORT", 993)
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
-        self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-        self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        self._smtp_port = _safe_int_env("EMAIL_SMTP_PORT", 587)
+        self._poll_interval = _safe_int_env("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
         #   platforms:

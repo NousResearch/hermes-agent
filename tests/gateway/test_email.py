@@ -254,6 +254,26 @@ class TestDispatchMessage(unittest.TestCase):
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
+    def test_malformed_numeric_env_values_fall_back_to_defaults(self):
+        """Malformed numeric env vars should not crash adapter init."""
+        from gateway.config import PlatformConfig
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_IMAP_PORT": "oops",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_SMTP_PORT": "broken",
+            "EMAIL_POLL_INTERVAL": "later",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        self.assertEqual(adapter._imap_port, 993)
+        self.assertEqual(adapter._smtp_port, 587)
+        self.assertEqual(adapter._poll_interval, 15)
+
     def test_self_message_filtered(self):
         """Messages from the agent's own address should be skipped."""
         import asyncio

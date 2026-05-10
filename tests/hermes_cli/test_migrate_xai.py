@@ -29,7 +29,7 @@ def trap_config(tmp_path: Path) -> Path:
         "auxiliary:\n"
         "  vision:\n"
         "    provider: xai\n"
-        "    model: grok-4-fast       # retiring\n"
+        "    model: grok-4-fast-reasoning  # retiring\n"
         "  compression:\n"
         "    provider: openai         # not affected\n"
         "    model: gpt-4o-mini\n"
@@ -89,7 +89,7 @@ class TestNoOpPaths:
             apply_migration(tmp_path / "absent.yaml", issues=[
                 RetirementIssue(
                     config_path="principal.model",
-                    current_model="grok-4",
+                    current_model="grok-3",
                     replacement="grok-4.3",
                 )
             ])

@@ -15467,6 +15467,9 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     Also refreshes the channel directory every 5 minutes and prunes the
     image/audio/document cache + expired ``hermes debug share`` pastes
     once per hour.
+
+    Proactive Communication Loop runs once per minute (gated internally by
+    peak flow window — only fires synthesis at the user's peak creative hour).
     """
     from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
@@ -15476,6 +15479,16 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
+    PROACTIVE_CHECK_EVERY = 1  # ticks — check every tick (internal gate handles timing)
+
+    # Proactive Communication Loop — initialized once per gateway lifetime
+    _proactive_scheduler = None
+    try:
+        from hermes_cli.proactive_scheduler import ProactiveScheduler
+        _proactive_scheduler = ProactiveScheduler(adapters=adapters, loop=loop)
+        logger.info("Proactive Communication Loop scheduler initialized")
+    except Exception as _e:
+        logger.debug("Proactive scheduler unavailable: %s", _e)
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
@@ -15541,6 +15554,15 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                 )
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
+
+        # Proactive Communication Loop — checks every tick whether any session
+        # is in its peak flow window and has a graph connection worth surfacing.
+        # Internal gates prevent double-firing and enforce daily rate limits.
+        if _proactive_scheduler is not None and tick_count % PROACTIVE_CHECK_EVERY == 0:
+            try:
+                _proactive_scheduler.tick()
+            except Exception as e:
+                logger.debug("Proactive scheduler tick error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")

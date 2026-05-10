@@ -50,7 +50,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
@@ -65,6 +65,10 @@ WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.enviro
 _log = logging.getLogger(__name__)
 
 app = FastAPI(title="Hermes Agent", version=__version__)
+
+# Aggregates dashboard plugin backends under ``/api/plugins/<name>/...`` so
+# routes can be rebuilt after installs / re-scans without a process restart.
+_dashboard_plugin_api_router = APIRouter()
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
@@ -3884,6 +3888,7 @@ async def get_dashboard_plugins():
 async def rescan_dashboard_plugins():
     """Force re-scan of dashboard plugins."""
     plugins = _get_dashboard_plugins(force_rescan=True)
+    _mount_plugin_api_routes()
     return {"ok": True, "count": len(plugins)}
 
 
@@ -4039,6 +4044,7 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
             detail=result.get("error") or "Install failed.",
         )
     _get_dashboard_plugins(force_rescan=True)
+    _mount_plugin_api_routes()
     # Strip internal paths from the response
     result.pop("after_install_path", None)
     return result
@@ -4085,6 +4091,7 @@ async def post_agent_plugin_update(request: Request, name: str):
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Update failed.")
     _get_dashboard_plugins(force_rescan=True)
+    _mount_plugin_api_routes()
     return result
 
 
@@ -4098,6 +4105,7 @@ async def delete_agent_plugin(request: Request, name: str):
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Remove failed.")
     _get_dashboard_plugins(force_rescan=True)
+    _mount_plugin_api_routes()
     return result
 
 
@@ -4187,14 +4195,24 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     return FileResponse(target, media_type=media_type)
 
 
-def _mount_plugin_api_routes():
-    """Import and mount backend API routes from plugins that declare them.
+def _mount_plugin_api_routes() -> None:
+    """Import dashboard plugin API modules into the aggregate plugin router.
 
-    Each plugin's ``api`` field points to a Python file that must expose
-    a ``router`` (FastAPI APIRouter).  Routes are mounted under
+    Each plugin's ``api`` manifest field names a Python file that must expose a
+    ``router`` (:class:`fastapi.APIRouter`).  Routes appear under
     ``/api/plugins/<name>/``.
+
+    Callable multiple times — for example after a disk re-scan or plugin
+    install — without duplicating mounts on ``app``.
     """
-    for plugin in _get_dashboard_plugins():
+    plugins = _get_dashboard_plugins()
+
+    _dashboard_plugin_api_router.routes.clear()
+    for mod_key in list(sys.modules):
+        if mod_key.startswith("hermes_dashboard_plugin_"):
+            sys.modules.pop(mod_key, None)
+
+    for plugin in plugins:
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
@@ -4224,14 +4242,15 @@ def _mount_plugin_api_routes():
             if router is None:
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
                 continue
-            app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
+            _dashboard_plugin_api_router.include_router(router, prefix=f"/{plugin['name']}")
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
 
 
-# Mount plugin API routes before the SPA catch-all.
+# Single include on ``app``; refresh by repopulating ``_dashboard_plugin_api_router``.
 _mount_plugin_api_routes()
+app.include_router(_dashboard_plugin_api_router, prefix="/api/plugins")
 
 mount_spa(app)
 

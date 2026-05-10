@@ -1940,6 +1940,49 @@ class TestDashboardPluginManifestExtensions:
         ]
 
 
+class TestPluginAPIAuth:
+    """Plugin ``api`` routers are reachable after discovery + remount."""
+
+    def test_plugin_route_allows_auth(self, tmp_path, monkeypatch):
+        import json
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        plug_dir = tmp_path / "plugins" / "pauth" / "dashboard"
+        plug_dir.mkdir(parents=True)
+        (plug_dir / "manifest.json").write_text(
+            json.dumps({
+                "name": "pauth",
+                "label": "PAuth",
+                "tab": {"path": "/pauth", "hidden": True},
+                "entry": "dist/index.js",
+                "api": "plugin_api.py",
+            }),
+            encoding="utf-8",
+        )
+        (plug_dir / "plugin_api.py").write_text(
+            "from fastapi import APIRouter\n"
+            "router = APIRouter()\n\n"
+            "@router.get('/ping')\n"
+            "async def ping():\n"
+            "    return {'ok': True}\n",
+            encoding="utf-8",
+        )
+
+        from hermes_cli import web_server
+        from starlette.testclient import TestClient
+
+        web_server._dashboard_plugins_cache = None
+        web_server._get_dashboard_plugins(force_rescan=True)
+        web_server._mount_plugin_api_routes()
+
+        client = TestClient(web_server.app)
+        hdr = web_server._SESSION_HEADER_NAME
+        tok = web_server._SESSION_TOKEN
+        resp = client.get("/api/plugins/pauth/ping", headers={hdr: tok})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+
 # ---------------------------------------------------------------------------
 # /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.
 #

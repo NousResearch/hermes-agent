@@ -1314,6 +1314,22 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Push a notification to the user when a kanban task transitions to
+        # `blocked` (whether via manual `kanban block` or auto-block on
+        # repeated failure). Off by default for backward compatibility — the
+        # existing `notify-subscribe` flow continues to work unchanged.
+        # Useful for unattended/multi-agent workflows where downstream tasks
+        # would otherwise stall silently.
+        "notify_on_block": False,
+        # Override the delivery target for `notify_on_block`. Empty string
+        # (the default) broadcasts to every connected platform's home
+        # channel — same fan-out as the gateway-restart notification. Set
+        # to `<platform>:<chat_id>[:<thread_id>]` to deliver to a single
+        # channel instead. Examples:
+        #     notify_on_block_channel: ""                       # all home channels
+        #     notify_on_block_channel: "telegram:123456789"     # one DM
+        #     notify_on_block_channel: "discord:9876:54321"     # thread
+        "notify_on_block_channel": "",
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

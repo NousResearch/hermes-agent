@@ -569,6 +569,90 @@ def test_notify_cursor_advances(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Per-board KV + global block-notifier cursor
+# ---------------------------------------------------------------------------
+
+def test_kv_set_get_roundtrip_and_delete(kanban_home):
+    conn = kb.connect()
+    try:
+        assert kb.get_kv(conn, "absent") is None
+        kb.set_kv(conn, "answer", "42")
+        assert kb.get_kv(conn, "answer") == "42"
+        # Upsert overwrites.
+        kb.set_kv(conn, "answer", "43")
+        assert kb.get_kv(conn, "answer") == "43"
+        # None deletes.
+        kb.set_kv(conn, "answer", None)
+        assert kb.get_kv(conn, "answer") is None
+    finally:
+        conn.close()
+
+
+def test_max_event_id_empty_and_populated(kanban_home):
+    conn = kb.connect()
+    try:
+        # Fresh board with no tasks → no events → 0.
+        assert kb.max_event_id(conn) == 0
+        tid = kb.create_task(conn, title="x")
+        # `created` event exists now.
+        assert kb.max_event_id(conn) > 0
+    finally:
+        conn.close()
+
+
+def test_block_notify_cursor_persists(kanban_home):
+    conn = kb.connect()
+    try:
+        assert kb.get_block_notify_cursor(conn) is None
+        kb.set_block_notify_cursor(conn, 17)
+        assert kb.get_block_notify_cursor(conn) == 17
+        kb.set_block_notify_cursor(conn, 99)
+        assert kb.get_block_notify_cursor(conn) == 99
+    finally:
+        conn.close()
+
+
+def test_unseen_block_events_filters_kind_and_cursor(kanban_home, all_assignees_spawnable):
+    """`unseen_block_events` returns only blocked/gave_up beyond cursor."""
+    conn = kb.connect()
+    try:
+        tid_a = kb.create_task(conn, title="a", assignee="w")
+        tid_b = kb.create_task(conn, title="b", assignee="w")
+
+        # Manual block on A → emits kind="blocked".
+        kb.block_task(conn, tid_a, reason="halt")
+
+        # Auto-block on B via failure_limit=1 spawn failure → kind="gave_up".
+        def _bad_spawn(task, ws):
+            raise RuntimeError("boom")
+        res = kb.dispatch_once(
+            conn, spawn_fn=_bad_spawn, failure_limit=1,
+        )
+        assert tid_b in res.auto_blocked
+
+        # No cursor yet: both block events are unseen.
+        events = kb.unseen_block_events(conn, after_id=0)
+        kinds = sorted(e.kind for e in events)
+        assert kinds == ["blocked", "gave_up"]
+        assert {e.task_id for e in events} == {tid_a, tid_b}
+
+        # `created` / `assigned` / `claimed` etc. are NOT returned.
+        assert all(e.kind in ("blocked", "gave_up") for e in events)
+
+        # Advance cursor past the first event; only the later one remains.
+        first_id = events[0].id
+        remaining = kb.unseen_block_events(conn, after_id=first_id)
+        assert len(remaining) == 1
+        assert remaining[0].id > first_id
+
+        # Beyond the last id: empty.
+        last_id = events[-1].id
+        assert kb.unseen_block_events(conn, after_id=last_id) == []
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # GC + retention
 # ---------------------------------------------------------------------------
 

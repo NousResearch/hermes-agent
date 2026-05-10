@@ -875,6 +875,16 @@ CREATE INDEX IF NOT EXISTS idx_events_run            ON task_events(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+
+-- Tiny per-board key/value store. Used by background watchers (e.g. the
+-- gateway's global block-notifier) that need a durable cursor outside
+-- of any per-task subscription. Keys are namespaced by the writer
+-- (e.g. ``notify_on_block.last_event_id``); values are opaque strings.
+CREATE TABLE IF NOT EXISTS kanban_kv (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at INTEGER NOT NULL
+);
 """
 
 
@@ -4299,6 +4309,115 @@ def advance_notify_cursor(
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
             (int(new_cursor), task_id, platform, chat_id, thread_id or ""),
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-board key/value store (kanban_kv)
+# ---------------------------------------------------------------------------
+#
+# Tiny KV used by background watchers that need a durable cursor outside
+# of any per-task subscription — e.g. the gateway's global block-notifier
+# which fans out ``blocked``/``gave_up`` events to home channels and must
+# persist its last delivered event id across gateway restarts.
+
+def get_kv(conn: sqlite3.Connection, key: str) -> Optional[str]:
+    """Return the stored value for ``key`` or ``None`` when unset."""
+    row = conn.execute(
+        "SELECT value FROM kanban_kv WHERE key = ?", (key,),
+    ).fetchone()
+    if row is None:
+        return None
+    val = row["value"]
+    return None if val is None else str(val)
+
+
+def set_kv(conn: sqlite3.Connection, key: str, value: Optional[str]) -> None:
+    """Upsert ``key`` → ``value``. ``None`` deletes the row."""
+    now = int(time.time())
+    with write_txn(conn):
+        if value is None:
+            conn.execute("DELETE FROM kanban_kv WHERE key = ?", (key,))
+        else:
+            conn.execute(
+                "INSERT INTO kanban_kv (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET "
+                "    value = excluded.value, updated_at = excluded.updated_at",
+                (key, str(value), now),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Global block-event stream (used by the gateway's notify_on_block watcher)
+# ---------------------------------------------------------------------------
+
+# Persisted under ``kanban_kv`` so the watcher's cursor survives gateway
+# restarts. Format: integer event id, stored as TEXT.
+_NOTIFY_ON_BLOCK_CURSOR_KEY = "notify_on_block.last_event_id"
+
+# Event kinds that represent "task is now blocked from the user's POV":
+#   * ``blocked``  — explicit ``kanban block`` (or workflow guard).
+#   * ``gave_up``  — circuit breaker tripped after ``failure_limit`` hits.
+# Both flip ``tasks.status`` to ``blocked``; the user cares about both.
+NOTIFY_ON_BLOCK_KINDS = ("blocked", "gave_up")
+
+
+def max_event_id(conn: sqlite3.Connection) -> int:
+    """Return the largest ``task_events.id`` on this board, or 0 if empty.
+
+    Used to seed the global block-notifier cursor on first enable so a
+    busy board doesn't flood the home channel with historical events.
+    """
+    row = conn.execute("SELECT MAX(id) AS m FROM task_events").fetchone()
+    if row is None or row["m"] is None:
+        return 0
+    return int(row["m"])
+
+
+def get_block_notify_cursor(conn: sqlite3.Connection) -> Optional[int]:
+    """Return the persisted block-notifier cursor for this board, or None."""
+    raw = get_kv(conn, _NOTIFY_ON_BLOCK_CURSOR_KEY)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def set_block_notify_cursor(conn: sqlite3.Connection, cursor: int) -> None:
+    """Persist the block-notifier cursor for this board."""
+    set_kv(conn, _NOTIFY_ON_BLOCK_CURSOR_KEY, str(int(cursor)))
+
+
+def unseen_block_events(
+    conn: sqlite3.Connection, *, after_id: int, limit: int = 100,
+) -> list[Event]:
+    """Return block events (``blocked`` / ``gave_up``) with ``id > after_id``.
+
+    Ordered by id ASC so the caller can advance the cursor monotonically.
+    ``limit`` caps a single tick's fan-out so a sudden burst of blocks
+    can't pin the watcher's event loop.
+    """
+    placeholders = ",".join("?" * len(NOTIFY_ON_BLOCK_KINDS))
+    q = (
+        f"SELECT * FROM task_events "
+        f"WHERE id > ? AND kind IN ({placeholders}) "
+        f"ORDER BY id ASC LIMIT ?"
+    )
+    params: list[Any] = [int(after_id), *NOTIFY_ON_BLOCK_KINDS, int(limit)]
+    rows = conn.execute(q, params).fetchall()
+    out: list[Event] = []
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"]) if r["payload"] else None
+        except Exception:
+            payload = None
+        out.append(Event(
+            id=r["id"], task_id=r["task_id"], kind=r["kind"],
+            payload=payload, created_at=r["created_at"],
+            run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
+        ))
+    return out
 
 
 # ---------------------------------------------------------------------------

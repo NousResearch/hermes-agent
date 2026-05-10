@@ -301,3 +301,290 @@ def test_dispatcher_tick_does_not_call_init_db(kanban_home, monkeypatch):
         "_kanban_notifier_watcher must not call _kb.init_db(board=slug) — "
         "see issue #21378."
     )
+
+
+# ---------------------------------------------------------------------------
+# Global block-notifier (kanban.notify_on_block)
+# ---------------------------------------------------------------------------
+#
+# Companion to the per-task notifier above. These tests exercise
+# `_kanban_global_block_watcher`: the gateway watcher that fans out
+# `blocked` / `gave_up` events to a configured channel (or all home
+# channels) without requiring per-task subscriptions.
+
+def _make_runner_with_adapter(platform):
+    """Construct a GatewayRunner stub with a single mocked adapter."""
+    from gateway.run import GatewayRunner
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    fake_adapter = MagicMock()
+    delivered: list[tuple[str, str, dict]] = []
+
+    async def _capture(chat_id, msg, metadata=None):
+        delivered.append((chat_id, msg, metadata or {}))
+
+    fake_adapter.send = AsyncMock(side_effect=_capture)
+    runner.adapters = {platform: fake_adapter}
+    return runner, fake_adapter, delivered
+
+
+def _stop_after(runner, ticks=3):
+    """Return a fast-sleep coroutine that stops the watcher after N ticks."""
+    counter = {"n": 0}
+    _orig = asyncio.sleep
+
+    async def _fast(_):
+        counter["n"] += 1
+        if counter["n"] >= ticks:
+            runner._running = False
+        await _orig(0)
+    return _fast
+
+
+@pytest.mark.asyncio
+async def test_global_block_watcher_disabled_by_default(kanban_home):
+    """When kanban.notify_on_block is unset/false, the watcher exits quietly."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    runner, fake_adapter, _delivered = _make_runner_with_adapter(Platform.TELEGRAM)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="ignored", assignee="w")
+        kb.block_task(conn, tid, reason="x")
+    finally:
+        conn.close()
+
+    # `load_config` returning an empty kanban section keeps the flag false.
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"kanban": {}},
+    ):
+        await asyncio.wait_for(
+            runner._kanban_global_block_watcher(interval=1),
+            timeout=5.0,
+        )
+    fake_adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_global_block_watcher_seeds_cursor_then_delivers_new_block(kanban_home):
+    """First enable seeds cursor at MAX(id); only NEW block events fire."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform, HomeChannel
+
+    runner, fake_adapter, delivered = _make_runner_with_adapter(Platform.TELEGRAM)
+
+    # Provide a home channel for the runner's config.
+    runner.config = MagicMock()
+    runner.config.get_home_channel = MagicMock(
+        return_value=HomeChannel(
+            platform=Platform.TELEGRAM, chat_id="home-chat", name="home",
+        )
+    )
+
+    # Pre-existing block (must NOT fire — it predates the cursor seed).
+    conn = kb.connect()
+    try:
+        old_tid = kb.create_task(conn, title="old", assignee="w")
+        kb.block_task(conn, old_tid, reason="historical")
+    finally:
+        conn.close()
+
+    cfg = {"kanban": {"notify_on_block": True, "notify_on_block_channel": ""}}
+
+    # Tick #1 should seed the cursor and find no NEW events. Then we
+    # inject a fresh block and a follow-up tick delivers it. The
+    # fast-sleep helper stops the watcher after a few ticks.
+    new_tid_holder: dict[str, str] = {}
+
+    real_sleep = asyncio.sleep
+    tick = {"n": 0}
+
+    async def _fast(_):
+        tick["n"] += 1
+        # tick 1 = initial 5s delay; tick 2 = first inter-iteration sleep
+        # AFTER the cursor-seeding pass. Insert at tick 2 so the seed
+        # pins the cursor at the historical event and the fresh block
+        # is seen as new on the next iteration.
+        if tick["n"] == 2:
+            conn2 = kb.connect()
+            try:
+                tid = kb.create_task(conn2, title="fresh", assignee="w")
+                kb.block_task(conn2, tid, reason="halt")
+                new_tid_holder["tid"] = tid
+            finally:
+                conn2.close()
+        if tick["n"] >= 5:
+            runner._running = False
+        await real_sleep(0)
+
+    with patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("gateway.run.asyncio.sleep", side_effect=_fast):
+        await asyncio.wait_for(
+            runner._kanban_global_block_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    assert "tid" in new_tid_holder
+    # Exactly one delivery, and it references the fresh block (not the
+    # historical one that predated the cursor seed).
+    assert fake_adapter.send.called
+    msgs = [m for (_chat, m, _meta) in delivered]
+    assert any(new_tid_holder["tid"] in m for m in msgs), (
+        f"expected delivery to mention fresh task {new_tid_holder['tid']}, got {msgs}"
+    )
+    assert not any("historical" in m for m in msgs), (
+        f"historical block must NOT be delivered, got {msgs}"
+    )
+
+    # Cursor was persisted past the new event id.
+    conn = kb.connect()
+    try:
+        cursor = kb.get_block_notify_cursor(conn)
+    finally:
+        conn.close()
+    assert cursor is not None and cursor > 0
+
+
+@pytest.mark.asyncio
+async def test_global_block_watcher_delivers_gave_up_with_failure_count(kanban_home):
+    """Auto-block via failure_limit emits `gave_up` and the watcher delivers it."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform, HomeChannel
+
+    runner, fake_adapter, delivered = _make_runner_with_adapter(Platform.TELEGRAM)
+    runner.config = MagicMock()
+    runner.config.get_home_channel = MagicMock(
+        return_value=HomeChannel(
+            platform=Platform.TELEGRAM, chat_id="ops", name="ops",
+        )
+    )
+
+    cfg = {"kanban": {"notify_on_block": True, "notify_on_block_channel": ""}}
+
+    # Seed the cursor first so the historical task creation events
+    # don't get re-attributed as block events. (They aren't `blocked`
+    # or `gave_up`, so they wouldn't fire anyway, but we want the
+    # cursor seeded before we induce the auto-block to mirror real life.)
+    real_sleep = asyncio.sleep
+    tick = {"n": 0}
+    induced = {"done": False}
+
+    async def _fast(_):
+        tick["n"] += 1
+        # Insert at tick 2 (after cursor seeding) so the gave_up event
+        # registers as new. See the seed-cursor test above. We emit
+        # `gave_up` directly with a payload that matches what
+        # `_record_task_failure` writes — simpler than driving a real
+        # auto-block through the dispatcher (which is already covered
+        # in test_kanban_core_functionality.py).
+        if tick["n"] == 2 and not induced["done"]:
+            conn2 = kb.connect()
+            try:
+                tid = kb.create_task(conn2, title="will-fail", assignee="w")
+                kb._append_event(
+                    conn2, tid, "gave_up",
+                    {
+                        "failures": 2,
+                        "effective_limit": 2,
+                        "limit_source": "dispatcher",
+                        "error": "boom",
+                        "trigger_outcome": "spawn_failed",
+                    },
+                )
+                induced["done"] = True
+                induced["tid"] = tid
+            finally:
+                conn2.close()
+        if tick["n"] >= 5:
+            runner._running = False
+        await real_sleep(0)
+
+    with patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("gateway.run.asyncio.sleep", side_effect=_fast):
+        await asyncio.wait_for(
+            runner._kanban_global_block_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    msgs = [m for (_chat, m, _meta) in delivered]
+    assert any(induced["tid"] in m and "blocked" in m for m in msgs), (
+        f"expected gave_up delivery for {induced.get('tid')!r}, got {msgs}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_global_block_watcher_explicit_channel_override(kanban_home):
+    """Explicit notify_on_block_channel overrides the home-channel fan-out."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform, HomeChannel
+
+    runner, fake_adapter, delivered = _make_runner_with_adapter(Platform.TELEGRAM)
+    # Set a DIFFERENT home channel so we can verify the explicit override
+    # routes elsewhere (specifically: chat_id="ops-chat", thread "42").
+    runner.config = MagicMock()
+    runner.config.get_home_channel = MagicMock(
+        return_value=HomeChannel(
+            platform=Platform.TELEGRAM, chat_id="home-default", name="home",
+        )
+    )
+
+    cfg = {"kanban": {
+        "notify_on_block": True,
+        "notify_on_block_channel": "telegram:ops-chat:42",
+    }}
+
+    real_sleep = asyncio.sleep
+    tick = {"n": 0}
+    induced = {"tid": None}
+
+    async def _fast(_):
+        tick["n"] += 1
+        if tick["n"] == 2:
+            conn2 = kb.connect()
+            try:
+                tid = kb.create_task(conn2, title="halt-me", assignee="w")
+                kb.block_task(conn2, tid, reason="manual halt")
+                induced["tid"] = tid
+            finally:
+                conn2.close()
+        if tick["n"] >= 5:
+            runner._running = False
+        await real_sleep(0)
+
+    with patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("gateway.run.asyncio.sleep", side_effect=_fast):
+        await asyncio.wait_for(
+            runner._kanban_global_block_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    # Routed to the explicit chat, not the home default; thread metadata set.
+    assert fake_adapter.send.called
+    chat_ids = {chat for (chat, _msg, _meta) in delivered}
+    assert "ops-chat" in chat_ids
+    assert "home-default" not in chat_ids
+    metas = [meta for (_chat, _msg, meta) in delivered]
+    assert any(meta.get("thread_id") == "42" for meta in metas)
+
+
+@pytest.mark.asyncio
+async def test_global_block_watcher_rejects_malformed_channel(kanban_home):
+    """Misconfigured channel disables the watcher loudly (no sends, no crash)."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    runner, fake_adapter, _delivered = _make_runner_with_adapter(Platform.TELEGRAM)
+
+    cfg = {"kanban": {
+        "notify_on_block": True,
+        "notify_on_block_channel": "this-is-not-valid",
+    }}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        await asyncio.wait_for(
+            runner._kanban_global_block_watcher(interval=1),
+            timeout=5.0,
+        )
+    fake_adapter.send.assert_not_called()

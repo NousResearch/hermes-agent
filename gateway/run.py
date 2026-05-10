@@ -3644,6 +3644,12 @@ class GatewayRunner:
         # so human-in-the-loop workflows hear back without polling.
         asyncio.create_task(self._kanban_notifier_watcher())
 
+        # Start background kanban global block-notifier — delivers `blocked`
+        # / `gave_up` events to a configured channel (or all home channels)
+        # without requiring per-task subscriptions. Gated by
+        # `kanban.notify_on_block`; no-op when disabled.
+        asyncio.create_task(self._kanban_global_block_watcher())
+
         # Start background kanban dispatcher — spawns workers for ready
         # tasks. Gated by `kanban.dispatch_in_gateway` (default True).
         # When false, users run `hermes kanban daemon` externally or
@@ -4089,6 +4095,249 @@ class GatewayRunner:
             )
         finally:
             conn.close()
+
+    async def _kanban_global_block_watcher(self, interval: float = 5.0) -> None:
+        """Fan-out ``blocked`` / ``gave_up`` events to a global channel.
+
+        Companion to ``_kanban_notifier_watcher``. Where that watcher
+        delivers terminal events to **per-task** subscribers registered
+        via ``hermes kanban notify-subscribe``, this watcher delivers a
+        single notification per block to a **global** target — typically
+        the user's home channel — so unattended workflows surface a stall
+        without requiring a subscription on every task.
+
+        Gated by ``kanban.notify_on_block`` (default false). When the flag
+        is off the loop exits immediately; flipping it on requires a
+        gateway restart, matching the dispatcher/notifier pattern.
+
+        Channel resolution (``kanban.notify_on_block_channel``):
+
+        * empty (default) — broadcasts to every connected platform's
+          home channel, mirroring ``_send_home_channel_startup_notifications``.
+        * ``"<platform>:<chat_id>[:<thread_id>]"`` — single explicit
+          target. ``thread_id`` may itself contain ``:`` (matrix room ids)
+          so the split caps at three pieces.
+
+        Cursor: persisted per board in ``kanban_kv`` so the watcher
+        survives gateway restarts without re-delivering. On first enable
+        the cursor is seeded to ``MAX(task_events.id)`` per board, so a
+        long-running install doesn't flood the home channel with weeks
+        of historical block events the moment the flag flips to true.
+        """
+        from gateway.config import Platform as _Platform
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            logger.warning(
+                "kanban block-notifier: config loader unavailable; disabled"
+            )
+            return
+        try:
+            from hermes_cli import kanban_db as _kb
+        except Exception:
+            logger.warning(
+                "kanban block-notifier: kanban_db not importable; disabled"
+            )
+            return
+
+        try:
+            cfg = _load_config()
+        except Exception as exc:
+            logger.warning(
+                "kanban block-notifier: cannot load config (%s); disabled", exc,
+            )
+            return
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if not kanban_cfg.get("notify_on_block", False):
+            return  # feature off — silent no-op
+
+        raw_target = str(kanban_cfg.get("notify_on_block_channel") or "").strip()
+        explicit_target: Optional[tuple[str, str, Optional[str]]] = None
+        if raw_target:
+            # Three-piece split keeps thread_ids that contain ':' intact
+            # (e.g. matrix room aliases). Anything malformed disables the
+            # watcher loudly — silent misconfig would hide the feature.
+            parts = raw_target.split(":", 2)
+            if len(parts) < 2 or not parts[0] or not parts[1]:
+                logger.warning(
+                    "kanban block-notifier: invalid kanban.notify_on_block_channel=%r "
+                    "(expected 'platform:chat_id[:thread_id]'); disabled",
+                    raw_target,
+                )
+                return
+            plat_str = parts[0].strip().lower()
+            try:
+                _Platform(plat_str)
+            except ValueError:
+                logger.warning(
+                    "kanban block-notifier: unknown platform %r in "
+                    "kanban.notify_on_block_channel; disabled", plat_str,
+                )
+                return
+            chat_id = parts[1].strip()
+            thread_id = parts[2].strip() if len(parts) == 3 and parts[2].strip() else None
+            explicit_target = (plat_str, chat_id, thread_id)
+            logger.info(
+                "kanban block-notifier: enabled (target=%s)", raw_target,
+            )
+        else:
+            logger.info(
+                "kanban block-notifier: enabled (broadcast to all home channels)"
+            )
+
+        # Initial delay so the gateway can finish wiring adapters.
+        await asyncio.sleep(5)
+
+        while self._running:
+            try:
+                def _collect() -> list[dict]:
+                    """Per-board: seed cursor on first run, then pull new events.
+
+                    Runs in a worker thread via ``asyncio.to_thread`` so the
+                    SQLite WAL lock never blocks the event loop. Returns one
+                    dict per board with ``events`` (possibly empty) and the
+                    ``new_cursor`` to persist after delivery.
+                    """
+                    out: list[dict] = []
+                    try:
+                        boards = _kb.list_boards(include_archived=False)
+                    except Exception:
+                        boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+                    for board_meta in boards:
+                        slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
+                        try:
+                            conn = _kb.connect(board=slug)
+                        except Exception:
+                            continue
+                        try:
+                            cursor = _kb.get_block_notify_cursor(conn)
+                            if cursor is None:
+                                # First time the watcher sees this board:
+                                # seed at MAX(id) so historical events
+                                # don't flood the channel.
+                                seed = _kb.max_event_id(conn)
+                                _kb.set_block_notify_cursor(conn, seed)
+                                cursor = seed
+                            events = _kb.unseen_block_events(
+                                conn, after_id=cursor, limit=50,
+                            )
+                            if not events:
+                                continue
+                            tasks_by_id: dict[str, Any] = {}
+                            for ev in events:
+                                if ev.task_id in tasks_by_id:
+                                    continue
+                                tasks_by_id[ev.task_id] = _kb.get_task(
+                                    conn, ev.task_id,
+                                )
+                            out.append({
+                                "board": slug,
+                                "events": events,
+                                "tasks": tasks_by_id,
+                                "new_cursor": max(ev.id for ev in events),
+                            })
+                        finally:
+                            conn.close()
+                    return out
+
+                def _persist(slug: str, cursor: int) -> None:
+                    conn = _kb.connect(board=slug)
+                    try:
+                        _kb.set_block_notify_cursor(conn, cursor)
+                    finally:
+                        conn.close()
+
+                batches = await asyncio.to_thread(_collect)
+                for batch in batches:
+                    slug = batch["board"]
+                    events = batch["events"]
+                    tasks = batch["tasks"]
+                    delivered_all = True
+                    for ev in events:
+                        task = tasks.get(ev.task_id)
+                        title = (
+                            (task.title if task else ev.task_id)[:120]
+                        )
+                        who = (task.assignee if task and task.assignee else None)
+                        tag = f"@{who} " if who else ""
+                        if ev.kind == "blocked":
+                            reason = ""
+                            if ev.payload and ev.payload.get("reason"):
+                                reason = f": {str(ev.payload['reason'])[:160]}"
+                            msg = (
+                                f"⏸ {tag}Kanban {ev.task_id} blocked"
+                                f" — {title}{reason}"
+                            )
+                        else:  # gave_up — auto-block on repeated failures
+                            err = ""
+                            if ev.payload and ev.payload.get("error"):
+                                err = f"\n{str(ev.payload['error'])[:200]}"
+                            limit = ""
+                            if ev.payload and ev.payload.get("effective_limit"):
+                                limit = (
+                                    f" (after {ev.payload['effective_limit']} "
+                                    f"failures)"
+                                )
+                            msg = (
+                                f"✖ {tag}Kanban {ev.task_id} blocked"
+                                f"{limit} — {title}{err}"
+                            )
+                        # Resolve targets: explicit override, or every
+                        # connected platform's home channel.
+                        targets: list[tuple[str, str, Optional[str]]] = []
+                        if explicit_target is not None:
+                            targets.append(explicit_target)
+                        else:
+                            for platform, _adapter in self.adapters.items():
+                                home = self.config.get_home_channel(platform)
+                                if not home or not home.chat_id:
+                                    continue
+                                targets.append((
+                                    platform.value,
+                                    str(home.chat_id),
+                                    str(home.thread_id) if home.thread_id else None,
+                                ))
+                        any_send_failed = False
+                        for plat_str, chat_id, thread_id in targets:
+                            try:
+                                plat = _Platform(plat_str)
+                            except ValueError:
+                                continue
+                            adapter = self.adapters.get(plat)
+                            if adapter is None:
+                                # Platform not currently connected. Treat as
+                                # delivered for this target — we don't want
+                                # to block the cursor forever waiting for an
+                                # offline platform; the next block event will
+                                # be delivered when it reconnects.
+                                continue
+                            metadata: dict[str, Any] = {}
+                            if thread_id:
+                                metadata["thread_id"] = thread_id
+                            try:
+                                await adapter.send(chat_id, msg, metadata=metadata)
+                            except Exception as exc:
+                                any_send_failed = True
+                                logger.warning(
+                                    "kanban block-notifier: send failed for "
+                                    "%s on %s: %s",
+                                    ev.task_id, plat_str, exc,
+                                )
+                        if any_send_failed:
+                            # Stop the batch and retry next tick. Cursor
+                            # advances only past events we fully delivered.
+                            delivered_all = False
+                            break
+                    if delivered_all:
+                        await asyncio.to_thread(
+                            _persist, slug, batch["new_cursor"],
+                        )
+            except Exception as exc:
+                logger.warning("kanban block-notifier tick failed: %s", exc)
+            for _ in range(int(max(1, interval))):
+                if not self._running:
+                    return
+                await asyncio.sleep(1)
 
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.

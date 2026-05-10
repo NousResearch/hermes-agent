@@ -1731,6 +1731,8 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             "      dispatch_in_gateway: true      # default\n"
             "      dispatch_interval_seconds: 60\n"
             "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
+            "      notify_on_block: false        # push notification when a task transitions to blocked\n"
+            "      notify_on_block_channel: \"\"   # empty=all home channels; or platform:chat_id[:thread]\n"
             "\n"
             "Running both the gateway AND this standalone daemon will\n"
             "race for claims. If you truly need the old standalone\n"

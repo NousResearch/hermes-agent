@@ -47,12 +47,17 @@ The `hermes config set` command automatically routes values to the right file �
 Settings are resolved in this order (highest priority first):
 
 1. **CLI arguments** — e.g., `hermes chat --model anthropic/claude-sonnet-4` (per-invocation override)
-2. **`~/.hermes/config.yaml`** — the primary config file for all non-secret settings
-3. **`~/.hermes/.env`** — fallback for env vars; **required** for secrets (API keys, tokens, passwords)
-4. **Built-in defaults** — hardcoded safe defaults when nothing else is set
+2. **Profile config** — the active profile's `config.yaml` (for non-default profiles with [inheritance](/docs/user-guide/profiles#config-inheritance), profile overrides win over inherited values)
+3. **`~/.hermes/config.yaml`** — the default profile's config file (inherited by new profiles automatically)
+4. **`~/.hermes/.env`** — fallback for env vars; **required** for secrets (API keys, tokens, passwords)
+5. **Built-in defaults** — hardcoded safe defaults when nothing else is set
 
 :::info Rule of Thumb
 Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
+:::
+
+:::tip Profile Config Inheritance
+New profiles automatically inherit from `~/.hermes/config.yaml` (the default profile). This means you only specify what differs — shared settings like terminal backend, compression, and provider definitions carry over automatically. See [Config Inheritance](/docs/user-guide/profiles#config-inheritance) for details.
 :::
 
 ## Environment Variable Substitution

@@ -230,7 +230,9 @@ def total_system_ram_gb() -> float:
             with open("/proc/meminfo", "r") as fh:
                 for line in fh:
                     if line.startswith("MemTotal:"):
-                        kb = int(line.split()[1])
+                        parts = line.split()
+                        if len(parts) < 2: return 0.0
+                        kb = int(parts[1])
                         return round(kb / (1024**2), 1)
         except OSError:
             return 0.0

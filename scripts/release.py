@@ -641,6 +641,7 @@ AUTHOR_MAP = {
     "mason@growagainorchids.com": "masonjames",
     "108541149+amethystani@users.noreply.github.com": "amethystani",
     "ytchen0719@gmail.com": "liquidchen",
+    "mehmet.kar@std.yildiz.edu.tr": "mehmetkr-31",
     "am@studio1.tailb672fe.ts.net": "subtract0",
     "mike@grossmann.at": "ReqX",
     "axmaiqiu@gmail.com": "qWaitCrypto",

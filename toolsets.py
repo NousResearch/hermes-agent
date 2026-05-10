@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # xAI Batch API (async batch chat completions, gated on XAI_API_KEY)
+    "xai_batch_chat",
 ]
 
 
@@ -114,6 +116,16 @@ TOOLSETS = {
             "or keyboard focus. Works with any tool-capable model."
         ),
         "tools": ["computer_use"],
+        "includes": []
+    },
+
+    "xai_batch": {
+        "description": (
+            "xAI Batch API — submit many chat completions at once for "
+            "asynchronous processing (reduced pricing, higher rate limits, "
+            "up to 24h SLA)."
+        ),
+        "tools": ["xai_batch_chat"],
         "includes": []
     },
 

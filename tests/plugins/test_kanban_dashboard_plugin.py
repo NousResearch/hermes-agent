@@ -1723,3 +1723,65 @@ def test_dashboard_requests_default_board_explicitly():
     assert "SDK.fetchJSON(withBoard(`${API}/config`, board))" in dist
     assert "SDK.fetchJSON(withBoard(`${API}/boards`, board))" in dist
     assert "}, [loadBoardList, switchBoard, board]);" in dist
+
+
+def test_dashboard_assignee_inputs_preserve_casing():
+    """Assignee/specifier inputs must disable browser auto-capitalization.
+
+    Hermes profile names are case-sensitive — the dispatcher uses the
+    assignee string as a literal directory/profile lookup. Mobile browsers
+    (iOS/Android) and some IMEs auto-capitalize the first letter of any
+    text input by default, so a user typing ``analyst`` ends up submitting
+    ``Analyst`` and the dispatcher fails to spawn a matching profile,
+    leading to the crash loop reported in #21320.
+
+    The fix sets ``autoCapitalize="none"``, ``autoCorrect="off"``,
+    ``spellCheck=false``, and ``style={textTransform: "none"}`` on the
+    two assignee ``<Input>`` elements (inline triage/lane create-task
+    input + task-edit panel "(empty = unassign)" input).
+
+    This test pins those attributes in the compiled dist bundle so a
+    future rebuild that loses them fails CI immediately.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    # Both sites should have all four attributes. Count occurrences to
+    # ensure both inputs got the treatment, not just one.
+    assert dist.count('autoCapitalize: "none"') >= 2, (
+        "Expected autoCapitalize=\"none\" on both assignee inputs (inline "
+        "create + task-edit panel)"
+    )
+    assert dist.count('autoCorrect: "off"') >= 2
+    assert dist.count("spellCheck: false") >= 2
+    assert dist.count('textTransform: "none"') >= 2
+
+
+def test_dashboard_lane_head_preserves_assignee_casing():
+    """Lane headers must not visually uppercase profile names.
+
+    The previous CSS rule ``.hermes-kanban-lane-head { text-transform:
+    uppercase; letter-spacing: 0.08em }`` made a valid ``analyst`` profile
+    appear as ``ANALYST`` in column headers; users then copied the
+    uppercase form back into edits, hitting the same crash loop as the
+    auto-capitalization path. The fix removes ``text-transform: uppercase``
+    from the rule and tightens letter-spacing.
+
+    Static-asset regression test for the rule contents.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    style = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    # Locate the .hermes-kanban-lane-head block. Use a generous slice to
+    # keep this resilient to nearby unrelated CSS edits.
+    marker = ".hermes-kanban-lane-head {"
+    idx = style.find(marker)
+    assert idx != -1, "could not locate .hermes-kanban-lane-head rule"
+    end = style.find("}", idx)
+    assert end != -1
+    rule = style[idx:end]
+
+    assert "text-transform: uppercase" not in rule, (
+        "Lane head must not visually uppercase profile names — see #21320 "
+        "and the explanatory comment in the CSS rule."
+    )

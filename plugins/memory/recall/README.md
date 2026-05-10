@@ -19,12 +19,12 @@ Recall fills the gap underneath it:
 - let the user review, reject, activate, or mark candidates as promoted,
 - rank archive rows by deterministic quality signals and suggest same-subject consolidations,
 - explicitly promote reviewed high-quality observations into built-in Hermes memory,
-- expose a lightweight dashboard curation tab for filtered review/search/promote flows,
+- expose curation tools for filtered review/search/promote flows,
 - validate release behavior with isolated scale burn-in checks.
 
 ## Positioning
 
-> **Recall is the safety-first Hermes memory layer: local SQLite, searchable archive, redaction-at-rest, hash-chain audit, dashboard curation, and explicit promotion into trusted memory — no cloud, no API key, no silent mutation of `MEMORY.md` or `USER.md`.**
+> **Recall is the safety-first Hermes memory layer: local SQLite, searchable archive, redaction-at-rest, hash-chain audit, curation tools, and explicit promotion into trusted memory — no cloud, no API key, no silent mutation of `MEMORY.md` or `USER.md`.**
 
 Recall is not trying to beat every memory product on semantic magic. It wins on being Hermes-native, local, auditable, conservative, inspectable, and safe to promote from.
 
@@ -39,7 +39,7 @@ Recall is not trying to beat every memory product on semantic magic. It wins on 
 | Secret redaction before storage | partial/manual | provider-dependent | provider-dependent | ✅ |
 | Explicit promote-to-trusted-memory workflow | manual | provider-dependent | provider-dependent | ✅ |
 | Conservative lower-trust context labeling | n/a | often unclear | often unclear | ✅ |
-| Dashboard curation | ❌ | external dashboards | external dashboards | ✅ |
+| Built-in curation tools | ❌ | external dashboards | external dashboards | ✅ |
 | Easy to inspect/debug | ✅ | ❌ | ❌ / partial | ✅ |
 | Semantic/vector/graph power | ❌ | ✅ | ✅ | ❌ currently |
 | Best fit | Trusted facts | Semantic recall | Complex knowledge graphs | Safe local Hermes archive |
@@ -50,9 +50,8 @@ Recall is not trying to beat every memory product on semantic magic. It wins on 
 - Mirrors explicit built-in memory writes as high-confidence archive observations.
 - Uses SQLite FTS5/BM25 search with query normalization.
 - Prefetches conservative, source-labelled recall context before turns.
-- Provides curation tools for archive observations, quality ranking, filtered dashboard review queues, consolidation suggestions, reviewed consolidation apply, and explicit promotion.
+- Provides curation tools for archive observations, quality ranking, filtered review queues, consolidation suggestions, reviewed consolidation apply, and explicit promotion.
 - Provides archive health stats, build info, export/import backups, diagnostics, and audit verification.
-- Installs an optional Hermes dashboard plugin for browser-based Recall review.
 - Requires no external SaaS, vector DB, embeddings, or network service.
 
 ## What it does not do
@@ -195,8 +194,7 @@ Run standalone tests from this repo:
 
 ```bash
 python -m pytest tests/test_recall_roadmap.py -q
-python -m py_compile __init__.py store.py schema.py audit.py redaction.py recall_cli.py dashboard/plugin_api.py
-node --check dashboard/dist/index.js
+python -m py_compile __init__.py store.py schema.py audit.py redaction.py recall_cli.py
 ```
 
 Scale burn-in results are tracked in [`docs/BURNIN.md`](docs/BURNIN.md). The v0.3.4 operator check passed with 100,000 observations, 1,200 episodes, 3,000 audit events, verified FTS/ranking/consolidation, audit-chain OK, diagnose OK, and zero redaction-at-rest leaks.

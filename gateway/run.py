@@ -704,6 +704,9 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "api_mode": runtime.get("api_mode"),
+        "preserve_anthropic_thinking_blocks": runtime.get(
+            "preserve_anthropic_thinking_blocks", False
+        ),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
@@ -8363,6 +8366,9 @@ class GatewayRunner:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    preserve_anthropic_thinking_blocks=(
+                                        result.preserve_anthropic_thinking_blocks
+                                    ),
                                 )
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
@@ -8500,6 +8506,9 @@ class GatewayRunner:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    preserve_anthropic_thinking_blocks=(
+                        result.preserve_anthropic_thinking_blocks
+                    ),
                 )
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
@@ -12939,6 +12948,7 @@ class GatewayRunner:
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),
+                bool(runtime.get("preserve_anthropic_thinking_blocks", False)),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.

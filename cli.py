@@ -4014,6 +4014,9 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                preserve_anthropic_thinking_blocks=runtime.get(
+                    "preserve_anthropic_thinking_blocks", False
+                ),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
@@ -5958,6 +5961,9 @@ class HermesCLI:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    preserve_anthropic_thinking_blocks=(
+                        result.preserve_anthropic_thinking_blocks
+                    ),
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
@@ -6185,6 +6191,9 @@ class HermesCLI:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    preserve_anthropic_thinking_blocks=(
+                        result.preserve_anthropic_thinking_blocks
+                    ),
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
@@ -7233,6 +7242,9 @@ class HermesCLI:
                     api_mode=turn_route["runtime"].get("api_mode"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
+                    preserve_anthropic_thinking_blocks=turn_route["runtime"].get(
+                        "preserve_anthropic_thinking_blocks", False
+                    ),
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,

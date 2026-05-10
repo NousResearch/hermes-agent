@@ -876,6 +876,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    override_preserve_anthropic_thinking_blocks: bool = False,
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1018,6 +1019,11 @@ def _build_child_agent(
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
     effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
+    effective_preserve_anthropic_thinking_blocks = (
+        bool(override_preserve_anthropic_thinking_blocks)
+        if override_provider
+        else bool(getattr(parent_agent, "preserve_anthropic_thinking_blocks", False))
+    )
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
     )
@@ -1093,6 +1099,7 @@ def _build_child_agent(
         model=effective_model,
         provider=effective_provider,
         api_mode=effective_api_mode,
+        preserve_anthropic_thinking_blocks=effective_preserve_anthropic_thinking_blocks,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
         max_iterations=max_iterations,
@@ -2051,6 +2058,9 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
+                override_preserve_anthropic_thinking_blocks=creds.get(
+                    "preserve_anthropic_thinking_blocks", False
+                ),
                 override_acp_command=t.get("acp_command")
                 or acp_command
                 or creds.get("command"),
@@ -2417,6 +2427,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
+        "preserve_anthropic_thinking_blocks": bool(
+            runtime.get("preserve_anthropic_thinking_blocks", False)
+        ),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }

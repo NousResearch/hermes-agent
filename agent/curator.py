@@ -1649,6 +1649,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     _base_url = None
     _api_mode = None
     _resolved_provider = None
+    _preserve_anthropic_thinking_blocks = False
     _model_name = ""
     try:
         from hermes_cli.config import load_config
@@ -1665,6 +1666,9 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         _api_key = _rp.get("api_key")
         _base_url = _rp.get("base_url")
         _api_mode = _rp.get("api_mode")
+        _preserve_anthropic_thinking_blocks = bool(
+            _rp.get("preserve_anthropic_thinking_blocks", False)
+        )
         _resolved_provider = _rp.get("provider") or _provider
     except Exception as e:
         logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
@@ -1680,6 +1684,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             api_key=_api_key,
             base_url=_base_url,
             api_mode=_api_mode,
+            preserve_anthropic_thinking_blocks=_preserve_anthropic_thinking_blocks,
             # Umbrella-building over a large skill collection is worth a
             # high iteration ceiling — the pass typically takes 50-100
             # API calls against hundreds of candidate skills. The

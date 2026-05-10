@@ -1428,6 +1428,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
             api_mode=runtime.get("api_mode"),
+            preserve_anthropic_thinking_blocks=runtime.get(
+                "preserve_anthropic_thinking_blocks", False
+            ),
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,

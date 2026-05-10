@@ -1109,6 +1109,7 @@ class AIAgent:
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
+        preserve_anthropic_thinking_blocks: bool = False,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500,
@@ -1148,6 +1149,8 @@ class AIAgent:
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
                 If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
+            preserve_anthropic_thinking_blocks (bool): For non-Anthropic anthropic_messages endpoints, opt in to replaying
+                Anthropic thinking/signature blocks instead of stripping them.
             prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
                 Useful for injecting a few-shot example or priming the model's response style.
                 Example: [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
@@ -1193,6 +1196,7 @@ class AIAgent:
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
+        self.preserve_anthropic_thinking_blocks = bool(preserve_anthropic_thinking_blocks)
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -2385,6 +2389,7 @@ class AIAgent:
             "base_url": self.base_url,
             "api_mode": self.api_mode,
             "api_key": getattr(self, "api_key", ""),
+            "preserve_anthropic_thinking_blocks": self.preserve_anthropic_thinking_blocks,
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
@@ -2518,7 +2523,15 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(
+        self,
+        new_model,
+        new_provider,
+        api_key='',
+        base_url='',
+        api_mode='',
+        preserve_anthropic_thinking_blocks=False,
+    ):
         """Switch the model/provider in-place for a live agent.
 
         Called by the /model command handlers (CLI and gateway) after
@@ -2565,6 +2578,7 @@ class AIAgent:
         if base_url:
             self.base_url = base_url
         self.api_mode = api_mode
+        self.preserve_anthropic_thinking_blocks = bool(preserve_anthropic_thinking_blocks)
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(self, "_transport_cache"):
             self._transport_cache.clear()
@@ -2663,6 +2677,7 @@ class AIAgent:
             "base_url": self.base_url,
             "api_mode": self.api_mode,
             "api_key": getattr(self, "api_key", ""),
+            "preserve_anthropic_thinking_blocks": self.preserve_anthropic_thinking_blocks,
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "use_native_cache_layout": self._use_native_cache_layout,
@@ -3077,7 +3092,7 @@ class AIAgent:
             detail = detail[:217].rstrip() + "..."
         self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
 
-    def _current_main_runtime(self) -> Dict[str, str]:
+    def _current_main_runtime(self) -> Dict[str, Any]:
         """Return the live main runtime for session-scoped auxiliary routing."""
         return {
             "model": getattr(self, "model", "") or "",
@@ -3085,6 +3100,9 @@ class AIAgent:
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
+            "preserve_anthropic_thinking_blocks": bool(
+                getattr(self, "preserve_anthropic_thinking_blocks", False)
+            ),
         }
 
     def _check_compression_model_feasibility(self) -> None:
@@ -4177,6 +4195,9 @@ class AIAgent:
                         api_mode=_parent_runtime.get("api_mode") or None,
                         base_url=_parent_runtime.get("base_url") or None,
                         api_key=_parent_runtime.get("api_key") or None,
+                        preserve_anthropic_thinking_blocks=bool(
+                            _parent_runtime.get("preserve_anthropic_thinking_blocks", False)
+                        ),
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
                         enabled_toolsets=["memory", "skills"],
@@ -8502,6 +8523,7 @@ class AIAgent:
             self.provider = fb_provider
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
+            self.preserve_anthropic_thinking_blocks = False
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self._fallback_activated = True
@@ -8625,6 +8647,9 @@ class AIAgent:
             self.provider = rt["provider"]
             self.base_url = rt["base_url"]           # setter updates _base_url_lower
             self.api_mode = rt["api_mode"]
+            self.preserve_anthropic_thinking_blocks = bool(
+                rt.get("preserve_anthropic_thinking_blocks", False)
+            )
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self.api_key = rt["api_key"]
@@ -8733,6 +8758,9 @@ class AIAgent:
             self.provider = rt["provider"]
             self.base_url = rt["base_url"]
             self.api_mode = rt["api_mode"]
+            self.preserve_anthropic_thinking_blocks = bool(
+                rt.get("preserve_anthropic_thinking_blocks", False)
+            )
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self.api_key = rt["api_key"]
@@ -9224,6 +9252,7 @@ class AIAgent:
                 base_url=getattr(self, "_anthropic_base_url", None),
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
                 drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+                preserve_thinking_for_third_party=self.preserve_anthropic_thinking_blocks,
             )
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -11336,10 +11365,16 @@ class AIAgent:
 
                 if self.api_mode == "anthropic_messages":
                     _tsum = self._get_transport()
-                    _ant_kw = _tsum.build_kwargs(model=self.model, messages=api_messages, tools=None,
-                                   max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
-                                   is_oauth=self._is_anthropic_oauth,
-                                   preserve_dots=self._anthropic_preserve_dots())
+                    _ant_kw = _tsum.build_kwargs(
+                        model=self.model,
+                        messages=api_messages,
+                        tools=None,
+                        max_tokens=self.max_tokens,
+                        reasoning_config=self.reasoning_config,
+                        is_oauth=self._is_anthropic_oauth,
+                        preserve_dots=self._anthropic_preserve_dots(),
+                        preserve_thinking_for_third_party=self.preserve_anthropic_thinking_blocks,
+                    )
                     summary_response = self._anthropic_messages_create(_ant_kw)
                     _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_summary_result.content or "").strip()
@@ -11366,10 +11401,16 @@ class AIAgent:
                     final_response = (_cnr_retry.content or "").strip()
                 elif self.api_mode == "anthropic_messages":
                     _tretry = self._get_transport()
-                    _ant_kw2 = _tretry.build_kwargs(model=self.model, messages=api_messages, tools=None,
-                                    is_oauth=self._is_anthropic_oauth,
-                                    max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
-                                    preserve_dots=self._anthropic_preserve_dots())
+                    _ant_kw2 = _tretry.build_kwargs(
+                        model=self.model,
+                        messages=api_messages,
+                        tools=None,
+                        is_oauth=self._is_anthropic_oauth,
+                        max_tokens=self.max_tokens,
+                        reasoning_config=self.reasoning_config,
+                        preserve_dots=self._anthropic_preserve_dots(),
+                        preserve_thinking_for_third_party=self.preserve_anthropic_thinking_blocks,
+                    )
                     retry_response = self._anthropic_messages_create(_ant_kw2)
                     _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_retry_result.content or "").strip()

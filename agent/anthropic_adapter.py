@@ -1452,6 +1452,7 @@ def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
     model: str | None = None,
+    preserve_thinking_for_third_party: bool = False,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format.
 
@@ -1463,6 +1464,8 @@ def convert_messages_to_anthropic(
     endpoint, all thinking block signatures are stripped.  Signatures are
     Anthropic-proprietary — third-party endpoints cannot validate them and will
     reject them with HTTP 400 "Invalid signature in thinking block".
+    Set *preserve_thinking_for_third_party* only for compatible endpoints that
+    explicitly accept Anthropic-native thinking/signature replay.
 
     When *model* is provided and matches the Kimi / Moonshot family (or
     *base_url* is a Kimi / Moonshot host), unsigned thinking blocks
@@ -1730,6 +1733,7 @@ def convert_messages_to_anthropic(
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
+    _strip_all_thinking = _is_third_party and not preserve_thinking_for_third_party
     # Kimi /coding and DeepSeek /anthropic share a contract: both speak the
     # Anthropic Messages protocol upstream but require that thinking blocks
     # synthesised from reasoning_content round-trip on subsequent turns when
@@ -1769,7 +1773,7 @@ def convert_messages_to_anthropic(
                 # keep it: the upstream needs it for message-history validation.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-        elif _is_third_party or idx != last_assistant_idx:
+        elif _strip_all_thinking or idx != last_assistant_idx:
             # Third-party endpoint: strip ALL thinking blocks from every
             # assistant message — signatures are Anthropic-proprietary.
             # Direct Anthropic: strip from non-latest assistant messages only.
@@ -1856,6 +1860,7 @@ def build_anthropic_kwargs(
     base_url: str | None = None,
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
+    preserve_thinking_for_third_party: bool = False,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -1889,6 +1894,8 @@ def build_anthropic_kwargs(
 
     When *base_url* points to a third-party Anthropic-compatible endpoint,
     thinking block signatures are stripped (they are Anthropic-proprietary).
+    Set *preserve_thinking_for_third_party* only for compatible endpoints that
+    explicitly accept Anthropic-native thinking/signature replay.
 
     When *fast_mode* is True, adds ``extra_body["speed"] = "fast"`` and the
     fast-mode beta header for ~2.5x faster output throughput on Opus 4.6.
@@ -1896,7 +1903,10 @@ def build_anthropic_kwargs(
     compatible ones).
     """
     system, anthropic_messages = convert_messages_to_anthropic(
-        messages, base_url=base_url, model=model
+        messages,
+        base_url=base_url,
+        model=model,
+        preserve_thinking_for_third_party=preserve_thinking_for_third_party,
     )
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
@@ -2060,5 +2070,4 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
 

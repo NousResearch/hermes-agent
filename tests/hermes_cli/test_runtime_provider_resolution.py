@@ -2140,6 +2140,122 @@ class TestProviderEntryApiKeyEnvAlias:
         key_env so the set stays in sync with what the runtime actually reads."""
         from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
         assert "key_env" in _VALID_CUSTOM_PROVIDER_FIELDS
+
+
+class TestPreserveAnthropicThinkingBlocksConfig:
+    def test_provider_entry_normalizes_preserve_thinking_flag(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "vendor",
+            "base_url": "https://api.vendor.example.com/anthropic",
+            "preserve_anthropic_thinking_blocks": True,
+        }
+
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+
+        assert normalized is not None
+        assert normalized.get("preserve_anthropic_thinking_blocks") is True
+
+    def test_camel_case_preserve_thinking_flag_normalizes(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "vendor",
+            "base_url": "https://api.vendor.example.com/anthropic",
+            "preserveAnthropicThinkingBlocks": True,
+        }
+
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+
+        assert normalized is not None
+        assert normalized.get("preserve_anthropic_thinking_blocks") is True
+
+    def test_valid_fields_set_lists_preserve_thinking_flag(self):
+        from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
+
+        assert "preserve_anthropic_thinking_blocks" in _VALID_CUSTOM_PROVIDER_FIELDS
+
+    def test_named_provider_runtime_propagates_preserve_thinking_flag(self, monkeypatch):
+        monkeypatch.setattr(
+            rp,
+            "load_config",
+            lambda: {
+                "providers": {
+                    "vendor": {
+                        "base_url": "https://api.vendor.example.com/anthropic",
+                        "api_key": "test-key",
+                        "api_mode": "anthropic_messages",
+                        "preserve_anthropic_thinking_blocks": True,
+                    },
+                },
+            },
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="custom:vendor")
+
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["preserve_anthropic_thinking_blocks"] is True
+
+    def test_named_provider_runtime_accepts_camel_case_preserve_thinking_flag(self, monkeypatch):
+        monkeypatch.setattr(
+            rp,
+            "load_config",
+            lambda: {
+                "providers": {
+                    "vendor": {
+                        "base_url": "https://api.vendor.example.com/anthropic",
+                        "api_key": "test-key",
+                        "api_mode": "anthropic_messages",
+                        "preserveAnthropicThinkingBlocks": True,
+                    },
+                },
+            },
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="custom:vendor")
+
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["preserve_anthropic_thinking_blocks"] is True
+
+    def test_legacy_custom_provider_runtime_propagates_preserve_thinking_flag(self, monkeypatch):
+        monkeypatch.setattr(
+            rp,
+            "load_config",
+            lambda: {
+                "custom_providers": [
+                    {
+                        "name": "vendor",
+                        "base_url": "https://api.vendor.example.com/anthropic",
+                        "api_key": "test-key",
+                        "api_mode": "anthropic_messages",
+                        "preserve_anthropic_thinking_blocks": True,
+                    },
+                ],
+            },
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="custom:vendor")
+
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["preserve_anthropic_thinking_blocks"] is True
+
+    def test_missing_preserve_thinking_flag_is_not_added_to_runtime(self, monkeypatch):
+        monkeypatch.setattr(
+            rp,
+            "load_config",
+            lambda: {
+                "providers": {
+                    "vendor": {
+                        "base_url": "https://api.vendor.example.com/anthropic",
+                        "api_key": "test-key",
+                        "api_mode": "anthropic_messages",
+                    },
+                },
+            },
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="custom:vendor")
+
+        assert "preserve_anthropic_thinking_blocks" not in resolved
 # =============================================================================
 # Tencent TokenHub — API-key provider runtime resolution
 # =============================================================================

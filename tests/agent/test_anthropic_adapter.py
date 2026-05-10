@@ -1628,6 +1628,88 @@ class TestThinkingBlockSignatureManagement:
         blocks = result[0]["content"]
         assert not any(b.get("type") == "redacted_thinking" for b in blocks)
 
+    def test_third_party_thinking_stripped_by_default(self):
+        """Third-party Anthropic-compatible endpoints still strip all thinking by default."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Response.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Private reasoning.", "signature": "sig_valid"},
+                    {"type": "redacted_thinking", "data": "opaque_signature_data"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://proxy.example.com/anthropic",
+        )
+        blocks = result[0]["content"]
+
+        assert not any(block.get("type") in {"thinking", "redacted_thinking"} for block in blocks)
+
+    def test_third_party_can_preserve_latest_signed_thinking_when_enabled(self):
+        """Opt-in third-party replay uses direct Anthropic signature handling."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_old", "function": {"name": "tool1", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Old reasoning.", "signature": "sig_old"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_old", "content": "old result"},
+            {
+                "role": "assistant",
+                "content": "Latest answer.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Latest reasoning.", "signature": "sig_new"},
+                    {"type": "redacted_thinking", "data": "opaque_signature_data"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://proxy.example.com/anthropic",
+            preserve_thinking_for_third_party=True,
+        )
+
+        assistants = [m for m in result if m["role"] == "assistant"]
+        assert not any(
+            b.get("type") in {"thinking", "redacted_thinking"}
+            for b in assistants[0]["content"]
+        )
+        latest_blocks = assistants[-1]["content"]
+        thinking = [b for b in latest_blocks if b.get("type") == "thinking"]
+        redacted = [b for b in latest_blocks if b.get("type") == "redacted_thinking"]
+        assert thinking[0]["signature"] == "sig_new"
+        assert redacted[0]["data"] == "opaque_signature_data"
+
+    def test_third_party_unsigned_latest_thinking_downgraded_when_enabled(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Response text.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Unsigned reasoning."},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://proxy.example.com/anthropic",
+            preserve_thinking_for_third_party=True,
+        )
+        blocks = result[0]["content"]
+
+        assert not any(b.get("type") == "thinking" for b in blocks)
+        assert "Unsigned reasoning." in [
+            b.get("text", "") for b in blocks if b.get("type") == "text"
+        ]
+
     def test_cache_control_stripped_from_thinking_blocks(self):
         """cache_control markers are removed from thinking/redacted_thinking blocks."""
         messages = [

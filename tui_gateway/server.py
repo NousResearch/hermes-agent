@@ -1799,6 +1799,9 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "api_key": getattr(agent, "api_key", None) or None,
         "provider": getattr(agent, "provider", None) or None,
         "api_mode": getattr(agent, "api_mode", None) or None,
+        "preserve_anthropic_thinking_blocks": bool(
+            getattr(agent, "preserve_anthropic_thinking_blocks", False)
+        ),
         "acp_command": getattr(agent, "acp_command", None) or None,
         "acp_args": getattr(agent, "acp_args", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
@@ -1887,6 +1890,9 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
         api_mode=runtime.get("api_mode"),
+        preserve_anthropic_thinking_blocks=runtime.get(
+            "preserve_anthropic_thinking_blocks", False
+        ),
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),

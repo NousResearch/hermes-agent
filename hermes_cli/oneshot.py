@@ -307,6 +307,9 @@ def _run_agent(
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
+        preserve_anthropic_thinking_blocks=runtime.get(
+            "preserve_anthropic_thinking_blocks", False
+        ),
         model=effective_model,
         enabled_toolsets=toolsets_list,
         quiet_mode=True,

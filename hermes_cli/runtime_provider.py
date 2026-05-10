@@ -176,6 +176,14 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _copy_preserve_anthropic_thinking_flag(source: Dict[str, Any], target: Dict[str, Any]) -> None:
+    if (
+        source.get("preserve_anthropic_thinking_blocks") is True
+        or source.get("preserveAnthropicThinkingBlocks") is True
+    ):
+        target["preserve_anthropic_thinking_blocks"] = True
+
+
 def _resolve_runtime_from_pool_entry(
     *,
     provider: str,
@@ -320,6 +328,7 @@ def _try_resolve_from_custom_pool(
     provider_label: str,
     api_mode_override: Optional[str] = None,
     provider_name: Optional[str] = None,
+    preserve_anthropic_thinking_blocks: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
     pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
@@ -335,7 +344,7 @@ def _try_resolve_from_custom_pool(
         pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         if not pool_api_key:
             return None
-        return {
+        result = {
             "provider": provider_label,
             "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
@@ -343,6 +352,9 @@ def _try_resolve_from_custom_pool(
             "source": f"pool:{pool_key}",
             "credential_pool": pool,
         }
+        if preserve_anthropic_thinking_blocks:
+            result["preserve_anthropic_thinking_blocks"] = True
+        return result
     except Exception:
         return None
 
@@ -411,6 +423,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    _copy_preserve_anthropic_thinking_flag(entry, result)
                     return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
@@ -429,6 +442,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        _copy_preserve_anthropic_thinking_flag(entry, result)
                         return result
 
     # Fall back to custom_providers: list (legacy format)
@@ -472,6 +486,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
+        _copy_preserve_anthropic_thinking_flag(entry, result)
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
@@ -529,7 +544,13 @@ def _resolve_named_custom_runtime(
         return None
 
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
+    pool_result = _try_resolve_from_custom_pool(
+        base_url,
+        "custom",
+        custom_provider.get("api_mode"),
+        provider_name=custom_provider.get("name"),
+        preserve_anthropic_thinking_blocks=custom_provider.get("preserve_anthropic_thinking_blocks") is True,
+    )
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -560,6 +581,7 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    _copy_preserve_anthropic_thinking_flag(custom_provider, result)
     return result
 
 

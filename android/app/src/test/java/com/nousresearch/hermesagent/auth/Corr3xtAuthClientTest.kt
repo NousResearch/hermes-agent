@@ -25,6 +25,18 @@ class Corr3xtAuthClientTest {
     }
 
     @Test
+    fun normalizeConfiguredBaseUrl_keepsBlankUrlsUnconfigured() {
+        assertNull(Corr3xtAuthClient.normalizeConfiguredBaseUrl(""))
+        assertEquals("", Corr3xtAuthClient.normalizedBaseUrl(""))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun buildStartUri_rejectsBlankBaseUrl() {
+        val option = requireNotNull(AuthCatalog.find("google"))
+        Corr3xtAuthClient.buildStartUri("", option, "state-123")
+    }
+
+    @Test
     fun buildStartUri_includesCallbackContractAndRedirectUri() {
         val option = requireNotNull(AuthCatalog.find("chatgpt"))
         val uri = Corr3xtAuthClient.buildStartUri("https://auth.corr3xt.com/", option, "state-123")

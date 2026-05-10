@@ -82,6 +82,7 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'Auth callback rejected: no provider credentials were returned' in auth_session_store
     assert 'Auth callback rejected: no account identity returned' in auth_session_store
     assert 'currentStrings().authBaseUrlMustBeValid()' in auth_view_model
+    assert 'currentStrings().authConfigureCorr3xtFirst()' in auth_view_model
     assert 'currentStrings().authSavedBaseUrl()' in auth_view_model
     assert 'viewModelScope.launch' in auth_view_model
     assert 'Corr3xtAuthClient.probeStartUri' in auth_view_model
@@ -96,6 +97,8 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'currentStrings().authOpenedCorr3xt(option.label)' in auth_view_model
     assert 'currentStrings().authNoBrowser()' in auth_view_model
     assert 'authBaseUrlMustBeValid' in strings
+    assert 'authConfigureCorr3xtFirst' in strings
+    assert 'Configure a reachable Corr3xt URL to enable app sign-in' in strings
     assert 'authOpenedCorr3xt' in strings
     assert 'authCheckingCorr3xt' in strings
     assert 'authHostCouldNotBeResolved' in strings
@@ -110,6 +113,7 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'locale' in corr3xt_auth_client
     assert 'lang' in corr3xt_auth_client
     assert 'normalizeConfiguredBaseUrl' in corr3xt_auth_client
+    assert 'throw IllegalArgumentException("Corr3xt base URL is not configured")' in corr3xt_auth_client
     assert 'probeStartUri' in corr3xt_auth_client
     assert 'UnknownHostException' in corr3xt_auth_client
     assert 'status = "unknown_host"' in corr3xt_auth_client
@@ -131,6 +135,8 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert 'runtimeProvider = "alibaba"' in qwen_block
     assert 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' in qwen_block
     assert "if (option.supportsBrowserSignIn)" in auth_screen
+    assert "enabled = option.browserSignInEnabled" in auth_screen
+    assert "browserSignInEnabled = option.scope != AuthScope.AppAccount || corr3xtConfigured" in auth_view_model
     assert "strings.setUpApiKeyFor(option.label)" in auth_screen
     assert "prepareApiKeySetup(methodId)" in auth_view_model
     assert "providers use secure API keys or tokens in Settings" in strings

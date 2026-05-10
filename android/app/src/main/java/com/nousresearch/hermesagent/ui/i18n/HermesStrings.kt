@@ -442,12 +442,21 @@ data class HermesStrings(
     }
 
     fun authGlobalStatusDefault(): String = when (language) {
-        AppLanguage.CHINESE -> "使用 Corr3xt 登录应用；提供商访问请用安全 API 密钥或令牌设置。"
-        AppLanguage.SPANISH -> "Usa Corr3xt para iniciar sesión en la app; configura proveedores con claves API o tokens seguros."
-        AppLanguage.GERMAN -> "Nutze Corr3xt für die App-Anmeldung; richte Anbieter mit sicheren API-Schlüsseln oder Tokens ein."
-        AppLanguage.PORTUGUESE -> "Use o Corr3xt para entrar no app; configure provedores com chaves API ou tokens seguros."
-        AppLanguage.FRENCH -> "Utilisez Corr3xt pour vous connecter à l’application ; configurez les fournisseurs avec des clés API ou jetons sécurisés."
-        AppLanguage.ENGLISH -> "Use Corr3xt to sign into the app; set up providers with secure API keys or tokens."
+        AppLanguage.CHINESE -> "已准备好使用已配置的 Corr3xt 应用登录 URL；提供商访问请在设置中使用安全 API 密钥或令牌。"
+        AppLanguage.SPANISH -> "La URL Corr3xt configurada está lista para el inicio de sesión de la app; los proveedores usan claves API o tokens seguros en Ajustes."
+        AppLanguage.GERMAN -> "Die konfigurierte Corr3xt-URL ist für die App-Anmeldung bereit; Anbieter nutzen sichere API-Schlüssel oder Tokens in Einstellungen."
+        AppLanguage.PORTUGUESE -> "A URL Corr3xt configurada está pronta para login no app; provedores usam chaves API ou tokens seguros nas Configurações."
+        AppLanguage.FRENCH -> "L’URL Corr3xt configurée est prête pour la connexion à l’application ; les fournisseurs utilisent des clés API ou jetons sécurisés dans Paramètres."
+        AppLanguage.ENGLISH -> "Configured Corr3xt app sign-in URL is ready; providers use secure API keys or tokens in Settings."
+    }
+
+    fun authConfigureCorr3xtFirst(): String = when (language) {
+        AppLanguage.CHINESE -> "请先配置可访问的 Corr3xt URL 以启用应用登录；提供商访问请在设置中使用安全 API 密钥或令牌。"
+        AppLanguage.SPANISH -> "Configura una URL Corr3xt accesible para activar el inicio de sesión de la app; los proveedores usan claves API o tokens seguros en Ajustes."
+        AppLanguage.GERMAN -> "Konfiguriere zuerst eine erreichbare Corr3xt-URL für die App-Anmeldung; Anbieter nutzen sichere API-Schlüssel oder Tokens in Einstellungen."
+        AppLanguage.PORTUGUESE -> "Configure uma URL Corr3xt acessível para ativar o login no app; provedores usam chaves API ou tokens seguros nas Configurações."
+        AppLanguage.FRENCH -> "Configurez d’abord une URL Corr3xt joignable pour activer la connexion à l’application ; les fournisseurs utilisent des clés API ou jetons sécurisés dans Paramètres."
+        AppLanguage.ENGLISH -> "Configure a reachable Corr3xt URL to enable app sign-in; providers use secure API keys or tokens in Settings."
     }
 
     fun authWaitingCallback(label: String): String = when (language) {

@@ -140,7 +140,7 @@ Daily scan for known vulnerabilities in project dependencies.
 hermes cron create "0 6 * * *" \
   "Run a dependency security audit on the hermes-agent project.
 
-1. cd ~/.hermes/hermes-agent && source .venv/bin/activate
+1. cd /path/to/hermes-agent && source .venv/bin/activate
 2. Run: pip audit --format json 2>/dev/null || pip audit 2>&1
 3. Run: npm audit --json 2>/dev/null (in website/ directory if it exists)
 4. Check for any CVEs with CVSS score >= 7.0

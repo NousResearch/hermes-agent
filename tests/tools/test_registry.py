@@ -314,6 +314,7 @@ class TestBuiltinDiscovery:
             "tools.session_search_tool",
             "tools.skill_manager_tool",
             "tools.skills_tool",
+            "tools.telegram_inbox_tool",
             "tools.terminal_tool",
             "tools.todo_tool",
             "tools.tts_tool",

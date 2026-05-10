@@ -2398,8 +2398,11 @@
             ? h("div", { className: "hermes-kanban-run-error" }, r.error)
             : null,
           r.metadata
-            ? h("code", { className: "hermes-kanban-run-meta" },
-                JSON.stringify(r.metadata))
+            ? h("div", { className: "hermes-kanban-run-meta-block" },
+                h("div", { className: "hermes-kanban-run-meta-label" }, "Metadata"),
+                h("code", { className: "hermes-kanban-run-meta" },
+                  JSON.stringify(r.metadata, null, 2)),
+              )
             : null,
         );
       }),

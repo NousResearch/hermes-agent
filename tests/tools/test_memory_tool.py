@@ -208,6 +208,75 @@ class TestMemoryStorePersistence:
         assert len(store.memory_entries) == 2
 
 
+class TestWriteFilePreservesPermissions:
+    """Regression: _write_file must preserve existing file permissions."""
+
+    def test_write_file_preserves_group_mode(self, tmp_path):
+        """Existing 0o660 permissions should survive an atomic write."""
+        import os
+        import stat
+
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text("old content", encoding="utf-8")
+        os.chmod(mem_file, 0o660)
+
+        before = stat.S_IMODE(mem_file.stat().st_mode)
+        MemoryStore._write_file(mem_file, ["new content"])
+        after = stat.S_IMODE(mem_file.stat().st_mode)
+
+        assert before == 0o660
+        assert after == 0o660
+
+    def test_write_file_new_file_succeeds(self, tmp_path):
+        """Writing to a non-existent file should not crash."""
+        mem_file = tmp_path / "MEMORY.md"
+        assert not mem_file.exists()
+
+        MemoryStore._write_file(mem_file, ["first entry"])
+        assert mem_file.exists()
+        assert "first entry" in mem_file.read_text(encoding="utf-8")
+
+    def test_write_file_preserves_0644(self, tmp_path):
+        """Existing 0o644 permissions should survive an atomic write."""
+        import os
+        import stat
+
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text("old", encoding="utf-8")
+        os.chmod(mem_file, 0o644)
+
+        MemoryStore._write_file(mem_file, ["updated"])
+        after = stat.S_IMODE(mem_file.stat().st_mode)
+        assert after == 0o644
+
+    def test_write_file_preserves_0600(self, tmp_path):
+        """Existing 0o600 permissions should survive an atomic write."""
+        import os
+        import stat
+
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text("old", encoding="utf-8")
+        os.chmod(mem_file, 0o600)
+
+        MemoryStore._write_file(mem_file, ["updated"])
+        after = stat.S_IMODE(mem_file.stat().st_mode)
+        assert after == 0o600
+
+    def test_write_file_overwrites_content(self, tmp_path):
+        """Permission preservation must not interfere with content update."""
+        import os
+
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text("old content", encoding="utf-8")
+        os.chmod(mem_file, 0o660)
+
+        MemoryStore._write_file(mem_file, ["new content A", "new content B"])
+        content = mem_file.read_text(encoding="utf-8")
+        assert "new content A" in content
+        assert "new content B" in content
+        assert "old content" not in content
+
+
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         store.add("memory", "loaded at start")

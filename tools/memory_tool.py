@@ -31,6 +31,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from utils import _preserve_file_mode, _restore_file_mode
 from typing import Dict, Any, List, Optional
 
 from utils import atomic_replace
@@ -441,6 +442,12 @@ class MemoryStore:
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
+            # Preserve existing file permissions before atomic replace.
+            # tempfile.mkstemp() creates files with 0600, and os.replace()
+            # inherits those restrictive permissions, silently dropping
+            # group access on shared/managed deployments.
+            original_mode = _preserve_file_mode(path)
+
             # Write to temp file in same directory (same filesystem for atomic rename)
             fd, tmp_path = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".mem_"
@@ -450,7 +457,8 @@ class MemoryStore:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                atomic_replace(tmp_path, path)
+                real_path = atomic_replace(tmp_path, path)
+                _restore_file_mode(Path(real_path), original_mode)
             except BaseException:
                 # Clean up temp file on any failure
                 try:

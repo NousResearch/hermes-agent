@@ -10190,20 +10190,27 @@ class GatewayRunner:
                     lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
                 )
 
+                _validation_failed = (
+                    getattr(compressor, "_last_summary_validation_failed", False) is True
+                )
+
                 # _compress_context already calls end_session() on the old session
                 # (preserving its full transcript in SQLite) and creates a new
                 # session_id for the continuation.  Write the compressed messages
                 # into the NEW session so the original history stays searchable.
+                old_session_id = session_entry.session_id
                 new_session_id = tmp_agent.session_id
-                if new_session_id != session_entry.session_id:
+                session_rotated = new_session_id != old_session_id
+                if session_rotated:
                     session_entry.session_id = new_session_id
                     self.session_store._save()
 
-                self.session_store.rewrite_transcript(new_session_id, compressed)
-                # Reset stored token count — transcript changed, old value is stale
-                self.session_store.update_session(
-                    session_entry.session_key, last_prompt_tokens=0
-                )
+                if compressed != msgs or session_rotated:
+                    self.session_store.rewrite_transcript(new_session_id, compressed)
+                    # Reset stored token count — transcript changed, old value is stale
+                    self.session_store.update_session(
+                        session_entry.session_key, last_prompt_tokens=0
+                    )
                 new_tokens = estimate_request_tokens_rough(
                     compressed, system_prompt=_sys_prompt, tools=_tools
                 )
@@ -10235,7 +10242,12 @@ class GatewayRunner:
             lines.append(summary["token_line"])
             if summary["note"]:
                 lines.append(summary["note"])
-            if _summary_failed:
+            if _validation_failed:
+                lines.append(
+                    f"⚠️ Summary validation failed ({_summary_err or 'unknown error'}). "
+                    "Compression was aborted and original context was preserved."
+                )
+            elif _summary_failed:
                 lines.append(
                     f"⚠️ Summary generation failed ({_summary_err or 'unknown error'}). "
                     f"{_dropped_count} historical message(s) were removed and replaced "

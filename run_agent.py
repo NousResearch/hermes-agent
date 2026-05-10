@@ -9690,13 +9690,6 @@ class AIAgent:
             focus_topic,
         )
 
-        # Notify external memory provider before compression discards context
-        if self._memory_manager:
-            try:
-                self._memory_manager.on_pre_compress(messages)
-            except Exception:
-                pass
-
         try:
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
         except TypeError:
@@ -9704,7 +9697,26 @@ class AIAgent:
             # focus_topic — fall back to calling without it.
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 
+        summary_validation_failed = (
+            getattr(self.context_compressor, "_last_summary_validation_failed", False) is True
+        )
         summary_error = getattr(self.context_compressor, "_last_summary_error", None)
+        if summary_validation_failed:
+            warning_key = ("validation", summary_error)
+            if getattr(self, "_last_compression_summary_warning", None) != warning_key:
+                self._last_compression_summary_warning = warning_key
+                self._emit_warning(
+                    f"⚠ Summary validation failed: {summary_error or 'unknown error'}. "
+                    "Compression was aborted safely and original context was preserved."
+                )
+            logger.info(
+                "context compression aborted after summary validation failure: "
+                "session=%s messages=%d preserved",
+                self.session_id or "none",
+                _pre_msg_count,
+            )
+            return messages, system_message
+
         if summary_error:
             if getattr(self, "_last_compression_summary_warning", None) != summary_error:
                 self._last_compression_summary_warning = summary_error
@@ -9729,6 +9741,15 @@ class AIAgent:
                         f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
                         "check auxiliary.compression.model in config.yaml."
                     )
+
+        # Notify external memory provider before compression discards context.
+        # Validation aborts return above, so memory providers do not observe a
+        # compression boundary when the original context is preserved intact.
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_pre_compress(messages)
+            except Exception:
+                pass
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:

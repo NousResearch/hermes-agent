@@ -190,6 +190,50 @@ async def test_compress_command_appends_warning_when_summary_generation_fails():
 
 
 @pytest.mark.asyncio
+async def test_compress_command_reports_validation_abort_without_placeholder_warning():
+    history = _make_history()
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor._last_summary_validation_failed = True
+    agent_instance.context_compressor._last_summary_error = (
+        "summary validation failed: missing required summary section(s): Active State"
+    )
+    agent_instance.context_compressor._last_summary_fallback_used = False
+    agent_instance.context_compressor._last_summary_dropped_count = 0
+    agent_instance.context_compressor._last_aux_model_failure_model = None
+    agent_instance.context_compressor._last_aux_model_failure_error = None
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (history, "")
+
+    def _estimate(messages, **_kwargs):
+        assert messages == history
+        return 100
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "Summary validation failed" in result
+    assert "Compression was aborted" in result
+    assert "original context was preserved" in result
+    assert "historical message(s) were removed and replaced with a placeholder" not in result
+    assert "No changes from compression" in result
+    runner.session_store.rewrite_transcript.assert_not_called()
+    runner.session_store.update_session.assert_not_called()
+    agent_instance.shutdown_memory_provider.assert_called_once()
+    agent_instance.close.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_compress_command_surfaces_aux_model_failure_even_when_recovered():
     """When the user's configured ``auxiliary.compression.model`` errors out
     but compression recovers by retrying on the main model, /compress must

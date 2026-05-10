@@ -154,3 +154,72 @@ class TestCompressionBoundaryHook:
             )
             assert compressed
             assert agent.session_id != original_sid
+
+    def test_validation_abort_preserves_session_and_original_context(self):
+        from hermes_state import SessionDB
+
+        class ValidationAbortCompressor:
+            _last_summary_validation_failed = True
+            _last_summary_error = (
+                "summary validation failed: missing required summary section(s): "
+                "Active State"
+            )
+            _last_summary_fallback_used = False
+            _last_aux_model_failure_model = None
+            _last_aux_model_failure_error = None
+            compression_count = 0
+            last_prompt_tokens = 0
+            last_completion_tokens = 0
+
+            def __init__(self):
+                self.on_session_start = MagicMock()
+
+            def compress(self, messages, **_kwargs):
+                return messages
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            db.create_session("original-session", source="cli", model="test/model")
+            agent = self._make_agent(db)
+            agent.context_compressor = ValidationAbortCompressor()
+            agent._emit_warning = MagicMock()
+            agent._todo_store = MagicMock()
+            agent._todo_store.format_for_injection.return_value = (
+                "[TODO SNAPSHOT SHOULD NOT BE APPENDED]"
+            )
+            agent._invalidate_system_prompt = MagicMock()
+            agent._build_system_prompt = MagicMock(return_value="rebuilt sys")
+
+            original_sid = agent.session_id
+            messages = [
+                {"role": "user", "content": "keep all of this"},
+                {"role": "assistant", "content": "still original"},
+                {"role": "user", "content": "latest turn"},
+            ]
+
+            returned, prompt = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=10_000,
+            )
+
+            assert returned == messages
+            assert returned is messages
+            assert prompt == "sys"
+            assert agent.session_id == original_sid
+            parent = db.get_session(original_sid)
+            assert parent is not None
+            assert parent["end_reason"] is None
+            assert parent["ended_at"] is None
+            agent.context_compressor.on_session_start.assert_not_called()
+            agent._todo_store.format_for_injection.assert_not_called()
+            agent._invalidate_system_prompt.assert_not_called()
+            agent._build_system_prompt.assert_not_called()
+
+            warning_text = "\n".join(
+                str(call.args[0]) for call in agent._emit_warning.call_args_list
+            )
+            assert "Inserted a fallback context marker" not in warning_text
+            assert "compression was aborted" in warning_text.lower()
+            assert "original context" in warning_text.lower()
+            assert "preserved" in warning_text.lower()

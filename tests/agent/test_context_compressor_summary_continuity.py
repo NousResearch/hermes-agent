@@ -5,6 +5,48 @@ from unittest.mock import MagicMock, patch
 from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
 
 
+def _valid_summary(marker: str = "updated summary") -> str:
+    return f"""## Active Task
+User asked: continue summary continuity work for {marker}.
+
+## Goal
+Keep iterative context summaries continuous.
+
+## Constraints & Preferences
+Preserve previous handoff context once.
+
+## Completed Actions
+1. RECORDED {marker} — valid continuity fixture [tool: test]
+
+## Active State
+Continuity test is running.
+
+## In Progress
+Checking prompt serialization.
+
+## Blocked
+None.
+
+## Key Decisions
+Only latest handoff should hydrate previous summary.
+
+## Resolved Questions
+None.
+
+## Pending User Asks
+None.
+
+## Relevant Files
+tests/agent/test_context_compressor_summary_continuity.py — continuity tests.
+
+## Remaining Work
+Run targeted continuity tests.
+
+## Critical Context
+Marker: {marker}.
+"""
+
+
 def _compressor() -> ContextCompressor:
     with patch("agent.context_compressor.get_model_context_length", return_value=100000):
         return ContextCompressor(
@@ -40,7 +82,7 @@ def test_existing_previous_summary_is_not_serialized_again_as_new_turn():
     old_summary = "OLD-SUMMARY-BODY unique continuity facts"
     compressor._previous_summary = old_summary
 
-    with patch("agent.context_compressor.call_llm", return_value=_response("updated summary")) as mock_call:
+    with patch("agent.context_compressor.call_llm", return_value=_response(_valid_summary("updated summary"))) as mock_call:
         compressor.compress(_messages_with_handoff(old_summary))
 
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]
@@ -56,7 +98,7 @@ def test_resume_rehydrates_previous_summary_from_handoff_message():
     old_summary = "RESUMED-SUMMARY-BODY durable continuity facts"
     assert compressor._previous_summary is None
 
-    with patch("agent.context_compressor.call_llm", return_value=_response("updated summary")) as mock_call:
+    with patch("agent.context_compressor.call_llm", return_value=_response(_valid_summary("updated summary"))) as mock_call:
         compressor.compress(_messages_with_handoff(old_summary))
 
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]

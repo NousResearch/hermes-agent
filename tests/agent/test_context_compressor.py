@@ -6,6 +6,48 @@ from unittest.mock import patch, MagicMock
 from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
 
 
+def _valid_summary(marker: str = "summary marker") -> str:
+    return f"""## Active Task
+User asked: continue the compressor validation work for {marker}.
+
+## Goal
+Keep context compaction safe.
+
+## Constraints & Preferences
+Follow TDD and preserve exact context on invalid summaries.
+
+## Completed Actions
+1. RECORDED {marker} — valid summary fixture [tool: test]
+
+## Active State
+Working tree has mocked compressor tests for {marker}.
+
+## In Progress
+Validation behavior is under test.
+
+## Blocked
+None.
+
+## Key Decisions
+Require the full structured summary shape before accepting compaction.
+
+## Resolved Questions
+None.
+
+## Pending User Asks
+None.
+
+## Relevant Files
+tests/agent/test_context_compressor.py — compressor tests.
+
+## Remaining Work
+Run the targeted validation commands.
+
+## Critical Context
+Marker: {marker}.
+"""
+
+
 @pytest.fixture()
 def compressor():
     """Create a ContextCompressor with mocked dependencies."""
@@ -99,7 +141,7 @@ class TestGenerateSummaryNoneContent:
     def test_none_content_does_not_crash(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: tool calls happened"
+        mock_response.choices[0].message.content = _valid_summary("tool calls happened")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
@@ -150,8 +192,8 @@ class TestNonStringContent:
 
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
-        assert isinstance(summary, str)
-        assert summary.startswith(SUMMARY_PREFIX)
+        assert summary is None
+        assert "validation" in c._last_summary_error.lower()
 
     def test_none_content_coerced_to_empty(self):
         mock_response = MagicMock()
@@ -168,14 +210,13 @@ class TestNonStringContent:
 
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
-        # None content → empty string → standardized compaction handoff prefix added
-        assert summary is not None
-        assert summary == SUMMARY_PREFIX
+        assert summary is None
+        assert "validation" in c._last_summary_error.lower()
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "ok"
+        mock_response.choices[0].message.content = _valid_summary("temperature")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
@@ -194,7 +235,7 @@ class TestNonStringContent:
     def test_summary_prompt_avoids_filter_sensitive_handoff_framing(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "ok"
+        mock_response.choices[0].message.content = _valid_summary("prompt")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
@@ -218,7 +259,7 @@ class TestNonStringContent:
     def test_summary_call_passes_live_main_runtime(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "ok"
+        mock_response.choices[0].message.content = _valid_summary("runtime")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
@@ -284,7 +325,7 @@ class TestSummaryFallbackToMainModel:
         a model the main provider doesn't serve → 404 → retry on main."""
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
-        mock_ok.choices[0].message.content = "summary via main model"
+        mock_ok.choices[0].message.content = _valid_summary("summary via main model")
 
         err_404 = Exception("404 model_not_found: no such model")
         err_404.status_code = 404
@@ -322,7 +363,7 @@ class TestSummaryFallbackToMainModel:
         ALSO trigger a best-effort retry on main before entering cooldown."""
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
-        mock_ok.choices[0].message.content = "summary via main model"
+        mock_ok.choices[0].message.content = _valid_summary("summary via main model")
 
         # A 400 from OpenRouter / Nous portal with an opaque message — does
         # NOT match _is_model_not_found, but still an unrecoverable misconfig.
@@ -409,7 +450,7 @@ class TestSummaryFallbackToMainModel:
 
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
-        mock_ok.choices[0].message.content = "summary via main model"
+        mock_ok.choices[0].message.content = _valid_summary("summary via main model")
 
         # Simulate the SDK raising a raw JSONDecodeError with a realistic
         # error message ("Expecting value: line X column Y char Z").
@@ -449,7 +490,7 @@ class TestSummaryFallbackToMainModel:
         same way."""
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
-        mock_ok.choices[0].message.content = "summary via main model"
+        mock_ok.choices[0].message.content = _valid_summary("summary via main model")
 
         # A plain Exception with the canonical JSON decode error text — what
         # the SDK's APIResponseValidationError looks like at str() time.
@@ -522,7 +563,7 @@ class TestStreamingClosedFallback:
         the retry-on-main path when ``_is_connection_error`` returns True."""
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
-        mock_ok.choices[0].message.content = "summary via main model"
+        mock_ok.choices[0].message.content = _valid_summary("summary via main model")
 
         err = Exception("RemoteProtocolError: incomplete chunked read")
 
@@ -552,7 +593,7 @@ class TestStreamingClosedFallback:
         """``peer closed connection`` triggers the retry-on-main path."""
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
-        mock_ok.choices[0].message.content = "summary ok"
+        mock_ok.choices[0].message.content = _valid_summary("summary ok")
 
         err = Exception("peer closed connection without sending complete message body")
 
@@ -646,7 +687,7 @@ class TestAuxModelFallbackSurfacedToCallers:
     def test_compress_exposes_aux_failure_fields_after_successful_fallback(self):
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
-        mock_ok.choices[0].message.content = "summary via main"
+        mock_ok.choices[0].message.content = _valid_summary("summary via main")
         err_400 = Exception("400 provider rejected configured model")
         err_400.status_code = 400
 
@@ -682,7 +723,7 @@ class TestAuxModelFallbackSurfacedToCallers:
         fields so the warning doesn't persist forever."""
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
-        mock_ok.choices[0].message.content = "summary via main"
+        mock_ok.choices[0].message.content = _valid_summary("summary via main")
         err_400 = Exception("400 aux model busted")
         err_400.status_code = 400
 
@@ -752,7 +793,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "summary text"
+        mock_response.choices[0].message.content = _valid_summary("summary text")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
@@ -781,6 +822,203 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert c._last_summary_dropped_count == 0
 
 
+class TestSummaryValidation:
+    """Goal -> test mapping for invalid-summary fail-closed behavior.
+
+    1. Missing required sections -> original messages unchanged.
+    2. Template placeholders in Active Task -> original messages unchanged.
+    3. Provider truncation finish_reason -> original messages unchanged.
+    4. Invalid aux summary -> one retry on main model.
+    5. Prompt guidance -> explicit heading, placeholder, and balance rules.
+    """
+
+    def _make_msgs(self):
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+    def _compressor(self, **kwargs):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(
+                model=kwargs.pop("model", "main-model"),
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                **kwargs,
+            )
+
+    def _response(self, content: str, finish_reason: str | None = None):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = content
+        if finish_reason is not None:
+            mock_response.choices[0].finish_reason = finish_reason
+        return mock_response
+
+    def _four_heading_summary(self) -> str:
+        return """## Active Task
+User asked: keep working on summary validation.
+
+## Goal
+Prevent bad compaction.
+
+## Completed Actions
+1. WROTE invalid fixture — omits most sections [tool: test]
+
+## Remaining Work
+Implement validation.
+"""
+
+    def _summary_with_active_task_placeholder(self) -> str:
+        return _valid_summary("[THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request]")
+
+    def test_invalid_structured_summary_is_rejected_non_destructively(self):
+        c = self._compressor()
+        msgs = self._make_msgs()
+
+        with patch("agent.context_compressor.call_llm", return_value=self._response(self._four_heading_summary())):
+            result = c.compress(msgs)
+
+        assert result == msgs
+        assert c.compression_count == 0
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+        assert c._last_summary_validation_failed is True
+        assert c._last_summary_error is not None
+        assert "validation" in c._last_summary_error.lower()
+        assert "missing" in c._last_summary_error.lower()
+        assert not any(
+            isinstance(m.get("content"), str) and m["content"].startswith(SUMMARY_PREFIX)
+            for m in result
+        )
+
+    def test_active_task_template_placeholder_is_rejected_non_destructively(self):
+        c = self._compressor()
+        msgs = self._make_msgs()
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=self._response(self._summary_with_active_task_placeholder()),
+        ):
+            result = c.compress(msgs)
+
+        assert result == msgs
+        assert c.compression_count == 0
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_validation_failed is True
+        assert "placeholder" in c._last_summary_error.lower()
+        assert not any(
+            isinstance(m.get("content"), str)
+            and "[THE SINGLE MOST IMPORTANT FIELD" in m["content"]
+            for m in result
+        )
+
+    def test_provider_truncation_finish_reason_is_rejected_non_destructively(self):
+        c = self._compressor()
+        msgs = self._make_msgs()
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=self._response(_valid_summary("truncated"), finish_reason="length"),
+        ):
+            result = c.compress(msgs)
+
+        assert result == msgs
+        assert c.compression_count == 0
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_validation_failed is True
+        assert "finish_reason" in c._last_summary_error
+        assert "length" in c._last_summary_error
+
+    def test_invalid_aux_summary_retries_once_on_main_and_accepts_valid_summary(self):
+        c = self._compressor(
+            model="main-model",
+            summary_model_override="broken-aux-model",
+        )
+        msgs = self._make_msgs()
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[
+                self._response(self._four_heading_summary()),
+                self._response(_valid_summary("summary via main after aux validation failure")),
+            ],
+        ) as mock_call:
+            result = c.compress(msgs)
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "broken-aux-model"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert c._last_aux_model_failure_model == "broken-aux-model"
+        assert c._last_aux_model_failure_error is not None
+        assert "validation" in c._last_aux_model_failure_error.lower()
+        assert c._last_summary_validation_failed is False
+        assert c._last_summary_fallback_used is False
+        assert c.compression_count == 1
+        assert any(
+            isinstance(m.get("content"), str)
+            and "summary via main after aux validation failure" in m["content"]
+            for m in result
+        )
+
+    def test_active_task_placeholder_phrases_are_allowed_outside_active_task(self):
+        c = self._compressor()
+        summary = _valid_summary("legitimate critical context").replace(
+            "Marker: legitimate critical context.",
+            "If multiple tasks are open, preserve their issue ordering.",
+        )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=self._response(summary),
+        ):
+            result = c._generate_summary(self._make_msgs())
+
+        assert result is not None
+        assert c._last_summary_validation_failed is False
+
+    def test_summary_prompt_requires_headings_forbids_placeholders_and_bounds_completed_actions(self):
+        c = self._compressor()
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=self._response(_valid_summary("prompt guidance")),
+        ) as mock_call:
+            c._generate_summary(self._make_msgs())
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        for heading in (
+            "## Active Task",
+            "## Goal",
+            "## Constraints & Preferences",
+            "## Completed Actions",
+            "## Active State",
+            "## In Progress",
+            "## Blocked",
+            "## Key Decisions",
+            "## Resolved Questions",
+            "## Pending User Asks",
+            "## Relevant Files",
+            "## Remaining Work",
+            "## Critical Context",
+        ):
+            assert heading in prompt
+        assert "must include every required heading" in prompt
+        assert "Never leave bracketed template placeholders" in prompt
+        assert "Completed Actions must not consume so much of the summary" in prompt
+        assert "Active State, Blocked, and Critical Context" in prompt
+        assert "required headings exactly as shown" in prompt
+        assert "section bodies" in prompt
+        assert "same language the user was using" in prompt
+
+
 class TestSummaryPrefixNormalization:
     def test_legacy_prefix_is_replaced(self):
         summary = ContextCompressor._with_summary_prefix("[CONTEXT SUMMARY]: did work")
@@ -795,7 +1033,7 @@ class TestCompressWithClient:
     def test_system_content_list_gets_compression_note_without_crashing(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "summary text"
+        mock_response.choices[0].message.content = _valid_summary("summary text")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
@@ -825,7 +1063,7 @@ class TestCompressWithClient:
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: stuff happened"
+        mock_response.choices[0].message.content = _valid_summary("stuff happened")
         mock_client.chat.completions.create.return_value = mock_response
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
@@ -844,7 +1082,7 @@ class TestCompressWithClient:
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: compressed middle"
+        mock_response.choices[0].message.content = _valid_summary("compressed middle")
         mock_client.chat.completions.create.return_value = mock_response
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
@@ -920,7 +1158,7 @@ class TestCompressWithClient:
         """
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "summary text"
+        mock_response.choices[0].message.content = _valid_summary("summary text")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
@@ -954,7 +1192,7 @@ class TestCompressWithClient:
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: stuff happened"
+        mock_response.choices[0].message.content = _valid_summary("stuff happened")
         mock_client.chat.completions.create.return_value = mock_response
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
@@ -987,7 +1225,7 @@ class TestCompressWithClient:
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: stuff happened"
+        mock_response.choices[0].message.content = _valid_summary("stuff happened")
         mock_client.chat.completions.create.return_value = mock_response
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
@@ -1017,7 +1255,7 @@ class TestCompressWithClient:
         doesn't collide with head, the role should be flipped."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "summary text"
+        mock_response.choices[0].message.content = _valid_summary("summary text")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
@@ -1056,7 +1294,7 @@ class TestCompressWithClient:
         """
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "summary text"
+        mock_response.choices[0].message.content = _valid_summary("summary text")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
@@ -1094,7 +1332,7 @@ class TestCompressWithClient:
         """Structured tail content should accept a merged summary without TypeError."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "summary text"
+        mock_response.choices[0].message.content = _valid_summary("summary text")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
@@ -1130,7 +1368,7 @@ class TestCompressWithClient:
         summary='assistant' collides with tail, 'user' collides with head → merge."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "summary text"
+        mock_response.choices[0].message.content = _valid_summary("summary text")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
@@ -1170,7 +1408,7 @@ class TestCompressWithClient:
         head=user/tail=user) still produce a standalone summary message."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "summary text"
+        mock_response.choices[0].message.content = _valid_summary("summary text")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
@@ -1197,7 +1435,7 @@ class TestCompressWithClient:
     def test_summarization_does_not_start_tail_with_tool_outputs(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: compressed middle"
+        mock_response.choices[0].message.content = _valid_summary("compressed middle")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(

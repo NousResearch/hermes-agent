@@ -521,6 +521,13 @@ class ShellFileOperations(FileOperations):
             result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
+
+    def _ends_with_newline(self, path: str) -> bool:
+        """Return True when the file's final byte is a newline."""
+        result = self._exec(f"tail -c 1 {self._escape_shell_arg(path)} 2>/dev/null")
+        if result.exit_code != 0:
+            return False
+        return _strip_terminal_fence_leaks(result.stdout) == "\n"
     
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """
@@ -692,6 +699,10 @@ class ShellFileOperations(FileOperations):
             total_lines = int(wc_output.strip())
         except ValueError:
             total_lines = 0
+        if file_size > 0 and not self._ends_with_newline(path):
+            # wc -l counts newline bytes, so a non-empty file without a
+            # trailing newline still has one more logical line.
+            total_lines += 1
         
         # Check if truncated
         truncated = total_lines > end_line

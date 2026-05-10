@@ -1367,6 +1367,67 @@ def get_available_skills(board: Optional[str] = Query(None)):
         return {"skills": []}
 
 
+@router.get("/profile-skills")
+def get_profile_skills(
+    profile: str = Query(..., description="Profile name"),
+    board: Optional[str] = Query(None),
+):
+    """Return the enabled skills for a given profile.
+
+    Enabled skills = all system skills minus the profile's disabled list.
+    The profile's disabled skills are read from its ``config.yaml``.
+
+    ``board`` is accepted for consistency with other endpoints but does
+    not affect the result — skills are per-profile, not per-board.
+    """
+    # 1. Get all system skills (reuse the same scan as /available-skills)
+    try:
+        from agent.skill_utils import get_all_skills_dirs, EXCLUDED_SKILL_DIRS
+        all_dirs = get_all_skills_dirs()
+        system_skills: set[str] = set()
+        for sd in all_dirs:
+            if not sd.is_dir():
+                continue
+            for entry in sd.iterdir():
+                if not entry.is_dir():
+                    continue
+                if entry.name in EXCLUDED_SKILL_DIRS:
+                    continue
+                if (entry / "SKILL.md").is_file():
+                    system_skills.add(entry.name)
+    except Exception:
+        return {"profile": profile, "skills": [], "disabled": []}
+
+    # 2. Read profile's disabled skills from its config.yaml
+    import yaml
+    from hermes_constants import get_default_hermes_root
+
+    profile_config_path = (
+        get_default_hermes_root() / "profiles" / profile / "config.yaml"
+    )
+    disabled_skills: set[str] = set()
+    try:
+        if profile_config_path.exists():
+            cfg = yaml.safe_load(profile_config_path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict):
+                skills_cfg = cfg.get("skills") or {}
+                raw_disabled = skills_cfg.get("disabled") or []
+                if isinstance(raw_disabled, list):
+                    disabled_skills = {
+                        str(s).strip() for s in raw_disabled if str(s).strip()
+                    }
+    except Exception:
+        pass  # If we can't read the config, return all system skills
+
+    enabled = sorted(system_skills - disabled_skills)
+    disabled = sorted(disabled_skills & system_skills)
+    return {
+        "profile": profile,
+        "skills": enabled,
+        "disabled": disabled,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Worker log (read-only; file written by _default_spawn)
 # ---------------------------------------------------------------------------

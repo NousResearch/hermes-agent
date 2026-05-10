@@ -445,10 +445,6 @@
     // showing stale data.
     const [taskEventTick, setTaskEventTick] = useState({});
 
-    // Available skills for the InlineCreate form's skills select.
-    // Fetched once on mount and whenever the board slug changes.
-    const [availableSkills, setAvailableSkills] = useState([]);
-
     const cursorRef = useRef(0);
     const reloadTimerRef = useRef(null);
     const wsRef = useRef(null);
@@ -469,17 +465,6 @@
         })
         .catch(function () { setConfig({ render_markdown: true }); });
     }, []);  // eslint-disable-line react-hooks/exhaustive-deps
-
-    // --- load available skills for InlineCreate -------------------------
-    useEffect(function () {
-      SDK.fetchJSON(withBoard(`${API}/available-skills`, board))
-        .then(function (data) {
-          setAvailableSkills((data && data.skills) || []);
-        })
-        .catch(function () {
-          setAvailableSkills([]);
-        });
-    }, [board]);  // eslint-disable-line react-hooks/exhaustive-deps
 
     // --- fetch full board ---------------------------------------------------
     const loadBoard = useCallback(() => {
@@ -807,7 +792,6 @@
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
           assignees: (boardData && boardData.assignees) || [],
-          availableSkills: availableSkills,
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
@@ -1603,7 +1587,6 @@
           onCreate: props.onCreate,
           allTasks: props.allTasks,
           assignees: props.assignees,
-          availableSkills: props.availableSkills,
         });
       }),
     );
@@ -1688,7 +1671,6 @@
         columnName: props.column.name,
         allTasks: props.allTasks,
         assignees: props.assignees,
-        availableSkills: props.availableSkills,
         onSubmit: function (body) {
           props.onCreate(body).then(function () { setShowCreate(false); });
         },
@@ -1876,14 +1858,42 @@
     const [otherAssignee, setOtherAssignee] = useState("");
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
-    const [selectedSkills, setSelectedSkills] = useState([]);
-    const [customSkills, setCustomSkills] = useState("");
+    // Profile skills: fetched when assignee changes, displayed as read-only tags.
+    const [profileSkills, setProfileSkills] = useState(null);
+    const [profileSkillsLoading, setProfileSkillsLoading] = useState(false);
     // Workspace controls. `scratch` (default) ignores path; `worktree` optionally
     // takes a path (dispatcher derives one from the assignee profile otherwise);
     // `dir` requires a path. Backend enforces the rule — we only hide/show the
     // input here to save vertical space in the common `scratch` case.
     const [workspaceKind, setWorkspaceKind] = useState("scratch");
     const [workspacePath, setWorkspacePath] = useState("");
+
+    // --- fetch profile skills when assignee changes -----------------------
+    useEffect(function () {
+      var resolved = assignee;
+      if (assignee === "__other__") {
+        resolved = otherAssignee || "";
+      }
+      if (resolved && resolved !== "__none__" && resolved !== "") {
+        setProfileSkillsLoading(true);
+        SDK.fetchJSON(withBoard(
+          API + "/profile-skills?profile=" + encodeURIComponent(resolved),
+          ""
+        ))
+          .then(function (data) {
+            setProfileSkills(data || { skills: [], disabled: [] });
+          })
+          .catch(function () {
+            setProfileSkills({ skills: [], disabled: [] });
+          })
+          .finally(function () {
+            setProfileSkillsLoading(false);
+          });
+      } else {
+        setProfileSkills(null);
+        setProfileSkillsLoading(false);
+      }
+    }, [assignee, otherAssignee]);  // eslint-disable-line react-hooks/exhaustive-deps
 
     const submit = function () {
       const trimmed = title.trim();
@@ -1901,17 +1911,9 @@
         body.assignee = assignee;
       }
       if (parent) body.parents = [parent];
-      // Combine selected skills (from the additive Select) with custom
-      // comma-separated skills. The dispatcher always auto-loads
-      // kanban-worker; these are extras on top.
-      const skillList = [].concat(selectedSkills).concat(
-        customSkills.split(",")
-          .map(function (s) { return s.trim(); })
-          .filter(function (s) { return s.length > 0; })
-      );
-      if (skillList.length > 0) body.skills = skillList;
-      // Only send workspace_kind when it's non-default. Keeps the request
-      // shape small and interoperable with older dispatcher versions.
+      // No manual skills field — profile skills are auto-resolved by the
+      // dispatcher based on the assigned profile's config. Only send
+      // workspace_kind when it's non-default.
       if (workspaceKind && workspaceKind !== "scratch") {
         body.workspace_kind = workspaceKind;
       }
@@ -1919,7 +1921,7 @@
       if (wpTrim) body.workspace_path = wpTrim;
       props.onSubmit(body);
       setTitle(""); setAssignee(""); setOtherAssignee("");
-      setPriority(0); setParent(""); setSelectedSkills([]); setCustomSkills("");
+      setPriority(0); setParent(""); setProfileSkills(null);
       setWorkspaceKind("scratch"); setWorkspacePath("");
     };
 
@@ -1979,53 +1981,31 @@
           title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
         }),
       ),
-      // Skills: additive Select + tags + custom input
+      // Profile skills — auto-resolved from the selected assignee's config.
+      // Read-only tags, no manual add/remove. Only shown when a profile is
+      // selected so the user can see which skills the worker will have.
       h("div", { className: "flex flex-col gap-1" },
-        h("div", { className: "flex gap-2 items-center" },
-          h(Select, {
-            value: "__placeholder__",
-            onChange: function (e) {
-              const val = e.target.value;
-              if (val && val !== "__placeholder__") {
-                setSelectedSkills(function (prev) {
-                  if (prev.indexOf(val) === -1) {
-                    return prev.concat([val]);
-                  }
-                  return prev;
-                });
-              }
-            },
-            className: "h-7 text-xs flex-1",
-          },
-            h(SelectOption, { value: "__placeholder__", disabled: true },
-              tx(t, "addSkill", "+ add skill…")),
-            (props.availableSkills || []).map(function (s) {
-              return h(SelectOption, { key: s, value: s }, s);
-            }),
-          ),
-          h(Input, {
-            value: customSkills,
-            onChange: function (e) { setCustomSkills(e.target.value); },
-            placeholder: tx(t, "customSkill", "+ custom"),
-            className: "h-7 text-xs w-28",
-            title: "Comma-separated custom skills not in the list",
-          }),
-        ),
-        // Tags for selected skills (removable)
-        selectedSkills.length > 0 ? h("div", { className: "flex flex-wrap gap-1 mt-1" },
-          selectedSkills.map(function (s) {
-            return h("span", {
-              key: s,
-              className: "inline-flex items-center gap-1 text-xs bg-muted px-1.5 py-0.5 rounded cursor-pointer",
-              onClick: function () {
-                setSelectedSkills(function (prev) {
-                  return prev.filter(function (x) { return x !== s; });
-                });
-              },
-              title: "Click to remove",
-            }, s + " ×");
-          }),
-        ) : null,
+        profileSkillsLoading
+          ? h("span", { className: "text-xs text-midground/40" }, "skills…")
+          : profileSkills && profileSkills.skills && profileSkills.skills.length > 0
+            ? [
+                h("div", { className: "flex flex-wrap gap-1" },
+                  profileSkills.skills.slice(0, 24).map(function (s) {
+                    return h("span", {
+                      key: s,
+                      className: "inline-flex items-center gap-1 text-xs bg-muted/30 text-midground/80 px-1.5 py-0.5 rounded",
+                      title: s,
+                    }, s);
+                  }),
+                  profileSkills.skills.length > 24
+                    ? h("span", { className: "text-xs text-midground/40" },
+                      "+" + (profileSkills.skills.length - 24) + " more")
+                    : null,
+                ),
+              ]
+            : profileSkills && profileSkills.skills
+              ? h("span", { className: "text-xs text-midground/40" }, "no profile-specific skills")
+              : null,
       ),
       h("div", { className: "flex gap-2" },
         h(Select, {

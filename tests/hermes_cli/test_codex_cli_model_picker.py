@@ -88,6 +88,13 @@ def test_codex_picker_uses_live_codex_catalog(hermes_auth_only_env, tmp_path, mo
         ]
     }))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    # Force the cache fallback path — without this the test issues a real
+    # 10s HTTP probe to chatgpt.com/backend-api/codex/models which is both
+    # slow and non-deterministic in CI/sandboxed environments.
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: [],
+    )
 
     providers = list_authenticated_providers(
         current_provider="openai-codex",

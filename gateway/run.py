@@ -10575,9 +10575,15 @@ class GatewayRunner:
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import (
+                prepare_korean_first_spoken_text,
+                text_to_speech_tool,
+            )
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            tts_text = prepare_korean_first_spoken_text(
+                text[:4000],
+                user_text=getattr(event, "text", "") or "",
+            )
             if not tts_text:
                 return
 

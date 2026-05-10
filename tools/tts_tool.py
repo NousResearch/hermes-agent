@@ -1988,6 +1988,26 @@ _MD_HEADER = re.compile(r'^#+\s*', flags=re.MULTILINE)
 _MD_LIST_ITEM = re.compile(r'^\s*[-*]\s+', flags=re.MULTILINE)
 _MD_HR = re.compile(r'---+')
 _MD_EXCESS_NL = re.compile(r'\n{3,}')
+_HANGUL_RE = re.compile(r'[\uac00-\ud7a3]')
+_LATIN_RE = re.compile(r'[A-Za-z]')
+_SPOKEN_UNIT_RE = re.compile(r'(?<=[.!?。？！])\s+|\n+')
+_TECHNICAL_ONLY_RE = re.compile(
+    r'(^\s*(?:[$>#]|(?:sudo|cd|git|python|pip|npm|pnpm|yarn|uv|docker|kubectl|curl|ssh|scp|rsync)\b))'
+    r'|(https?://|www\.)'
+    r'|(?:^|[\s(])(?:[/~]|\.{1,2}/)[^\s)]+'  # file paths
+    r'|\b[\w.+-]+/[\w./+-]+\b'  # repo/path-like tokens
+)
+_ENGLISH_OUTPUT_REQUEST_RE = re.compile(
+    r'\b(?:in|into|to)\s+english\b'
+    r'|\benglish\s+(?:voice|tts|audio|speech|spoken|output|reply|response|answer|translation)\b'
+    r'|\b(?:speak|say|read|voice|tts|output|reply|respond|answer|translate)\b[^.!?\n]{0,80}\benglish\b'
+    r'|영어로|영문으로|영어\s*(?:음성|목소리|답변|응답|출력|번역)',
+    flags=re.IGNORECASE,
+)
+_KOREAN_FIRST_FALLBACK = (
+    "영어 답변이라 음성으로는 한국어 안내만 전할게요. "
+    "자세한 내용은 텍스트를 확인해 주세요."
+)
 
 
 def _strip_markdown_for_tts(text: str) -> str:
@@ -2003,6 +2023,54 @@ def _strip_markdown_for_tts(text: str) -> str:
     text = _MD_HR.sub('', text)
     text = _MD_EXCESS_NL.sub('\n\n', text)
     return text.strip()
+
+
+def _user_requested_english_spoken_output(user_text: str) -> bool:
+    """Return True only for explicit per-turn English voice/output requests."""
+    return bool(_ENGLISH_OUTPUT_REQUEST_RE.search(user_text or ""))
+
+
+def _is_english_heavy_without_korean(text: str) -> bool:
+    """Heuristic guard for fail-closed Korean-first speech."""
+    if _HANGUL_RE.search(text):
+        return False
+    latin_chars = len(_LATIN_RE.findall(text))
+    if latin_chars == 0:
+        return False
+    non_space_chars = sum(1 for ch in text if not ch.isspace())
+    return latin_chars >= max(8, int(non_space_chars * 0.35))
+
+
+def prepare_korean_first_spoken_text(text: str, user_text: str = "") -> str:
+    """Prepare gateway/persona TTS text with a fail-closed Korean-first policy.
+
+    English is spoken verbatim only when the current user turn explicitly asks
+    for English voice/output.  Otherwise, keep Korean-containing spoken units
+    (preserving embedded technical terms) and drop English-only prose, code,
+    shell commands, paths, and URLs.  If no Korean spoken content remains,
+    return a short Korean notice instead of reading English aloud.
+    """
+    cleaned = _strip_markdown_for_tts(text or "")
+    if not cleaned:
+        return ""
+    if _user_requested_english_spoken_output(user_text):
+        return cleaned
+
+    units = [unit.strip() for unit in _SPOKEN_UNIT_RE.split(cleaned) if unit.strip()]
+    korean_units = []
+    for unit in units:
+        if _HANGUL_RE.search(unit):
+            korean_units.append(unit)
+            continue
+        if _TECHNICAL_ONLY_RE.search(unit):
+            continue
+        if _is_english_heavy_without_korean(unit):
+            continue
+
+    spoken = " ".join(korean_units).strip()
+    if spoken:
+        return re.sub(r'\s{2,}', ' ', spoken)
+    return _KOREAN_FIRST_FALLBACK
 
 
 def stream_tts_to_speaker(

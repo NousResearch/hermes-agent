@@ -227,6 +227,3 @@ select = ["PLW1514"]
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]
 "plugins/**" = ["PLW1514"]
-
-[tool.uv]
-exclude-newer = "7 days"

@@ -943,7 +943,7 @@ class TestFailClosedUnderPromptToolkit:
                 "prompt_dangerous_approval deadlocked under prompt_toolkit "
                 "with no callback -- fail-closed guard is broken"
             )
-            assert result == ["deny"]
+            assert result == ["unavailable"]
         finally:
             ptc.get_app_or_none = orig
 
@@ -965,3 +965,113 @@ class TestFailClosedUnderPromptToolkit:
             assert result == "once"
         finally:
             ptc.get_app_or_none = orig
+
+
+class TestApprovalUnavailableMessaging:
+    """Regression tests for no-callback approval failures.
+
+    A prompt that cannot be presented is not the same as an explicit user
+    denial. The tool result must say approval was unavailable so the agent
+    can rewrite the command instead of telling the user they denied it.
+    """
+
+    def _with_prompt_toolkit_active(self, fn):
+        import prompt_toolkit.application.current as ptc
+
+        orig = ptc.get_app_or_none
+        ptc.get_app_or_none = lambda: object()
+        try:
+            return fn()
+        finally:
+            ptc.get_app_or_none = orig
+
+    def test_combined_guard_python_c_no_callback_does_not_claim_user_denied(self):
+        def run():
+            with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+                with mock_patch("tools.approval._get_approval_mode", return_value="manual"):
+                    with mock_patch(
+                        "tools.tirith_security.check_command_security",
+                        return_value={"action": "allow", "findings": [], "summary": ""},
+                    ):
+                        return approval_module.check_all_command_guards(
+                            "python3 -c 'print(123)'",
+                            "local",
+                            approval_callback=None,
+                        )
+
+        result = self._with_prompt_toolkit_active(run)
+
+        assert result["approved"] is False
+        assert "no approval UI was available" in result["message"]
+        assert "The user did not deny" in result["message"]
+        assert "User denied" not in result["message"]
+        assert "Do NOT retry" not in result["message"]
+
+    def test_tirith_variation_selector_no_callback_does_not_claim_user_denied(self):
+        findings = [
+            {
+                "rule_id": "unicode_variation_selector",
+                "severity": "warning",
+                "title": "Unicode variation selector",
+                "description": "Variation selector characters can hide text differences.",
+            }
+        ]
+
+        def run():
+            with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+                with mock_patch("tools.approval._get_approval_mode", return_value="manual"):
+                    with mock_patch(
+                        "tools.tirith_security.check_command_security",
+                        return_value={
+                            "action": "warn",
+                            "findings": findings,
+                            "summary": "variation selector warning",
+                        },
+                    ):
+                        return approval_module.check_all_command_guards(
+                            "printf 'Waiting For ⏱️'",
+                            "local",
+                            approval_callback=None,
+                        )
+
+        result = self._with_prompt_toolkit_active(run)
+
+        assert result["approved"] is False
+        assert "no approval UI was available" in result["message"]
+        assert "The user did not deny" in result["message"]
+        assert "User denied" not in result["message"]
+        assert "Do NOT retry" not in result["message"]
+
+    def test_explicit_deny_still_reports_user_denied(self):
+        with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+            with mock_patch("tools.approval._get_approval_mode", return_value="manual"):
+                with mock_patch(
+                    "tools.tirith_security.check_command_security",
+                    return_value={"action": "allow", "findings": [], "summary": ""},
+                ):
+                    result = approval_module.check_all_command_guards(
+                        "python3 -c 'print(123)'",
+                        "local",
+                        approval_callback=lambda *args, **kwargs: "deny",
+                    )
+
+        assert result["approved"] is False
+        assert result["message"] == "BLOCKED: User denied. Do NOT retry."
+
+    def test_timeout_has_distinct_message(self):
+        with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+            with mock_patch("tools.approval._get_approval_mode", return_value="manual"):
+                with mock_patch(
+                    "tools.tirith_security.check_command_security",
+                    return_value={"action": "allow", "findings": [], "summary": ""},
+                ):
+                    result = approval_module.check_all_command_guards(
+                        "python3 -c 'print(123)'",
+                        "local",
+                        approval_callback=lambda *args, **kwargs: "timeout",
+                    )
+
+        assert result["approved"] is False
+        assert "approval request timed out" in result["message"]
+        assert "User denied" not in result["message"]
+        assert "user denied" not in result["message"].lower()

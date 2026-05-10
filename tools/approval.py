@@ -617,7 +617,11 @@ def prompt_dangerous_approval(command: str, description: str,
             prompt_toolkit integration. Signature:
             (command, description, *, allow_permanent=True) -> str.
 
-    Returns: 'once', 'session', 'always', or 'deny'
+    Returns: 'once', 'session', 'always', 'deny', 'timeout', or 'unavailable'
+
+    'deny' means the user explicitly rejected the command. 'timeout' means
+    no response arrived before the approval deadline. 'unavailable' means an
+    approval prompt could not be presented in the current execution context.
     """
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
@@ -628,14 +632,14 @@ def prompt_dangerous_approval(command: str, description: str,
                                      allow_permanent=allow_permanent)
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
-            return "deny"
+            return "unavailable"
 
     # Fail-closed guard: if prompt_toolkit owns the terminal (interactive
     # CLI session) and no approval callback is registered on this thread,
     # the input() fallback below would spawn a daemon thread whose read
     # can never see Enter -- the user's keystrokes go to prompt_toolkit,
     # not input(), producing an invisible 60s deadlock (issue #15216).
-    # Deny fast and log loudly instead so the caller can surface a real
+    # Fail fast and log loudly instead so the caller can surface a real
     # error to the agent. Any thread that needs interactive approval must
     # install a callback via tools.terminal_tool.set_approval_callback()
     # before reaching this point (see delegate_tool.py, run_agent.py
@@ -646,11 +650,12 @@ def prompt_dangerous_approval(command: str, description: str,
         if get_app_or_none() is not None:
             logger.warning(
                 "Dangerous-command approval requested on a thread with no "
-                "approval callback while prompt_toolkit is active; denying "
-                "to avoid stdin deadlock. command=%r description=%r",
+                "approval callback while prompt_toolkit is active; approval "
+                "is unavailable in this execution context. command=%r "
+                "description=%r",
                 command, description,
             )
-            return "deny"
+            return "unavailable"
     except Exception:
         # prompt_toolkit not installed, or detection failed -- fall through
         # to the legacy input() path (safe in non-TUI contexts: scripts,
@@ -689,7 +694,7 @@ def prompt_dangerous_approval(command: str, description: str,
 
             if thread.is_alive():
                 print("\n" + t("approval.timeout"))
-                return "deny"
+                return "timeout"
 
             choice = result["choice"]
             if choice in ('o', 'once'):
@@ -769,6 +774,25 @@ def _get_cron_approval_mode() -> str:
         return "deny"
     except Exception:
         return "deny"
+
+
+def _approval_unavailable_message(description: str) -> str:
+    return (
+        f"BLOCKED: Command required approval ({description}), but no approval "
+        "UI was available in this execution context. The user did not deny "
+        "the command. Rewrite the command to avoid the approval trigger, run "
+        "it interactively where approval prompts are available, or explicitly "
+        "use --yolo / approvals.mode=off if you accept the risk."
+    )
+
+
+def _approval_timeout_message(description: str) -> str:
+    return (
+        f"BLOCKED: Command required approval ({description}), but the approval "
+        "request timed out. This was not an explicit denial. Ask again only if "
+        "the user wants to retry or rewrite the command to avoid the approval "
+        "trigger."
+    )
 
 
 def _smart_approve(command: str, description: str) -> str:
@@ -903,6 +927,22 @@ def check_dangerous_command(command: str, env_type: str,
         return {
             "approved": False,
             "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
+            "pattern_key": pattern_key,
+            "description": description,
+        }
+
+    if choice == "timeout":
+        return {
+            "approved": False,
+            "message": _approval_timeout_message(description),
+            "pattern_key": pattern_key,
+            "description": description,
+        }
+
+    if choice == "unavailable":
+        return {
+            "approved": False,
+            "message": _approval_unavailable_message(description),
             "pattern_key": pattern_key,
             "description": description,
         }
@@ -1266,6 +1306,22 @@ def check_all_command_guards(command: str, env_type: str,
         return {
             "approved": False,
             "message": "BLOCKED: User denied. Do NOT retry.",
+            "pattern_key": primary_key,
+            "description": combined_desc,
+        }
+
+    if choice == "timeout":
+        return {
+            "approved": False,
+            "message": _approval_timeout_message(combined_desc),
+            "pattern_key": primary_key,
+            "description": combined_desc,
+        }
+
+    if choice == "unavailable":
+        return {
+            "approved": False,
+            "message": _approval_unavailable_message(combined_desc),
             "pattern_key": primary_key,
             "description": combined_desc,
         }

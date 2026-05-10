@@ -163,6 +163,30 @@ def test_android_linux_subsystem_reapplies_executable_bits_before_reusing_cached
     assert 'path_parts = [system_path]' in android_environment
 
 
+def test_android_intent_bridge_can_open_generated_workspace_html_with_fileprovider():
+    manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
+    paths = (REPO_ROOT / "android/app/src/main/res/xml/hermes_file_paths.xml").read_text(encoding="utf-8")
+    intent_bridge = (
+        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesIntentBridge.kt"
+    ).read_text(encoding="utf-8")
+    automation_test = (
+        REPO_ROOT / "android/app/src/androidTest/java/com/nousresearch/hermesagent/HermesAutomationInstrumentedTest.kt"
+    ).read_text(encoding="utf-8")
+
+    assert 'androidx.core.content.FileProvider' in manifest
+    assert 'android:authorities="${applicationId}.files"' in manifest
+    assert 'android:resource="@xml/hermes_file_paths"' in manifest
+    assert 'name="hermes_home"' in paths
+    assert 'path="hermes-home/"' in paths
+    assert 'FileProvider.getUriForFile(' in intent_bridge
+    assert 'Intent.FLAG_GRANT_READ_URI_PERMISSION' in intent_bridge
+    assert '"html", "htm" -> "text/html"' in intent_bridge
+    assert 'shouldAddBrowsableCategory(resolvedDataUri ?: intent.data)' in intent_bridge
+    assert 'BROWSABLE_URI_SCHEMES = setOf("http", "https")' in intent_bridge
+    assert 'fun intentAutomationCanOpenGeneratedHermesHtmlFileWhenBrowserIsAvailable()' in automation_test
+    assert 'hermes-flappy-browser-smoke.html' in automation_test
+
+
 def test_android_python_import_path_prefers_hermes_utils_before_chaquopy_requirements():
     python_path = (REPO_ROOT / "hermes_android/python_path.py").read_text(encoding="utf-8")
     config_bridge = (REPO_ROOT / "hermes_android/config_bridge.py").read_text(encoding="utf-8")

@@ -5,8 +5,10 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 
 object HermesIntentBridge {
     fun performIntentJson(context: Context, payload: JSONObject): JSONObject {
@@ -24,8 +26,8 @@ object HermesIntentBridge {
             return successJson(intentTaskAction, payload, "Android intent payload is valid")
         }
 
-        val intent = buildIntent(intentTaskAction, payload)
         val appContext = context.applicationContext
+        val intent = buildIntent(appContext, intentTaskAction, payload)
         return when (intentTaskAction) {
             INTENT_TASK_SEND_BROADCAST -> runCatching {
                 appContext.sendBroadcast(intent)
@@ -53,7 +55,7 @@ object HermesIntentBridge {
         return INTENT_TASK_ACTION_SYNONYMS[normalized] ?: normalized.takeIf { it in INTENT_TASK_ACTIONS }
     }
 
-    private fun buildIntent(intentTaskAction: String, payload: JSONObject): Intent {
+    private fun buildIntent(context: Context, intentTaskAction: String, payload: JSONObject): Intent {
         val intent = Intent()
         val intentAction = payload.optString("intent_action").ifBlank {
             if (intentTaskAction == INTENT_TASK_OPEN_URI) Intent.ACTION_VIEW else ""
@@ -61,10 +63,20 @@ object HermesIntentBridge {
         if (intentAction.isNotBlank()) {
             intent.action = intentAction
         }
+        var resolvedDataUri: Uri? = null
         payload.optString("data_uri").takeIf { it.isNotBlank() }?.let { rawUri ->
-            intent.data = Uri.parse(rawUri)
+            val resolved = resolveOpenUri(context, intentTaskAction, rawUri)
+            resolvedDataUri = resolved.uri
+            if (resolved.mimeType.isNullOrBlank()) {
+                intent.data = resolved.uri
+            } else {
+                intent.setDataAndType(resolved.uri, resolved.mimeType)
+            }
+            if (resolved.grantReadPermission) {
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
         }
-        if (intentTaskAction == INTENT_TASK_OPEN_URI) {
+        if (intentTaskAction == INTENT_TASK_OPEN_URI && shouldAddBrowsableCategory(resolvedDataUri ?: intent.data)) {
             intent.addCategory(Intent.CATEGORY_BROWSABLE)
         }
         payload.optString("package_name").takeIf { it.isNotBlank() }?.let { packageName ->
@@ -92,6 +104,63 @@ object HermesIntentBridge {
             }
         }
         return intent
+    }
+
+    private fun resolveOpenUri(context: Context, intentTaskAction: String, rawUri: String): ResolvedOpenUri {
+        if (intentTaskAction != INTENT_TASK_OPEN_URI) {
+            return ResolvedOpenUri(Uri.parse(rawUri))
+        }
+        val parsed = Uri.parse(rawUri)
+        val localFile = localHermesFile(context, rawUri, parsed) ?: return ResolvedOpenUri(parsed)
+        val contentUri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.files",
+            localFile,
+        )
+        return ResolvedOpenUri(
+            uri = contentUri,
+            mimeType = mimeTypeFor(localFile),
+            grantReadPermission = true,
+        )
+    }
+
+    private fun localHermesFile(context: Context, rawUri: String, parsed: Uri): File? {
+        val candidate = when {
+            parsed.scheme == "file" -> parsed.path?.let(::File)
+            parsed.scheme.isNullOrBlank() && File(rawUri).isAbsolute -> File(rawUri)
+            parsed.scheme.isNullOrBlank() -> {
+                val state = HermesLinuxSubsystemBridge.ensureInstalled(context)
+                val homePath = state.optString("home_path").ifBlank {
+                    File(context.filesDir, "hermes-home/workspace").absolutePath
+                }
+                File(homePath, rawUri)
+            }
+            else -> null
+        } ?: return null
+        val canonical = candidate.canonicalFile
+        val hermesRoot = File(context.filesDir, "hermes-home").canonicalFile
+        return canonical.takeIf { file ->
+            (file == hermesRoot || file.path.startsWith(hermesRoot.path + File.separator)) && file.isFile
+        }
+    }
+
+    private fun mimeTypeFor(file: File): String {
+        return when (file.extension.lowercase()) {
+            "html", "htm" -> "text/html"
+            "txt", "log", "md" -> "text/plain"
+            "json" -> "application/json"
+            "js" -> "application/javascript"
+            "css" -> "text/css"
+            "svg" -> "image/svg+xml"
+            "png" -> "image/png"
+            "jpg", "jpeg" -> "image/jpeg"
+            "gif" -> "image/gif"
+            else -> "*/*"
+        }
+    }
+
+    private fun shouldAddBrowsableCategory(uri: Uri?): Boolean {
+        return uri?.scheme?.lowercase() in BROWSABLE_URI_SCHEMES
     }
 
     private fun validatePayload(payload: JSONObject): String? {
@@ -229,9 +298,16 @@ object HermesIntentBridge {
             .put("extras", payload.optJSONObject("extras") ?: JSONObject())
     }
 
+    private data class ResolvedOpenUri(
+        val uri: Uri,
+        val mimeType: String? = null,
+        val grantReadPermission: Boolean = false,
+    )
+
     private const val INTENT_TASK_START_ACTIVITY = "start_activity"
     private const val INTENT_TASK_OPEN_URI = "open_uri"
     private const val INTENT_TASK_SEND_BROADCAST = "send_broadcast"
+    private val BROWSABLE_URI_SCHEMES = setOf("http", "https")
     private val INTENT_TASK_ACTIONS = listOf(
         INTENT_TASK_START_ACTIVITY,
         INTENT_TASK_OPEN_URI,

@@ -5,6 +5,7 @@ import pytest
 from pathlib import Path
 
 from hermes_state import SessionDB
+from persistence_sanitizer import summarize_for_log
 
 
 @pytest.fixture()
@@ -223,26 +224,39 @@ class TestMessageStorage:
         TUI (issue #17522).
         """
         db.create_session(session_id="s1", source="cli")
+        data_url = "data:image/png;base64,iVBORw0KGgo="
         content = [
             {"type": "text", "text": "describe this screenshot"},
             {
                 "type": "image_url",
-                "image_url": {"url": "data:image/png;base64,iVBORw0KG..."},
+                "image_url": {"url": data_url},
             },
         ]
 
         # Write must not raise
         db.append_message("s1", role="user", content=content)
 
-        # get_messages decodes back to the original list
         msgs = db.get_messages("s1")
         assert len(msgs) == 1
-        assert msgs[0]["content"] == content
+        assert msgs[0]["content"][0] == content[0]
+        image_part = msgs[0]["content"][1]
+        assert image_part["type"] == "text"
+        assert "Image omitted from persistent transcript" in image_part["text"]
+        assert "image/png" in image_part["text"]
+        assert "Raw base64 was not stored" in image_part["text"]
+        assert data_url not in str(msgs[0]["content"])
 
-        # get_messages_as_conversation decodes back to the original list
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 1
-        assert conv[0] == {"role": "user", "content": content}
+        assert conv[0]["role"] == "user"
+        assert data_url not in str(conv[0]["content"])
+
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT content FROM messages WHERE session_id = ?", ("s1",)
+            ).fetchone()
+        assert data_url not in row["content"]
+        assert "Image omitted from persistent transcript" in row["content"]
 
     def test_dict_content_round_trip(self, db):
         """Dict-shaped content (e.g. provider wrappers) also round-trips."""
@@ -271,9 +285,10 @@ class TestMessageStorage:
         """`replace_messages` (used by /retry, /undo, /compress) must also
         handle list content without crashing."""
         db.create_session(session_id="s1", source="cli")
+        data_url = "data:image/png;base64,AAA"
         content = [
             {"type": "text", "text": "look at this"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            {"type": "image_url", "image_url": {"url": data_url}},
         ]
 
         db.replace_messages(
@@ -286,8 +301,39 @@ class TestMessageStorage:
 
         msgs = db.get_messages("s1")
         assert len(msgs) == 2
-        assert msgs[0]["content"] == content
+        assert msgs[0]["content"][0] == content[0]
+        assert msgs[0]["content"][1]["type"] == "text"
+        assert "Image omitted from persistent transcript" in msgs[0]["content"][1]["text"]
+        assert data_url not in str(msgs[0]["content"])
         assert msgs[1]["content"] == "I see a screenshot."
+
+    def test_scalar_image_data_url_is_not_persisted(self, db):
+        """Bare data URLs are replaced with metadata before storage."""
+        db.create_session(session_id="s1", source="cli")
+        data_url = "data:image/jpeg;base64,SGVsbG8="
+
+        db.append_message("s1", role="user", content=data_url)
+
+        msg = db.get_messages("s1")[0]
+        assert "Image omitted from persistent transcript" in msg["content"]
+        assert "image/jpeg" in msg["content"]
+        assert data_url not in msg["content"]
+
+    def test_embedded_image_data_url_is_not_persisted_or_logged(self, db):
+        """Text containing an inline data URL must not keep raw image bytes."""
+        db.create_session(session_id="s1", source="cli")
+        data_url = "data:image/png;base64,SGVsbG8="
+        content = f"Screenshot payload: {data_url}"
+
+        db.append_message("s1", role="user", content=content)
+
+        msg = db.get_messages("s1")[0]
+        assert data_url not in msg["content"]
+        assert "Image omitted from persistent transcript" in msg["content"]
+
+        preview = summarize_for_log(content)
+        assert data_url not in preview
+        assert "Image omitted from persistent transcript" in preview
 
     def test_get_messages_as_conversation(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -2942,4 +2988,3 @@ class TestFTS5ToolCallMigration:
             assert version == 11
         finally:
             session_db.close()
-

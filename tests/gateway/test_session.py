@@ -473,6 +473,53 @@ class TestSessionStoreRewriteTranscript:
         reloaded = store.load_transcript(session_id)
         assert reloaded == []
 
+    def test_append_sanitizes_inline_image_jsonl(self, store):
+        session_id = "test_session_image_append"
+        data_url = "data:image/png;base64,SGVsbG8="
+        store.append_to_transcript(
+            session_id,
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe this"},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        )
+
+        raw = store.get_transcript_path(session_id).read_text(encoding="utf-8")
+        assert data_url not in raw
+        assert "Image omitted from persistent transcript" in raw
+
+        reloaded = store.load_transcript(session_id)
+        assert reloaded[0]["content"][1]["type"] == "text"
+        assert "Raw base64 was not stored" in reloaded[0]["content"][1]["text"]
+
+    def test_rewrite_sanitizes_inline_image_jsonl(self, store):
+        session_id = "test_session_image_rewrite"
+        data_url = "data:image/jpeg;base64,SGVsbG8="
+
+        store.rewrite_transcript(
+            session_id,
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "describe this"},
+                        {"type": "input_image", "image_url": data_url},
+                    ],
+                }
+            ],
+        )
+
+        raw = store.get_transcript_path(session_id).read_text(encoding="utf-8")
+        assert data_url not in raw
+        assert "Image omitted from persistent transcript" in raw
+
+        reloaded = store.load_transcript(session_id)
+        assert reloaded[0]["content"][1]["type"] == "input_text"
+        assert "image/jpeg" in reloaded[0]["content"][1]["text"]
+
 
 class TestLoadTranscriptCorruptLines:
     """Regression: corrupt JSONL lines (e.g. from mid-write crash) must be

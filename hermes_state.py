@@ -25,6 +25,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
+from persistence_sanitizer import sanitize_for_persistence
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -1405,6 +1406,7 @@ class SessionDB:
         sentinel-prefixed JSON string for lists/dicts. Paired with
         :meth:`_decode_content` on read.
         """
+        content = sanitize_for_persistence(content)
         if content is None or isinstance(content, (str, bytes, int, float)):
             return content
         try:
@@ -1451,18 +1453,18 @@ class SessionDB:
         """
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
-            json.dumps(reasoning_details)
+            json.dumps(sanitize_for_persistence(reasoning_details))
             if reasoning_details else None
         )
         codex_items_json = (
-            json.dumps(codex_reasoning_items)
+            json.dumps(sanitize_for_persistence(codex_reasoning_items))
             if codex_reasoning_items else None
         )
         codex_message_items_json = (
-            json.dumps(codex_message_items)
+            json.dumps(sanitize_for_persistence(codex_message_items))
             if codex_message_items else None
         )
-        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        tool_calls_json = json.dumps(sanitize_for_persistence(tool_calls)) if tool_calls else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -1546,15 +1548,15 @@ class SessionDB:
                 )
 
                 reasoning_details_json = (
-                    json.dumps(reasoning_details) if reasoning_details else None
+                    json.dumps(sanitize_for_persistence(reasoning_details)) if reasoning_details else None
                 )
                 codex_items_json = (
-                    json.dumps(codex_reasoning_items) if codex_reasoning_items else None
+                    json.dumps(sanitize_for_persistence(codex_reasoning_items)) if codex_reasoning_items else None
                 )
                 codex_message_items_json = (
-                    json.dumps(codex_message_items) if codex_message_items else None
+                    json.dumps(sanitize_for_persistence(codex_message_items)) if codex_message_items else None
                 )
-                tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                tool_calls_json = json.dumps(sanitize_for_persistence(tool_calls)) if tool_calls else None
 
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
@@ -2860,4 +2862,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

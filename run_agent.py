@@ -69,6 +69,7 @@ from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from persistence_sanitizer import sanitize_message_for_persistence
 
 
 _OPENAI_CLS_CACHE: Optional[type] = None
@@ -5033,7 +5034,7 @@ class AIAgent:
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])
-                cleaned.append(msg)
+                cleaned.append(sanitize_message_for_persistence(msg))
 
             # Guard: never overwrite a larger session log with fewer messages.
             # This protects against data loss when --resume loads a session whose

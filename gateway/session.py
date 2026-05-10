@@ -19,6 +19,8 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
+from persistence_sanitizer import sanitize_message_for_persistence
+
 logger = logging.getLogger(__name__)
 
 
@@ -1255,6 +1257,7 @@ class SessionStore:
                      via its own _flush_messages_to_session_db(), preventing
                      the duplicate-write bug (#860).
         """
+        message = sanitize_message_for_persistence(message)
         # Write to SQLite (unless the agent already handled it)
         if self._db and not skip_db:
             try:
@@ -1298,6 +1301,7 @@ class SessionStore:
         transcript_path = self.get_transcript_path(session_id)
         with open(transcript_path, "w", encoding="utf-8") as f:
             for msg in messages:
+                msg = sanitize_message_for_persistence(msg)
                 f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:

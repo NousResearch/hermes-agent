@@ -269,6 +269,13 @@ def test_android_automation_exposes_operator_standby_history_for_remote_dispatch
     assert 'operator_command' in bridge
     assert 'parseOperatorCommand' in bridge
     assert 'OPENGUI_COMPATIBLE_COMMAND_HELP' in bridge
+    assert 'OPENGUI_SLASH_COMMANDS' in bridge
+    assert 'operatorCommandAccess' in bridge
+    assert 'allowed_guild_ids' in bridge
+    assert 'allowed_channel_ids' in bridge
+    assert 'allowed_user_ids' in bridge
+    assert 'not_allowed' in bridge
+    assert 'slash_command_schema' in bridge
     assert '!opengui' in bridge
     assert '/run <id>' in bridge
     assert 'opengui_im_command' in bridge
@@ -286,6 +293,10 @@ def test_android_automation_exposes_operator_standby_history_for_remote_dispatch
     assert 'DISPATCH_EXECUTION_ID' in bridge
     assert 'standby_dispatch' in bridge
     assert 'supported_dispatch_channels' in bridge
+    assert '"discord"' in bridge
+    assert '"telegram"' in bridge
+    assert '"feishu"' in bridge
+    assert '"rest"' in bridge
     assert 'external_broadcast' in bridge
     assert 'OpenGUI standby payload' in bridge
     assert 'compatible_dispatch_payloads' in bridge

@@ -179,15 +179,23 @@ class TestFeishuFallbackThreadRouting:
 
         # The request should have receive_id_type="thread_id"
         call_args = mock_client.im.v1.message.create.call_args[0][0]
-        body = call_args.body
+        # Lark SDK builder exposes .body; the in-tree fallback exposes .request_body.
+        # The contributor's branch had the lark SDK installed, the test environment
+        # may not — handle both shapes.
+        body = getattr(call_args, "body", None) or getattr(call_args, "request_body", None)
+        assert body is not None, "request has neither .body nor .request_body"
         # receive_id should be the thread_id, not the chat_id
-        import json as _json
-        body_dict = _json.loads(body) if isinstance(body, str) else body
-        assert hasattr(body, 'receive_id'), (
-            "CreateMessageRequestBody missing receive_id attribute"
+        receive_id = getattr(body, "receive_id", None)
+        if receive_id is None and isinstance(body, str):
+            import json as _json
+            receive_id = _json.loads(body).get("receive_id")
+        assert receive_id == "omt_topic_abc", (
+            f"Expected receive_id='omt_topic_abc', got '{receive_id}'"
         )
-        assert body.receive_id == "omt_topic_abc", (
-            f"Expected receive_id='omt_topic_abc', got '{body.receive_id}'"
+        # And receive_id_type must be 'thread_id', not 'chat_id'
+        receive_id_type = getattr(call_args, "receive_id_type", None)
+        assert receive_id_type == "thread_id", (
+            f"Expected receive_id_type='thread_id', got '{receive_id_type}'"
         )
 
     @pytest.mark.asyncio

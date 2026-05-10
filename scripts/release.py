@@ -713,6 +713,7 @@ AUTHOR_MAP = {
     "ty@tmrtn.com": "tymrtn",
     "elitovsky@zenproject.net": "kallidean",
     "5463986+baocin@users.noreply.github.com": "baocin",
+    "107296821+princepal9120@users.noreply.github.com": "princepal9120",
     "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
     "haimu0x0@proton.me": "haimu0x",
     "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",

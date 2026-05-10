@@ -356,15 +356,74 @@ class HolographicMemoryProvider(MemoryProvider):
 
     # -- Auto-extraction (on_session_end) ------------------------------------
 
+    @staticmethod
+    def _format_auto_extracted_fact(prefix: str, fragment: str, *, colon: bool = False) -> str:
+        """Build a concise fact from a regex capture instead of raw chat text."""
+        detail = " ".join(str(fragment or "").split()).strip()
+        if not detail:
+            return ""
+        detail = detail[:400].rstrip()
+        fact = f"{prefix}: {detail}" if colon else f"{prefix} {detail}"
+        if fact[-1] not in ".!?":
+            fact += "."
+        return fact
+
     def _auto_extract_facts(self, messages: list) -> None:
         _PREF_PATTERNS = [
-            re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
-            re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
-            re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
+            (
+                re.compile(r'\bI\s+(prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
+                2,
+                {
+                    "prefer": "User prefers",
+                    "like": "User likes",
+                    "love": "User likes",
+                    "use": "User uses",
+                    "want": "User wants",
+                    "need": "User needs",
+                },
+                1,
+                None,
+            ),
+            (
+                re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
+                1,
+                {},
+                0,
+                "User prefers",
+            ),
+            (
+                re.compile(r'\bI\s+(always|never|usually)\s+(.+)', re.IGNORECASE),
+                2,
+                {
+                    "always": "User always",
+                    "never": "User never",
+                    "usually": "User usually",
+                },
+                1,
+                None,
+            ),
         ]
         _DECISION_PATTERNS = [
-            re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
-            re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
+            (
+                re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
+                1,
+                {},
+                0,
+                "Project decision",
+                True,
+            ),
+            (
+                re.compile(r'\bthe\s+project\s+(uses|needs|requires)\s+(.+)', re.IGNORECASE),
+                2,
+                {
+                    "uses": ("Project uses", False),
+                    "needs": ("Project needs", False),
+                    "requires": ("Project requires", False),
+                },
+                1,
+                None,
+                False,
+            ),
         ]
 
         extracted = 0
@@ -375,23 +434,39 @@ class HolographicMemoryProvider(MemoryProvider):
             if not isinstance(content, str) or len(content) < 10:
                 continue
 
-            for pattern in _PREF_PATTERNS:
-                if pattern.search(content):
+            for pattern, fragment_group, prefixes, action_group, default_prefix in _PREF_PATTERNS:
+                match = pattern.search(content)
+                if not match:
+                    continue
+                action = match.group(action_group).lower() if action_group else ""
+                prefix = prefixes.get(action, default_prefix)
+                if not prefix:
+                    continue
+                fact = self._format_auto_extracted_fact(prefix, match.group(fragment_group))
+                if fact:
                     try:
-                        self._store.add_fact(content[:400], category="user_pref")
+                        self._store.add_fact(fact, category="user_pref")
                         extracted += 1
                     except Exception:
                         pass
-                    break
+                break
 
-            for pattern in _DECISION_PATTERNS:
-                if pattern.search(content):
+            for pattern, fragment_group, prefixes, action_group, default_prefix, default_colon in _DECISION_PATTERNS:
+                match = pattern.search(content)
+                if not match:
+                    continue
+                action = match.group(action_group).lower() if action_group else ""
+                prefix, colon = prefixes.get(action, (default_prefix, default_colon))
+                if not prefix:
+                    continue
+                fact = self._format_auto_extracted_fact(prefix, match.group(fragment_group), colon=colon)
+                if fact:
                     try:
-                        self._store.add_fact(content[:400], category="project")
+                        self._store.add_fact(fact, category="project")
                         extracted += 1
                     except Exception:
                         pass
-                    break
+                break
 
         if extracted:
             logger.info("Auto-extracted %d facts from conversation", extracted)

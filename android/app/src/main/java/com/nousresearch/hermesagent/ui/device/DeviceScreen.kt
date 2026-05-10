@@ -136,6 +136,7 @@ fun DeviceScreen(
                 ) {
                 DeviceGuideCard(workspacePath = uiState.workspacePath)
                 LinuxSuiteCard(uiState = uiState)
+                OperatorStandbyCard(uiState = uiState)
                 ConnectivityCard(
                     uiState = uiState,
                     onOpenWifi = { viewModel.performSystemAction("open_wifi_panel") },
@@ -182,7 +183,44 @@ fun DeviceScreen(
             }
         }
     }
+    }
 }
+
+@Composable
+private fun OperatorStandbyCard(uiState: DeviceUiState) {
+    val strings = LocalHermesStrings.current
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(strings.operatorStandbyTitle(), style = MaterialTheme.typography.titleMedium)
+            Text(
+                strings.operatorStandbyStatus(
+                    ready = uiState.operatorStandbyReady,
+                    enabledCount = uiState.enabledAutomationCount,
+                    externalCount = uiState.externalTriggerCount,
+                ),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                strings.operatorStandbyRunHistory(uiState.recentAutomationRunCount),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (uiState.lastAutomationRunLabel.isNotBlank() || uiState.lastAutomationRunResult.isNotBlank()) {
+                Text(
+                    strings.operatorStandbyLastRun(
+                        label = uiState.lastAutomationRunLabel,
+                        success = uiState.lastAutomationRunSuccess,
+                        result = uiState.lastAutomationRunResult,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
 }
 
 @Composable

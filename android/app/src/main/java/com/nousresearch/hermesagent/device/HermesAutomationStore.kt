@@ -72,6 +72,51 @@ data class HermesAutomationRecord(
     }
 }
 
+data class HermesAutomationRunEvent(
+    val id: String,
+    val automationId: String,
+    val automationLabel: String,
+    val actionType: String,
+    val trigger: String,
+    val success: Boolean,
+    val exitCode: Int,
+    val result: String,
+    val startedAtEpochMs: Long,
+    val finishedAtEpochMs: Long,
+) {
+    fun toJson(): JSONObject {
+        return JSONObject()
+            .put("id", id)
+            .put("automation_id", automationId)
+            .put("automation_label", automationLabel)
+            .put("action_type", actionType)
+            .put("trigger", trigger)
+            .put("success", success)
+            .put("exit_code", exitCode)
+            .put("result", result)
+            .put("started_at_epoch_ms", startedAtEpochMs)
+            .put("finished_at_epoch_ms", finishedAtEpochMs)
+            .put("duration_ms", (finishedAtEpochMs - startedAtEpochMs).coerceAtLeast(0L))
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject): HermesAutomationRunEvent {
+            return HermesAutomationRunEvent(
+                id = json.optString("id"),
+                automationId = json.optString("automation_id"),
+                automationLabel = json.optString("automation_label"),
+                actionType = json.optString("action_type"),
+                trigger = json.optString("trigger"),
+                success = json.optBoolean("success", false),
+                exitCode = json.optInt("exit_code", -1),
+                result = json.optString("result"),
+                startedAtEpochMs = json.optLong("started_at_epoch_ms", 0L),
+                finishedAtEpochMs = json.optLong("finished_at_epoch_ms", 0L),
+            )
+        }
+    }
+}
+
 class HermesAutomationStore(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -115,6 +160,31 @@ class HermesAutomationStore(context: Context) {
     fun clear() {
         saveAll(emptyList())
         saveVariables(JSONObject())
+        saveRunEvents(emptyList())
+    }
+
+    fun addRunEvent(event: HermesAutomationRunEvent) {
+        val updated = listRunEvents(MAX_RUN_EVENTS)
+            .filterNot { it.id == event.id }
+            .plus(event)
+            .sortedByDescending { it.finishedAtEpochMs }
+            .take(MAX_RUN_EVENTS)
+        saveRunEvents(updated)
+    }
+
+    fun listRunEvents(limit: Int = 50): List<HermesAutomationRunEvent> {
+        val safeLimit = limit.coerceIn(1, MAX_RUN_EVENTS)
+        val raw = preferences.getString(KEY_RUN_EVENTS, "[]").orEmpty()
+        val array = runCatching { JSONArray(raw) }.getOrDefault(JSONArray())
+        val events = mutableListOf<HermesAutomationRunEvent>()
+        for (index in 0 until array.length()) {
+            val json = array.optJSONObject(index) ?: continue
+            val event = runCatching { HermesAutomationRunEvent.fromJson(json) }.getOrNull() ?: continue
+            if (event.id.isNotBlank() && event.automationId.isNotBlank()) {
+                events += event
+            }
+        }
+        return events.sortedByDescending { it.finishedAtEpochMs }.take(safeLimit)
     }
 
     fun listVariables(): JSONObject {
@@ -172,11 +242,23 @@ class HermesAutomationStore(context: Context) {
         preferences.edit().putString(KEY_VARIABLES, variables.toString()).apply()
     }
 
+    private fun saveRunEvents(events: List<HermesAutomationRunEvent>) {
+        val array = JSONArray().apply {
+            events
+                .sortedByDescending { it.finishedAtEpochMs }
+                .take(MAX_RUN_EVENTS)
+                .forEach { event -> put(event.toJson()) }
+        }
+        preferences.edit().putString(KEY_RUN_EVENTS, array.toString()).apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "hermes_android_automations"
         private const val KEY_RECORDS = "records_json"
         private const val KEY_VARIABLES = "variables_json"
+        private const val KEY_RUN_EVENTS = "run_events_json"
         private const val MAX_VARIABLE_VALUE_CHARS = 4_000
+        private const val MAX_RUN_EVENTS = 50
 
         fun normalizeVariableName(name: String): String? {
             val trimmed = name.trim().removePrefix("%")

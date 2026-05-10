@@ -63,9 +63,33 @@ class HermesAutomationInstrumentedTest {
         assertEquals("automation-ok", target.readText())
         assertEquals(0, run.getJSONObject("automation").getInt("last_exit_code"))
 
+        val history = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run_history",
+                JSONObject().put("limit", 5),
+            )
+        )
+        assertTrue(history.toString(), history.getBoolean("success"))
+        assertTrue(history.getInt("run_count") >= 1)
+        val latestRun = history.getJSONArray("runs").getJSONObject(0)
+        assertEquals(id, latestRun.getString("automation_id"))
+        assertEquals("Automation smoke", latestRun.getString("automation_label"))
+        assertEquals("manual", latestRun.getString("trigger"))
+        assertTrue(latestRun.getBoolean("success"))
+        assertTrue(latestRun.getLong("duration_ms") >= 0L)
+
         val enabled = JSONObject(HermesAutomationBridge.performActionJson(app, "enable", JSONObject().put("id", id)))
         assertTrue(enabled.toString(), enabled.getBoolean("success"))
         assertTrue(enabled.getJSONObject("automation").getBoolean("enabled"))
+
+        val standby = JSONObject(HermesAutomationBridge.performActionJson(app, "operator_standby_status"))
+        assertTrue(standby.toString(), standby.getBoolean("success"))
+        val standbyDispatch = standby.getJSONObject("standby_dispatch")
+        assertTrue(standbyDispatch.toString(), standbyDispatch.getBoolean("ready"))
+        assertEquals(1, standbyDispatch.getInt("enabled_automation_count"))
+        assertEquals(1, standbyDispatch.getInt("recent_run_count"))
+        assertEquals("Automation smoke", standbyDispatch.getString("last_run_label"))
 
         val disabled = JSONObject(HermesAutomationBridge.performActionJson(app, "disable", JSONObject().put("id", id)))
         assertTrue(disabled.toString(), disabled.getBoolean("success"))
@@ -603,6 +627,35 @@ class HermesAutomationInstrumentedTest {
         assertEquals(app.packageName, result.getString("package_name"))
         assertEquals(3, result.getInt("extras_count"))
         assertEquals("broadcast-ok", result.getJSONObject("extras").getString("message"))
+    }
+
+    @Test
+    fun intentAutomationCanOpenBrowserUriWhenBrowserIsAvailable() {
+        val uri = "https://example.com/#hermes-browser-smoke"
+
+        val created = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "create_open_uri_task",
+                JSONObject()
+                    .put("label", "Open browser smoke")
+                    .put("data_uri", uri)
+                    .put("enabled", false),
+            )
+        )
+        assertTrue(created.toString(), created.getBoolean("success"))
+
+        val run = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "run",
+                JSONObject().put("id", created.getJSONObject("automation").getString("id")),
+            )
+        )
+        assertTrue(run.toString(), run.getBoolean("success"))
+        val result = run.getJSONObject("result")
+        assertEquals("open_uri", result.getString("action"))
+        assertEquals(uri, result.getString("data_uri"))
     }
 
     @Test

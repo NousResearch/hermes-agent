@@ -33,6 +33,10 @@ def test_localization_layer_covers_visible_chat_auth_portal_device_and_settings_
         'localDownloadStatusLine',
         'restartOnMobileData',
         'openSystemDownloads',
+        'operatorStandbyTitle',
+        'operatorStandbyStatus',
+        'operatorStandbyRunHistory',
+        'operatorStandbyLastRun',
     ]:
         assert key in strings
 
@@ -42,6 +46,9 @@ def test_localization_layer_covers_visible_chat_auth_portal_device_and_settings_
     assert 'strings.authRefreshDescription()' in auth_screen
     assert 'strings.authWaitingCallbackFor(uiState.pendingMethodLabel)' in auth_screen
     assert 'strings.deviceGuideTitle' in device
+    assert 'OperatorStandbyCard' in device
+    assert 'strings.operatorStandbyTitle()' in device
+    assert 'strings.operatorStandbyStatus(' in device
     assert 'strings.toolProfileTitle' in tool_profile
     assert 'strings.providerLabel' in settings
     assert 'strings.localDownloadsExampleGuidance()' in downloads_section
@@ -206,3 +213,25 @@ def test_device_backend_exposes_deeper_radio_control_actions_and_status():
     assert 'isActiveNetworkMetered' in bridge
     assert 'Cellular + radio controls' in device
     assert 'airplane_mode_enabled' in state_writer
+
+
+def test_android_automation_exposes_operator_standby_history_for_remote_dispatch():
+    bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAutomationBridge.kt").read_text(encoding="utf-8")
+    store = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAutomationStore.kt").read_text(encoding="utf-8")
+    view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceViewModel.kt").read_text(encoding="utf-8")
+    device = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceScreen.kt").read_text(encoding="utf-8")
+
+    assert 'HermesAutomationRunEvent' in store
+    assert 'KEY_RUN_EVENTS' in store
+    assert 'addRunEvent' in store
+    assert 'listRunEvents' in store
+    assert 'operator_standby_status' in bridge
+    assert 'run_history' in bridge
+    assert 'standby_dispatch' in bridge
+    assert 'supported_dispatch_channels' in bridge
+    assert 'external_broadcast' in bridge
+    assert 'Tasker plugin' in bridge
+    assert 'automationStandbyStatus' in view_model
+    assert 'operatorStandbyReady' in view_model
+    assert 'externalTriggerCount' in view_model
+    assert 'OperatorStandbyCard(uiState = uiState)' in device

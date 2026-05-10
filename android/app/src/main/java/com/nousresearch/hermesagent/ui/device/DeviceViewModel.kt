@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import com.nousresearch.hermesagent.data.DeviceCapabilityStore
 import com.nousresearch.hermesagent.device.DeviceStateWriter
 import com.nousresearch.hermesagent.device.HermesAccessibilityController
+import com.nousresearch.hermesagent.device.HermesAutomationBridge
 import com.nousresearch.hermesagent.device.HermesGlobalAction
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import com.nousresearch.hermesagent.device.HermesSystemControlBridge
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 
@@ -60,6 +62,14 @@ data class DeviceUiState(
     val notificationPermissionGranted: Boolean = true,
     val backgroundPersistenceEnabled: Boolean = false,
     val runtimeServiceRunning: Boolean = false,
+    val operatorStandbyReady: Boolean = false,
+    val automationCount: Int = 0,
+    val enabledAutomationCount: Int = 0,
+    val externalTriggerCount: Int = 0,
+    val recentAutomationRunCount: Int = 0,
+    val lastAutomationRunLabel: String = "",
+    val lastAutomationRunResult: String = "",
+    val lastAutomationRunSuccess: Boolean? = null,
     val resizableWindowSupport: Boolean = true,
     val freeformWindowSupported: Boolean = false,
     val status: String = "",
@@ -181,6 +191,7 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
         val sharedFolder = capabilityStore.load()
         val linuxState = HermesLinuxSubsystemBridge.readState(context)
         val systemStatus = HermesSystemControlBridge.readStatus(context)
+        val standbyStatus = automationStandbyStatus(context)
         val workspace = DeviceStateWriter.workspaceDir(context)
         val workspaceFiles = workspace
             .listFiles()
@@ -229,10 +240,28 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
             notificationPermissionGranted = systemStatus.notificationPermissionGranted,
             backgroundPersistenceEnabled = systemStatus.backgroundPersistenceEnabled,
             runtimeServiceRunning = systemStatus.runtimeServiceRunning,
+            operatorStandbyReady = standbyStatus.optBoolean("ready", false),
+            automationCount = standbyStatus.optInt("automation_count", 0),
+            enabledAutomationCount = standbyStatus.optInt("enabled_automation_count", 0),
+            externalTriggerCount = standbyStatus.optInt("external_trigger_count", 0),
+            recentAutomationRunCount = standbyStatus.optInt("recent_run_count", 0),
+            lastAutomationRunLabel = standbyStatus.optString("last_run_label"),
+            lastAutomationRunResult = standbyStatus.optString("last_run_result"),
+            lastAutomationRunSuccess = when {
+                standbyStatus.has("last_run_success") && !standbyStatus.isNull("last_run_success") -> standbyStatus.optBoolean("last_run_success")
+                else -> null
+            },
             resizableWindowSupport = systemStatus.resizableWindowSupport,
             freeformWindowSupported = systemStatus.freeformWindowSupported,
             status = status,
         )
+    }
+
+    private fun automationStandbyStatus(context: Application): JSONObject {
+        return runCatching {
+            JSONObject(HermesAutomationBridge.operatorStandbyStatusJson(context))
+                .optJSONObject("standby_dispatch") ?: JSONObject()
+        }.getOrDefault(JSONObject())
     }
 
     private fun queryDisplayName(uri: Uri): String {

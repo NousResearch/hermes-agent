@@ -64,6 +64,9 @@ object HermesIntentBridge {
         payload.optString("data_uri").takeIf { it.isNotBlank() }?.let { rawUri ->
             intent.data = Uri.parse(rawUri)
         }
+        if (intentTaskAction == INTENT_TASK_OPEN_URI) {
+            intent.addCategory(Intent.CATEGORY_BROWSABLE)
+        }
         payload.optString("package_name").takeIf { it.isNotBlank() }?.let { packageName ->
             intent.setPackage(packageName)
         }

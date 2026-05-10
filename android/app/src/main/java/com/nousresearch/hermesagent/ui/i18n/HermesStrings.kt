@@ -405,6 +405,81 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Workspace path: $workspacePath"
     }
 
+    fun operatorStandbyTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "操作员待命"
+        AppLanguage.SPANISH -> "Operador en espera"
+        AppLanguage.GERMAN -> "Operator-Standby"
+        AppLanguage.PORTUGUESE -> "Operador em espera"
+        AppLanguage.FRENCH -> "Opérateur en veille"
+        AppLanguage.ENGLISH -> "Operator standby"
+    }
+
+    fun operatorStandbyStatus(ready: Boolean, enabledCount: Int, externalCount: Int): String = when (language) {
+        AppLanguage.CHINESE -> if (ready) "已启用 $enabledCount 个自动化，其中 $externalCount 个可由外部广播触发。" else "没有已启用的自动化待运行。"
+        AppLanguage.SPANISH -> if (ready) "$enabledCount automatizaciones habilitadas; $externalCount aceptan disparo externo." else "No hay automatizaciones habilitadas esperando ejecución."
+        AppLanguage.GERMAN -> if (ready) "$enabledCount Automationen aktiviert; $externalCount nehmen externe Broadcasts an." else "Keine aktivierten Automationen warten auf Ausführung."
+        AppLanguage.PORTUGUESE -> if (ready) "$enabledCount automações ativadas; $externalCount aceitam acionamento externo." else "Nenhuma automação ativada aguardando execução."
+        AppLanguage.FRENCH -> if (ready) "$enabledCount automatisations activées ; $externalCount acceptent un déclenchement externe." else "Aucune automatisation activée en attente d’exécution."
+        AppLanguage.ENGLISH -> if (ready) "$enabledCount enabled automations; $externalCount accept external broadcast dispatch." else "No enabled automations are waiting for dispatch."
+    }
+
+    fun operatorStandbyRunHistory(count: Int): String = when (language) {
+        AppLanguage.CHINESE -> "最近运行：$count"
+        AppLanguage.SPANISH -> "Ejecuciones recientes: $count"
+        AppLanguage.GERMAN -> "Letzte Ausführungen: $count"
+        AppLanguage.PORTUGUESE -> "Execuções recentes: $count"
+        AppLanguage.FRENCH -> "Exécutions récentes : $count"
+        AppLanguage.ENGLISH -> "Recent runs: $count"
+    }
+
+    fun operatorStandbyLastRun(label: String, success: Boolean?, result: String): String {
+        val status = when (success) {
+            true -> when (language) {
+                AppLanguage.CHINESE -> "成功"
+                AppLanguage.SPANISH -> "correcto"
+                AppLanguage.GERMAN -> "erfolgreich"
+                AppLanguage.PORTUGUESE -> "sucesso"
+                AppLanguage.FRENCH -> "réussi"
+                AppLanguage.ENGLISH -> "success"
+            }
+            false -> when (language) {
+                AppLanguage.CHINESE -> "失败"
+                AppLanguage.SPANISH -> "fallo"
+                AppLanguage.GERMAN -> "fehlgeschlagen"
+                AppLanguage.PORTUGUESE -> "falha"
+                AppLanguage.FRENCH -> "échec"
+                AppLanguage.ENGLISH -> "failed"
+            }
+            null -> when (language) {
+                AppLanguage.CHINESE -> "未运行"
+                AppLanguage.SPANISH -> "sin ejecutar"
+                AppLanguage.GERMAN -> "nicht ausgeführt"
+                AppLanguage.PORTUGUESE -> "sem execução"
+                AppLanguage.FRENCH -> "non exécuté"
+                AppLanguage.ENGLISH -> "not run"
+            }
+        }
+        val cleanLabel = label.ifBlank {
+            when (language) {
+                AppLanguage.CHINESE -> "自动化"
+                AppLanguage.SPANISH -> "automatización"
+                AppLanguage.GERMAN -> "Automation"
+                AppLanguage.PORTUGUESE -> "automação"
+                AppLanguage.FRENCH -> "automatisation"
+                AppLanguage.ENGLISH -> "automation"
+            }
+        }
+        val cleanResult = result.take(180)
+        return when (language) {
+            AppLanguage.CHINESE -> if (cleanResult.isBlank()) "上次运行：$cleanLabel ($status)" else "上次运行：$cleanLabel ($status) - $cleanResult"
+            AppLanguage.SPANISH -> if (cleanResult.isBlank()) "Última ejecución: $cleanLabel ($status)" else "Última ejecución: $cleanLabel ($status) - $cleanResult"
+            AppLanguage.GERMAN -> if (cleanResult.isBlank()) "Letzte Ausführung: $cleanLabel ($status)" else "Letzte Ausführung: $cleanLabel ($status) - $cleanResult"
+            AppLanguage.PORTUGUESE -> if (cleanResult.isBlank()) "Última execução: $cleanLabel ($status)" else "Última execução: $cleanLabel ($status) - $cleanResult"
+            AppLanguage.FRENCH -> if (cleanResult.isBlank()) "Dernière exécution : $cleanLabel ($status)" else "Dernière exécution : $cleanLabel ($status) - $cleanResult"
+            AppLanguage.ENGLISH -> if (cleanResult.isBlank()) "Last run: $cleanLabel ($status)" else "Last run: $cleanLabel ($status) - $cleanResult"
+        }
+    }
+
     fun portalLoadingStatus(loggedIn: Boolean): String = when (language) {
         AppLanguage.CHINESE -> if (loggedIn) "已登录 Nous Portal" else "正在加载嵌入式 Portal 预览"
         AppLanguage.SPANISH -> if (loggedIn) "Sesión iniciada en Nous Portal" else "Cargando la vista previa incrustada del portal"

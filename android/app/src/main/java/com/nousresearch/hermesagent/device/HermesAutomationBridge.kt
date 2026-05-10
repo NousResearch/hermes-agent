@@ -22,6 +22,8 @@ object HermesAutomationBridge {
     fun performActionJson(context: Context, action: String, arguments: JSONObject = JSONObject()): String {
         return when (action.lowercase().ifBlank { "list" }) {
             "list", "list_automations", "status" -> listJson(context)
+            "run_history", "automation_run_history", "recent_runs", "operator_run_history" -> runHistoryJson(context, arguments)
+            "operator_standby_status", "standby_status", "remote_dispatch_status", "dispatch_status" -> operatorStandbyStatusJson(context)
             "create_shell_task", "create_shell", "create" -> createShellTaskJson(context, arguments)
             "create_file_write_task", "create_file_write", "write_file_task" -> createFileWriteTaskJson(context, arguments)
             "create_file_delete_task", "create_file_delete", "delete_file_task" -> createFileDeleteTaskJson(context, arguments)
@@ -125,13 +127,34 @@ object HermesAutomationBridge {
 
     fun listJson(context: Context): String {
         val store = HermesAutomationStore(context)
+        val records = store.list()
         return JSONObject()
             .put("success", true)
-            .put("automations", recordsToJson(store.list()))
+            .put("automations", recordsToJson(records))
             .put("variables", store.listVariables())
+            .put("standby_dispatch", standbySummaryJson(records, store))
+            .put("recent_run_events", runEventsToJson(store.listRunEvents(10)))
             .put("available_actions", JSONArray(AUTOMATION_ACTIONS))
             .put("available_triggers", JSONArray(AUTOMATION_TRIGGERS))
             .put("min_interval_minutes", HermesAutomationScheduler.MIN_INTERVAL_MINUTES)
+            .toString()
+    }
+
+    fun runHistoryJson(context: Context, arguments: JSONObject): String {
+        val limit = arguments.optInt("limit", 20).coerceIn(1, 50)
+        val events = HermesAutomationStore(context).listRunEvents(limit)
+        return JSONObject()
+            .put("success", true)
+            .put("run_count", events.size)
+            .put("runs", runEventsToJson(events))
+            .toString()
+    }
+
+    fun operatorStandbyStatusJson(context: Context): String {
+        val store = HermesAutomationStore(context)
+        return JSONObject()
+            .put("success", true)
+            .put("standby_dispatch", standbySummaryJson(store.list(), store))
             .toString()
     }
 
@@ -1507,6 +1530,7 @@ object HermesAutomationBridge {
             setTimeEventVariables(store)
         }
         val variables = store.listVariables()
+        val startedAtEpochMs = System.currentTimeMillis()
         val rawResult = when (record.actionType) {
             ACTION_TYPE_SHELL -> runShellRecord(context, record, variables)
             ACTION_TYPE_FILE_WRITE -> runFileWriteRecord(context, record, variables)
@@ -1539,14 +1563,29 @@ object HermesAutomationBridge {
             .filter { it.isNotBlank() }
             .joinToString("\n")
             .take(MAX_RESULT_CHARS)
+        val finishedAtEpochMs = System.currentTimeMillis()
         val updated = record.copy(
-            updatedAtEpochMs = System.currentTimeMillis(),
-            lastRunEpochMs = System.currentTimeMillis(),
+            updatedAtEpochMs = finishedAtEpochMs,
+            lastRunEpochMs = finishedAtEpochMs,
             lastExitCode = exitCode,
             lastSuccess = success,
             lastResult = resultText,
         )
         store.upsert(updated)
+        store.addRunEvent(
+            HermesAutomationRunEvent(
+                id = UUID.randomUUID().toString(),
+                automationId = record.id,
+                automationLabel = record.label,
+                actionType = record.actionType,
+                trigger = trigger,
+                success = success,
+                exitCode = exitCode,
+                result = resultText,
+                startedAtEpochMs = startedAtEpochMs,
+                finishedAtEpochMs = finishedAtEpochMs,
+            )
+        )
         runCatching {
             HermesTaskerEventBridge.notifyAutomationFinished(
                 context = context,
@@ -3365,6 +3404,31 @@ object HermesAutomationBridge {
         }
     }
 
+    private fun runEventsToJson(events: List<HermesAutomationRunEvent>): JSONArray {
+        return JSONArray().apply {
+            events.forEach { event -> put(event.toJson()) }
+        }
+    }
+
+    private fun standbySummaryJson(records: List<HermesAutomationRecord>, store: HermesAutomationStore): JSONObject {
+        val enabledRecords = records.filter { it.enabled }
+        val externalRecords = enabledRecords.filter { it.triggerType == TRIGGER_EXTERNAL }
+        val recentRuns = store.listRunEvents(5)
+        val latestRun = recentRuns.firstOrNull()
+        return JSONObject()
+            .put("ready", enabledRecords.isNotEmpty())
+            .put("automation_count", records.size)
+            .put("enabled_automation_count", enabledRecords.size)
+            .put("external_trigger_count", externalRecords.size)
+            .put("recent_run_count", recentRuns.size)
+            .put("last_run_epoch_ms", latestRun?.finishedAtEpochMs ?: JSONObject.NULL)
+            .put("last_run_success", latestRun?.success ?: JSONObject.NULL)
+            .put("last_run_label", latestRun?.automationLabel.orEmpty())
+            .put("last_run_trigger", latestRun?.trigger.orEmpty())
+            .put("last_run_result", latestRun?.result.orEmpty())
+            .put("supported_dispatch_channels", JSONArray(listOf("manual", "external_broadcast", "quick_settings_tile", "home_screen_widget", "launcher_shortcut", "Tasker plugin")))
+    }
+
     private fun automationBundleFromArguments(arguments: JSONObject): JSONObject? {
         jsonObjectArgument(arguments, "bundle")?.let { return it }
         jsonObjectArgument(arguments, "bundle_json")?.let { return it }
@@ -4196,6 +4260,8 @@ object HermesAutomationBridge {
 
     private val AUTOMATION_ACTIONS = listOf(
         "list",
+        "operator_standby_status",
+        "run_history",
         "create_shell_task",
         "create_file_write_task",
         "create_file_delete_task",

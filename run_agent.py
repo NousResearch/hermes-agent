@@ -5759,16 +5759,11 @@ class AIAgent:
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 
-        from hermes_time import now as _hermes_now
-        now = _hermes_now()
-        timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
-        if self.pass_session_id and self.session_id:
-            timestamp_line += f"\nSession ID: {self.session_id}"
-        if self.model:
-            timestamp_line += f"\nModel: {self.model}"
-        if self.provider:
-            timestamp_line += f"\nProvider: {self.provider}"
-        prompt_parts.append(timestamp_line)
+        # Dynamic per-call metadata (timestamp/session/model/provider) is
+        # intentionally NOT included in the cached/stored system prompt.
+        # It is injected into the API copy of the current user message by
+        # _build_runtime_metadata_prompt(). Keeping it out of this prompt
+        # preserves Anthropic prompt-cache prefixes across recurring cron runs.
 
         # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
         # of the requested model. Inject explicit model identity into the system prompt
@@ -5802,6 +5797,27 @@ class AIAgent:
                 pass
 
         return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
+
+    def _build_runtime_metadata_prompt(self) -> str:
+        """Return per-call runtime metadata kept out of the cached system prompt.
+
+        This metadata includes values that legitimately change between Hermes
+        spawns (notably the wall-clock timestamp and optional session id).
+        It is injected into the API-only copy of the current user message so
+        Anthropic prompt caching can reuse the stable system+tools prefix
+        across recurring cron cycles.
+        """
+        from hermes_time import now as _hermes_now
+
+        now = _hermes_now()
+        lines = [f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"]
+        if self.pass_session_id and self.session_id:
+            lines.append(f"Session ID: {self.session_id}")
+        if self.model:
+            lines.append(f"Model: {self.model}")
+        if self.provider:
+            lines.append(f"Provider: {self.provider}")
+        return "\n".join(lines)
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -11976,6 +11992,8 @@ class AIAgent:
                     self.session_id or "-",
                 )
 
+            runtime_metadata_prompt = self._build_runtime_metadata_prompt()
+
             api_messages = []
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
@@ -11987,6 +12005,8 @@ class AIAgent:
                 # never mutated, so nothing leaks into session persistence.
                 if idx == current_turn_user_idx and msg.get("role") == "user":
                     _injections = []
+                    if runtime_metadata_prompt:
+                        _injections.append(runtime_metadata_prompt)
                     if _ext_prefetch_cache:
                         _fenced = build_memory_context_block(_ext_prefetch_cache)
                         if _fenced:

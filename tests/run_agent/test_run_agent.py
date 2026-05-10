@@ -984,10 +984,16 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
 
-    def test_includes_datetime(self, agent):
+    def test_runtime_metadata_kept_out_of_cached_system_prompt(self, agent):
         prompt = agent._build_system_prompt()
-        # Should contain current date info like "Conversation started:"
-        assert "Conversation started:" in prompt
+        assert "Conversation started:" not in prompt
+
+        agent.model = "claude-test"
+        agent.provider = "anthropic"
+        metadata = agent._build_runtime_metadata_prompt()
+        assert "Conversation started:" in metadata
+        assert "Model:" in metadata
+        assert "Provider:" in metadata
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
@@ -2475,6 +2481,29 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_runtime_metadata_injected_into_api_user_message_only(self, agent):
+        self._setup_agent(agent)
+        agent.model = "claude-test"
+        agent.provider = "anthropic"
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        sent = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert sent[0] == {"role": "system", "content": "You are helpful."}
+        assert sent[1]["role"] == "user"
+        assert sent[1]["content"].startswith("hello\n\nConversation started:")
+        assert "Model:" in sent[1]["content"]
+        assert "Provider:" in sent[1]["content"]
+        assert agent._cached_system_prompt == "You are helpful."
+        assert result["messages"][0] == {"role": "user", "content": "hello"}
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)

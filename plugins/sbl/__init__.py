@@ -452,11 +452,33 @@ def _on_transform_tool_result(
 
 
 def _on_session_start(**kwargs) -> None:
-    """Single log at session start. If snapshot exists, report services."""
-    logger.info("[SBL] Session started")
+    """Full audit on first session on a new system.
+    
+    If no snapshot exists (new server, first Hermes run), runs a complete
+    system audit immediately — not waiting for the first write. This ensures
+    the agent knows the infrastructure layout from session one.
+    
+    Returns None (hook), but the full audit persists to disk so sub-agent
+    sessions and future restarts load it via _has_snapshot().
+    """
     if _has_snapshot():
         logger.info("[SBL] Snapshot loaded: %d services, %d configs",
                     len(_service_map.services), len(_service_map.file_owners))
+        return
+    
+    # No snapshot — first run on this system. Full audit.
+    logger.info("[SBL] First run on new system — starting full audit...")
+    try:
+        sm = _take_snapshot()
+        n_services = len(sm.services)
+        n_configs = len(sm.file_owners)
+        n_ports = sum(len(s.get("ports", [])) for s in sm.services.values())
+        logger.info(
+            "[SBL] Full audit complete: %d services, %d config dependencies, %d ports",
+            n_services, n_configs, n_ports,
+        )
+    except Exception as e:
+        logger.error("[SBL] Full audit failed: %s — will retry on first SYSTEM write", e)
 
 
 # ── SBL Commands ───────────────────────────────────────────────────────────

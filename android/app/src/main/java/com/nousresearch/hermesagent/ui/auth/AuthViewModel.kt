@@ -2,6 +2,9 @@ package com.nousresearch.hermesagent.ui.auth
 
 import android.app.Application
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -49,6 +52,7 @@ data class AuthUiState(
     val hasPendingRequest: Boolean = false,
     val apiKeyFallbackMethodId: String = "",
     val apiKeyFallbackLabel: String = "",
+    val pendingStartUrl: String = "",
     val options: List<AuthOptionUiState> = emptyList(),
 )
 
@@ -152,6 +156,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         )
         val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(pendingRequest.startUrl)).apply {
             addCategory(Intent.CATEGORY_BROWSABLE)
+        }
+        val chooserIntent = Intent.createChooser(browserIntent, "Open Corr3xt sign-in").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
@@ -189,6 +195,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                         globalStatus = failureStatus,
                         pendingMethodLabel = "",
                         hasPendingRequest = false,
+                        pendingStartUrl = "",
                         apiKeyFallbackMethodId = if (apiKeyFallbackAvailable) option.id else "",
                         apiKeyFallbackLabel = if (apiKeyFallbackAvailable) option.label else "",
                     )
@@ -198,31 +205,36 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
             authSessionStore.savePendingRequest(pendingRequest)
             try {
-                getApplication<Application>().startActivity(browserIntent)
+                getApplication<Application>().startActivity(chooserIntent)
                 _uiState.update { current ->
                     current.copy(
                         corr3xtBaseUrl = normalizedBaseUrl,
                         globalStatus = currentStrings().authOpenedCorr3xt(option.label),
                         pendingMethodLabel = option.label,
                         hasPendingRequest = true,
+                        pendingStartUrl = pendingRequest.startUrl,
                         apiKeyFallbackMethodId = "",
                         apiKeyFallbackLabel = "",
                     )
                 }
             } catch (_: ActivityNotFoundException) {
                 authSessionStore.clearPendingRequest()
+                copyAuthStartUrl(pendingRequest.startUrl, updateStatus = false)
                 _uiState.update {
                     it.copy(
-                        globalStatus = currentStrings().authNoBrowser(),
+                        globalStatus = "${currentStrings().authNoBrowser()} ${currentStrings().authCopiedSignInUrl()}",
+                        pendingStartUrl = pendingRequest.startUrl,
                         apiKeyFallbackMethodId = if (option.scope == AuthScope.RuntimeProvider) option.id else "",
                         apiKeyFallbackLabel = if (option.scope == AuthScope.RuntimeProvider) option.label else "",
                     )
                 }
             } catch (_: RuntimeException) {
                 authSessionStore.clearPendingRequest()
+                copyAuthStartUrl(pendingRequest.startUrl, updateStatus = false)
                 _uiState.update {
                     it.copy(
-                        globalStatus = currentStrings().authTryAgain(),
+                        globalStatus = "${currentStrings().authTryAgain()} ${currentStrings().authCopiedSignInUrl()}",
+                        pendingStartUrl = pendingRequest.startUrl,
                         apiKeyFallbackMethodId = if (option.scope == AuthScope.RuntimeProvider) option.id else "",
                         apiKeyFallbackLabel = if (option.scope == AuthScope.RuntimeProvider) option.label else "",
                     )
@@ -230,6 +242,25 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         return true
+    }
+
+    fun copyPendingSignInUrl() {
+        val startUrl = _uiState.value.pendingStartUrl.ifBlank {
+            authSessionStore.loadPendingRequest()?.startUrl.orEmpty()
+        }
+        copyAuthStartUrl(startUrl, updateStatus = true)
+    }
+
+    private fun copyAuthStartUrl(startUrl: String, updateStatus: Boolean) {
+        val target = startUrl.trim()
+        if (target.isBlank()) {
+            return
+        }
+        val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText("Hermes Corr3xt sign-in URL", target))
+        if (updateStatus) {
+            _uiState.update { it.copy(globalStatus = currentStrings().authCopiedSignInUrl()) }
+        }
     }
 
     fun prepareApiKeySetup(methodId: String) {
@@ -254,6 +285,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 globalStatus = currentStrings().authApiKeySetupReady(option.label),
                 apiKeyFallbackMethodId = "",
                 apiKeyFallbackLabel = "",
+                pendingStartUrl = "",
             )
         }
     }
@@ -266,6 +298,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 hasPendingRequest = false,
                 apiKeyFallbackMethodId = "",
                 apiKeyFallbackLabel = "",
+                pendingStartUrl = "",
                 globalStatus = currentStrings().authCanceled(),
             )
         }
@@ -346,6 +379,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             globalStatus = globalStatus,
             pendingMethodLabel = pendingMethodLabel,
             hasPendingRequest = pending != null,
+            pendingStartUrl = pending?.startUrl.orEmpty(),
             apiKeyFallbackMethodId = "",
             apiKeyFallbackLabel = "",
             options = options,

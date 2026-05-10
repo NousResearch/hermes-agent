@@ -306,6 +306,24 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Copy setup URL"
     }
 
+    fun copyAuthSignInUrl(): String = when (language) {
+        AppLanguage.CHINESE -> "复制登录链接"
+        AppLanguage.SPANISH -> "Copiar URL de inicio de sesión"
+        AppLanguage.GERMAN -> "Anmelde-URL kopieren"
+        AppLanguage.PORTUGUESE -> "Copiar URL de login"
+        AppLanguage.FRENCH -> "Copier l’URL de connexion"
+        AppLanguage.ENGLISH -> "Copy sign-in URL"
+    }
+
+    fun authCopiedSignInUrl(): String = when (language) {
+        AppLanguage.CHINESE -> "已复制登录链接。"
+        AppLanguage.SPANISH -> "URL de inicio de sesión copiada."
+        AppLanguage.GERMAN -> "Anmelde-URL kopiert."
+        AppLanguage.PORTUGUESE -> "URL de login copiada."
+        AppLanguage.FRENCH -> "URL de connexion copiée."
+        AppLanguage.ENGLISH -> "Copied sign-in URL."
+    }
+
     fun toolProfileTitle(): String = when (language) {
         AppLanguage.CHINESE -> "Android Alpha 工具配置"
         AppLanguage.SPANISH -> "Perfil de herramientas Android alpha"
@@ -1063,12 +1081,12 @@ data class HermesStrings(
     }
 
     fun authOpenedCorr3xt(label: String): String = when (language) {
-        AppLanguage.CHINESE -> "已打开 Corr3xt 进行 $label 登录"
-        AppLanguage.SPANISH -> "Corr3xt abierto para iniciar sesión con $label"
-        AppLanguage.GERMAN -> "Corr3xt für die Anmeldung mit $label geöffnet"
-        AppLanguage.PORTUGUESE -> "Corr3xt aberto para login com $label"
-        AppLanguage.FRENCH -> "Corr3xt ouvert pour la connexion avec $label"
-        AppLanguage.ENGLISH -> "Opened Corr3xt for $label sign-in"
+        AppLanguage.CHINESE -> "已打开 Corr3xt 进行 $label 登录。如果浏览器卡住，请复制登录链接并粘贴到其他浏览器。"
+        AppLanguage.SPANISH -> "Corr3xt abierto para iniciar sesión con $label. Si el navegador se queda bloqueado, copia la URL de inicio de sesión y pégala en otro navegador."
+        AppLanguage.GERMAN -> "Corr3xt für die Anmeldung mit $label geöffnet. Wenn der Browser hängen bleibt, kopiere die Anmelde-URL und füge sie in einem anderen Browser ein."
+        AppLanguage.PORTUGUESE -> "Corr3xt aberto para login com $label. Se o navegador travar, copie a URL de login e cole em outro navegador."
+        AppLanguage.FRENCH -> "Corr3xt ouvert pour la connexion avec $label. Si le navigateur se bloque, copiez l’URL de connexion et collez-la dans un autre navigateur."
+        AppLanguage.ENGLISH -> "Opened Corr3xt for $label sign-in. If your browser stalls, copy the sign-in URL and paste it into another browser."
     }
 
     fun languageSwitchedTo(label: String): String = when (language) {

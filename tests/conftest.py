@@ -614,4 +614,191 @@ def _reset_tool_registry_caches():
         _clear_tool_defs_cache()
     except ImportError:
         pass
+
+
+# ── Live-system guard ──────────────────────────────────────────────────────
+#
+# Several test files exercise the gateway-restart / kill code paths
+# (``cmd_update``, ``kill_gateway_processes``, ``stop_profile_gateway``).
+# When a single test forgets to mock either ``os.kill`` or the global
+# ``find_gateway_pids`` helper, the real call leaks out of the hermetic
+# environment and finds the developer's live ``hermes-gateway`` process
+# via ``psutil`` — sending it SIGTERM mid-test. The shutdown forensics in
+# PR #23285 caught this happening 5+ times in 3 days, every time
+# correlated with a ``tests/hermes_cli/`` pytest run starting up.
+#
+# This fixture makes the leak impossible by intercepting the two
+# primitives that actually do damage:
+#
+#  • ``os.kill`` rejects any PID outside the test process subtree with
+#    a hard ``RuntimeError`` so the offending test gets a stack trace
+#    instead of silently murdering the real gateway.
+#  • ``subprocess.run`` / ``subprocess.Popen`` / ``call`` / ``check_call`` /
+#    ``check_output`` reject any ``systemctl ... <verb> hermes-gateway``
+#    invocation that would mutate the live unit. Read-only systemctl
+#    calls (``status``, ``show``, ``list-units``) still pass through.
+#
+# We intentionally do NOT stub ``find_gateway_pids`` / ``_scan_gateway_pids``
+# here — tests of those functions themselves need the real implementation.
+# Even if a test gets the live gateway PID back from a real scan, the
+# ``os.kill`` guard above catches the actual signal call, and the
+# ``systemctl`` guard catches the systemd path. Discovery without
+# delivery is harmless.
+
+_LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
+
+
+def pytest_configure(config):  # noqa: D401 — pytest hook
+    """Register markers used by hermetic conftest."""
+    config.addinivalue_line(
+        "markers",
+        f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "
+        "(only for tests that genuinely need real os.kill / subprocess "
+        "behaviour — e.g. PTY tests that signal their own child).",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _live_system_guard(request, monkeypatch):
+    """Block real os.kill / systemctl / gateway-pid scans during tests.
+
+    See block comment above for the why. Tests that genuinely need
+    real signal delivery (e.g. PTY tests that SIGINT their own child)
+    can opt out with ``@pytest.mark.live_system_guard_bypass``.
+    """
+    if request.node.get_closest_marker(_LIVE_SYSTEM_GUARD_BYPASS_MARK):
+        yield
+        return
+
+    import os as _os
+    import subprocess as _subprocess
+
+    test_pid = _os.getpid()
+    # Capture the test process's existing children at fixture start —
+    # any *new* children spawned by the test are also allowlisted via
+    # the live psutil walk below. Static set keeps the fast path cheap.
+    try:
+        import psutil as _psutil
+        _initial_children = {
+            c.pid for c in _psutil.Process(test_pid).children(recursive=True)
+        }
+    except Exception:
+        _psutil = None
+        _initial_children = set()
+
+    def _is_own_subtree(pid: int) -> bool:
+        if pid == test_pid or pid in _initial_children:
+            return True
+        if _psutil is None:
+            return False
+        try:
+            walker = _psutil.Process(pid)
+        except Exception:
+            # Stale PID — kill would be a no-op anyway, allow it.
+            return True
+        try:
+            for parent in walker.parents():
+                if parent.pid == test_pid:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    real_kill = _os.kill
+
+    def _guarded_kill(pid, sig, *args, **kwargs):
+        if _is_own_subtree(int(pid)):
+            return real_kill(pid, sig, *args, **kwargs)
+        raise RuntimeError(
+            f"tests/conftest.py live-system guard: blocked os.kill("
+            f"{pid}, {sig}) — PID is outside the test process subtree. "
+            "If this fired in CI it means the test reached a real "
+            "kill_gateway_processes / stop_profile_gateway / cmd_update "
+            "code path without mocking find_gateway_pids and os.kill. "
+            "Mock both, or mark the test with "
+            "@pytest.mark.live_system_guard_bypass if real signal "
+            "delivery is genuinely required."
+        )
+
+    monkeypatch.setattr(_os, "kill", _guarded_kill)
+
+    # ``os.killpg`` is the same risk class — sends a signal to every
+    # process in a group. The gateway is a session leader (its own
+    # PGID == its PID), so killpg(gateway_pid, SIGTERM) is a one-shot
+    # kill of the live process. Allow it only when the target PGID is
+    # the test process's own group.
+    if hasattr(_os, "killpg"):
+        real_killpg = _os.killpg
+        own_pgid = _os.getpgrp()
+
+        def _guarded_killpg(pgid, sig, *args, **kwargs):
+            if int(pgid) == own_pgid or _is_own_subtree(int(pgid)):
+                return real_killpg(pgid, sig, *args, **kwargs)
+            raise RuntimeError(
+                f"tests/conftest.py live-system guard: blocked "
+                f"os.killpg({pgid}, {sig}) — PGID is outside the test "
+                "process group. See _live_system_guard for the why."
+            )
+
+        monkeypatch.setattr(_os, "killpg", _guarded_killpg)
+
+    real_run = _subprocess.run
+    real_popen = _subprocess.Popen
+    real_call = _subprocess.call
+    real_check_call = _subprocess.check_call
+    real_check_output = _subprocess.check_output
+
+    def _is_blocked_systemctl(cmd) -> bool:
+        if isinstance(cmd, (list, tuple)):
+            tokens = [str(t) for t in cmd]
+        elif isinstance(cmd, (bytes, bytearray)):
+            tokens = bytes(cmd).decode(errors="replace").split()
+        elif isinstance(cmd, str):
+            tokens = cmd.split()
+        else:
+            return False
+        if not tokens:
+            return False
+        head = tokens[0].rsplit("/", 1)[-1]
+        if head != "systemctl":
+            return False
+        joined = " ".join(tokens).lower()
+        # Block any systemctl invocation that targets a hermes-gateway
+        # unit AND would change its run state. Status reads, list-units,
+        # and show calls remain allowed because they're side-effect-free.
+        if "hermes-gateway" not in joined and "hermes.service" not in joined:
+            return False
+        mutating = (
+            "restart", "start", "stop", "kill", "reload",
+            "reset-failed", "enable", "disable", "mask", "unmask",
+            "daemon-reload",
+        )
+        return any(verb in tokens for verb in mutating)
+
+    def _wrap_subprocess(name, real):
+        def _guarded(cmd, *args, **kwargs):
+            if _is_blocked_systemctl(cmd):
+                raise RuntimeError(
+                    f"tests/conftest.py live-system guard: blocked "
+                    f"subprocess.{name}({cmd!r}) — would mutate the "
+                    "live hermes-gateway systemd unit. Mock "
+                    "subprocess.run / _run_systemctl in the test, or "
+                    "mark with @pytest.mark.live_system_guard_bypass."
+                )
+            return real(cmd, *args, **kwargs)
+        _guarded.__name__ = f"_guarded_{name}"
+        return _guarded
+
+    monkeypatch.setattr(_subprocess, "run", _wrap_subprocess("run", real_run))
+    monkeypatch.setattr(_subprocess, "Popen", _wrap_subprocess("Popen", real_popen))
+    monkeypatch.setattr(_subprocess, "call", _wrap_subprocess("call", real_call))
+    monkeypatch.setattr(
+        _subprocess, "check_call", _wrap_subprocess("check_call", real_check_call)
+    )
+    monkeypatch.setattr(
+        _subprocess,
+        "check_output",
+        _wrap_subprocess("check_output", real_check_output),
+    )
+
     yield

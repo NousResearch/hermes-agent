@@ -145,6 +145,8 @@ _PROVIDER_ALIASES = {
     "moonshot-cn": "kimi-coding-cn",
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+    "fireworks-ai": "fireworks",
+    "fw": "fireworks",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",

@@ -320,6 +320,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "trinity-large-preview",
         "trinity-mini",
     ],
+    "fireworks": [
+        "accounts/fireworks/models/deepseek-v4-pro",
+        "accounts/fireworks/models/kimi-k2p6",
+        "accounts/fireworks/models/kimi-k2p5",
+        "accounts/fireworks/models/glm-5p1",
+        "accounts/fireworks/models/glm-5",
+        "accounts/fireworks/models/minimax-m2p7",
+    ],
     "gmi": [
         "zai-org/GLM-5.1-FP8",
         "deepseek-ai/DeepSeek-V3.2",
@@ -799,6 +807,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
+    ProviderEntry("fireworks",      "Fireworks AI",             "Fireworks AI (DeepSeek, Kimi, GLM, MiniMax — direct API)"),
     ProviderEntry("gmi",            "GMI Cloud",                "GMI Cloud (multi-model direct API)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
@@ -854,6 +863,8 @@ _PROVIDER_ALIASES = {
     "stepfun-coding-plan": "stepfun",
     "arcee-ai": "arcee",
     "arceeai": "arcee",
+    "fireworks-ai": "fireworks",
+    "fw": "fireworks",
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
     "minimax-china": "minimax-cn",
@@ -2007,6 +2018,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
             except Exception:
                 pass
+    if normalized == "fireworks":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("fireworks")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
     if normalized == "gmi":
         try:
             from hermes_cli.auth import resolve_api_key_provider_credentials

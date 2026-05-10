@@ -1981,15 +1981,32 @@ class AIAgent:
                 for t in self.tools
                 if isinstance(t, dict)
             }
+            _raw_schemas = []
             for _schema in self._memory_manager.get_all_tool_schemas():
                 _tname = _schema.get("name", "")
                 if _tname and _tname in _existing_tool_names:
                     continue  # already registered via plugin path
-                _wrapped = {"type": "function", "function": _schema}
-                self.tools.append(_wrapped)
+                _raw_schemas.append(_schema)
                 if _tname:
-                    self.valid_tool_names.add(_tname)
                     _existing_tool_names.add(_tname)
+            # Sanitize memory provider schemas (same as get_tool_definitions)
+            try:
+                from tools.schema_sanitizer import sanitize_tool_schemas
+                _wrapped_all = [{"type": "function", "function": s} for s in _raw_schemas]
+                _sanitized = sanitize_tool_schemas(_wrapped_all)
+                for _w in _sanitized:
+                    self.tools.append(_w)
+                    _n = _w.get("function", {}).get("name", "")
+                    if _n:
+                        self.valid_tool_names.add(_n)
+            except Exception:
+                # Fallback: append unsanitized
+                for _schema in _raw_schemas:
+                    _wrapped = {"type": "function", "function": _schema}
+                    self.tools.append(_wrapped)
+                    _tname = _schema.get("name", "")
+                    if _tname:
+                        self.valid_tool_names.add(_tname)
 
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10

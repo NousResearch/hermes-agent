@@ -460,7 +460,6 @@ class MemoryManager:
         *,
         parent_session_id: str = "",
         reset: bool = False,
-        rewound: bool = False,
         **kwargs,
     ) -> None:
         """Notify all providers that the agent's session_id has rotated.
@@ -474,9 +473,10 @@ class MemoryManager:
         session's record. See ``MemoryProvider.on_session_switch`` for
         the full contract.
 
-        ``rewound=True`` signals that session_id is unchanged but the
-        transcript was truncated; providers caching per-turn document
-        state should invalidate.
+        Callers may pass ``rewound=True`` (forwarded via ``**kwargs``)
+        to signal that session_id is unchanged but the transcript was
+        truncated; providers caching per-turn document state should
+        invalidate.
         """
         if not new_session_id:
             return
@@ -486,7 +486,6 @@ class MemoryManager:
                     new_session_id,
                     parent_session_id=parent_session_id,
                     reset=reset,
-                    rewound=rewound,
                     **kwargs,
                 )
             except Exception as e:

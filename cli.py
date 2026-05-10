@@ -1349,6 +1349,28 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
     return _WINDOWS_PATH_WITH_DOT_SEGMENT_RE.sub(_protect, text)
 
 
+EMPTY_RESPONSE_EXHAUSTED_MESSAGE = (
+    "The model returned no visible response after retries. If this happened "
+    "after tool calls, the tools completed but the model did not produce a "
+    "final answer. Try again, switch models, or configure a fallback provider."
+)
+
+
+def _normalize_final_response_for_cli(result, response):
+    """Convert internal empty-response sentinels into user-facing CLI text."""
+    if not isinstance(result, dict):
+        return response or "", False
+
+    empty_exhausted = bool(result.get("empty_response_exhausted"))
+    empty_exhausted = (
+        empty_exhausted or result.get("error_code") == "empty_response_exhausted"
+    )
+    if empty_exhausted and (response or "") == "(empty)":
+        return EMPTY_RESPONSE_EXHAUSTED_MESSAGE, True
+
+    return response or "", False
+
+
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
@@ -7423,6 +7445,9 @@ class HermesCLI:
                 )
 
                 response = result.get("final_response", "") if result else ""
+                response, _empty_response_error = _normalize_final_response_for_cli(
+                    result, response
+                )
                 if not response and result and result.get("error"):
                     response = f"Error: {result['error']}"
 
@@ -10254,9 +10279,18 @@ class HermesCLI:
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
+            response, empty_response_error = _normalize_final_response_for_cli(
+                result, response
+            )
 
             # Auto-generate session title after first exchange (non-blocking)
-            if response and result and not result.get("failed") and not result.get("partial"):
+            if (
+                response
+                and result
+                and not empty_response_error
+                and not result.get("failed")
+                and not result.get("partial")
+            ):
                 try:
                     from agent.title_generator import maybe_auto_title
                     # Route title-generation failures through the agent's
@@ -10347,7 +10381,9 @@ class HermesCLI:
                     _resp_color = "#CD7F32"
                     _resp_text = "#FFF8DC"
 
-                is_error_response = result and (result.get("failed") or result.get("partial"))
+                is_error_response = empty_response_error or (
+                    result and (result.get("failed") or result.get("partial"))
+                )
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
@@ -10389,7 +10425,12 @@ class HermesCLI:
 
             # Speak response aloud if voice TTS is enabled
             # Skip batch TTS when streaming TTS already handled it
-            if self._voice_tts and response and not use_streaming_tts:
+            if (
+                self._voice_tts
+                and response
+                and not use_streaming_tts
+                and not empty_response_error
+            ):
                 self._voice_speak_response_async(response)
 
 

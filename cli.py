@@ -6961,6 +6961,8 @@ class HermesCLI:
             self._handle_sessions_command()
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "indicator":
+            self._handle_indicator_command(cmd_original)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
 
@@ -7933,6 +7935,48 @@ class HermesCLI:
                 f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
                 " — all commands auto-approved. Use with caution."
             )
+
+    def _handle_indicator_command(self, cmd_original: str) -> None:
+        """Pick the TUI busy-indicator style (kaomoji/emoji/unicode/ascii).
+
+        Usage:
+            /indicator              → show current style
+            /indicator kaomoji      → set to kaomoji (default)
+            /indicator emoji        → set to emoji
+            /indicator unicode      → set to unicode (braille spinner)
+            /indicator ascii        → set to ascii
+        """
+        from hermes_cli.config import load_config
+        from hermes_cli.colors import Colors as _Colors
+
+        VALID_STYLES = {"kaomoji", "emoji", "unicode", "ascii"}
+
+        # Parse arg
+        arg = ""
+        try:
+            parts = (cmd_original or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        cfg = load_config() or {}
+        current = ((cfg.get("display") or {}).get("tui_status_indicator", "kaomoji"))
+
+        if arg in ("status", "?", ""):
+            _cprint(f"  {_Colors.BOLD}Busy indicator:{_Colors.RESET} {current}")
+            _cprint(f"  Available: {', '.join(sorted(VALID_STYLES))}")
+            return
+
+        if arg not in VALID_STYLES:
+            _cprint(f"  Unknown indicator style: {arg}")
+            _cprint(f"  Available: {', '.join(sorted(VALID_STYLES))}")
+            return
+
+        if save_config_value("display.tui_status_indicator", arg):
+            _cprint(f"  Busy indicator set to: {_Colors.GREEN}{arg}{_Colors.RESET} (saved)")
+        else:
+            _cprint(f"  Busy indicator set to: {arg}")
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.

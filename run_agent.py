@@ -2822,6 +2822,100 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
 
+    # Headers we capture from the dying stream's HTTP response so post-mortem
+    # diagnosis can answer "which CF edge / which OpenRouter downstream
+    # provider / which request id".  Lowercased; httpx returns CIMultiDict.
+    _STREAM_DIAG_HEADERS = (
+        "cf-ray",
+        "cf-cache-status",
+        "x-openrouter-provider",
+        "x-openrouter-model",
+        "x-openrouter-id",
+        "x-request-id",
+        "x-vercel-id",
+        "via",
+        "server",
+        "x-forwarded-for",
+    )
+
+    @staticmethod
+    def _stream_diag_init() -> Dict[str, Any]:
+        """Return a fresh per-attempt diagnostic dict.
+
+        Mutated in-place by the streaming functions and read from the retry
+        block when a stream dies.  Lives on ``request_client_holder`` so it
+        survives across the closure boundary.
+        """
+        return {
+            "started_at": time.time(),
+            "first_chunk_at": None,
+            "chunks": 0,
+            "bytes": 0,
+            "headers": {},
+            "http_status": None,
+        }
+
+    def _stream_diag_capture_response(
+        self, diag: Dict[str, Any], http_response: Any
+    ) -> None:
+        """Snapshot interesting headers + HTTP status from the live stream.
+
+        Called once at stream open (before iterating chunks) so the metadata
+        survives even if the stream dies before any chunk arrives.  Failures
+        are swallowed — diag is best-effort.
+        """
+        if http_response is None or not isinstance(diag, dict):
+            return
+        try:
+            diag["http_status"] = getattr(http_response, "status_code", None)
+        except Exception:
+            pass
+        try:
+            headers = getattr(http_response, "headers", None) or {}
+            captured: Dict[str, str] = {}
+            for name in self._STREAM_DIAG_HEADERS:
+                try:
+                    val = headers.get(name)
+                    if val:
+                        # Truncate single-value to keep log lines bounded.
+                        captured[name] = str(val)[:120]
+                except Exception:
+                    continue
+            diag["headers"] = captured
+        except Exception:
+            pass
+
+    @staticmethod
+    def _flatten_exception_chain(error: BaseException) -> str:
+        """Return a compact ``Outer(msg) <- Inner(msg) <- ...`` rendering.
+
+        OpenAI SDK wraps httpx errors as ``APIConnectionError`` /
+        ``APIError`` and only the wrapper's class is visible at the catch
+        site — but the underlying ``RemoteProtocolError`` /
+        ``ConnectError`` / ``ReadError`` is what tells us WHY the stream
+        died.  Walks ``__cause__`` then ``__context__`` (deduped, max 4
+        deep) to surface the chain in one line.
+        """
+        seen: List[BaseException] = []
+        link: Optional[BaseException] = error
+        while link is not None and len(seen) < 4:
+            if link in seen:
+                break
+            seen.append(link)
+            nxt = getattr(link, "__cause__", None) or getattr(
+                link, "__context__", None
+            )
+            if nxt is None or nxt is link:
+                break
+            link = nxt
+        parts: List[str] = []
+        for e in seen:
+            msg = str(e).strip().replace("\n", " ")
+            if len(msg) > 140:
+                msg = msg[:140] + "…"
+            parts.append(f"{type(e).__name__}({msg})" if msg else type(e).__name__)
+        return " <- ".join(parts) if parts else type(error).__name__
+
     def _log_stream_retry(
         self,
         *,
@@ -2830,6 +2924,7 @@ class AIAgent:
         attempt: int,
         max_attempts: int,
         mid_tool_call: bool,
+        diag: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record a transient stream-drop and retry to ``agent.log``.
 
@@ -2837,6 +2932,13 @@ class AIAgent:
         of UI verbosity.  Subagents in particular benefit because their
         retries no longer spam the parent's terminal — but the file log keeps
         full detail (provider, error class, attempt, base_url, subagent_id).
+
+        When *diag* is provided (the per-attempt stream-diagnostic dict from
+        ``_stream_diag_init``), the WARNING also captures upstream headers
+        (cf-ray, x-openrouter-provider, x-openrouter-id), HTTP status, bytes
+        streamed before the drop, and elapsed time on the dying attempt.
+        These are the breadcrumbs needed to answer "is one CF edge / one
+        downstream provider responsible, or is it random across runs?"
         """
         try:
             try:
@@ -2845,10 +2947,47 @@ class AIAgent:
                 _summary = str(error)
             if _summary and len(_summary) > 240:
                 _summary = _summary[:240] + "…"
+
+            # Inner-cause chain (httpx errors hide under openai.APIError).
+            try:
+                _chain = self._flatten_exception_chain(error)
+            except Exception:
+                _chain = type(error).__name__
+
+            # Per-attempt counters and upstream headers.
+            _now = time.time()
+            _bytes = 0
+            _chunks = 0
+            _elapsed = 0.0
+            _ttfb = None
+            _headers_repr = "-"
+            _http_status = "-"
+            if isinstance(diag, dict):
+                try:
+                    _bytes = int(diag.get("bytes") or 0)
+                    _chunks = int(diag.get("chunks") or 0)
+                    _started = float(diag.get("started_at") or _now)
+                    _elapsed = max(0.0, _now - _started)
+                    _first = diag.get("first_chunk_at")
+                    if _first is not None:
+                        _ttfb = max(0.0, float(_first) - _started)
+                    headers = diag.get("headers") or {}
+                    if isinstance(headers, dict) and headers:
+                        _headers_repr = " ".join(
+                            f"{k}={v}" for k, v in headers.items()
+                        )
+                    if diag.get("http_status") is not None:
+                        _http_status = str(diag.get("http_status"))
+                except Exception:
+                    pass
+
             logger.warning(
                 "Stream %s on attempt %s/%s — retrying. "
                 "subagent_id=%s depth=%s provider=%s base_url=%s "
-                "error_type=%s error=%s",
+                "error_type=%s error=%s "
+                "chain=%s "
+                "http_status=%s bytes=%d chunks=%d elapsed=%.2fs ttfb=%s "
+                "upstream=[%s]",
                 kind,
                 attempt,
                 max_attempts,
@@ -2858,6 +2997,13 @@ class AIAgent:
                 self.base_url or "-",
                 type(error).__name__,
                 _summary,
+                _chain,
+                _http_status,
+                _bytes,
+                _chunks,
+                _elapsed,
+                f"{_ttfb:.2f}s" if _ttfb is not None else "-",
+                _headers_repr,
                 extra={"mid_tool_call": mid_tool_call},
             )
         except Exception:
@@ -2870,6 +3016,7 @@ class AIAgent:
         attempt: int,
         max_attempts: int,
         mid_tool_call: bool,
+        diag: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Emit a single user-visible line for a stream drop+retry.
 
@@ -2877,13 +3024,14 @@ class AIAgent:
         parent prefixes subagent lines with ``[subagent-N]`` via ``log_prefix``
         so they're easy to attribute.  All cases also write a structured
         WARNING to ``agent.log`` via :meth:`_log_stream_retry` with the full
-        diagnostic detail (subagent_id, provider, base_url, error_type) for
-        post-hoc analysis.
+        diagnostic detail (subagent_id, provider, base_url, error_type,
+        cf-ray, x-openrouter-provider, bytes/chunks, elapsed) for post-hoc
+        analysis.
 
-        Replaces the older two-line ``⚠️ Connection dropped …`` +
-        ``🔄 Reconnected …`` pair with a single information-dense line that
-        names the provider (so multi-provider sessions can tell who dropped)
-        and the error class without ambiguity.
+        The user-visible status line is intentionally compact: provider,
+        error class, attempt N/M, plus ``after Xs`` when the stream dropped
+        mid-flight.  Full diagnostic detail goes to ``agent.log`` only —
+        ``hermes logs --level WARNING | grep "Stream drop"`` to inspect.
         """
         kind = "drop mid tool-call" if mid_tool_call else "drop"
         self._log_stream_retry(
@@ -2892,11 +3040,23 @@ class AIAgent:
             attempt=attempt,
             max_attempts=max_attempts,
             mid_tool_call=mid_tool_call,
+            diag=diag,
         )
         provider = self.provider or "provider"
+        # Compose a brief "after Xs" suffix when we have timing data — helps
+        # the user distinguish "couldn't connect" (0s) from "died after 30s
+        # of streaming" (likely upstream idle-kill or proxy timeout).
+        _suffix = ""
+        if isinstance(diag, dict):
+            try:
+                started = diag.get("started_at")
+                if started is not None:
+                    _suffix = f" after {max(0.0, time.time() - float(started)):.1f}s"
+            except Exception:
+                pass
         try:
             self._emit_status(
-                f"⚠️ {provider} stream {kind} ({type(error).__name__}) "
+                f"⚠️ {provider} stream {kind} ({type(error).__name__}){_suffix} "
                 f"— reconnecting, retry {attempt}/{max_attempts}"
             )
             self._touch_activity(
@@ -7382,7 +7542,7 @@ class AIAgent:
             return result["response"]
 
         result = {"response": None, "error": None, "partial_tool_names": []}
-        request_client_holder = {"client": None}
+        request_client_holder = {"client": None, "diag": None}
         first_delta_fired = {"done": False}
         deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
         # Wall-clock timestamp of the last real streaming chunk.  The outer
@@ -7444,12 +7604,21 @@ class AIAgent:
             # attempt's start, not a previous attempt's last chunk.
             last_chunk_time["t"] = time.time()
             self._touch_activity("waiting for provider response (streaming)")
+            # Initialize per-attempt stream diagnostics so the retry block can
+            # reach for them after the stream dies.  Lives on
+            # ``request_client_holder["diag"]`` for closure access.
+            _diag = self._stream_diag_init()
+            request_client_holder["diag"] = _diag
             stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
 
             # Capture rate limit headers from the initial HTTP response.
             # The OpenAI SDK Stream object exposes the underlying httpx
             # response via .response before any chunks are consumed.
             self._capture_rate_limits(getattr(stream, "response", None))
+            # Snapshot diagnostic headers (cf-ray, x-openrouter-provider, etc.)
+            # so they survive even when the stream dies before any chunk
+            # arrives.  Best-effort; never raises.
+            self._stream_diag_capture_response(_diag, getattr(stream, "response", None))
 
             # Log OpenRouter response cache status when present.
             self._check_openrouter_cache_status(getattr(stream, "response", None))
@@ -7471,6 +7640,24 @@ class AIAgent:
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
                 self._touch_activity("receiving stream response")
+
+                # Update per-attempt diagnostic counters.  Best-effort —
+                # failures are swallowed so the streaming hot path is never
+                # interrupted by diagnostic accounting.
+                try:
+                    _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
+                    if _diag.get("first_chunk_at") is None:
+                        _diag["first_chunk_at"] = last_chunk_time["t"]
+                    # Approximate byte size from the chunk's repr — exact wire
+                    # bytes aren't exposed by the SDK, but len(repr(chunk)) is
+                    # a stable proxy for "how much content arrived" that
+                    # survives stub provider differences.
+                    try:
+                        _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(chunk))
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
 
                 if self._interrupt_requested:
                     break
@@ -7666,8 +7853,21 @@ class AIAgent:
 
             # Reset stale-stream timer for this attempt
             last_chunk_time["t"] = time.time()
+            # Per-attempt diagnostic dict for the retry block to consume.
+            _diag = self._stream_diag_init()
+            request_client_holder["diag"] = _diag
             # Use the Anthropic SDK's streaming context manager
             with self._anthropic_client.messages.stream(**api_kwargs) as stream:
+                # The Anthropic SDK exposes the raw httpx response on
+                # ``stream.response``.  Snapshot diagnostic headers
+                # immediately so they survive a stream that dies before the
+                # first event.
+                try:
+                    self._stream_diag_capture_response(
+                        _diag, getattr(stream, "response", None)
+                    )
+                except Exception:
+                    pass
                 for event in stream:
                     # Update stale-stream timer on every event so the
                     # outer poll loop knows data is flowing.  Without
@@ -7677,6 +7877,18 @@ class AIAgent:
                     # already does this at the top of its chunk loop).
                     last_chunk_time["t"] = time.time()
                     self._touch_activity("receiving stream response")
+
+                    # Update per-attempt diagnostic counters (best-effort).
+                    try:
+                        _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
+                        if _diag.get("first_chunk_at") is None:
+                            _diag["first_chunk_at"] = last_chunk_time["t"]
+                        try:
+                            _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(event))
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
 
                     if self._interrupt_requested:
                         break
@@ -7831,6 +8043,7 @@ class AIAgent:
                                 attempt=_stream_attempt + 2,
                                 max_attempts=_max_stream_retries + 1,
                                 mid_tool_call=True,
+                                diag=request_client_holder.get("diag"),
                             )
                             stale = request_client_holder.get("client")
                             if stale is not None:
@@ -7885,6 +8098,7 @@ class AIAgent:
                                     attempt=_stream_attempt + 2,
                                     max_attempts=_max_stream_retries + 1,
                                     mid_tool_call=False,
+                                    diag=request_client_holder.get("diag"),
                                 )
                                 # Close the stale request client before retry
                                 stale = request_client_holder.get("client")
@@ -7903,19 +8117,18 @@ class AIAgent:
                                     pass
                                 continue
                             # Retries exhausted. Log the final failure with
-                            # full diagnostic detail and surface a status
-                            # line — subagent lines get the ``[subagent-N]``
-                            # log_prefix so the parent can attribute them.
-                            logger.warning(
-                                "Streaming exhausted %s retries on transient "
-                                "error: subagent_id=%s depth=%s provider=%s "
-                                "error_type=%s error=%s",
-                                _max_stream_retries + 1,
-                                getattr(self, "_subagent_id", None) or "-",
-                                getattr(self, "_delegate_depth", 0),
-                                self.provider or "-",
-                                type(e).__name__,
-                                e,
+                            # full diagnostic detail (chain, headers,
+                            # bytes/elapsed) via the same helper used for
+                            # mid-flight retries — subagent lines get the
+                            # ``[subagent-N]`` log_prefix so the parent can
+                            # attribute them.
+                            self._log_stream_retry(
+                                kind="exhausted",
+                                error=e,
+                                attempt=_max_stream_retries + 1,
+                                max_attempts=_max_stream_retries + 1,
+                                mid_tool_call=False,
+                                diag=request_client_holder.get("diag"),
                             )
                             self._emit_status(
                                 "❌ Connection to provider failed after "

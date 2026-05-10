@@ -918,9 +918,9 @@ DEFAULT_CONFIG = {
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
+    # Gemini 5000, Murf 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "murf" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -943,6 +943,16 @@ DEFAULT_CONFIG = {
         "mistral": {
             "model": "voxtral-mini-tts-2603",
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
+        },
+        "murf": {
+            "model": "GEN2",             # "GEN2" (studio quality) | "FALCON" (ultra-low latency stream)
+            "voice_id": "en-US-natalie", # Murf voice ID
+            "locale": "en-US",
+            "region": "DEFAULT",         # DEFAULT, GLOBAL, US_EAST, US_WEST, IN, EU_CENTRAL, etc.
+            "style": "Conversational",   # Optional speaking style
+            "speed": 0,                  # -50 to 50
+            "pitch": 0,                  # -50 to 50
+            "output_format": "MP3",      # MP3 | WAV | OGG | PCM
         },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
@@ -1488,6 +1498,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "MURF_REGION": {
+        "description": "Murf region override (GLOBAL, US_EAST, US_WEST, IN, etc.)",
+        "prompt": "Murf region (leave empty for default)",
+        "url": "https://murf.ai/api/docs/text-to-speech/streaming",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "XAI_API_KEY": {
         "description": "xAI API key",
         "prompt": "xAI API key",
@@ -2023,6 +2041,13 @@ OPTIONAL_ENV_VARS = {
         "description": "Mistral API key for Voxtral TTS and transcription (STT)",
         "prompt": "Mistral API key",
         "url": "https://console.mistral.ai/",
+        "password": True,
+        "category": "tool",
+    },
+    "MURF_API_KEY": {
+        "description": "Murf AI API key for text-to-speech synthesis",
+        "prompt": "Murf API key",
+        "url": "https://murf.ai/api/docs",
         "password": True,
         "category": "tool",
     },

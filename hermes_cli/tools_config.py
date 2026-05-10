@@ -223,6 +223,15 @@ TOOL_CATEGORIES = {
                 "tts_provider": "gemini",
             },
             {
+                "name": "Murf TTS",
+                "badge": "paid",
+                "tag": "Gen2/Falcon models with style controls",
+                "env_vars": [
+                    {"key": "MURF_API_KEY", "prompt": "Murf API key", "url": "https://murf.ai/api/docs"},
+                ],
+                "tts_provider": "murf",
+            },
+            {
                 "name": "KittenTTS",
                 "badge": "local · free",
                 "tag": "Lightweight local ONNX TTS (~25MB), no API key",

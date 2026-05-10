@@ -471,6 +471,8 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (Mistral Voxtral)", True, None))
     elif tts_provider == "gemini" and (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")):
         tool_status.append(("Text-to-Speech (Google Gemini)", True, None))
+    elif tts_provider == "murf" and get_env_value("MURF_API_KEY"):
+        tool_status.append(("Text-to-Speech (Murf)", True, None))
     elif tts_provider == "neutts":
         try:
             neutts_ok = importlib.util.find_spec("neutts") is not None
@@ -1094,6 +1096,7 @@ def _setup_tts_provider(config: dict):
         "minimax": "MiniMax TTS",
         "mistral": "Mistral Voxtral TTS",
         "gemini": "Google Gemini TTS",
+        "murf": "Murf TTS",
         "neutts": "NeuTTS",
         "kittentts": "KittenTTS",
     }
@@ -1118,11 +1121,12 @@ def _setup_tts_provider(config: dict):
             "MiniMax TTS (high quality with voice cloning, needs API key)",
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
+            "Murf TTS (Gen2/Falcon models, rich voice styles, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
             "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "murf", "neutts", "kittentts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1247,6 +1251,45 @@ def _setup_tts_provider(config: dict):
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
+
+    elif selected == "murf":
+        existing = get_env_value("MURF_API_KEY")
+        if not existing:
+            print()
+            print_info("Get your Murf API key at https://murf.ai/api/docs")
+            api_key = prompt("Murf API key for TTS", password=True)
+            if api_key:
+                save_env_value("MURF_API_KEY", api_key)
+                print_success("Murf TTS API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+        if selected == "murf":
+            print()
+            print_info("Murf voice docs:")
+            print_info("  • Voice Library: https://murf.ai/api/docs/voices-styles/voice-library")
+            print_info("  • Voices & Styles Overview: https://murf.ai/api/docs/voices-styles/overview")
+
+            murf_cfg = config.setdefault("tts", {}).setdefault("murf", {})
+            current_model = str(murf_cfg.get("model", "GEN2")).strip().upper() or "GEN2"
+            if current_model == "GEN_FALCON":
+                current_model = "FALCON"
+            model_choices = [
+                "GEN2 (studio quality, richer controls)",
+                "FALCON (ultra-low latency streaming)",
+            ]
+            model_default = 1 if current_model == "FALCON" else 0
+            model_idx = prompt_choice("Select Murf model:", model_choices, model_default)
+            murf_cfg["model"] = "FALCON" if model_idx == 1 else "GEN2"
+            print_success(f"Murf model set to: {murf_cfg['model']}")
+
+            default_voice = str(murf_cfg.get("voice_id", "en-US-natalie")).strip() or "en-US-natalie"
+            voice_id = prompt("Murf voice_id", default=default_voice)
+            murf_cfg["voice_id"] = voice_id
+
+            default_style = str(murf_cfg.get("style", "Conversational")).strip() or "Conversational"
+            style = prompt("Murf style", default=default_style)
+            murf_cfg["style"] = style
 
     elif selected == "kittentts":
         # Check if already installed

@@ -427,6 +427,15 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # --- agent.auxiliary_client — runtime main provider/model override ---
+    # Set per-turn by AIAgent.run_conversation; tests that import it must
+    # see a clean state so config.yaml fallback works as expected.
+    try:
+        from agent import auxiliary_client as _aux_mod
+        _aux_mod.clear_runtime_main()
+    except Exception:
+        pass
+
     # --- tools.file_tools — per-task read history + file-ops cache ---
     # _read_tracker accumulates per-task_id read history for loop detection,
     # capped by _READ_HISTORY_CAP. If entries from a prior test persist, the

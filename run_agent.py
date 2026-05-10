@@ -11119,6 +11119,20 @@ class AIAgent:
 
         self._ensure_db_session()
 
+        # Tell auxiliary_client what the live main provider/model are for
+        # this turn. Used by tools whose behaviour depends on the active
+        # main model (e.g. vision_analyze's native fast path) so they see
+        # the CLI/gateway override instead of the stale config.yaml
+        # default. Idempotent — fine to call every turn.
+        try:
+            from agent.auxiliary_client import set_runtime_main
+            set_runtime_main(
+                getattr(self, "provider", "") or "",
+                getattr(self, "model", "") or "",
+            )
+        except Exception:
+            pass
+
         # Tag all log records on this thread with the session ID so
         # ``hermes logs --session <id>`` can filter a single conversation.
         from hermes_logging import set_session_context

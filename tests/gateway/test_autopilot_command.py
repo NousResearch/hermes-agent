@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from hermes_cli import kanban_db as kb
 from gateway.autopilot import (
     ACTION_DISABLE,
     ACTION_DRY_RUN,
@@ -1607,6 +1608,78 @@ def test_executor_result_ingest_records_controller_event_not_completion_authorit
     assert work_state.records[0].review_closeout["executor_event"]["next_card_started"] is False
     assert work_state.records[0].review_closeout["repo_full_name"] == "chriskim12/hermes-agent"
     assert work_state.records[0].review_closeout["commit"] == "1af1c992b4fe"
+
+
+def test_executor_result_ingest_writes_kanban_run_authority_trail_when_conn_provided(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    kb.init_db()
+    record = _autopilot_work_record(
+        "CH-420",
+        state="running",
+        proof="executor started",
+        next_action="Await executor result",
+    )
+    work_state = _FakeWorkStateStore([record])
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="CH-420 task", idempotency_key="linear:CH-420")
+        result = ingest_autopilot_executor_result(
+            work_state_store=work_state,
+            work_id="CH-420",
+            owner_session_id="autopilot:CH-420",
+            executor_result={
+                "status": "succeeded",
+                "proof": "executor produced PR-ready evidence",
+                "repo_full_name": "chriskim12/hermes-agent",
+            },
+            kanban_conn=conn,
+        )
+        task = kb.get_task(conn, task_id)
+        run = kb.latest_run(conn, task_id)
+
+    assert result["status"] == "ingested"
+    assert result["kanban_run_ingestion"]["status"] == "ingested"
+    assert result["kanban_run_ingestion"]["side_effects"] == {
+        "kanban_task_written": True,
+        "task_run_written": True,
+        "executor_spawned": False,
+        "linear_done_mutated": False,
+        "kanban_done_projected_to_linear": False,
+    }
+    assert task.status == "blocked"
+    assert run.status == "done"
+    assert run.outcome == "completed"
+    assert run.metadata["source"] == "autopilot_executor_result"
+    assert run.metadata["work_state"]["state"] == "worker_done"
+    assert run.metadata["work_state"]["review_closeout"]["executor_event"]["status"] == "executor_finished"
+    assert run.metadata["kanban_done_projection"] == "forbidden"
+
+
+def test_executor_result_ingest_blocks_when_kanban_run_correlation_missing(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    kb.init_db()
+    record = _autopilot_work_record("CH-420", state="running")
+    work_state = _FakeWorkStateStore([record])
+
+    with kb.connect() as conn:
+        result = ingest_autopilot_executor_result(
+            work_state_store=work_state,
+            work_id="CH-420",
+            executor_result={"status": "needs_continuation", "proof": "more tests needed"},
+            kanban_conn=conn,
+        )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "kanban_run_ingestion_fail_closed"
+    assert result["kanban_run_ingestion"]["status"] == "fail_closed"
+    assert result["kanban_run_ingestion"]["side_effects"]["task_run_written"] is False
+    assert result["linear_done_mutated"] is False
+    assert result["next_card_started"] is False
+
 
 
 def test_controller_tick_continues_same_card_when_executor_requests_continuation(tmp_path):

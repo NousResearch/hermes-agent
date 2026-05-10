@@ -1,16 +1,24 @@
-"""Read-only work_state → Kanban run projection helpers.
+"""work_state → Kanban run projection and authority-trail helpers.
 
 CH-411 keeps Kanban as a shadow/run ledger while Linear remains the source of
 truth.  This module therefore projects OMX/work_state outcomes into Kanban task
 status plus ``task_runs.metadata``/outcome facts without dispatching executors,
 mutating Linear, or writing generic task metadata.
+
+CH-420 adds a narrow ingestion helper that persists those projections into
+``task_runs`` as recoverable evidence.  The helper still refuses ambiguous task
+correlation and never projects worker completion to Kanban ``done``/``closed``.
 """
 
 from __future__ import annotations
 
+import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
+
+from hermes_cli import kanban_db as kb
 
 
 KANBAN_RUN_METADATA_SCHEMA = "work_state_kanban_run_projection.v1"
@@ -20,6 +28,8 @@ _RECOVERABLE_WORK_STATES = frozenset({
     "stale",
     "retry_needed",
     "handoff_needed",
+    "continuation_needed",
+    "worker_done_retry_needed",
     "failed",
 })
 # Keep task_runs.status/outcome aligned with hermes_cli.kanban_db schema
@@ -29,6 +39,8 @@ _KANBAN_RUN_STATUS_BY_WORK_STATE = {
     "stale": "blocked",
     "retry_needed": "blocked",
     "handoff_needed": "blocked",
+    "continuation_needed": "blocked",
+    "worker_done_retry_needed": "blocked",
     "failed": "failed",
 }
 _KANBAN_RUN_OUTCOME_BY_WORK_STATE = {
@@ -36,10 +48,13 @@ _KANBAN_RUN_OUTCOME_BY_WORK_STATE = {
     "stale": "blocked",
     "retry_needed": "blocked",
     "handoff_needed": "blocked",
+    "continuation_needed": "blocked",
+    "worker_done_retry_needed": "blocked",
     "failed": "gave_up",
 }
-_RUNNING_WORK_STATES = frozenset({"created", "running"})
+_RUNNING_WORK_STATES = frozenset({"active", "created", "running", "in_progress"})
 _FINISHED_WORK_STATES = frozenset({
+    "worker_done",
     "finished",
     "completed",
     "complete",
@@ -109,7 +124,7 @@ def _attr(record: Any, name: str, default: Any = None) -> Any:
 
 def _norm(value: Any) -> Optional[str]:
     text = _text(value)
-    return text.lower().replace("-", "_").replace(" ", "_") if text else None
+    return text.lower().replace("-", "_").replace(" ", "_").replace("/", "_") if text else None
 
 
 def _resolution_failure_reason(resolution: Optional[Mapping[str, Any]]) -> Optional[str]:
@@ -187,6 +202,8 @@ def _base_metadata(record: Any, *, source: str, reason: str) -> dict[str, Any]:
         "planning_gate": _attr(record, "planning_gate"),
         "next_execution_branch": _attr(record, "next_execution_branch"),
         "close_authority": _attr(record, "close_authority"),
+        "review_closeout": _attr(record, "review_closeout"),
+        "reroute_recommendation": _attr(record, "reroute_recommendation"),
     }
     return {
         "schema": KANBAN_RUN_METADATA_SCHEMA,
@@ -328,3 +345,325 @@ def project_work_state_to_kanban_run(
         source=source,
         missing=["recognized_state_or_usable_outcome"],
     ).to_dict()
+
+
+def _task_ids_for_query(conn: Any, query: str, params: tuple[Any, ...]) -> set[str]:
+    rows = conn.execute(query, params).fetchall()
+    return {str(row["id"] if "id" in row.keys() else row["task_id"]) for row in rows}
+
+
+def _active_task_ids_for_column(conn: Any, column: str, value: Optional[str]) -> set[str]:
+    text = _text(value)
+    if not text:
+        return set()
+    if column not in {"id", "public_id", "idempotency_key"}:
+        raise ValueError(f"unsupported kanban task correlation column: {column}")
+    return _task_ids_for_query(
+        conn,
+        f"SELECT id FROM tasks WHERE {column} = ? AND status != 'archived'",
+        (text,),
+    )
+
+
+def _active_task_ids_for_alias(conn: Any, alias: Optional[str]) -> set[str]:
+    text = _text(alias)
+    if not text:
+        return set()
+    return _task_ids_for_query(
+        conn,
+        """
+        SELECT a.task_id
+          FROM task_aliases a
+          JOIN tasks t ON t.id = a.task_id
+         WHERE a.alias = ?
+           AND t.status != 'archived'
+        """,
+        (text,),
+    )
+
+
+def _resolve_kanban_task_for_work_state(
+    conn: Any,
+    record: Any,
+    *,
+    task_id: Optional[str] = None,
+    task_locator: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Resolve work_state evidence to exactly one active Kanban task.
+
+    Correlation is intentionally conservative.  Explicit ``task_id`` or
+    ``task_locator`` values are honored first.  Without an explicit locator,
+    the work_state ``work_id`` may match a Kanban ``id``, ``public_id``,
+    ``task_aliases.alias``, or the legacy/native idempotency keys used by
+    admission helpers.  Multiple distinct matches fail closed rather than
+    guessing which task should receive authority-trail evidence.
+    """
+
+    locator = dict(task_locator or {})
+    if task_id is not None:
+        locator["task_id"] = task_id
+
+    matches: dict[str, set[str]] = {}
+
+    if locator:
+        locator_map = {
+            "task_id": ("id", locator.get("task_id") or locator.get("id")),
+            "public_id": ("public_id", locator.get("public_id")),
+            "idempotency_key": ("idempotency_key", locator.get("idempotency_key")),
+        }
+        for reason, (column, value) in locator_map.items():
+            task_ids = _active_task_ids_for_column(conn, column, _text(value))
+            if task_ids:
+                matches[reason] = task_ids
+        alias_ids = _active_task_ids_for_alias(
+            conn,
+            locator.get("alias") or locator.get("work_id") or locator.get("legacy_ref"),
+        )
+        if alias_ids:
+            matches["alias"] = alias_ids
+    else:
+        work_id = _text(_attr(record, "work_id"))
+        if work_id:
+            inferred = {
+                "work_id_as_task_id": _active_task_ids_for_column(conn, "id", work_id),
+                "work_id_as_public_id": _active_task_ids_for_column(conn, "public_id", work_id),
+                "work_id_as_alias": _active_task_ids_for_alias(conn, work_id),
+                "linear_idempotency_key": _active_task_ids_for_column(
+                    conn,
+                    "idempotency_key",
+                    f"linear:{work_id}",
+                ),
+                "kanban_idempotency_key": _active_task_ids_for_column(
+                    conn,
+                    "idempotency_key",
+                    f"kanban:{work_id}",
+                ),
+            }
+            matches.update({reason: ids for reason, ids in inferred.items() if ids})
+
+    all_matches = sorted({task_id for ids in matches.values() for task_id in ids})
+    if not all_matches:
+        return {
+            "status": "missing",
+            "reason": "missing_kanban_task_correlation_fail_closed",
+            "matches": [],
+        }
+    if len(all_matches) > 1:
+        return {
+            "status": "ambiguous",
+            "reason": "ambiguous_kanban_task_correlation_fail_closed",
+            "matches": [
+                {"task_id": matched, "matched_by": sorted(k for k, ids in matches.items() if matched in ids)}
+                for matched in all_matches
+            ],
+        }
+    selected = all_matches[0]
+    return {
+        "status": "single_match",
+        "reason": "eligible",
+        "task_id": selected,
+        "matches": [
+            {"task_id": selected, "matched_by": sorted(k for k, ids in matches.items() if selected in ids)}
+        ],
+    }
+
+
+def _closed_kanban_task_fail_closed(task: Any) -> bool:
+    return bool(task and _attr(task, "status") in {"done", "archived"})
+
+
+def _insert_or_update_run_evidence(
+    conn: Any,
+    task_id: str,
+    *,
+    projection: Mapping[str, Any],
+) -> int:
+    run = projection["task_run"]
+    run_status = str(run["status"])
+    outcome = run.get("outcome")
+    summary = run.get("summary")
+    metadata = run.get("metadata") or {}
+    metadata_json = json.dumps(metadata, ensure_ascii=False)
+    now = int(time.time())
+    task = kb.get_task(conn, task_id)
+    profile = _attr(task, "assignee")
+    step_key = _attr(task, "current_step_key")
+
+    if run_status == "running":
+        active = kb.active_run(conn, task_id)
+        if active is not None:
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'running',
+                       outcome = NULL,
+                       summary = ?,
+                       metadata = ?,
+                       last_heartbeat_at = ?,
+                       ended_at = NULL
+                 WHERE id = ?
+                """,
+                (summary, metadata_json, now, active.id),
+            )
+            run_id = active.id
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO task_runs (
+                    task_id, profile, step_key, status,
+                    last_heartbeat_at, started_at, summary, metadata
+                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                """,
+                (task_id, profile, step_key, now, now, summary, metadata_json),
+            )
+            run_id = int(cur.lastrowid or 0)
+        conn.execute(
+            """
+            UPDATE tasks
+               SET status = 'running',
+                   started_at = COALESCE(started_at, ?),
+                   current_run_id = ?,
+                   claim_lock = NULL,
+                   claim_expires = NULL,
+                   worker_pid = NULL
+             WHERE id = ?
+               AND status != 'archived'
+            """,
+            (now, run_id, task_id),
+        )
+        return run_id
+
+    active = kb.active_run(conn, task_id)
+    if active is not None:
+        conn.execute(
+            """
+            UPDATE task_runs
+               SET status = ?,
+                   outcome = ?,
+                   summary = ?,
+                   metadata = ?,
+                   ended_at = ?,
+                   claim_lock = NULL,
+                   claim_expires = NULL,
+                   worker_pid = NULL
+             WHERE id = ?
+            """,
+            (run_status, outcome, summary, metadata_json, now, active.id),
+        )
+        run_id = active.id
+    else:
+        cur = conn.execute(
+            """
+            INSERT INTO task_runs (
+                task_id, profile, step_key, status, outcome,
+                summary, metadata, started_at, ended_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (task_id, profile, step_key, run_status, outcome, summary, metadata_json, now, now),
+        )
+        run_id = int(cur.lastrowid or 0)
+
+    conn.execute(
+        """
+        UPDATE tasks
+           SET status = ?,
+               current_run_id = NULL,
+               claim_lock = NULL,
+               claim_expires = NULL,
+               worker_pid = NULL
+         WHERE id = ?
+           AND status != 'archived'
+        """,
+        (projection["task_status"], task_id),
+    )
+    return run_id
+
+
+def ingest_work_state_run_evidence(
+    conn: Any,
+    record: Any,
+    *,
+    task_id: Optional[str] = None,
+    task_locator: Optional[Mapping[str, Any]] = None,
+    resolution: Optional[Mapping[str, Any]] = None,
+    source: str = "work_state_run_evidence",
+) -> dict[str, Any]:
+    """Persist one work_state evidence projection to Kanban ``task_runs``.
+
+    This is an authority-trail helper, not a dispatcher or closeout controller:
+    it never spawns executors, mutates Linear, writes generic task metadata, or
+    projects worker completion to Kanban ``done``/``closed``.  Correlation must
+    resolve to exactly one active Kanban task before any write occurs.
+    """
+
+    correlation = _resolve_kanban_task_for_work_state(
+        conn,
+        record,
+        task_id=task_id,
+        task_locator=task_locator,
+    )
+    if correlation["status"] != "single_match":
+        return {
+            "status": "fail_closed",
+            "reason": correlation["reason"],
+            "task_id": None,
+            "correlation": correlation,
+            "side_effects": {
+                "kanban_task_written": False,
+                "task_run_written": False,
+                "executor_spawned": False,
+                "linear_done_mutated": False,
+                "kanban_done_projected_to_linear": False,
+            },
+        }
+
+    selected_task_id = str(correlation["task_id"])
+    task = kb.get_task(conn, selected_task_id)
+    if _closed_kanban_task_fail_closed(task):
+        return {
+            "status": "fail_closed",
+            "reason": "kanban_task_done_or_archived_fail_closed",
+            "task_id": selected_task_id,
+            "correlation": correlation,
+            "side_effects": {
+                "kanban_task_written": False,
+                "task_run_written": False,
+                "executor_spawned": False,
+                "linear_done_mutated": False,
+                "kanban_done_projected_to_linear": False,
+            },
+        }
+
+    projection = project_work_state_to_kanban_run(record, resolution=resolution, source=source)
+    with kb.write_txn(conn):
+        run_id = _insert_or_update_run_evidence(conn, selected_task_id, projection=projection)
+        kb._append_event(
+            conn,
+            selected_task_id,
+            "work_state_evidence_ingested",
+            {
+                "source": source,
+                "projection_status": projection["status"],
+                "projection_reason": projection["reason"],
+                "task_run_status": projection["task_run"]["status"],
+                "task_run_outcome": projection["task_run"].get("outcome"),
+                "work_state": _attr(record, "state"),
+            },
+            run_id=run_id,
+        )
+
+    return {
+        "status": "ingested" if projection["status"] == "mapped" else "ingested_fail_closed",
+        "reason": projection["reason"],
+        "task_id": selected_task_id,
+        "run_id": run_id,
+        "correlation": correlation,
+        "projection": projection,
+        "side_effects": {
+            "kanban_task_written": True,
+            "task_run_written": True,
+            "executor_spawned": False,
+            "linear_done_mutated": False,
+            "kanban_done_projected_to_linear": False,
+        },
+    }

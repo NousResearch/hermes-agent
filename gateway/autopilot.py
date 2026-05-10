@@ -1338,6 +1338,7 @@ def ingest_autopilot_executor_result(
     executor_result: Mapping[str, Any],
     owner_session_id: Optional[str] = None,
     now: Optional[datetime] = None,
+    kanban_conn: Any = None,
 ) -> dict[str, Any]:
     """Store an executor result as controller input, never as controller completion.
 
@@ -1460,7 +1461,8 @@ def ingest_autopilot_executor_result(
             "linear_done_mutated": False,
             "next_card_started": False,
         }
-    return {
+
+    result = {
         "status": "ingested",
         "reason": "executor_result_recorded_as_controller_event",
         "work_id": normalized_work_id,
@@ -1468,6 +1470,68 @@ def ingest_autopilot_executor_result(
         "linear_done_mutated": False,
         "next_card_started": False,
     }
+    if kanban_conn is not None:
+        executor_event = closeout.get("executor_event") if isinstance(closeout, Mapping) else None
+        if not isinstance(executor_event, Mapping):
+            executor_event = {}
+        evidence_state = {
+            "executor_finished": "worker_done",
+            "same_card_continuation": "continuation_needed",
+            "blocked": "blocked",
+        }.get(controller_event, "blocked")
+        evidence_record = {
+            "work_id": normalized_work_id,
+            "title": getattr(record, "title", None),
+            "objective": getattr(record, "objective", None),
+            "owner": getattr(record, "owner", None),
+            "executor": getattr(record, "executor", None),
+            "mode": getattr(record, "mode", None),
+            "owner_session_id": getattr(record, "owner_session_id", None),
+            "executor_session_id": getattr(record, "executor_session_id", None),
+            "tmux_session": getattr(record, "tmux_session", None),
+            "repo_path": getattr(record, "repo_path", None),
+            "worktree_path": getattr(record, "worktree_path", None),
+            "task_branch": getattr(record, "task_branch", None),
+            "state": evidence_state,
+            "proof": payload.get("proof") or payload.get("summary") or getattr(record, "proof", None),
+            "next_action": executor_event.get("next_action") or getattr(record, "next_action", None),
+            "usable_outcome": "usable_output" if controller_event == "executor_finished" else None,
+            "close_disposition": "close" if controller_event == "executor_finished" else None,
+            "blocked_reason": payload.get("blocked_reason") or getattr(record, "blocked_reason", None),
+            "cleanup_required": getattr(record, "cleanup_required", None),
+            "cleanup_proof": getattr(record, "cleanup_proof", None),
+            "current_lane": getattr(record, "current_lane", None),
+            "planning_gate": getattr(record, "planning_gate", None),
+            "next_execution_branch": getattr(record, "next_execution_branch", None),
+            "close_authority": getattr(record, "close_authority", None),
+            "review_closeout": closeout,
+        }
+        try:
+            from hermes_cli.kanban_work_state import ingest_work_state_run_evidence
+
+            kanban_ingestion = ingest_work_state_run_evidence(
+                kanban_conn,
+                evidence_record,
+                source="autopilot_executor_result",
+            )
+        except Exception as exc:
+            return {
+                "status": "blocked",
+                "reason": f"kanban_run_ingestion_failed:{type(exc).__name__}",
+                "work_id": normalized_work_id,
+                "controller_event": controller_event,
+                "linear_done_mutated": False,
+                "next_card_started": False,
+                "kanban_run_ingestion": {
+                    "status": "fail_closed",
+                    "reason": f"exception:{type(exc).__name__}",
+                },
+            }
+        result["kanban_run_ingestion"] = kanban_ingestion
+        if kanban_ingestion.get("status") not in {"ingested", "ingested_fail_closed"}:
+            result["status"] = "blocked"
+            result["reason"] = "kanban_run_ingestion_fail_closed"
+    return result
 
 
 def bound_autopilot_next_action(value: Any, *, fallback: str) -> str:

@@ -393,6 +393,25 @@ class TestStripThinkBlocks:
         assert "read_file" not in result
         assert "done" in result
 
+    def test_tool_use_block_stripped(self, agent):
+        text = '<tool_use>{"name":"read_file","input":{"path":"/tmp/x"}}</tool_use> done'
+        result = agent._strip_think_blocks(text)
+        assert "<tool_use>" not in result
+        assert "read_file" not in result
+        assert "done" in result
+
+    def test_tool_call_closing_tag_inside_json_string_stripped(self, agent):
+        text = (
+            'before <tool_call>{"name":"write_file",'
+            '"arguments":{"content":"</tool_call>"}}</tool_call> after'
+        )
+        result = agent._strip_think_blocks(text)
+        assert "<tool_call>" not in result
+        assert "</tool_call>" not in result
+        assert '"}}' not in result
+        assert "before" in result
+        assert "after" in result
+
     def test_function_calls_block_stripped(self, agent):
         text = '<function_calls>[{"name":"x"}]</function_calls>after'
         result = agent._strip_think_blocks(text)
@@ -2493,6 +2512,34 @@ class TestRunConversation:
         assert result["api_calls"] == 2
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
+
+    def test_inline_tool_use_content_then_stop(self, agent):
+        self._setup_agent(agent)
+        resp1 = _mock_response(
+            content=(
+                '<tool_use>{"id":"c1","name":"web_search",'
+                '"input":{"query":"hermes"}}</tool_use>'
+            ),
+            finish_reason="stop",
+        )
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        assert result["api_calls"] == 2
+        assert mock_handle_function_call.call_args.args[:2] == (
+            "web_search",
+            {"query": "hermes"},
+        )
+        assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
 
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)

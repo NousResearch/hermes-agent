@@ -1,5 +1,7 @@
 """Tests for the ChatCompletionsTransport."""
 
+import json
+
 import pytest
 from types import SimpleNamespace
 
@@ -675,6 +677,100 @@ class TestChatCompletionsNormalize:
         assert len(nr.tool_calls) == 1
         assert nr.tool_calls[0].name == "terminal"
         assert nr.tool_calls[0].id == "call_123"
+
+    def test_inline_tool_use_response(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=(
+                        '<tool_use>{"id":"t1","name":"terminal",'
+                        '"input":{"command":"pwd"}}</tool_use>'
+                    ),
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content is None
+        assert nr.finish_reason == "tool_calls"
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].id == "t1"
+        assert nr.tool_calls[0].name == "terminal"
+        assert json.loads(nr.tool_calls[0].arguments) == {"command": "pwd"}
+        assert nr.usage.total_tokens == 30
+
+    def test_inline_tool_use_preserves_length_finish_reason(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content='<tool_use>{"name":"terminal","input":{}}</tool_use>',
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="length",
+            )],
+            usage=None,
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.finish_reason == "length"
+        assert len(nr.tool_calls) == 1
+
+    def test_inline_tool_use_preserves_surrounding_text_and_reasoning(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=(
+                        'I will check. <tool_use>{"id":"t1","name":"terminal",'
+                        '"input":{"command":"pwd"}}</tool_use> Done.'
+                    ),
+                    tool_calls=None,
+                    reasoning="summary text",
+                    reasoning_content="scratchpad",
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == "I will check.  Done."
+        assert nr.finish_reason == "tool_calls"
+        assert nr.reasoning == "summary text"
+        assert nr.reasoning_content == "scratchpad"
+        assert len(nr.tool_calls) == 1
+
+    def test_structured_tool_calls_take_precedence_over_inline_text(self, transport):
+        tc = SimpleNamespace(
+            id="call_123",
+            function=SimpleNamespace(name="terminal", arguments='{"command": "ls"}'),
+        )
+        content = '<tool_use>{"id":"inline","name":"read_file","input":{}}</tool_use>'
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=[tc],
+                    reasoning_content=None,
+                ),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == content
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].id == "call_123"
+        assert nr.tool_calls[0].name == "terminal"
 
     def test_tool_call_extra_content_preserved(self, transport):
         """Gemini 3 thinking models attach extra_content with thought_signature

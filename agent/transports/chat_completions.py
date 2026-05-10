@@ -12,6 +12,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 import copy
 from typing import Any, Dict, List, Optional
 
+from agent.inline_tool_calls import extract_inline_tool_calls
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
@@ -518,6 +519,7 @@ class ChatCompletionsTransport(ProviderTransport):
         choice = response.choices[0]
         msg = choice.message
         finish_reason = choice.finish_reason or "stop"
+        content = msg.content
 
         tool_calls = None
         if msg.tool_calls:
@@ -546,6 +548,13 @@ class ChatCompletionsTransport(ProviderTransport):
                         provider_data=tc_provider_data or None,
                     )
                 )
+        elif isinstance(content, str):
+            inline = extract_inline_tool_calls(content)
+            if inline.tool_calls:
+                tool_calls = inline.tool_calls
+                content = inline.content
+                if finish_reason == "stop":
+                    finish_reason = "tool_calls"
 
         usage = None
         if hasattr(response, "usage") and response.usage:
@@ -575,7 +584,7 @@ class ChatCompletionsTransport(ProviderTransport):
             provider_data["reasoning_details"] = rd
 
         return NormalizedResponse(
-            content=msg.content,
+            content=content,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             reasoning=reasoning,

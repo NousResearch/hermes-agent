@@ -138,6 +138,7 @@ from tools.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
+from agent.inline_tool_calls import strip_inline_tool_call_blocks
 from agent.memory_manager import StreamingContextScrubber, build_memory_context_block, sanitize_context
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.retry_utils import jittered_backoff
@@ -3556,6 +3557,7 @@ class AIAgent:
         Additionally strips standalone tool-call XML blocks that some open
         models (notably Gemma variants on OpenRouter) emit inside assistant
         content instead of via the structured ``tool_calls`` field:
+          * ``<tool_use>…</tool_use>``
           * ``<tool_call>…</tool_call>``
           * ``<tool_calls>…</tool_calls>``
           * ``<tool_result>…</tool_result>``
@@ -3577,18 +3579,20 @@ class AIAgent:
         content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
-        # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
-        #     generic tag names first — they have no attribute gating since
-        #     a literal <tool_call> in prose is already vanishingly rare.
-        for _tc_name in ("tool_call", "tool_calls", "tool_result",
-                          "function_call", "function_calls"):
-            content = re.sub(
-                rf'<{_tc_name}\b[^>]*>.*?</{_tc_name}>',
-                '',
-                content,
-                flags=re.DOTALL | re.IGNORECASE,
-            )
-        # 1c. <function name="...">...</function> — Gemma-style standalone
+        # 1b. JSON-bearing tool-call XML blocks (openclaw/openclaw#67318).
+        #     Use JSON-aware span removal so closing tag text inside JSON
+        #     strings (for example a write_file payload containing
+        #     "</tool_call>") does not terminate the block early.
+        content = strip_inline_tool_call_blocks(content)
+        # 1c. Tool-result XML blocks are cleanup-only; never turn these into
+        #     executable calls.
+        content = re.sub(
+            r'<tool_result\b[^>]*>.*?</tool_result>',
+            '',
+            content,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        # 1d. <function name="...">...</function> — Gemma-style standalone
         #     tool call. Only strip when the tag sits at a block boundary
         #     (start of text, after a newline, or after sentence-ending
         #     punctuation) AND carries a name="..." attribute. This keeps
@@ -3623,7 +3627,7 @@ class AIAgent:
         #     during streaming may still be valuable to the user; matches
         #     OpenClaw's intentional asymmetry.)
         content = re.sub(
-            r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
+            r'</(?:tool_use|tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
             '',
             content,
             flags=re.IGNORECASE,

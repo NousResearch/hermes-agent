@@ -1,12 +1,16 @@
 package com.nousresearch.hermesagent.data
 
+import android.content.Context
 import android.net.Uri
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class AuthSessionStoreTest {
@@ -153,5 +157,106 @@ class AuthSessionStoreTest {
         assertEquals("https://chatgpt.com/backend-api/f", result.session?.baseUrl)
         assertEquals("gpt-5-thinking", result.session?.model)
         assertEquals("Signed in with ChatGPT", result.session?.status)
+    }
+
+    @Test
+    fun saveSession_keepsRuntimeProviderCredentialsOutOfPlainAuthPreferences() {
+        val context = cleanContext()
+        val store = AuthSessionStore(context, InMemoryAuthSessionSecretStore())
+        val session = AuthSession(
+            methodId = "chatgpt",
+            label = "ChatGPT",
+            scope = AuthScope.RuntimeProvider,
+            runtimeProvider = "chatgpt-web",
+            signedIn = true,
+            status = "Signed in with ChatGPT",
+            accessToken = "access-secret",
+            refreshToken = "refresh-secret",
+            sessionToken = "session-secret",
+            apiKey = "api-secret",
+            baseUrl = "https://chatgpt.com/backend-api/f",
+            model = "gpt-5-thinking",
+        )
+
+        store.saveSession(session)
+
+        val raw = plainAuthPreferences(context).getString("session_chatgpt", "").orEmpty()
+        assertTrue(raw.isNotBlank())
+        assertFalse(raw.contains("access-secret"))
+        assertFalse(raw.contains("refresh-secret"))
+        assertFalse(raw.contains("session-secret"))
+        assertFalse(raw.contains("api-secret"))
+        assertFalse(raw.contains("accessToken"))
+        assertFalse(raw.contains("refreshToken"))
+        assertFalse(raw.contains("sessionToken"))
+        assertFalse(raw.contains("apiKey"))
+
+        val loaded = store.loadSession("chatgpt")
+        assertNotNull(loaded)
+        assertEquals("access-secret", loaded?.accessToken)
+        assertEquals("refresh-secret", loaded?.refreshToken)
+        assertEquals("session-secret", loaded?.sessionToken)
+        assertEquals("api-secret", loaded?.apiKey)
+    }
+
+    @Test
+    fun loadSession_migratesLegacyPlaintextCredentialsIntoSecureStore() {
+        val context = cleanContext()
+        val secretStore = InMemoryAuthSessionSecretStore()
+        plainAuthPreferences(context).edit().putString(
+            "session_chatgpt",
+            JSONObject()
+                .put("methodId", "chatgpt")
+                .put("label", "ChatGPT")
+                .put("scope", AuthScope.RuntimeProvider.name)
+                .put("runtimeProvider", "chatgpt-web")
+                .put("signedIn", true)
+                .put("status", "Signed in with ChatGPT")
+                .put("accessToken", "legacy-access")
+                .put("refreshToken", "legacy-refresh")
+                .put("sessionToken", "legacy-session")
+                .put("apiKey", "legacy-api")
+                .put("baseUrl", "https://chatgpt.com/backend-api/f")
+                .put("model", "gpt-5-thinking")
+                .put("updatedAtEpochMs", 100L)
+                .toString(),
+        ).commit()
+
+        val loaded = AuthSessionStore(context, secretStore).loadSession("chatgpt")
+
+        assertEquals("legacy-access", loaded?.accessToken)
+        assertEquals("legacy-refresh", loaded?.refreshToken)
+        assertEquals("legacy-session", loaded?.sessionToken)
+        assertEquals("legacy-api", loaded?.apiKey)
+        val migratedRaw = plainAuthPreferences(context).getString("session_chatgpt", "").orEmpty()
+        assertFalse(migratedRaw.contains("legacy-access"))
+        assertFalse(migratedRaw.contains("accessToken"))
+    }
+
+    private fun cleanContext(): Context {
+        val context = RuntimeEnvironment.getApplication().applicationContext
+        context.deleteSharedPreferences("hermes_android_auth")
+        context.deleteSharedPreferences("hermes_android_secrets")
+        return context
+    }
+
+    private fun plainAuthPreferences(context: Context) =
+        context.getSharedPreferences("hermes_android_auth", Context.MODE_PRIVATE)
+
+    private class InMemoryAuthSessionSecretStore : AuthSessionSecretStore {
+        private val secretsByMethod = mutableMapOf<String, AuthSessionSecrets>()
+
+        override fun loadAuthSessionSecrets(methodId: String): AuthSessionSecrets =
+            secretsByMethod[methodId].orEmpty()
+
+        override fun saveAuthSessionSecrets(methodId: String, secrets: AuthSessionSecrets) {
+            secretsByMethod[methodId] = secrets
+        }
+
+        override fun clearAuthSessionSecrets(methodId: String) {
+            secretsByMethod.remove(methodId)
+        }
+
+        private fun AuthSessionSecrets?.orEmpty(): AuthSessionSecrets = this ?: AuthSessionSecrets()
     }
 }

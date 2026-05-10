@@ -2000,6 +2000,19 @@ def get_python_path() -> str:
 # Systemd (Linux)
 # =============================================================================
 
+def _normalize_path_entry_for_dedup(path: str) -> str:
+    """Return a stable PATH entry key/payload for generated service units.
+
+    WSL interop paths can appear both from the caller's PATH and from built-in
+    fallbacks, sometimes differing only by a trailing slash. Without normalizing
+    those variants, the generated gateway unit can oscillate between two
+    equivalent PATH strings and `hermes gateway status` reports a stale unit.
+    """
+    if not path:
+        return ""
+    return path.rstrip(os.sep) or os.sep
+
+
 def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     """Return user-local bin dirs that exist and aren't already in *path_entries*."""
     candidates = [
@@ -2043,11 +2056,14 @@ def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
             candidates.append(entry)
 
     result: list[str] = []
-    seen = set(path_entries)
+    seen = {_normalize_path_entry_for_dedup(p) for p in path_entries}
     for entry in candidates:
-        if entry and entry not in seen:
-            seen.add(entry)
-            result.append(entry)
+        if not entry:
+            continue
+        normalized = _normalize_path_entry_for_dedup(entry)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
     return result
 
 

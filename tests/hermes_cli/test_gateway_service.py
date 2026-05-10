@@ -350,7 +350,26 @@ class TestGeneratedSystemdUnits:
         unit = gateway_cli.generate_systemd_unit(system=False)
 
         assert "/mnt/c/WINDOWS/system32" in unit
-        assert "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/" in unit
+        assert "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0" in unit
+        assert "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:" not in unit
+
+    def test_wsl_windows_interop_paths_are_stable_across_trailing_slash_variants(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+        monkeypatch.setenv(
+            "PATH",
+            "/usr/local/bin:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0",
+        )
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda cmd: "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe" if cmd == "powershell.exe" else None,
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        path_line = next(line for line in unit.splitlines() if line.startswith('Environment="PATH='))
+
+        assert path_line.count("/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0") == 1
+        assert "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:" not in path_line
 
     def test_user_unit_omits_windows_interop_paths_outside_wsl(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)

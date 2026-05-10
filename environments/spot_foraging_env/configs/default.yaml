@@ -1,0 +1,38 @@
+env:
+  n_batteries: 5
+  arena_half_size_m: 4.0
+  spawn_radius_m: 0.5
+  max_skill_picks: 30
+  fall_terminates: true
+  enable_image: true
+  image_pixels: 256
+
+  walk_policy_onnx: null   # null = auto-resolve via SPOT_WALK_POLICY_ONNX env var or ~/.cache/spot_rapier/walk_policy.onnx
+
+  skill_pick_temperature: 1.0
+  skill_pick_max_tokens: 256
+
+  reward_per_battery: 10.0
+  reward_success_bonus: 20.0
+  reward_skill_pick_cost: 0.05
+  reward_fall_penalty: 5.0
+  reward_distance_decrement_weight: 0.5
+
+  group_size: 4
+  max_token_length: 8192
+  steps_per_eval: 50
+  use_wandb: true
+  include_messages: true
+  tokenizer_name: NousResearch/DeepHermes-3-Llama-3-3B-Preview
+  rollout_server_url: http://localhost:8000
+
+slurm: false
+
+openai:
+  base_url: http://localhost:8001/v1   # vLLM serving the trainee
+  api_key: x
+  model_name: NousResearch/DeepHermes-3-Llama-3-3B-Preview
+  server_type: vllm
+  health_check: true
+  timeout: 600
+  num_max_requests_at_once: 32

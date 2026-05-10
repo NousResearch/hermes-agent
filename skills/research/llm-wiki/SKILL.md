@@ -45,7 +45,7 @@ Gordon wants the wiki maintained **passively** — he reads it in a browser at `
 6. Verify with browser-like curl: `curl -L -A 'Mozilla/5.0' -H 'Cookie: wiki_auth=GW2026' <live-url>` because Python `urllib` can get Cloudflare 403s
 7. Live in ~30 seconds at `https://hermes-pages-d55.pages.dev/wiki/`
 
-Detailed Gordon-specific notes: see `references/gordon-static-html-wiki-maintenance.md`.
+Detailed Gordon-specific notes: see `references/gordon-static-html-wiki-maintenance.md`. For reducing duplication by refactoring hub/child topology, see `references/gordon-static-html-wiki-topology-refactors.md`.
 
 **To add the wiki to Obsidian later:** Clone `https://github.com/rousegordon-ops/hermes-pages`, point Obsidian at `gordons-llm-wiki/` subdirectory.
 
@@ -282,11 +282,11 @@ a `_meta/topic-map.md` that groups pages by theme for faster navigation.
 Do not make the user define the taxonomy. Infer a reasonable structure from the content, then refactor as the wiki grows.
 
 Principles:
-- **Parent pages are maps, not dumping grounds.** Keep hub/index pages concise and navigable.
+- **Parent pages are maps, not dumping grounds.** Keep hub/index pages concise and navigable. If a hub starts accumulating repeated details also covered by child pages, refactor it back into a map/portfolio page and move shared analysis into an intermediate child hub.
 - **Promote repeated or central topics to pages.** If a topic appears repeatedly, becomes a decision area, or the user asks for a deep dive, create a dedicated page.
-- **Use semantic containment for hierarchy:** broad domain → hub page; major bucket → child hub; specific idea/opportunity/company/source → child page.
-- **Create child pages for deep dives by default.** Example: `business-opportunities` → `business-opportunities/ai-consulting` → `business-opportunities/engineering-knowledge-base-rag`.
-- **Split large sections.** If a page section exceeds ~300–500 words, includes multiple independent subtopics, or would be painful to skim in 30 seconds, split it into child pages.
+- **Use semantic containment for hierarchy:** broad domain → hub page; major bucket → child hub; specific idea/opportunity/company/source → child page. When two child pages share the same thesis/market framing, add a middle parent for the shared material instead of duplicating it in each page.
+- **Create child pages for deep dives by default.** Example: `business-opportunities` → `business-opportunities/ai-consulting-workflow-automation` → `business-opportunities/ai-consulting-workflow-automation/manufacturing-semicap-workflow-automation`.
+- **Split large sections.** If a page section exceeds ~300–500 words, includes multiple independent subtopics, duplicates another page, or would be painful to skim in 30 seconds, split it into child pages.
 - **Preserve navigation.** Add links from parent to child, child back to parent, and related links between sibling/adjacent pages.
 - **Do not promote child pages into the top-level wiki index as peers.** Deep-dive child pages should be linked from the relevant parent hub section/item unless they are major standalone hubs themselves.
 - **Prefer small composable pages over long monoliths.** The wiki should become more navigable over time, not just longer.
@@ -585,6 +585,8 @@ If a `[[wikilink]]` in `index.md` doesn't have a map entry, `wiki_link()` falls 
 - **Don't create pages without cross-references** — isolated pages are invisible. Every page must
   link to at least 2 other pages.
 - **Don't list child deep dives as top-level peers** — if a page lives under a parent hub path (e.g. `/wiki/business-opportunities/acquire-local-service-business`), link it from the relevant parent hub item/section, not as a peer in the root wiki index unless it has become a major standalone hub.
+- **Don't let scheduled jobs undo hierarchy refactors** — when changing page topology, update any cron/webhook prompts that write to those pages so future automated updates target the correct hub or child page and do not reintroduce duplicated content.
+- **Preserve old URLs when moving child pages** — use lightweight static HTML redirects for old child-page URLs so existing links/bookmarks keep working, while canonical links point to the new semantic hierarchy.
 - **Frontmatter is required** — it enables search, filtering, and staleness detection.
 - **Tags must come from the taxonomy** — freeform tags decay into noise. Add new tags to SCHEMA.md
   first, then use them.

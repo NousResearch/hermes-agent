@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Recall, Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: recall       # or honcho, openviking, mem0, hindsight, holographic, retaindb, byterover, supermemory
 ```
 
 ## How It Works
@@ -39,6 +39,43 @@ When a memory provider is active, Hermes automatically:
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
 ## Available Providers
+
+### Recall
+
+Safety-first local memory archive for Hermes. Recall keeps built-in `MEMORY.md` and `USER.md` authoritative, while adding a lower-trust SQLite FTS5 archive, redaction-at-rest, hash-chain audit, deterministic quality ranking, reviewed consolidation, and explicit promotion back into trusted built-in memory.
+
+> Recall is the safety-first Hermes memory layer: local SQLite, searchable archive, redaction-at-rest, hash-chain audit, dashboard curation, and explicit promotion into trusted memory — no cloud, no API key, no silent mutation of `MEMORY.md` or `USER.md`.
+
+| | |
+|---|---|
+| **Best for** | Local-first users who want searchable history, auditability, and conservative promotion into trusted memory |
+| **Requires** | Nothing beyond Python stdlib + SQLite FTS5 |
+| **Data storage** | `$HERMES_HOME/recall_memory.sqlite` by default |
+| **Cost** | Free / local |
+
+**Tools (16):** `memory_recall_build_info`, `memory_archive_search`, `memory_archive_current`, `memory_candidate_review`, `memory_candidate_mark`, `memory_archive_forget`, `memory_audit_query`, `memory_audit_verify`, `memory_archive_stats`, `memory_archive_export`, `memory_archive_import`, `memory_archive_diagnose`, `memory_quality_rank`, `memory_consolidation_suggest`, `memory_consolidation_apply`, `memory_promote_candidate`
+
+**Setup Wizard:**
+```bash
+hermes memory setup        # select "recall"
+```
+
+**Manual config:**
+```yaml
+memory:
+  provider: recall
+plugins:
+  recall:
+    db_path: "$HERMES_HOME/recall_memory.sqlite"
+    auto_capture: true
+    prefetch_enabled: true
+    max_prefetch_results: 3
+    audit_enabled: true
+```
+
+:::note Trust model
+Recall archive rows are lower-trust evidence. Built-in memory remains authoritative. Promotion into `MEMORY.md` or `USER.md` requires the explicit `memory_promote_candidate` tool with `confirm=true`; rejected or low-quality rows require additional opt-in flags.
+:::
 
 ### Honcho
 
@@ -526,6 +563,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
+| **Recall** | Local | Free | 16 | None | Searchable SQLite archive + hash-chain audit + explicit promotion |
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
@@ -539,7 +577,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 Each provider's data is isolated per [profile](/docs/user-guide/profiles):
 
-- **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
+- **Local storage providers** (Recall, Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file

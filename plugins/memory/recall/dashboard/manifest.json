@@ -1,0 +1,13 @@
+{
+  "name": "recall",
+  "label": "Recall Memory",
+  "description": "Review, curate, promote, and audit the local Recall memory archive.",
+  "icon": "BrainCircuit",
+  "version": "0.3.4",
+  "tab": {
+    "path": "/recall",
+    "position": "after:sessions"
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

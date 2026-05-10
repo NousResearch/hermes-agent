@@ -1,0 +1,11 @@
+manifest_version: 1
+name: recall
+version: 0.3.7
+description: "Hermes-native searchable memory archive with conservative recall and hash-chain audit."
+author: "Hermes Agent"
+kind: exclusive
+hooks:
+  - sync_turn
+  - on_pre_compress
+  - on_memory_write
+  - on_delegation

@@ -98,7 +98,7 @@ TIPS = [
     "hermes profile create work --clone copies your current config and keys to a new profile.",
     "hermes update syncs new bundled skills to ALL profiles automatically.",
     "hermes gateway install sets up Hermes as a system service (systemd/launchd).",
-    "hermes memory setup lets you configure an external memory provider (Honcho, Mem0, etc.).",
+    "hermes memory setup lets you configure an external memory provider (Recall, Honcho, Mem0, etc.).",
     "hermes webhook subscribe creates event-driven webhook routes with HMAC validation.",
     "Save money: hermes tools disables unused tools, hermes skills config trims skills down.",
     "/reasoning low or /reasoning minimal cuts thinking depth below the default (medium) — faster, cheaper responses.",
@@ -246,7 +246,7 @@ TIPS = [
     # --- Plugins ---
     "Three plugin types: general (tools/hooks), memory providers, and context engines.",
     "hermes plugins install owner/repo installs plugins directly from GitHub.",
-    "8 external memory providers available: Honcho, OpenViking, Mem0, Hindsight, and more.",
+    "9 external memory providers available: Recall, Honcho, OpenViking, Mem0, Hindsight, and more.",
     "Plugin hooks include pre/post_tool_call, pre/post_llm_call, and transform_terminal_output for output canonicalization.",
 
     # --- Miscellaneous ---

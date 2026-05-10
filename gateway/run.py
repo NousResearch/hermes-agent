@@ -3887,10 +3887,18 @@ class GatewayRunner:
                         except Exception:
                             continue
                         try:
-                            try:
-                                _kb.init_db(board=slug)  # idempotent; handles first-run
-                            except Exception:
-                                pass
+                            # `connect()` runs the schema + idempotent migration
+                            # on first open per process, so an explicit
+                            # `init_db()` here would be redundant. Worse:
+                            # `init_db()` deliberately busts the per-process
+                            # cache and re-runs the migration on a *second*
+                            # connection, which races the first and used to
+                            # log a benign but noisy `duplicate column name`
+                            # traceback (and intermittent "database is locked"
+                            # — issue #21378) on every gateway start against
+                            # a legacy DB. `_add_column_if_missing` now
+                            # tolerates that race, but we still skip the
+                            # redundant call to avoid the wasted work.
                             subs = _kb.list_notify_subs(conn)
                             for sub in subs:
                                 cursor, events = _kb.unseen_events_for_sub(
@@ -4183,10 +4191,12 @@ class GatewayRunner:
             conn = None
             try:
                 conn = _kb.connect(board=slug)
-                try:
-                    _kb.init_db(board=slug)  # idempotent, handles first-run
-                except Exception:
-                    pass
+                # `connect()` runs the schema + idempotent migration on
+                # first open per process; the previous explicit
+                # `init_db()` call here busted the per-process cache and
+                # re-ran the migration on a second connection, racing
+                # the first. See the matching comment in
+                # `_kanban_notifier_watcher` and issue #21378.
                 return _kb.dispatch_once(
                     conn,
                     board=slug,

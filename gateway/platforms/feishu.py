@@ -4273,21 +4273,31 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
-        body = self._build_create_message_body(
-            receive_id=chat_id,
-            msg_type=msg_type,
-            content=payload,
-            uuid_value=str(uuid.uuid4()),
-        )
-        # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
-        # Feishu API expects receive_id_type="open_id" for user DMs (ou_ prefix)
-        # and receive_id_type="chat_id" for group chats (oc_ prefix, which IS
-        # the chat_id format — see https://open.feishu.cn/document/).
-        if chat_id.startswith("ou_"):
-            receive_id_type = "open_id"
+        # For topic/thread messages that fell back from reply→create, use
+        # thread_id as receive_id so the message lands in the topic instead of
+        # the main chat.
+        _thread_id = (metadata or {}).get("thread_id")
+        if _thread_id:
+            body = self._build_create_message_body(
+                receive_id=_thread_id,
+                msg_type=msg_type,
+                content=payload,
+                uuid_value=str(uuid.uuid4()),
+            )
+            request = self._build_create_message_request("thread_id", body)
         else:
-            receive_id_type = "chat_id"
-        request = self._build_create_message_request(receive_id_type, body)
+            body = self._build_create_message_body(
+                receive_id=chat_id,
+                msg_type=msg_type,
+                content=payload,
+                uuid_value=str(uuid.uuid4()),
+            )
+            # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
+            if chat_id.startswith("ou_"):
+                receive_id_type = "open_id"
+            else:
+                receive_id_type = "chat_id"
+            request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod

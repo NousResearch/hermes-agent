@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from store import RecallStore
+from .store import RecallStore
 
 
 def _default_db_path() -> Path:
@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             _print(payload, as_json=args.json)
         elif args.command == "verify":
-            from audit import verify_audit_chain
+            from .audit import verify_audit_chain
 
             _print(verify_audit_chain(store.conn), as_json=args.json)
         elif args.command == "diagnose":

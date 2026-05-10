@@ -14,26 +14,12 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-try:
-    from agent.memory_provider import MemoryProvider
-except Exception:  # Allows standalone CLI/tests without Hermes installed.
-    class MemoryProvider:  # type: ignore[no-redef]
-        pass
+from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
-try:
-    from tools.registry import tool_error
-except Exception:  # Allows standalone CLI/tests without Hermes installed.
-    def tool_error(message: str) -> str:  # type: ignore[no-redef]
-        return json.dumps({"error": message}, ensure_ascii=False)
-
-try:  # Hermes plugin package import
-    from .audit import verify_audit_chain
-    from .redaction import redact_text
-    from .store import RecallStore
-except ImportError:  # Standalone import from repository root
-    from audit import verify_audit_chain
-    from redaction import redact_text
-    from store import RecallStore
+from .audit import verify_audit_chain
+from .redaction import redact_text
+from .store import RecallStore
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +33,6 @@ PROVIDER_BUILD = {
         "quality-ranking",
         "safe-promotion",
         "consolidation-apply",
-        "dashboard-curation",
     ],
 }
 
@@ -301,10 +286,7 @@ class RecallMemoryProvider(MemoryProvider):
         try:
             schema_version = str(self._require_store().conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()["value"])
         except Exception:
-            try:
-                from .schema import SCHEMA_VERSION as schema_version  # type: ignore[no-redef]
-            except Exception:
-                from schema import SCHEMA_VERSION as schema_version  # type: ignore[no-redef]
+            from .schema import SCHEMA_VERSION as schema_version
         return {
             **PROVIDER_BUILD,
             "schema_version": str(schema_version),
@@ -354,10 +336,12 @@ class RecallMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         try:
             from hermes_constants import get_hermes_home
-        except Exception:
-            get_hermes_home = lambda: Path.home() / ".hermes"  # type: ignore[assignment]
 
-        hermes_home = Path(kwargs.get("hermes_home") or get_hermes_home())
+            default_home = get_hermes_home()
+        except Exception:
+            default_home = Path.home() / ".hermes"
+
+        hermes_home = Path(kwargs.get("hermes_home") or default_home)
         self._hermes_home = hermes_home
         self.db_path = _resolve_path(self._config.get("db_path"), hermes_home)
         self.store = RecallStore(self.db_path)

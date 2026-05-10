@@ -44,7 +44,7 @@ The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. T
 
 Safety-first local memory archive for Hermes. Recall keeps built-in `MEMORY.md` and `USER.md` authoritative, while adding a lower-trust SQLite FTS5 archive, redaction-at-rest, hash-chain audit, deterministic quality ranking, reviewed consolidation, and explicit promotion back into trusted built-in memory.
 
-> Recall is the safety-first Hermes memory layer: local SQLite, searchable archive, redaction-at-rest, hash-chain audit, dashboard curation, and explicit promotion into trusted memory — no cloud, no API key, no silent mutation of `MEMORY.md` or `USER.md`.
+> Recall is the safety-first Hermes memory layer: local SQLite, searchable archive, redaction-at-rest, hash-chain audit, curation tools, and explicit promotion into trusted memory — no cloud, no API key, no silent mutation of `MEMORY.md` or `USER.md`.
 
 | | |
 |---|---|

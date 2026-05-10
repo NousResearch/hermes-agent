@@ -11,14 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:  # Hermes plugin package import
-    from .audit import hash_event, verify_audit_chain
-    from .redaction import redact_text
-    from .schema import SCHEMA_SQL, SCHEMA_VERSION
-except ImportError:  # Standalone CLI/test import from repository root
-    from audit import hash_event, verify_audit_chain
-    from redaction import redact_text
-    from schema import SCHEMA_SQL, SCHEMA_VERSION
+from .audit import hash_event, verify_audit_chain
+from .redaction import redact_text
+from .schema import SCHEMA_SQL, SCHEMA_VERSION
 
 
 _QUERY_STOPWORDS = {

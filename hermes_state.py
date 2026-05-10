@@ -747,6 +747,18 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def rename_session(self, session_id: str, title: str) -> bool:
+        """Rename a session by updating its title. Returns True if a row was updated."""
+        result = {"updated": False}
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions SET title = ? WHERE id = ?",
+                (title, session_id),
+            )
+            result["updated"] = cur.rowcount > 0
+        self._execute_write(_do)
+        return result["updated"]
+
     def update_token_counts(
         self,
         session_id: str,

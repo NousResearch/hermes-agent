@@ -71,7 +71,9 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # Generated fresh on every server start — dies when the process exits.
 # Injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = secrets.token_urlsafe(32)
+# Use fixed token from env var if set, otherwise generate random.
+# Setting HERMES_DASHBOARD_TOKEN makes the token stable across restarts.
+_SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
@@ -2299,6 +2301,22 @@ async def delete_session_endpoint(session_id: str):
         if not db.delete_session(session_id):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"ok": True}
+    finally:
+        db.close()
+
+
+class SessionRename(BaseModel):
+    title: str
+
+
+@app.patch("/api/sessions/{session_id}")
+async def rename_session_endpoint(session_id: str, body: SessionRename):
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        if not db.rename_session(session_id, body.title):
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"ok": True, "session_id": session_id, "title": body.title}
     finally:
         db.close()
 

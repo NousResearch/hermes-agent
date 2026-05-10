@@ -4200,6 +4200,36 @@ def call_llm(
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
+
+        # ── Transient error retry (connection drops, read timeouts, DNS) ─
+        # Connection errors (APITimeoutError, APIConnectionError) are often
+        # transient — a provider hiccup rather than permanent failure.
+        # Retry up to 2 more times with jittered exponential backoff
+        # before surfacing the error.  Auth and payment errors skip
+        # this path (they have their own handlers above).
+        if _is_connection_error(first_err):
+            from agent.retry_utils import jittered_backoff
+            _conn_max_retries = 3  # total attempts including the first
+            for _conn_attempt in range(2, _conn_max_retries + 1):
+                _wait = jittered_backoff(
+                    _conn_attempt, base_delay=2.0, max_delay=30.0)
+                logger.info(
+                    "Auxiliary %s: connection error (attempt %d/%d), "
+                    "retrying in %.1fs: %s",
+                    task or "call", _conn_attempt, _conn_max_retries,
+                    _wait, first_err)
+                time.sleep(_wait)
+                try:
+                    return _validate_llm_response(
+                        client.chat.completions.create(**kwargs), task)
+                except Exception as _retry_err:
+                    if not _is_connection_error(_retry_err):
+                        raise
+                    first_err = _retry_err
+            logger.warning(
+                "Auxiliary %s: connection error persisted after "
+                "%d attempts, surfacing: %s",
+                task or "call", _conn_max_retries, first_err)
         raise
 
 
@@ -4517,4 +4547,35 @@ async def async_call_llm(
                     fb_kwargs["model"] = async_fb_model
                 return _validate_llm_response(
                     await async_fb.chat.completions.create(**fb_kwargs), task)
+
+        # ── Transient error retry (connection drops, read timeouts, DNS) ─
+        # Connection errors (APITimeoutError, APIConnectionError) are often
+        # transient — a provider hiccup rather than permanent failure.
+        # Retry up to 2 more times with jittered exponential backoff
+        # before surfacing the error.  Auth and payment errors skip
+        # this path (they have their own handlers above).
+        if _is_connection_error(first_err):
+            from agent.retry_utils import jittered_backoff
+            import asyncio as _aio
+            _conn_max_retries = 3  # total attempts including the first
+            for _conn_attempt in range(2, _conn_max_retries + 1):
+                _wait = jittered_backoff(
+                    _conn_attempt, base_delay=2.0, max_delay=30.0)
+                logger.info(
+                    "Auxiliary %s (async): connection error (attempt %d/%d), "
+                    "retrying in %.1fs: %s",
+                    task or "call", _conn_attempt, _conn_max_retries,
+                    _wait, first_err)
+                await _aio.sleep(_wait)
+                try:
+                    return _validate_llm_response(
+                        await client.chat.completions.create(**kwargs), task)
+                except Exception as _retry_err:
+                    if not _is_connection_error(_retry_err):
+                        raise
+                    first_err = _retry_err
+            logger.warning(
+                "Auxiliary %s (async): connection error persisted after "
+                "%d attempts, surfacing: %s",
+                task or "call", _conn_max_retries, first_err)
         raise

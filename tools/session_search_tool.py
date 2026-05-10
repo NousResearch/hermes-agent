@@ -240,7 +240,9 @@ async def _summarize_session(
             # Reasoning-only / empty — let the retry loop handle it
             logging.warning("Session search LLM returned empty content (attempt %d/%d)", attempt + 1, max_retries)
             if attempt < max_retries - 1:
-                await asyncio.sleep(1 * (attempt + 1))
+                from agent.retry_utils import jittered_backoff
+                _wait = jittered_backoff(attempt + 1, base_delay=2.0, max_delay=30.0)
+                await asyncio.sleep(_wait)
                 continue
             return content
         except RuntimeError:
@@ -248,7 +250,12 @@ async def _summarize_session(
             return None
         except Exception as e:
             if attempt < max_retries - 1:
-                await asyncio.sleep(1 * (attempt + 1))
+                from agent.retry_utils import jittered_backoff
+                _wait = jittered_backoff(attempt + 1, base_delay=2.0, max_delay=30.0)
+                logging.warning(
+                    "Session summarization failed (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1, max_retries, _wait, e)
+                await asyncio.sleep(_wait)
             else:
                 logging.warning(
                     "Session summarization failed after %d attempts: %s",

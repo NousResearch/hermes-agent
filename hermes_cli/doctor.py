@@ -658,6 +658,35 @@ def run_doctor(args):
             pass
 
     # =========================================================================
+    # Check: xAI model retirement (May 15, 2026)
+    # =========================================================================
+    print()
+    print(color("◆ xAI Model Retirement (May 15, 2026)", Colors.CYAN, Colors.BOLD))
+
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.xai_retirement import (
+            MIGRATION_GUIDE_URL,
+            find_retired_xai_refs,
+            format_issue,
+        )
+
+        _xai_cfg = load_config()
+        retired_refs = find_retired_xai_refs(_xai_cfg)
+        if not retired_refs:
+            check_ok("No retired xAI models in config")
+        else:
+            for ref in retired_refs:
+                check_warn(format_issue(ref))
+            check_info(f"Migration guide: {MIGRATION_GUIDE_URL}")
+            manual_issues.append(
+                f"Update {len(retired_refs)} retired xAI model reference(s) "
+                f"in config.yaml — see {MIGRATION_GUIDE_URL}"
+            )
+    except Exception as _xai_check_err:
+        check_warn("xAI retirement check skipped", f"({_xai_check_err})")
+
+    # =========================================================================
     # Check: Auth providers
     # =========================================================================
     print()

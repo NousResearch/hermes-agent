@@ -2931,13 +2931,27 @@ class FeishuAdapter(BasePlatformAdapter):
                 text = f"{hint}\n\n{text}" if text else hint
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+
+        # Extract quote (reply-to) context from Feishu message.
+        # Feishu populates the quote field when a user replies with a
+        # native quote (selecting part of a previous message).
+        quote = getattr(message, "quote", None)
+        if quote is not None:
+            quote_id = getattr(quote, "id", None) or getattr(quote, "message_id", None)
+            quote_text = getattr(quote, "text", None)
+        else:
+            quote_id = None
+            quote_text = None
+
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
             or getattr(message, "root_id", None)
+            or quote_id
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        reply_to_text = reply_to_text or quote_text
 
         sender_primary = (
             getattr(sender_id, "open_id", None)

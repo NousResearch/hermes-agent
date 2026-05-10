@@ -736,13 +736,13 @@
         }
         const anchor = lastSelectedId;
         if (!anchor || anchor === toId) {
-          next.has(toId) ? next.delete(toId) : next.add(toId);
+          next.add(toId);
           return next;
         }
         const aIdx = order.indexOf(anchor);
         const bIdx = order.indexOf(toId);
         if (aIdx === -1 || bIdx === -1) {
-          next.has(toId) ? next.delete(toId) : next.add(toId);
+          next.add(toId);
           return next;
         }
         const lo = Math.min(aIdx, bIdx);
@@ -750,6 +750,7 @@
         for (let i = lo; i <= hi; i++) next.add(order[i]);
         return next;
       });
+      setLastSelectedId(toId);
     }, [filteredBoard, lastSelectedId]);
 
     const selectAllVisible = useCallback(function () {
@@ -769,8 +770,13 @@
       if (!filteredBoard || !filteredBoard.columns) return;
       const col = filteredBoard.columns.find(function (c) { return c.name === columnName; });
       if (!col) return;
+      const allSelected = col.tasks && col.tasks.length > 0 && col.tasks.every(function (t) { return selectedIds.has(t.id); });
       const next = new Set(selectedIds);
-      for (const t of col.tasks || []) next.add(t.id);
+      if (allSelected) {
+        for (const t of col.tasks || []) next.delete(t.id);
+      } else {
+        for (const t of col.tasks || []) next.add(t.id);
+      }
       setSelectedIds(next);
       if (col.tasks && col.tasks.length > 0) setLastSelectedId(col.tasks[0].id);
     }, [filteredBoard, selectedIds]);
@@ -781,6 +787,24 @@
       const finalPatch = withCompletionSummary(patch, selectedIds.size, t);
       if (!finalPatch) return;
       const body = Object.assign({ ids: Array.from(selectedIds) }, finalPatch);
+      // Optimistic UI for status moves (same pattern as moveSelected).
+      if (finalPatch.status) {
+        setBoardData(function (b) {
+          if (!b) return b;
+          const moved = [];
+          const columns = b.columns.map(function (col) {
+            const kept = [];
+            for (const t of col.tasks) {
+              if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: finalPatch.status }));
+              else kept.push(t);
+            }
+            return Object.assign({}, col, { tasks: kept });
+          });
+          const dest = columns.find(function (c) { return c.name === finalPatch.status; });
+          if (dest) dest.tasks = moved.concat(dest.tasks);
+          return Object.assign({}, b, { columns });
+        });
+      }
       SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -803,6 +827,7 @@
         .catch(function (e) {
           setError(String(e.message || e));
           setFailedIds(new Set(selectedIds));
+          loadBoard();
         });
     }, [selectedIds, loadBoard, board]);
 

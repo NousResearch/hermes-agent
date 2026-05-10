@@ -1966,19 +1966,36 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model/provider override: if the task specifies its own
+            # model or provider, resolve a fresh credential bundle for that task.
+            # Falls back to the global delegation creds when absent.
+            task_model = t.get("model") or None
+            task_provider = t.get("provider") or None
+            if task_model or task_provider:
+                task_cfg = dict(cfg)
+                if task_model:
+                    task_cfg["model"] = task_model
+                if task_provider:
+                    task_cfg["provider"] = task_provider
+                try:
+                    task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+                except ValueError as exc:
+                    return tool_error(str(exc))
+            else:
+                task_creds = creds
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
                 or creds.get("command"),
@@ -2390,6 +2407,11 @@ DELEGATE_TASK_SCHEMA = {
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
         "2. Batch (parallel): provide 'tasks' array with up to delegation.max_concurrent_children items (default 3, configurable via config.yaml, no hard ceiling). "
         "All run concurrently and results are returned together. Nested delegation requires role='orchestrator' and delegation.max_spawn_depth >= 2.\n\n"
+        "MODEL ROUTING: Each task in 'tasks' accepts optional 'model' and 'provider' fields "
+        "to run that specific subtask on a different model (e.g. route a hard reasoning task "
+        "to 'anthropic/claude-opus-4' via provider='openrouter' while lighter tasks use the "
+        "default). Requires OpenRouter or another multi-model provider. Falls back to "
+        "delegation.model from config.yaml when omitted.\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
@@ -2490,6 +2512,23 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override (e.g. 'anthropic/claude-opus-4', "
+                                "'openai/gpt-4o'). Overrides delegation.model from config.yaml "
+                                "for this task only. Useful when one subtask needs a more capable "
+                                "model while others use the default."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task provider override (e.g. 'openrouter', 'anthropic'). "
+                                "Use together with 'model' when the target model lives on a "
+                                "different provider than the parent. Omit to inherit."
+                            ),
                         },
                     },
                     "required": ["goal"],

@@ -2495,5 +2495,143 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+# =========================================================================
+# Per-task model/provider override
+# =========================================================================
+
+
+class TestPerTaskModelOverride(unittest.TestCase):
+    """Tests that per-task model/provider fields route each subagent correctly."""
+
+    def _make_parent(self):
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "file"]
+        return parent
+
+    def _make_mock_child(self):
+        m = MagicMock()
+        m.run_conversation.return_value = {
+            "final_response": "done", "completed": True,
+            "api_calls": 1, "messages": [],
+        }
+        m._delegate_saved_tool_names = []
+        m._credential_pool = None
+        m.session_prompt_tokens = 0
+        m.session_completion_tokens = 0
+        m.model = "test-model"
+        return m
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_schema_has_model_and_provider_per_task(self, _cfg, _creds):
+        """DELEGATE_TASK_SCHEMA exposes model and provider inside tasks[].items."""
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        task_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+        self.assertIn("model", task_props)
+        self.assertIn("provider", task_props)
+        self.assertEqual(task_props["model"]["type"], "string")
+        self.assertEqual(task_props["provider"]["type"], "string")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_per_task_model_overrides_global_creds(self, mock_cfg, mock_creds):
+        """When a task specifies model='opus', that task's child is built with it."""
+        # Global creds return the default model
+        global_creds = {
+            "model": "default-model", "provider": "openrouter",
+            "base_url": None, "api_key": "key", "api_mode": None,
+        }
+        # Per-task creds (called when task has model override)
+        per_task_creds = {
+            "model": "anthropic/claude-opus-4", "provider": "openrouter",
+            "base_url": None, "api_key": "key", "api_mode": None,
+        }
+        mock_creds.side_effect = [global_creds, per_task_creds]
+
+        parent = self._make_parent()
+        built_models = []
+
+        def _factory(*a, **kw):
+            built_models.append(kw.get("model"))
+            return self._make_mock_child()
+
+        with patch("run_agent.AIAgent", side_effect=_factory):
+            delegate_task(
+                tasks=[
+                    {"goal": "easy task"},
+                    {"goal": "hard task", "model": "anthropic/claude-opus-4"},
+                ],
+                parent_agent=parent,
+            )
+
+        # First task uses global creds, second uses per-task creds
+        self.assertEqual(built_models[0], "default-model")
+        self.assertEqual(built_models[1], "anthropic/claude-opus-4")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_task_without_model_uses_global_creds(self, mock_cfg, mock_creds):
+        """Tasks that omit model use the global delegation creds unchanged."""
+        global_creds = {
+            "model": "global-model", "provider": None,
+            "base_url": None, "api_key": None, "api_mode": None,
+        }
+        mock_creds.return_value = global_creds
+
+        parent = self._make_parent()
+        built_models = []
+
+        def _factory(*a, **kw):
+            built_models.append(kw.get("model"))
+            return self._make_mock_child()
+
+        with patch("run_agent.AIAgent", side_effect=_factory):
+            delegate_task(
+                tasks=[{"goal": "task A"}, {"goal": "task B"}],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(built_models, ["global-model", "global-model"])
+        # _resolve_delegation_credentials called once for global creds only
+        mock_creds.assert_called_once()
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_per_task_provider_triggers_credential_re_resolution(self, mock_cfg, mock_creds):
+        """A per-task provider triggers a second _resolve_delegation_credentials call
+        with the per-task config overlay."""
+        global_creds = {
+            "model": None, "provider": None,
+            "base_url": None, "api_key": None, "api_mode": None,
+        }
+        task_creds = {
+            "model": None, "provider": "anthropic",
+            "base_url": "https://api.anthropic.com/v1", "api_key": "ak",
+            "api_mode": "anthropic_messages",
+        }
+        mock_creds.side_effect = [global_creds, task_creds]
+
+        parent = self._make_parent()
+        built_providers = []
+
+        def _factory(*a, **kw):
+            built_providers.append(kw.get("provider"))
+            return self._make_mock_child()
+
+        with patch("run_agent.AIAgent", side_effect=_factory):
+            delegate_task(
+                tasks=[
+                    {"goal": "default provider task"},
+                    {"goal": "anthropic task", "provider": "anthropic"},
+                ],
+                parent_agent=parent,
+            )
+
+        # Two calls: initial global resolve + one per-task re-resolve
+        self.assertEqual(mock_creds.call_count, 2)
+        # Second child got the anthropic provider
+        self.assertEqual(built_providers[1], "anthropic")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,12 +15,12 @@ data class AuthStartProbeResult(
 )
 
 object Corr3xtAuthClient {
-    const val DEFAULT_BASE_URL = "https://auth.corr3xt.com"
+    const val DEFAULT_BASE_URL = ""
 
     fun normalizeConfiguredBaseUrl(baseUrl: String): String? {
         val candidate = baseUrl.trim()
         if (candidate.isBlank()) {
-            return DEFAULT_BASE_URL
+            return null
         }
 
         val parsed = runCatching { Uri.parse(candidate) }.getOrNull() ?: return null
@@ -49,7 +49,7 @@ object Corr3xtAuthClient {
     }
 
     fun normalizedBaseUrl(baseUrl: String): String {
-        return normalizeConfiguredBaseUrl(baseUrl) ?: DEFAULT_BASE_URL
+        return normalizeConfiguredBaseUrl(baseUrl).orEmpty()
     }
 
     fun buildStartUri(
@@ -58,7 +58,8 @@ object Corr3xtAuthClient {
         state: String,
         languageTag: String = "en",
     ): Uri {
-        val normalizedBaseUrl = normalizedBaseUrl(baseUrl)
+        val normalizedBaseUrl = normalizeConfiguredBaseUrl(baseUrl)
+            ?: throw IllegalArgumentException("Corr3xt base URL is not configured")
         val normalizedLanguageTag = languageTag.trim().ifBlank { "en" }
         return Uri.parse("$normalizedBaseUrl/oauth/start").buildUpon()
             .appendQueryParameter("method", option.id)

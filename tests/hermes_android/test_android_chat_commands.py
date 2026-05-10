@@ -22,7 +22,9 @@ def test_chat_command_router_supports_native_navigation_and_auth_commands():
         '/speak',
     ]:
         assert command in router
-    assert 'chatgpt|claude|gemini|google|email|phone' in router
+    assert 'openrouter|chatgpt|claude|gemini|qwen|zai|google|email|phone' in router
+    assert 'Prepared $method API-key setup in Settings' in router
+    assert 'Configure a reachable Corr3xt URL in Accounts' in router
     assert 'applyProvider' in router
     assert 'applyModel' in router
     assert 'startAuthMethod' in router

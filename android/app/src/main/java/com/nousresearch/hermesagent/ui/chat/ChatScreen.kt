@@ -155,10 +155,9 @@ fun ChatScreen(
     }
 
     fun startAuthMethod(methodId: String): Boolean {
-        val supported = setOf("chatgpt", "claude", "gemini", "google", "email", "phone")
+        val supported = setOf("openrouter", "chatgpt", "claude", "gemini", "qwen", "zai", "google", "email", "phone")
         if (methodId !in supported) return false
-        authViewModel.startAuth(methodId)
-        return true
+        return authViewModel.startAuth(methodId)
     }
 
     val shellActions = remember(strings.language, uiState.isShowingHistory, uiState.messages, uiState.activeConversationTitle) {

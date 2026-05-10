@@ -195,7 +195,10 @@ fun AuthScreen(
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 if (option.supportsBrowserSignIn) {
-                                    Button(onClick = { viewModel.startAuth(option.id) }) {
+                                    Button(
+                                        onClick = { viewModel.startAuth(option.id) },
+                                        enabled = option.browserSignInEnabled,
+                                    ) {
                                         Text(if (option.signedIn) strings.reconnect.ifBlank { "Reconnect" } else strings.signIn.ifBlank { "Sign in" })
                                     }
                                 }

@@ -38,11 +38,13 @@ data class AuthOptionUiState(
     val accountHint: String = "",
     val supportsApiKeySetup: Boolean = false,
     val supportsBrowserSignIn: Boolean = true,
+    val browserSignInEnabled: Boolean = true,
 )
 
 data class AuthUiState(
-    val corr3xtBaseUrl: String = Corr3xtAuthClient.DEFAULT_BASE_URL,
-    val globalStatus: String = "Use Corr3xt to sign into the app; set up providers with secure API keys or tokens.",
+    val corr3xtBaseUrl: String = "",
+    val corr3xtConfigured: Boolean = false,
+    val globalStatus: String = "Configure a reachable Corr3xt URL for app sign-in; providers use secure API keys or tokens in Settings.",
     val pendingMethodLabel: String = "",
     val hasPendingRequest: Boolean = false,
     val apiKeyFallbackMethodId: String = "",
@@ -79,7 +81,14 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveCorr3xtBaseUrl() {
-        val normalized = Corr3xtAuthClient.normalizeConfiguredBaseUrl(_uiState.value.corr3xtBaseUrl)
+        val candidate = _uiState.value.corr3xtBaseUrl.trim()
+        if (candidate.isBlank()) {
+            _uiState.update {
+                it.copy(globalStatus = currentStrings().authConfigureCorr3xtFirst())
+            }
+            return
+        }
+        val normalized = Corr3xtAuthClient.normalizeConfiguredBaseUrl(candidate)
         if (normalized == null) {
             _uiState.update {
                 it.copy(globalStatus = currentStrings().authBaseUrlMustBeValid())
@@ -102,23 +111,31 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 corr3xtBaseUrl = normalized,
+                corr3xtConfigured = true,
                 globalStatus = currentStrings().authSavedBaseUrl(),
             )
         }
     }
 
-    fun startAuth(methodId: String) {
-        val option = AuthCatalog.find(methodId) ?: return
+    fun startAuth(methodId: String): Boolean {
+        val option = AuthCatalog.find(methodId) ?: return false
         if (!option.browserSignInSupported && option.scope == AuthScope.RuntimeProvider) {
             prepareApiKeySetup(methodId)
-            return
+            return true
         }
-        val normalizedBaseUrl = Corr3xtAuthClient.normalizeConfiguredBaseUrl(_uiState.value.corr3xtBaseUrl)
+        val candidateBaseUrl = _uiState.value.corr3xtBaseUrl.trim()
+        if (candidateBaseUrl.isBlank()) {
+            _uiState.update {
+                it.copy(globalStatus = currentStrings().authConfigureCorr3xtFirst())
+            }
+            return false
+        }
+        val normalizedBaseUrl = Corr3xtAuthClient.normalizeConfiguredBaseUrl(candidateBaseUrl)
         if (normalizedBaseUrl == null) {
             _uiState.update {
                 it.copy(globalStatus = currentStrings().authBaseUrlMustBeValid())
             }
-            return
+            return false
         }
 
         val settings = appSettingsStore.load()
@@ -211,6 +228,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        return true
     }
 
     fun prepareApiKeySetup(methodId: String) {
@@ -275,6 +293,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val corr3xtBaseUrl = Corr3xtAuthClient.normalizedBaseUrl(settings.corr3xtBaseUrl)
+        val corr3xtConfigured = corr3xtBaseUrl.isNotBlank()
         val sessions = authSessionStore.loadSessions()
         val sessionsById = sessions.associateBy { it.methodId }
         val options = AuthCatalog.options.map { option ->
@@ -297,6 +316,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 accountHint = listOf(session.displayName, session.email, session.phone)
                     .firstOrNull { it.isNotBlank() }
                     .orEmpty(),
+                browserSignInEnabled = option.scope != AuthScope.AppAccount || corr3xtConfigured,
             )
         }
         val signedInAccounts = options.count { it.signedIn }
@@ -315,11 +335,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             pending != null -> strings.authWaitingCallback(pendingMethodLabel)
             !latestSessionStatus.isNullOrBlank() -> latestSessionStatus
             signedInAccounts > 0 -> strings.authConnectedMethods(signedInAccounts)
+            !corr3xtConfigured -> strings.authConfigureCorr3xtFirst()
             else -> strings.authGlobalStatusDefault()
         }
 
         return AuthUiState(
             corr3xtBaseUrl = corr3xtBaseUrl,
+            corr3xtConfigured = corr3xtConfigured,
             globalStatus = globalStatus,
             pendingMethodLabel = pendingMethodLabel,
             hasPendingRequest = pending != null,

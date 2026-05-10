@@ -71,6 +71,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "metadata": t.metadata or {},
     }
 
 
@@ -294,6 +295,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--metadata", default=None,
+                          help="JSON object for task-level policy metadata. "
+                               "Use significant_work/guardrail_group/guardrail_role "
+                               "to activate hard C/D/E gate enforcement.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
@@ -1030,6 +1035,16 @@ def _cmd_create(args: argparse.Namespace) -> int:
         print(f"kanban: --max-runtime: {exc}", file=sys.stderr)
         return 2
     max_retries = getattr(args, "max_retries", None)
+    metadata = None
+    if getattr(args, "metadata", None):
+        try:
+            metadata = json.loads(args.metadata)
+        except json.JSONDecodeError as exc:
+            print(f"kanban: --metadata must be valid JSON: {exc}", file=sys.stderr)
+            return 2
+        if not isinstance(metadata, dict):
+            print("kanban: --metadata must decode to a JSON object", file=sys.stderr)
+            return 2
     if max_retries is not None and max_retries < 1:
         print(
             f"kanban: --max-retries must be >= 1 (got {max_retries}); "
@@ -1054,6 +1069,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            metadata=metadata,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

@@ -377,12 +377,12 @@ def test_create_with_parents_stays_todo_until_parents_done(kanban_home):
         assert kb.get_task(conn, child).status == "ready"
 
 
-def test_unblock_with_pending_parents_goes_to_todo(kanban_home):
-    """unblock_task must re-gate on parent completion (Fix 3).
+def test_unblock_with_pending_parents_refuses_until_parent_done(kanban_home):
+    """unblock_task must refuse while any parent remains unfinished.
 
-    A task blocked while parents are still in progress must return to
-    'todo' (not 'ready') on unblock. Otherwise the dispatcher will claim
-    it immediately, repeating Bug 2 from the RCA.
+    Keeping a manually blocked child blocked avoids bypassing unfinished
+    upstream gates. The operator/worker can unblock it after the parent is
+    complete, at which point normal ready-state recomputation applies.
     """
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent", assignee="a")
@@ -395,12 +395,12 @@ def test_unblock_with_pending_parents_goes_to_todo(kanban_home):
             "UPDATE tasks SET status='blocked' WHERE id=?", (child,),
         )
         conn.commit()
-        assert kb.unblock_task(conn, child)
-        assert kb.get_task(conn, child).status == "todo"
-        # After parent completes + recompute, the child is ready.
+        assert not kb.unblock_task(conn, child)
+        assert kb.get_task(conn, child).status == "blocked"
+        # After parent completes, the explicit unblock can promote the child.
         kb.claim_task(conn, parent)
         kb.complete_task(conn, parent, result="ok")
-        kb.recompute_ready(conn)
+        assert kb.unblock_task(conn, child)
         assert kb.get_task(conn, child).status == "ready"
 
 

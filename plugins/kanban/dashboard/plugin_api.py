@@ -515,6 +515,7 @@ class CreateTaskBody(BaseModel):
     idempotency_key: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     skills: Optional[list[str]] = None
+    metadata: Optional[dict] = None
 
 
 @router.post("/tasks")
@@ -537,6 +538,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             idempotency_key=payload.idempotency_key,
             max_runtime_seconds=payload.max_runtime_seconds,
             skills=payload.skills,
+            metadata=payload.metadata,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -555,6 +557,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
                 # Probe failure must never block the create itself.
                 pass
         return body
+    except kanban_db.SignificantWorkGuardrailError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
@@ -604,6 +608,13 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         if payload.status is not None:
             s = payload.status
             ok = True
+            if s in ("ready", "todo", "triage"):
+                meta = kanban_db._task_meta(conn, task_id)
+                if kanban_db._guardrail_role(meta) in kanban_db.GATE_ROLES or kanban_db._is_significant(meta):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="guardrail lane/reconciler status cannot be changed directly; use structured completion",
+                    )
             if s == "done":
                 ok = kanban_db.complete_task(
                     conn, task_id,
@@ -676,6 +687,8 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(updated) if updated else None}
+    except kanban_db.SignificantWorkGuardrailError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     finally:
         conn.close()
 
@@ -700,6 +713,14 @@ def _set_status_direct(
             (task_id,),
         ).fetchone()
         if prev is None:
+            return False
+
+        # Guard: direct dashboard status writes cannot reopen or promote
+        # significant-work gate cards. Guardrail lanes/reconcilers must move
+        # through structured completion paths so custody metadata and child
+        # demotion invariants stay authoritative in kanban_db.
+        meta = kanban_db._task_meta(conn, task_id)
+        if kanban_db._guardrail_role(meta) in kanban_db.GATE_ROLES or kanban_db._is_significant(meta):
             return False
 
         # Guard: don't allow promoting to 'ready' unless all parents are done.
@@ -789,6 +810,8 @@ def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     try:
         kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
         return {"ok": True}
+    except kanban_db.SignificantWorkGuardrailError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
@@ -806,6 +829,8 @@ def delete_link(
     try:
         ok = kanban_db.unlink_tasks(conn, parent_id, child_id)
         return {"ok": bool(ok)}
+    except kanban_db.SignificantWorkGuardrailError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     finally:
         conn.close()
 
@@ -852,6 +877,12 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         entry.update(ok=False, error="archive refused")
                 if payload.status is not None and not payload.archive:
                     s = payload.status
+                    if s in ("ready", "todo", "triage"):
+                        meta = kanban_db._task_meta(conn, tid)
+                        if kanban_db._guardrail_role(meta) in kanban_db.GATE_ROLES or kanban_db._is_significant(meta):
+                            entry.update(ok=False, error="guardrail lane/reconciler status cannot be changed directly")
+                            results.append(entry)
+                            continue
                     if s == "done":
                         ok = kanban_db.complete_task(
                             conn, tid,
@@ -867,8 +898,14 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
                             ok = _set_status_direct(conn, tid, "ready")
-                    elif s in ("todo", "running", "triage"):
+                    elif s == "todo":
                         ok = _set_status_direct(conn, tid, s)
+                    elif s == "triage":
+                        ok = _set_status_direct(conn, tid, s)
+                    elif s == "running":
+                        entry.update(ok=False, error="running status requires dispatcher claim_task")
+                        results.append(entry)
+                        continue
                     else:
                         entry.update(ok=False, error=f"unknown status {s!r}")
                         results.append(entry)
@@ -1116,6 +1153,8 @@ def reassign_task_endpoint(
                 ),
             )
         return {"ok": True, "task_id": task_id, "assignee": payload.profile or None}
+    except kanban_db.SignificantWorkGuardrailError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     finally:
         conn.close()
 

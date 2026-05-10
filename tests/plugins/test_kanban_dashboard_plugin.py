@@ -331,6 +331,197 @@ def test_patch_status_running_rejected(client):
     assert statuses.get(t["id"]) != "running"
 
 
+def test_bulk_running_status_rejected(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "bulk x"}).json()["task"]
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [t["id"]], "status": "running"},
+    )
+    assert r.status_code == 200
+    result = r.json()["results"][0]
+    assert result["ok"] is False
+    assert "running" in result["error"]
+
+
+def test_guardrail_lane_direct_patch_reopen_rejected(client):
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn,
+            title="nontrivial work",
+            metadata={"significant_work": True, "guardrail_group": "gate-1"},
+        )
+        codex = kb.create_task(
+            conn,
+            title="Codex lane",
+            assignee="codex-reviewer",
+            parents=[parent],
+            metadata={"guardrail_group": "gate-1", "guardrail_role": "codex_lane"},
+        )
+        kb.complete_task(conn, parent, result="ready")
+        kb.complete_task(
+            conn,
+            codex,
+            metadata={
+                "artifact_commit": "abc123",
+                "findings_artifact": "reviews/codex.md",
+                "model": "gpt-5.5",
+                "verdict": "APPROVE",
+            },
+        )
+    r = client.patch(f"/api/plugins/kanban/tasks/{codex}", json={"status": "todo"})
+    assert r.status_code == 409
+    assert "guardrail" in r.json()["detail"]
+
+
+def test_guardrail_lane_bulk_reopen_rejected(client):
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn,
+            title="nontrivial work",
+            metadata={"significant_work": True, "guardrail_group": "gate-1"},
+        )
+        claude = kb.create_task(
+            conn,
+            title="Claude lane",
+            assignee="claude-reviewer",
+            parents=[parent],
+            metadata={"guardrail_group": "gate-1", "guardrail_role": "claude_lane"},
+        )
+        kb.complete_task(conn, parent, result="ready")
+        kb.complete_task(
+            conn,
+            claude,
+            metadata={
+                "artifact_commit": "abc123",
+                "findings_artifact": "reviews/claude.md",
+                "model": "claude-opus-4-7",
+                "verdict": "APPROVE",
+            },
+        )
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [claude], "status": "triage"},
+    )
+    assert r.status_code == 200
+    result = r.json()["results"][0]
+    assert result["ok"] is False
+    assert "guardrail" in result["error"]
+
+
+def test_guardrail_single_endpoints_return_409_not_500(client):
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn,
+            title="nontrivial work",
+            metadata={"significant_work": True, "guardrail_group": "gate-1"},
+        )
+        codex = kb.create_task(
+            conn,
+            title="Codex lane",
+            assignee="codex-reviewer",
+            parents=[parent],
+            metadata={"guardrail_group": "gate-1", "guardrail_role": "codex_lane"},
+        )
+        claude = kb.create_task(
+            conn,
+            title="Claude lane",
+            assignee="claude-reviewer",
+            parents=[parent],
+            metadata={"guardrail_group": "gate-1", "guardrail_role": "claude_lane"},
+        )
+        recon = kb.create_task(
+            conn,
+            title="Reconcile",
+            assignee="controller",
+            parents=[codex, claude],
+            metadata={"guardrail_group": "gate-1", "guardrail_role": "reconciler"},
+        )
+        kb.complete_task(conn, parent, result="ready")
+    done = client.patch(f"/api/plugins/kanban/tasks/{codex}", json={"status": "done"})
+    assert done.status_code == 409
+    assert "required metadata" in done.json()["detail"]
+    archive = client.patch(f"/api/plugins/kanban/tasks/{codex}", json={"status": "archived"})
+    assert archive.status_code == 409
+    assert "guardrail" in archive.json()["detail"]
+    assign = client.patch(f"/api/plugins/kanban/tasks/{codex}", json={"assignee": "claude-reviewer"})
+    assert assign.status_code == 409
+    assert "codex_lane" in assign.json()["detail"]
+    unlink = client.delete(
+        "/api/plugins/kanban/links",
+        params={"parent_id": codex, "child_id": recon},
+    )
+    assert unlink.status_code == 409
+    assert "guardrail" in unlink.json()["detail"]
+    reassign = client.post(
+        f"/api/plugins/kanban/tasks/{claude}/reassign",
+        json={"profile": "codex-reviewer"},
+    )
+    assert reassign.status_code == 409
+    assert "claude_lane" in reassign.json()["detail"]
+
+
+def test_dashboard_create_invalid_guardrail_task_returns_409_not_500(client):
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn,
+            title="nontrivial work",
+            metadata={"significant_work": True, "guardrail_group": "gate-1"},
+        )
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "direct downstream bypass",
+            "parents": [parent],
+        },
+    )
+    assert r.status_code == 409
+    assert "significant-work" in r.json()["detail"]
+
+
+def test_significant_root_direct_patch_reopen_rejected(client):
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn,
+            title="nontrivial work",
+            metadata={"significant_work": True, "guardrail_group": "gate-1"},
+        )
+        kb.complete_task(conn, parent, result="approved")
+    r = client.patch(f"/api/plugins/kanban/tasks/{parent}", json={"status": "todo"})
+    assert r.status_code == 409
+    assert "guardrail" in r.json()["detail"]
+
+
+def test_significant_root_bulk_reopen_rejected(client):
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn,
+            title="nontrivial work",
+            metadata={"significant_work": True, "guardrail_group": "gate-1"},
+        )
+        kb.complete_task(conn, parent, result="approved")
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [parent], "status": "triage"},
+    )
+    assert r.status_code == 200
+    result = r.json()["results"][0]
+    assert result["ok"] is False
+    assert "guardrail" in result["error"]
+
+
+def test_dashboard_create_malformed_standalone_guardrail_returns_409(client):
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "bad codex lane",
+            "assignee": "codex-reviewer",
+            "metadata": {"guardrail_role": "codex_lane"},
+        },
+    )
+    assert r.status_code == 409
+    assert "guardrail_group" in r.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Comments + Links
 # ---------------------------------------------------------------------------

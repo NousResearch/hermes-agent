@@ -258,6 +258,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "completed_at": t.completed_at,
                     "result": t.result,
                     "current_run_id": t.current_run_id,
+                    "metadata": t.metadata or {},
                 }
 
             def _run_dict(r):
@@ -568,6 +569,11 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(bool_error)
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
+    metadata = args.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return tool_error(
+            f"metadata must be a JSON object, got {type(metadata).__name__}"
+        )
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -602,6 +608,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                metadata=metadata,
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
             new_task = kb.get_task(conn, new_tid)
@@ -1000,6 +1007,15 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "metadata": {
+                "type": "object",
+                "description": (
+                    "Task-level policy metadata. For significant work use "
+                    "significant_work, guardrail_group, guardrail_role "
+                    "(codex_lane, claude_lane, reconciler), or "
+                    "single_controller_acceptable for mechanical waivers."
                 ),
             },
         },

@@ -606,6 +606,7 @@ class Task:
     # ``kanban.failure_limit`` config, and then to ``DEFAULT_FAILURE_LIMIT``.
     # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
     max_retries: Optional[int] = None
+    metadata: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -619,6 +620,14 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        metadata_value: Optional[dict] = None
+        if "metadata" in keys and row["metadata"]:
+            try:
+                parsed = json.loads(row["metadata"])
+                if isinstance(parsed, dict):
+                    metadata_value = parsed
+            except Exception:
+                metadata_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -670,6 +679,7 @@ class Task:
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
             ),
+            metadata=metadata_value,
         )
 
 
@@ -796,7 +806,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
-    max_retries          INTEGER
+    max_retries          INTEGER,
+    -- Structured task-level policy metadata. This is distinct from
+    -- task_runs.metadata (worker handoff facts). Used for hard guardrails
+    -- such as significant-work C/D/E gate roles.
+    metadata             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1074,6 +1088,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # which is the correct default (they keep the global behaviour
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
+    if "metadata" not in cols:
+        # JSON object for task-level policy metadata. Existing tasks are
+        # grandfathered by NULL metadata; guardrails only activate when
+        # significant_work / guardrail_role keys are present.
+        _add_column_if_missing(conn, "tasks", "metadata", "metadata TEXT")
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -1202,6 +1221,326 @@ def _claimer_id() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Significant-work C/D/E guardrails
+# ---------------------------------------------------------------------------
+
+class SignificantWorkGuardrailError(ValueError):
+    """Raised when hard significant-work gate policy is violated."""
+
+
+LANE_ROLES = {"codex_lane", "claude_lane"}
+GATE_ROLES = LANE_ROLES | {"reconciler"}
+REQUIRED_LANE_METADATA = ("artifact_commit", "findings_artifact", "model", "verdict")
+
+
+def _normalise_metadata(metadata: Optional[dict]) -> Optional[dict]:
+    if metadata is None:
+        return None
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be a JSON object / dict")
+    return dict(metadata)
+
+
+def _metadata_json(metadata: Optional[dict]) -> Optional[str]:
+    meta = _normalise_metadata(metadata)
+    return json.dumps(meta, ensure_ascii=False) if meta is not None else None
+
+
+def _task_meta(conn: sqlite3.Connection, task_id: str) -> dict:
+    row = conn.execute("SELECT metadata FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row or not row["metadata"]:
+        return {}
+    try:
+        parsed = json.loads(row["metadata"])
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _guardrail_role(meta: dict) -> Optional[str]:
+    role = meta.get("guardrail_role")
+    return str(role) if role else None
+
+
+def _guardrail_group(meta: dict) -> Optional[str]:
+    group = meta.get("guardrail_group")
+    return str(group) if group else None
+
+
+def _is_significant(meta: dict) -> bool:
+    return bool(meta.get("significant_work"))
+
+
+def _has_single_controller_waiver(meta: dict) -> bool:
+    return meta.get("single_controller_acceptable") is True
+
+
+def _model_family(model: str) -> str:
+    m = (model or "").strip().lower()
+    if not m:
+        return ""
+    if "claude" in m or "anthropic" in m:
+        return "anthropic"
+    if "gpt" in m or "openai" in m or "codex" in m or re.match(r"^o\d", m):
+        return "openai"
+    if "gemini" in m or "google" in m:
+        return "google"
+    if "kimi" in m or "moonshot" in m:
+        return "moonshot"
+    if "qwen" in m or "dashscope" in m:
+        return "qwen"
+    return m.split("/", 1)[0].split(":", 1)[0]
+
+
+def _latest_completed_run_info(conn: sqlite3.Connection, task_id: str) -> tuple[dict, Optional[str]]:
+    row = conn.execute(
+        """
+        SELECT metadata, profile FROM task_runs
+         WHERE task_id = ?
+           AND outcome = 'completed'
+           AND metadata IS NOT NULL
+         ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+         LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return {}, None
+    metadata = {}
+    if row["metadata"]:
+        try:
+            parsed = json.loads(row["metadata"])
+            metadata = parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            metadata = {}
+    return metadata, row["profile"]
+
+
+def _latest_completed_metadata(conn: sqlite3.Connection, task_id: str) -> dict:
+    metadata, _profile = _latest_completed_run_info(conn, task_id)
+    return metadata
+
+
+def _guardrail_parents(conn: sqlite3.Connection, child_id: str) -> list[tuple[str, dict]]:
+    rows = conn.execute(
+        "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+        (child_id,),
+    ).fetchall()
+    return [(r["parent_id"], _task_meta(conn, r["parent_id"])) for r in rows]
+
+
+def _lane_significant_parent_ids(conn: sqlite3.Connection, lane_id: str, group: str) -> set[str]:
+    subjects: set[str] = set()
+    for pid, meta in _guardrail_parents(conn, lane_id):
+        if _is_significant(meta) and _guardrail_group(meta) == group:
+            subjects.add(pid)
+    return subjects
+
+
+def _task_assignee(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return row["assignee"] if row else None
+
+
+def _task_status(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return row["status"] if row else None
+
+
+def _validate_lane_assignee(role: str, assignee: Optional[str]) -> None:
+    value = (assignee or "").strip().lower()
+    if not value:
+        raise SignificantWorkGuardrailError(
+            "guardrail review lanes require explicit assignee profiles"
+        )
+    if role == "codex_lane" and not any(token in value for token in ("codex", "openai", "gpt")):
+        raise SignificantWorkGuardrailError(
+            "codex_lane must be assigned to a Codex/OpenAI worker profile"
+        )
+    if role == "claude_lane" and not any(token in value for token in ("claude", "anthropic")):
+        raise SignificantWorkGuardrailError(
+            "claude_lane must be assigned to a Claude/Anthropic worker profile"
+        )
+
+
+def _validate_guardrail_link(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    child_metadata: Optional[dict] = None,
+    child_assignee: Optional[str] = None,
+) -> None:
+    parent_meta = _task_meta(conn, parent_id)
+    child_meta = child_metadata if child_metadata is not None else _task_meta(conn, child_id)
+    parent_role = _guardrail_role(parent_meta)
+    child_role = _guardrail_role(child_meta)
+    parent_group = _guardrail_group(parent_meta)
+    child_group = _guardrail_group(child_meta)
+
+    if _is_significant(parent_meta) and not parent_group:
+        raise SignificantWorkGuardrailError(
+            "significant-work tasks require a non-empty guardrail_group"
+        )
+
+    if _is_significant(parent_meta) and not _has_single_controller_waiver(parent_meta):
+        if child_role not in LANE_ROLES or child_group != parent_group:
+            raise SignificantWorkGuardrailError(
+                "significant-work direct downstream is blocked: create Codex "
+                "and Claude review lanes in the same guardrail_group, or set "
+                "single_controller_acceptable=true for mechanical work"
+            )
+
+    if child_role in LANE_ROLES:
+        if _is_significant(parent_meta) and _task_status(conn, child_id) == "done":
+            raise SignificantWorkGuardrailError(
+                "completed guardrail lane cannot be linked to significant work after the fact"
+            )
+        _validate_lane_assignee(
+            child_role,
+            child_assignee if child_assignee is not None else _task_assignee(conn, child_id),
+        )
+
+    if parent_role in LANE_ROLES:
+        if not parent_group:
+            raise SignificantWorkGuardrailError(
+                "guardrail review lanes require a non-empty guardrail_group"
+            )
+        if child_role != "reconciler" or child_group != parent_group:
+            raise SignificantWorkGuardrailError(
+                "review lane cannot feed direct downstream work; downstream "
+                "must depend on a reconciler in the same guardrail_group"
+            )
+
+
+def _validate_reconciler_shape(
+    conn: sqlite3.Connection,
+    task_id: str,
+    child_meta: dict,
+    parent_ids_for_new_task: Optional[Iterable[str]] = None,
+) -> None:
+    if _guardrail_role(child_meta) != "reconciler":
+        return
+    group = _guardrail_group(child_meta)
+    if not group:
+        raise SignificantWorkGuardrailError(
+            "reconciler requires a non-empty guardrail_group"
+        )
+    if parent_ids_for_new_task is None:
+        parents = _guardrail_parents(conn, task_id)
+    else:
+        parents = [(pid, _task_meta(conn, pid)) for pid in parent_ids_for_new_task]
+    lane_ids: dict[str, list[str]] = {"codex_lane": [], "claude_lane": []}
+    for pid, meta in parents:
+        role = _guardrail_role(meta)
+        if role in LANE_ROLES:
+            lane_ids[role].append(pid)
+    if len(lane_ids["codex_lane"]) != 1:
+        raise SignificantWorkGuardrailError(
+            "reconciler must depend on exactly one codex_lane parent"
+        )
+    if len(lane_ids["claude_lane"]) != 1:
+        raise SignificantWorkGuardrailError(
+            "reconciler must depend on exactly one claude_lane parent"
+        )
+    roles = {"codex_lane": lane_ids["codex_lane"][0], "claude_lane": lane_ids["claude_lane"][0]}
+    for _pid, meta in parents:
+        if _guardrail_role(meta) in LANE_ROLES and _guardrail_group(meta) != group:
+            raise SignificantWorkGuardrailError(
+                "reconciler and review lanes must share the same guardrail_group"
+            )
+    codex_subjects = _lane_significant_parent_ids(conn, roles["codex_lane"], group)
+    claude_subjects = _lane_significant_parent_ids(conn, roles["claude_lane"], group)
+    if not (codex_subjects & claude_subjects):
+        raise SignificantWorkGuardrailError(
+            "reconciler review lanes must share the same significant parent"
+        )
+
+
+def _validate_guardrail_completion(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+) -> None:
+    task_meta = _task_meta(conn, task_id)
+    role = _guardrail_role(task_meta)
+    if role not in GATE_ROLES:
+        return
+    group = _guardrail_group(task_meta)
+    if not group:
+        raise SignificantWorkGuardrailError(
+            "guardrail_role tasks require a non-empty guardrail_group before completion"
+        )
+    handoff = _normalise_metadata(metadata) or {}
+    if role in LANE_ROLES:
+        missing = [k for k in REQUIRED_LANE_METADATA if not handoff.get(k)]
+        if missing:
+            raise SignificantWorkGuardrailError(
+                "review lane completion missing required metadata: " + ", ".join(missing)
+            )
+        return
+
+    _validate_reconciler_shape(conn, task_id, task_meta)
+    missing = [k for k in ("artifact_commit", "findings_artifact", "verdict") if not handoff.get(k)]
+    if missing:
+        raise SignificantWorkGuardrailError(
+            "reconciler completion missing required metadata: " + ", ".join(missing)
+        )
+    parents = _guardrail_parents(conn, task_id)
+    by_role = {_guardrail_role(meta): pid for pid, meta in parents}
+    for lane_name in ("codex_lane", "claude_lane"):
+        status = _task_status(conn, by_role[lane_name])
+        if status != "done":
+            raise SignificantWorkGuardrailError(
+                f"{lane_name} current status must be done before reconciler completion"
+            )
+    codex_meta, codex_profile = _latest_completed_run_info(conn, by_role["codex_lane"])
+    claude_meta, claude_profile = _latest_completed_run_info(conn, by_role["claude_lane"])
+    for lane_name, lane_meta in (("codex_lane", codex_meta), ("claude_lane", claude_meta)):
+        missing = [k for k in REQUIRED_LANE_METADATA if not lane_meta.get(k)]
+        if missing:
+            raise SignificantWorkGuardrailError(
+                f"{lane_name} has not completed with required metadata: " + ", ".join(missing)
+            )
+    if not codex_profile or not claude_profile or codex_profile == claude_profile:
+        raise SignificantWorkGuardrailError(
+            "codex_lane and claude_lane must complete under different worker profiles"
+        )
+    if _model_family(str(codex_meta.get("model", ""))) == _model_family(str(claude_meta.get("model", ""))):
+        raise SignificantWorkGuardrailError(
+            "codex_lane and claude_lane must use different model families"
+        )
+    if _model_family(str(codex_meta.get("model", ""))) != "openai":
+        raise SignificantWorkGuardrailError(
+            "codex_lane must be reviewed by an OpenAI/Codex model family"
+        )
+    if _model_family(str(claude_meta.get("model", ""))) != "anthropic":
+        raise SignificantWorkGuardrailError(
+            "claude_lane must be reviewed by an Anthropic/Claude model family"
+        )
+    if str(codex_meta.get("artifact_commit")) != str(claude_meta.get("artifact_commit")):
+        raise SignificantWorkGuardrailError(
+            "artifact_commit mismatch between review lanes"
+        )
+    if str(handoff.get("artifact_commit")) != str(codex_meta.get("artifact_commit")):
+        raise SignificantWorkGuardrailError(
+            "reconciler artifact_commit must match reviewed artifact_commit"
+        )
+    if str(codex_meta.get("verdict", "")).upper() != str(claude_meta.get("verdict", "")).upper():
+        raise SignificantWorkGuardrailError(
+            "verdict disagreement between review lanes"
+        )
+    if str(codex_meta.get("verdict", "")).upper() != "APPROVE":
+        raise SignificantWorkGuardrailError(
+            "non-approving review consensus blocks downstream work"
+        )
+    if str(handoff.get("verdict", "")).upper() != "APPROVE":
+        raise SignificantWorkGuardrailError(
+            "reconciler verdict must be APPROVE before downstream work can proceed"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Task creation / mutation
 # ---------------------------------------------------------------------------
 
@@ -1231,6 +1570,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    metadata: Optional[dict] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1265,6 +1605,7 @@ def create_task(
             f"got {workspace_kind!r}"
         )
     parents = tuple(p for p in parents if p)
+    task_metadata = _normalise_metadata(metadata)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -1339,10 +1680,32 @@ def create_task(
                     initial_status = "triage"
                 else:
                     initial_status = "ready"
-                    if parents:
-                        missing = _find_missing_parents(conn, parents)
-                        if missing:
-                            raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
+                if _is_significant(task_metadata or {}) and not _guardrail_group(task_metadata or {}):
+                    raise SignificantWorkGuardrailError(
+                        "significant-work tasks require a non-empty guardrail_group"
+                    )
+                if _guardrail_role(task_metadata or {}) in GATE_ROLES and not _guardrail_group(task_metadata or {}):
+                    raise SignificantWorkGuardrailError(
+                        "guardrail_role tasks require a non-empty guardrail_group"
+                    )
+                if _guardrail_role(task_metadata or {}) in LANE_ROLES:
+                    _validate_lane_assignee(_guardrail_role(task_metadata or {}) or "", assignee)
+                if parents:
+                    missing = _find_missing_parents(conn, parents)
+                    if missing:
+                        raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
+                    for pid in parents:
+                        _validate_guardrail_link(
+                            conn,
+                            pid,
+                            task_id,
+                            child_metadata=task_metadata or {},
+                            child_assignee=assignee,
+                        )
+                    _validate_reconciler_shape(
+                        conn, task_id, task_metadata or {}, parents
+                    )
+                    if not triage:
                         # If any parent is not yet done, we're todo.
                         rows = conn.execute(
                             "SELECT status FROM tasks WHERE id IN "
@@ -1351,12 +1714,6 @@ def create_task(
                         ).fetchall()
                         if any(r["status"] != "done" for r in rows):
                             initial_status = "todo"
-                # Even in triage mode we still need to validate parent ids
-                # so the eventual link rows don't dangle.
-                if triage and parents:
-                    missing = _find_missing_parents(conn, parents)
-                    if missing:
-                        raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
                 conn.execute(
                     """
@@ -1364,8 +1721,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         tenant, idempotency_key, max_runtime_seconds, skills,
-                        max_retries
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        max_retries, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1383,6 +1740,7 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        _metadata_json(task_metadata),
                     ),
                 )
                 for pid in parents:
@@ -1400,6 +1758,7 @@ def create_task(
                         "parents": list(parents),
                         "tenant": tenant,
                         "skills": list(skills_list) if skills_list else None,
+                        "metadata": task_metadata,
                     },
                 )
             return task_id
@@ -1478,6 +1837,9 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 f"cannot reassign {task_id}: currently running (claimed). "
                 "Wait for completion or reclaim the stale lock first."
             )
+        role = _guardrail_role(_task_meta(conn, task_id))
+        if role in LANE_ROLES:
+            _validate_lane_assignee(role, profile)
         if row["assignee"] != profile:
             # The retry guard is scoped to the task/profile combination. A
             # human reassigning the task is an explicit recovery action, so the
@@ -1508,6 +1870,30 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             raise ValueError(
                 f"linking {parent_id} -> {child_id} would create a cycle"
             )
+        _validate_guardrail_link(conn, parent_id, child_id)
+        parent_meta = _task_meta(conn, parent_id)
+        parent_role = _guardrail_role(parent_meta)
+        child_status = _task_status(conn, child_id)
+        if child_status == "running" and (_is_significant(parent_meta) or parent_role in GATE_ROLES):
+            raise SignificantWorkGuardrailError(
+                "running downstream work cannot be linked under an unfinished guardrail gate"
+            )
+        if child_status == "done" and (_is_significant(parent_meta) or parent_role in GATE_ROLES):
+            raise SignificantWorkGuardrailError(
+                "completed downstream work cannot be retroactively linked under a guardrail gate"
+            )
+        candidate_parents = [r["parent_id"] for r in conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+            (child_id,),
+        ).fetchall()]
+        if parent_id not in candidate_parents:
+            candidate_parents.append(parent_id)
+        _validate_reconciler_shape(
+            conn,
+            child_id,
+            _task_meta(conn, child_id),
+            parent_ids_for_new_task=candidate_parents,
+        )
         conn.execute(
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
@@ -1552,6 +1938,17 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
 
 def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
     with write_txn(conn):
+        parent_meta = _task_meta(conn, parent_id)
+        child_meta = _task_meta(conn, child_id)
+        if (
+            _is_significant(parent_meta)
+            or _guardrail_role(parent_meta) in GATE_ROLES
+            or _is_significant(child_meta)
+            or _guardrail_role(child_meta) in GATE_ROLES
+        ):
+            raise SignificantWorkGuardrailError(
+                "cannot unlink guardrail dependency; create a new explicit gate/waiver instead"
+            )
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
             (parent_id, child_id),
@@ -2337,6 +2734,7 @@ def complete_task(
         verified_cards = []
 
     with write_txn(conn):
+        _validate_guardrail_completion(conn, task_id, metadata)
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -2451,6 +2849,10 @@ def edit_completed_task_result(
         ).fetchone()
         if not row or row["status"] != "done":
             return False
+        if metadata is not None and _guardrail_role(_task_meta(conn, task_id)) in GATE_ROLES:
+            raise SignificantWorkGuardrailError(
+                "completed guardrail review metadata is immutable; rerun the lane instead"
+            )
         conn.execute(
             "UPDATE tasks SET result = ? WHERE id = ?",
             (result, task_id),
@@ -2573,7 +2975,15 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'blocked'",
             (task_id,),
         ).fetchone()
-        if stale and stale["current_run_id"]:
+        if not stale:
+            return False
+        parent_rows = conn.execute(
+            "SELECT t.status FROM tasks t JOIN task_links l ON l.parent_id = t.id WHERE l.child_id = ?",
+            (task_id,),
+        ).fetchall()
+        if parent_rows and any(r["status"] != "done" for r in parent_rows):
+            return False
+        if stale["current_run_id"]:
             conn.execute(
                 """
                 UPDATE task_runs
@@ -2699,6 +3109,11 @@ def specify_triage_task(
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
+        meta = _task_meta(conn, task_id)
+        if _is_significant(meta) or _guardrail_role(meta) in GATE_ROLES:
+            raise SignificantWorkGuardrailError(
+                "cannot archive guardrail/significant-work task; create an explicit superseding gate instead"
+            )
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "

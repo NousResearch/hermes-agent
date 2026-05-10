@@ -1512,7 +1512,12 @@ def _cprint(text: str):
     # fails we fall back to a direct print so the line isn't lost.
     def _schedule():
         try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            # prompt_toolkit 3.0.52+ returns an Awaitable; fire-and-forget
+            # is intentional here — the callback runs on the event loop.
+            import warnings as _w
+            with _w.catch_warnings():
+                _w.filterwarnings("ignore", "coroutine.*was never awaited", RuntimeWarning)
+                run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
         except Exception:
             try:
                 _pt_print(_PT_ANSI(text))
@@ -5830,6 +5835,7 @@ class HermesCLI:
     def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
         """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
         import threading
+        import warnings
         from hermes_cli.curses_ui import curses_single_select
 
         result = [None]
@@ -5848,7 +5854,12 @@ class HermesCLI:
             self._status_bar_visible = False
             self._app.invalidate()
             try:
-                run_in_terminal(_pick)
+                # prompt_toolkit 3.0.52+ returns an Awaitable from
+                # run_in_terminal; we intentionally fire-and-forget here
+                # because the callback runs on the event loop thread.
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", "coroutine.*was never awaited", RuntimeWarning)
+                    run_in_terminal(_pick)
             finally:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
@@ -5859,6 +5870,8 @@ class HermesCLI:
 
     def _prompt_text_input(self, prompt_text: str) -> str | None:
         """Prompt for free-text input safely inside or outside prompt_toolkit."""
+        import warnings
+
         result = [None]
 
         def _ask():
@@ -5873,7 +5886,12 @@ class HermesCLI:
             self._status_bar_visible = False
             self._app.invalidate()
             try:
-                run_in_terminal(_ask)
+                # prompt_toolkit 3.0.52+ returns an Awaitable from
+                # run_in_terminal; we intentionally fire-and-forget here
+                # because the callback runs on the event loop thread.
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", "coroutine.*was never awaited", RuntimeWarning)
+                    run_in_terminal(_ask)
             finally:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
@@ -11302,6 +11320,7 @@ class HermesCLI:
                 event.app.invalidate()
                 return
             import signal as _sig
+            import warnings
             from prompt_toolkit.application import run_in_terminal
             from hermes_cli.skin_engine import get_active_skin
             agent_name = get_active_skin().get_branding("agent_name", "Hermes Agent")
@@ -11309,7 +11328,11 @@ class HermesCLI:
             def _suspend():
                 os.write(1, msg.encode())
                 os.kill(0, _sig.SIGTSTP)
-            run_in_terminal(_suspend)
+            # prompt_toolkit 3.0.52+ returns an Awaitable; fire-and-forget
+            # is intentional here — the callback runs on the event loop.
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", "coroutine.*was never awaited", RuntimeWarning)
+                run_in_terminal(_suspend)
 
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search).

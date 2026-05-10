@@ -1825,6 +1825,7 @@ def run_conversation(
                     "does not support multimodal",
                     "does not support vision",
                     "model does not support image",
+                    "no endpoints found that support image",
                     # ChatGPT-account Codex backend
                     # (https://chatgpt.com/backend-api/codex) rejects
                     # data:image/...base64 URLs in input_image fields

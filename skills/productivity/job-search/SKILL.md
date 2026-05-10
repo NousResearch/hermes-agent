@@ -79,6 +79,8 @@ Keep under 500 words.
 
 **Cron output location:** `/opt/data/cron/output/041c2bde2ba9/` (latest run: `YYYY-MM-DD_HH-MM-SS.md`). Parse the "## Response" section for the actual job report. The "## Prompt" section is the skill attachment and can be skipped.
 
+**Wiki update requirement:** Each daily job report should update the static HTML page `/opt/data/hermes-pages/wiki/career-opportunities.html` and deploy via Cloudflare Pages direct upload. It should also update `/opt/data/hermes-pages/wiki/business-opportunities.html` with outside-the-box product/business/acquisition/consulting ideas discovered during the search. Do NOT regenerate the wiki from markdown. Copy `/opt/data/hermes-pages/wiki` to `/opt/data/hermes-pages-files/wiki`, then run `export PATH=/opt/data/.nvm/bin:$PATH && /opt/data/.npm-global/bin/wrangler pages deploy /opt/data/hermes-pages-files --project-name hermes-pages --branch main --commit-dirty=true`. Public pages: `https://hermes-pages-d55.pages.dev/wiki/career-opportunities` and `https://hermes-pages-d55.pages.dev/wiki/business-opportunities`.
+
 ## Company Deep-Dive Workflow
 
 1. Identify target companies (commute <30 min from home)

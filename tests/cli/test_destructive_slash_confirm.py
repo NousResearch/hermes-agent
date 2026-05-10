@@ -150,3 +150,45 @@ def test_gate_default_true_when_config_missing():
     # treated as on despite the config error.  If the gate had been off
     # this would have returned 'once' without consulting the prompt.
     assert result is None
+
+
+def test_prompt_text_input_uses_direct_input_off_main_thread():
+    from cli import HermesCLI
+
+    app = SimpleNamespace(invalidate=lambda: None)
+    self_ = SimpleNamespace(_app=app, _status_bar_visible=True)
+
+    with patch("cli.threading.current_thread", return_value=object()), patch(
+        "cli.threading.main_thread", return_value=object()
+    ), patch("builtins.input", return_value="  1  ") as mock_input, patch(
+        "prompt_toolkit.application.run_in_terminal"
+    ) as mock_run_in_terminal:
+        result = _bound(HermesCLI._prompt_text_input, self_)("Choice: ")
+
+    assert result == "1"
+    mock_input.assert_called_once_with("Choice: ")
+    mock_run_in_terminal.assert_not_called()
+
+
+def test_prompt_text_input_uses_run_in_terminal_on_main_thread():
+    from cli import HermesCLI
+
+    app = SimpleNamespace(invalidate=lambda: None)
+    self_ = SimpleNamespace(_app=app, _status_bar_visible=True)
+
+    sentinel = object()
+
+    def _fake_run_in_terminal(func):
+        func()
+        return sentinel
+
+    with patch("cli.threading.current_thread", return_value=sentinel), patch(
+        "cli.threading.main_thread", return_value=sentinel
+    ), patch("builtins.input", return_value="  2  ") as mock_input, patch(
+        "prompt_toolkit.application.run_in_terminal", side_effect=_fake_run_in_terminal
+    ) as mock_run_in_terminal:
+        result = _bound(HermesCLI._prompt_text_input, self_)("Choice: ")
+
+    assert result == "2"
+    mock_input.assert_called_once_with("Choice: ")
+    mock_run_in_terminal.assert_called_once()

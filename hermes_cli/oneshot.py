@@ -332,6 +332,10 @@ def _run_agent(
     agent.suppress_status_output = True
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
+    # Force non-streaming path.  Without this, _use_streaming stays True
+    # even with no stream consumers — the response content is emitted as
+    # deltas into the void and chat() returns "" (fixes #22975).
+    agent._disable_streaming = True
 
     return agent.chat(prompt) or ""
 

@@ -350,6 +350,23 @@ class TestResolveDeliveryTarget:
 
         assert _resolve_delivery_targets({"deliver": []}) == []
 
+    def test_whatsapp_deliver_resolves_home_channel(self, monkeypatch):
+        """deliver='whatsapp' must resolve via WHATSAPP_HOME_CHANNEL (#22997).
+
+        Prior to this fix, 'whatsapp' was absent from _HOME_TARGET_ENV_VARS so
+        _resolve_home_env_var returned '' and delivery was silently dropped.
+        """
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "15551234567@s.whatsapp.net")
+        job = {"id": "wa-test", "name": "wa-test", "deliver": "whatsapp"}
+
+        targets = _resolve_delivery_targets(job)
+
+        assert len(targets) == 1, f"expected 1 target, got {targets}"
+        assert targets[0]["platform"] == "whatsapp"
+        assert targets[0]["chat_id"] == "15551234567@s.whatsapp.net"
+
 
 class TestRoutingIntents:
     """``all`` routing intent expands at fire time."""

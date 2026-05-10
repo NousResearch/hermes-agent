@@ -83,7 +83,13 @@ class ContextoMemoryProvider(MemoryProvider):
         base_url = os.environ.get("CONTEXTO_BASE_URL", "http://localhost:4010")
         self._client = ContextoClient(base_url=base_url)
         self._agent_slug = kwargs.get("agent_identity") or "hermes"
-        self._user_id = kwargs.get("user_id") or None
+        # Prefer the gateway-supplied platform user_id (Telegram, Discord, etc.).
+        # In CLI sessions there is none, so fall back to the agent slug itself —
+        # this gives the contexto extractor a stable identity to anchor first-
+        # person language to, which prevents the extractor from emitting bare
+        # "User" / "I" subjects (or worse, drifting toward whichever named
+        # entity is most salient in the conversation context).
+        self._user_id = kwargs.get("user_id") or self._agent_slug
         self._agent_context = kwargs.get("agent_context") or "primary"
         # Only the primary agent registers the slug and writes — subagents,
         # cron, and flush share the parent's slug but must not ingest (their

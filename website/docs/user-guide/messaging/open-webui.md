@@ -35,7 +35,7 @@ Open WebUI talks to Hermes server-to-server, so you do not need `API_SERVER_CORS
 If you want Hermes + Open WebUI wired together locally with a reusable launcher, run:
 
 ```bash
-cd ~/.hermes/hermes-agent
+cd /path/to/hermes-agent
 bash scripts/setup_open_webui.sh
 ```
 

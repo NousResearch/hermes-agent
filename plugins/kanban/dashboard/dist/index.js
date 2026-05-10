@@ -675,14 +675,15 @@
         } else {
           setFailedIds(new Set());
         }
-        clearSelected();
+        setSelectedIds(new Set());
+        setLastSelectedId(null);
         loadBoard();
       }).catch(function (err) {
         setError(`Move failed: ${err.message || err}`);
         setFailedIds(new Set(selectedIds));
         loadBoard();
       });
-    }, [selectedIds, loadBoard, clearSelected, board]);
+    }, [selectedIds, loadBoard, board]);
 
     const createTask = useCallback(function (body) {
       return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
@@ -792,14 +793,15 @@
           } else {
             setFailedIds(new Set());
           }
-          clearSelected();
+          setSelectedIds(new Set());
+          setLastSelectedId(null);
           loadBoard();
         })
         .catch(function (e) {
           setError(String(e.message || e));
           setFailedIds(new Set(selectedIds));
         });
-    }, [selectedIds, loadBoard, clearSelected, board]);
+    }, [selectedIds, loadBoard, board]);
 
     // --- board switching ----------------------------------------------------
     const switchBoard = useCallback(function (nextSlug) {
@@ -1803,7 +1805,7 @@
       }
       el.addEventListener("hermes-kanban:drop", onTouchDrop);
       return function () { el.removeEventListener("hermes-kanban:drop", onTouchDrop); };
-    }, [props.column.name, props.onMove]);
+    }, [props.column.name, props.onMove, props.selectedIds, props.onMoveSelected]);
 
     const handleDragOver = function (e) {
       e.preventDefault();

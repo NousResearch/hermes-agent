@@ -5597,6 +5597,34 @@ class HermesCLI:
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 
+    def _handle_sessions_command(self) -> None:
+        """Handle /sessions — list and browse saved sessions."""
+        # Fix for Issue #22951: /sessions unknown command in classic REPL mode
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
+            return
+
+        try:
+            sessions = self._session_db.list_sessions()
+        except Exception as exc:
+            _cprint(f"  Error reading sessions: {exc}")
+            return
+
+        if not sessions:
+            _cprint("  No saved sessions yet. Sessions are created automatically as you chat.")
+            return
+
+        try:
+            from hermes_cli.main import _session_browse_picker
+            selected = _session_browse_picker(sessions)
+        except Exception as exc:
+            _cprint(f"  Error browsing sessions: {exc}")
+            return
+
+        if selected is not None:
+            self._relaunch(session_id=selected)
+
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy.
 
@@ -6922,6 +6950,8 @@ class HermesCLI:
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "sessions":
+            self._handle_sessions_command()
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "gquota":

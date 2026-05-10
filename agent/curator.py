@@ -899,9 +899,12 @@ def _build_rename_summary(
           • flaky-thing — pruned (stale)
           • old-utility → spreadsheet-ops
         full report: hermes curator status
+        keep an umbrella stable: hermes curator pin document-tools
 
     Cap is 10 entries so a 50-skill consolidation doesn't blow up
-    agent.log; the full list is always in REPORT.md.
+    agent.log; the full list is always in REPORT.md. The pin hint only
+    appears when at least one consolidation produced an umbrella worth
+    pinning (pruned-only runs skip it).
     """
     after_by_name = {r.get("name"): r for r in after_report if isinstance(r, dict)}
     after_names = set(after_by_name.keys())
@@ -950,6 +953,17 @@ def _build_rename_summary(
     if total > SHOW:
         lines.append(f"  … and {total - SHOW} more")
     lines.append("full report: hermes curator status")
+    # Pin hint — only surface it when there's actually a destination skill
+    # worth pinning. The umbrella skills that absorbed content are the natural
+    # candidates: pinning one tells future curator runs to leave it alone.
+    # Pruned-only runs don't get this hint (nothing surviving to pin).
+    if consolidated:
+        umbrellas = sorted({e.get("into") for e in consolidated if e.get("into")})
+        if umbrellas:
+            example = umbrellas[0]
+            lines.append(
+                f"keep an umbrella stable: hermes curator pin {example}"
+            )
     return "\n".join(lines)
 
 

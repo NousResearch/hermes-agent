@@ -1,6 +1,6 @@
 import type { ThemeColors } from './theme.js'
 
-const RICH_RE = /\[(?:bold\s+)?(?:dim\s+)?(#(?:[0-9a-fA-F]{3,8}))\]([\s\S]*?)(\[\/\])/g
+const RICH_RE = /\[(?:bold\s+)?(?:dim\s+)?(#(?:[0-9a-fA-F]{3,8}))(?:\s+on\s+(#(?:[0-9a-fA-F]{3,8})))?\]([\s\S]*?)(\[\/\])/g
 
 export function parseRichMarkup(markup: string): Line[] {
   const lines: Line[] = []
@@ -9,7 +9,7 @@ export function parseRichMarkup(markup: string): Line[] {
     const trimmed = raw.trimEnd()
 
     if (!trimmed) {
-      lines.push(['', ' '])
+      lines.push([['', ' ']])
 
       continue
     }
@@ -17,27 +17,30 @@ export function parseRichMarkup(markup: string): Line[] {
     const matches = [...trimmed.matchAll(RICH_RE)]
 
     if (!matches.length) {
-      lines.push(['', trimmed])
+      lines.push([['', trimmed]])
 
       continue
     }
 
     let cursor = 0
+    const segments: Segment[] = []
 
     for (const m of matches) {
       const before = trimmed.slice(cursor, m.index)
 
       if (before) {
-        lines.push(['', before])
+        segments.push(['', before])
       }
 
-      lines.push([m[1]!, m[2]!])
+      segments.push(m[2] ? [m[1]!, m[3]!, m[2]!] : [m[1]!, m[3]!])
       cursor = m.index! + m[0].length
     }
 
     if (cursor < trimmed.length) {
-      lines.push(['', trimmed.slice(cursor)])
+      segments.push(['', trimmed.slice(cursor)])
     }
+
+    lines.push(segments)
   }
 
   return lines
@@ -76,7 +79,7 @@ const CADUC_GRADIENT = [2, 2, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 3, 3, 3] as const
 const colorize = (art: string[], gradient: readonly number[], c: ThemeColors): Line[] => {
   const p = [c.primary, c.accent, c.border, c.muted]
 
-  return art.map((text, i) => [p[gradient[i]!] ?? c.muted, text])
+  return art.map((text, i) => [[p[gradient[i]!] ?? c.muted, text]])
 }
 
 export const LOGO_WIDTH = 98
@@ -88,6 +91,7 @@ export const logo = (c: ThemeColors, customLogo?: string): Line[] =>
 export const caduceus = (c: ThemeColors, customHero?: string): Line[] =>
   customHero ? parseRichMarkup(customHero) : colorize(CADUCEUS_ART, CADUC_GRADIENT, c)
 
-export const artWidth = (lines: Line[]) => lines.reduce((m, [, t]) => Math.max(m, t.length), 0)
+export const artWidth = (lines: Line[]) => lines.reduce((m, line) => Math.max(m, line.reduce((n, segment) => n + segment[1].length, 0)), 0)
 
-type Line = [string, string]
+export type Segment = [string, string] | [string, string, string]
+export type Line = Segment[]

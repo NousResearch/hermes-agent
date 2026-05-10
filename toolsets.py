@@ -131,6 +131,18 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
+
+    "tool_backpack": {
+        "description": "Compact gateway for selecting hidden runtime tools",
+        "tools": ["tool_backpack"],
+        "includes": []
+    },
+
+    "skill_backpack": {
+        "description": "Compact gateway for selecting hidden skills from the local Skill Backpack tree",
+        "tools": ["skill_backpack"],
+        "includes": []
+    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",

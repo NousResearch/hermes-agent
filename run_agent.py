@@ -161,6 +161,7 @@ from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.backpack_advisor import BACKPACK_GATEWAY_GUIDANCE, build_backpack_candidate_hints
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -5329,6 +5330,9 @@ class AIAgent:
             from agent.prompt_builder import COMPUTER_USE_GUIDANCE
             prompt_parts.append(COMPUTER_USE_GUIDANCE)
 
+        if {"tool_backpack", "skill_backpack"} & set(self.valid_tool_names):
+            prompt_parts.append(BACKPACK_GATEWAY_GUIDANCE)
+
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
             prompt_parts.append(nous_subscription_prompt)
@@ -9838,6 +9842,41 @@ class AIAgent:
             parent_agent=self,
         )
 
+    def _activate_tool_backpack_selection(self, function_result: str) -> None:
+        """Add schemas for tools selected through ``tool_backpack``.
+
+        The API tool schema list is fixed per model request, so a backpack
+        selection must update the next request's schema list before the model
+        can call the selected tool directly.
+        """
+        try:
+            payload = json.loads(function_result)
+        except Exception:
+            return
+        if not isinstance(payload, dict) or payload.get("status") != "ok":
+            return
+
+        selected = []
+        if isinstance(payload.get("tool"), str):
+            selected.append(payload["tool"])
+        tools = payload.get("tools")
+        if isinstance(tools, list):
+            selected.extend(tool for tool in tools if isinstance(tool, str))
+        selected = [tool for tool in selected if tool not in self.valid_tool_names]
+        if not selected:
+            return
+
+        try:
+            from tools.registry import registry
+            new_defs = registry.get_definitions(set(selected), quiet=True)
+        except Exception:
+            return
+        if not new_defs:
+            return
+
+        self.tools.extend(new_defs)
+        self.valid_tool_names.update(tool["function"]["name"] for tool in new_defs)
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
@@ -9915,13 +9954,16 @@ class AIAgent:
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
         else:
-            return handle_function_call(
+            result = handle_function_call(
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
             )
+            if function_name == "tool_backpack":
+                self._activate_tool_backpack_selection(result)
+            return result
 
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
@@ -10656,6 +10698,9 @@ class AIAgent:
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
+            if function_name == "tool_backpack" and not _execution_blocked:
+                self._activate_tool_backpack_selection(function_result)
+
             if isinstance(function_result, str):
                 result_preview = function_result if self.verbose_logging else (
                     function_result[:200] if len(function_result) > 200 else function_result
@@ -11314,6 +11359,17 @@ class AIAgent:
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
 
+        _backpack_candidate_hints = ""
+        if {"tool_backpack", "skill_backpack"} & set(self.valid_tool_names):
+            try:
+                _backpack_candidate_hints = build_backpack_candidate_hints(
+                    original_user_message if isinstance(original_user_message, str) else "",
+                    set(self.valid_tool_names),
+                    limit=5,
+                )
+            except Exception as exc:
+                logger.debug("Backpack candidate hint generation failed: %s", exc)
+
         # Main conversation loop
         api_call_count = 0
         final_response = None
@@ -11525,6 +11581,8 @@ class AIAgent:
                             _injections.append(_fenced)
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
+                    if _backpack_candidate_hints:
+                        _injections.append(_backpack_candidate_hints)
                     if _injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import type { Line } from '../banner.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
@@ -27,12 +28,16 @@ function InlineLoader({ label, t }: { label: string; t: Theme }) {
   )
 }
 
-export function ArtLines({ lines }: { lines: [string, string][] }) {
+export function ArtLines({ lines }: { lines: Line[] }) {
   return (
     <>
-      {lines.map(([c, text], i) => (
-        <Text color={c} key={i}>
-          {text}
+      {lines.map((line, i) => (
+        <Text key={i}>
+          {line.map(([c, text, bg], j) => (
+            <Text backgroundColor={bg || undefined} color={c || undefined} key={j}>
+              {text}
+            </Text>
+          ))}
         </Text>
       ))}
     </>

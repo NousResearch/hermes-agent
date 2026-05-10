@@ -217,6 +217,29 @@ class TestSyncSkills:
         assert (skills_dir / "old-skill" / "SKILL.md").exists()
         assert (skills_dir / "category" / "DESCRIPTION.md").exists()
 
+    def test_skill_backpack_only_config_skips_local_skill_seeding(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        backpack_root = tmp_path / "skill-backpack-tree"
+        backpack_root.mkdir()
+
+        with self._patches(bundled, skills_dir, manifest_file), patch(
+            "tools.skills_sync.load_config",
+            return_value={
+                "skills": {
+                    "skill_backpack_enabled": True,
+                    "skill_backpack_root": str(backpack_root),
+                }
+            },
+        ):
+            result = sync_skills(quiet=True)
+
+        assert result["copied"] == []
+        assert result["updated"] == []
+        assert result["skipped_reason"] == "skill_backpack_only"
+        assert not skills_dir.exists()
+
     def test_fresh_install_records_origin_hashes(self, tmp_path):
         """After fresh install, manifest should have v2 format with hashes."""
         bundled = self._setup_bundled(tmp_path)

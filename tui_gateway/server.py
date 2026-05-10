@@ -1403,9 +1403,27 @@ def _session_info(agent) -> dict:
     except Exception:
         pass
     try:
-        from hermes_cli.banner import get_available_skills
+        tool_names = {
+            t.get("function", {}).get("name")
+            for t in (getattr(agent, "tools", []) or [])
+            if isinstance(t, dict)
+        }
+        if "skill_backpack" in tool_names:
+            from tools.skill_backpack import skill_backpack
 
-        info["skills"] = get_available_skills()
+            payload = json.loads(skill_backpack({"request": "index"}))
+            skills = payload.get("skills") if isinstance(payload, dict) else None
+            if isinstance(skills, list):
+                names = [
+                    str(row[1])
+                    for row in skills
+                    if isinstance(row, list) and len(row) > 1 and row[1]
+                ]
+                info["skills"] = {"skill_backpack": names}
+        else:
+            from hermes_cli.banner import get_available_skills
+
+            info["skills"] = get_available_skills()
     except Exception:
         pass
     try:
@@ -4268,6 +4286,22 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
 
 
+def _skill_backpack_enabled_for_cli() -> bool:
+    try:
+        cfg = _load_cfg()
+    except Exception:
+        return False
+    try:
+        from hermes_cli.tools_config import _get_platform_tools
+
+        return "skill_backpack" in _get_platform_tools(
+            cfg, "cli", include_default_mcp_servers=False
+        )
+    except Exception:
+        toolsets = (cfg.get("platform_toolsets") or {}).get("cli") or []
+        return "skill_backpack" in {str(toolset) for toolset in toolsets}
+
+
 @method("commands.catalog")
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata for the TUI — categorized, no aliases."""
@@ -4338,15 +4372,16 @@ def _(rid, params: dict) -> dict:
                 warning = f"quick_commands discovery unavailable: {e}"
 
         skill_count = 0
-        try:
-            from agent.skill_commands import scan_skill_commands
+        if not _skill_backpack_enabled_for_cli():
+            try:
+                from agent.skill_commands import scan_skill_commands
 
-            for k, info in sorted(scan_skill_commands().items()):
-                d = str(info.get("description", "Skill"))
-                all_pairs.append([k, d[:120] + ("…" if len(d) > 120 else "")])
-                skill_count += 1
-        except Exception as e:
-            warning = f"skill discovery unavailable: {e}"
+                for k, info in sorted(scan_skill_commands().items()):
+                    d = str(info.get("description", "Skill"))
+                    all_pairs.append([k, d[:120] + ("…" if len(d) > 120 else "")])
+                    skill_count += 1
+            except Exception as e:
+                warning = f"skill discovery unavailable: {e}"
 
         for cat in cat_order:
             categories.append({"name": cat, "pairs": cat_map[cat]})
@@ -4489,29 +4524,30 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
 
-    try:
-        from agent.skill_commands import (
-            scan_skill_commands,
-            build_skill_invocation_message,
-        )
-
-        cmds = scan_skill_commands()
-        key = f"/{name}"
-        if key in cmds:
-            msg = build_skill_invocation_message(
-                key, arg, task_id=session.get("session_key", "") if session else ""
+    if not _skill_backpack_enabled_for_cli():
+        try:
+            from agent.skill_commands import (
+                scan_skill_commands,
+                build_skill_invocation_message,
             )
-            if msg:
-                return _ok(
-                    rid,
-                    {
-                        "type": "skill",
-                        "message": msg,
-                        "name": cmds[key].get("name", name),
-                    },
+
+            cmds = scan_skill_commands()
+            key = f"/{name}"
+            if key in cmds:
+                msg = build_skill_invocation_message(
+                    key, arg, task_id=session.get("session_key", "") if session else ""
                 )
-    except Exception:
-        pass
+                if msg:
+                    return _ok(
+                        rid,
+                        {
+                            "type": "skill",
+                            "message": msg,
+                            "name": cmds[key].get("name", name),
+                        },
+                    )
+        except Exception:
+            pass
 
     # ── Commands that queue messages onto _pending_input in the CLI ───
     # In the TUI the slash worker subprocess has no reader for that queue,
@@ -5090,10 +5126,15 @@ def _(rid, params: dict) -> dict:
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import to_plain_text
 
-        from agent.skill_commands import get_skill_commands
+        if _skill_backpack_enabled_for_cli():
+            skill_commands_provider = lambda: {}
+        else:
+            from agent.skill_commands import get_skill_commands
+
+            skill_commands_provider = lambda: get_skill_commands()
 
         completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: get_skill_commands()
+            skill_commands_provider=skill_commands_provider
         )
         doc = Document(text, len(text))
         items = [

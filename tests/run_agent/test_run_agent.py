@@ -958,6 +958,115 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
+    def test_includes_backpack_gateway_guidance_without_full_index_when_gateway_available(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("tool_backpack", "skill_backpack"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            prompt = agent._build_system_prompt()
+
+        assert "Tool Backpack index:" not in prompt
+        assert "Backpack candidate hints" in prompt
+        assert "tool_backpack" in prompt
+        assert "skill_backpack" in prompt
+
+    def test_backpack_candidate_hints_are_injected_into_current_user_message_only(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("tool_backpack", "skill_backpack"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "run_agent.build_backpack_candidate_hints",
+                return_value="Backpack candidate hints:\n1. tool.read_file - use tool_backpack select read_file",
+            ),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.return_value = _mock_response(content="done")
+
+        result = agent.run_conversation("Read README.md")
+
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        sent_user = next(msg for msg in sent_messages if msg.get("role") == "user")
+        assert sent_user["content"].startswith("Read README.md")
+        assert "Backpack candidate hints:" in sent_user["content"]
+        assert "tool.read_file" in sent_user["content"]
+        assert agent._cached_system_prompt is not None
+        assert "tool.read_file" not in agent._cached_system_prompt
+
+    def test_empty_backpack_candidate_hints_do_not_modify_current_user_message(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("tool_backpack", "skill_backpack"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("run_agent.build_backpack_candidate_hints", return_value=""),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.return_value = _mock_response(content="hello")
+
+        result = agent.run_conversation("你好")
+
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        sent_user = next(msg for msg in sent_messages if msg.get("role") == "user")
+        assert sent_user["content"] == "你好"
+
+    def test_tool_backpack_selection_adds_direct_tool_schema(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("tool_backpack"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert "search_files" not in agent.valid_tool_names
+        agent._activate_tool_backpack_selection(
+            '{"status":"ok","decision":"select_tool","tool":"search_files"}'
+        )
+        assert "search_files" in agent.valid_tool_names
+        assert any(tool["function"]["name"] == "search_files" for tool in agent.tools)
+
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
         toolset_map = {

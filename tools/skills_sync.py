@@ -27,6 +27,7 @@ import os
 import shutil
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from hermes_cli.config import load_config
 from typing import Dict, List, Tuple
 from utils import atomic_replace
 
@@ -48,6 +49,15 @@ def _get_bundled_dir() -> Path:
     if env_override:
         return Path(env_override)
     return Path(__file__).parent.parent / "skills"
+
+
+def _skill_backpack_only_enabled() -> bool:
+    try:
+        skills_config = (load_config().get("skills") or {})
+    except Exception:
+        return False
+    root = skills_config.get("skill_backpack_root")
+    return skills_config.get("skill_backpack_enabled") is True and bool(root)
 
 
 def _read_manifest() -> Dict[str, str]:
@@ -182,6 +192,17 @@ def sync_skills(quiet: bool = False) -> dict:
         dict with keys: copied (list), updated (list), skipped (int),
                         user_modified (list), cleaned (list), total_bundled (int)
     """
+    if _skill_backpack_only_enabled():
+        return {
+            "copied": [],
+            "updated": [],
+            "skipped": 0,
+            "user_modified": [],
+            "cleaned": [],
+            "total_bundled": 0,
+            "skipped_reason": "skill_backpack_only",
+        }
+
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {

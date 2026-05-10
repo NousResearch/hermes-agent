@@ -245,6 +245,13 @@ describe('fromSkin', () => {
     expect(brand.prompt).toBe('$')
   })
 
+  it('uses skin avatar symbol as the TUI brand icon', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    const { brand } = fromSkin({}, { avatar_symbol: '⚗', prompt_symbol: '>' })
+
+    expect(brand.icon).toBe('⚗')
+  })
+
   it('normalizes skin prompt symbols to trimmed single-line text', async () => {
     const { DEFAULT_THEME, fromSkin } = await importThemeWithCleanEnv()
 

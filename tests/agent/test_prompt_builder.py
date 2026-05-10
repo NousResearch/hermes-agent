@@ -532,6 +532,29 @@ class TestBuildContextFilesPrompt:
         assert "If SOUL.md is present" not in result
         assert "## SOUL.md" not in result
 
+    def test_loads_interesting_md_from_hermes_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "interesting.md").write_text("Likes concise science notes.", encoding="utf-8")
+
+        result = build_context_files_prompt(cwd=str(tmp_path))
+
+        assert "interesting.md" in result
+        assert "Likes concise science notes." in result
+
+    def test_interesting_md_loads_even_when_soul_is_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
+        (hermes_home / "interesting.md").write_text("Stable profile interests.", encoding="utf-8")
+
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Stable profile interests." in result
+        assert "Be concise and friendly." not in result
+
     def test_empty_soul_md_adds_nothing(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
         hermes_home = tmp_path / "hermes_home"
@@ -1178,6 +1201,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 

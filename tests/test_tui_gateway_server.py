@@ -2525,6 +2525,81 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     assert info["mcp_servers"] == fake_status
 
 
+def test_session_info_uses_skill_backpack_inventory_when_available(monkeypatch):
+    fake_backpack = types.ModuleType("tools.skill_backpack")
+    fake_backpack.skill_backpack = lambda _args: json.dumps(
+        {
+            "status": "ok",
+            "skills": [
+                [1, "backpack-one", "first"],
+                [2, "backpack-two", "second"],
+            ],
+        }
+    )
+    monkeypatch.setitem(sys.modules, "tools.skill_backpack", fake_backpack)
+
+    fake_banner = types.ModuleType("hermes_cli.banner")
+    fake_banner.get_available_skills = lambda: {"legacy": ["legacy-skill"]}
+    monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+
+    agent = types.SimpleNamespace(
+        tools=[{"function": {"name": "skill_backpack"}}],
+        model="",
+    )
+    info = server._session_info(agent)
+
+    assert info["skills"] == {"skill_backpack": ["backpack-one", "backpack-two"]}
+
+
+def test_commands_catalog_hides_direct_skill_commands_when_skill_backpack_enabled(monkeypatch):
+    fake_skill_commands = types.ModuleType("agent.skill_commands")
+    fake_skill_commands.scan_skill_commands = lambda: {
+        "/legacy-skill": {"description": "legacy direct skill"}
+    }
+    monkeypatch.setitem(sys.modules, "agent.skill_commands", fake_skill_commands)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"platform_toolsets": {"cli": ["skill_backpack"]}})
+
+    resp = server.handle_request({"id": "1", "method": "commands.catalog", "params": {}})
+
+    assert resp["result"]["skill_count"] == 0
+    assert ["/legacy-skill", "legacy direct skill"] not in resp["result"]["pairs"]
+
+
+def test_complete_slash_hides_direct_skill_commands_when_skill_backpack_enabled(monkeypatch):
+    calls = []
+    fake_skill_commands = types.ModuleType("agent.skill_commands")
+
+    def fake_get_skill_commands():
+        calls.append(True)
+        return {"/legacy-skill": {"description": "legacy direct skill"}}
+
+    fake_skill_commands.get_skill_commands = fake_get_skill_commands
+    monkeypatch.setitem(sys.modules, "agent.skill_commands", fake_skill_commands)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"platform_toolsets": {"cli": ["skill_backpack"]}})
+
+    resp = server.handle_request({"id": "1", "method": "complete.slash", "params": {"text": "/legacy"}})
+
+    assert calls == []
+    assert all(item["display"] != "/legacy-skill" for item in resp["result"]["items"])
+
+
+def test_command_dispatch_hides_direct_skill_commands_when_skill_backpack_enabled(monkeypatch):
+    fake_skill_commands = types.ModuleType("agent.skill_commands")
+    fake_skill_commands.scan_skill_commands = lambda: {
+        "/legacy-skill": {"name": "legacy-skill", "description": "legacy direct skill"}
+    }
+    fake_skill_commands.build_skill_invocation_message = lambda *_args, **_kwargs: "invoke legacy"
+    monkeypatch.setitem(sys.modules, "agent.skill_commands", fake_skill_commands)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"platform_toolsets": {"cli": ["skill_backpack"]}})
+
+    resp = server.handle_request(
+        {"id": "1", "method": "command.dispatch", "params": {"name": "legacy-skill", "arg": ""}}
+    )
+
+    assert "error" in resp
+    assert "not a quick/plugin/skill command" in resp["error"]["message"]
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

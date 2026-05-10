@@ -575,7 +575,7 @@ export function fromSkin(
 
     brand: {
       name: branding.agent_name ?? d.brand.name,
-      icon: d.brand.icon,
+      icon: branding.avatar_symbol ?? d.brand.icon,
       prompt: cleanPromptSymbol(branding.prompt_symbol, d.brand.prompt),
       welcome: branding.welcome ?? d.brand.welcome,
       goodbye: branding.goodbye ?? d.brand.goodbye,

@@ -1306,6 +1306,29 @@ def load_soul_md() -> Optional[str]:
         return None
 
 
+def load_interesting_md() -> Optional[str]:
+    """Load profile-local interesting.md from HERMES_HOME, if present."""
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading interesting.md: %s", e)
+
+    interesting_path = get_hermes_home() / "interesting.md"
+    if not interesting_path.exists():
+        return None
+    try:
+        content = interesting_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _scan_context_content(content, "interesting.md")
+        result = f"## interesting.md\n\n{content}"
+        return _truncate_content(result, "interesting.md")
+    except Exception as e:
+        logger.debug("Could not read interesting.md from %s: %s", interesting_path, e)
+        return None
+
+
 def _load_hermes_md(cwd_path: Path) -> str:
     """.hermes.md / HERMES.md — walk to git root."""
     hermes_md_path = _find_hermes_md(cwd_path)
@@ -1427,6 +1450,10 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
         soul_content = load_soul_md()
         if soul_content:
             sections.append(soul_content)
+
+    interesting_content = load_interesting_md()
+    if interesting_content:
+        sections.append(interesting_content)
 
     if not sections:
         return ""

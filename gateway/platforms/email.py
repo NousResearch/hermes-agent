@@ -65,6 +65,73 @@ MAX_MESSAGE_LENGTH = 50_000
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
+
+def _split_msg_ids(value: str) -> List[str]:
+    """Extract RFC Message-ID tokens from a References/In-Reply-To header."""
+    if not value:
+        return []
+    # Message-IDs are angle-bracketed.  Fall back to whitespace tokens so tests
+    # and non-compliant clients still get deterministic threading metadata.
+    ids = re.findall(r"<[^>]+>", value)
+    if ids:
+        return ids
+    return [part for part in value.split() if part]
+
+
+def _normalize_email_subject(subject: str) -> str:
+    """Return a Gmail-threading-friendly base subject for Hermes replies.
+
+    Gmail is tolerant of a single ``Re:`` prefix, but large status text such as
+    ``Cronjob Response: ... (job_id: ...)`` in the subject makes replies split
+    into separate conversations.  Keep task/user subject text stable and put
+    operational details in the body instead.
+    """
+    subject = (subject or "Hermes Agent").strip() or "Hermes Agent"
+    # Collapse repeated reply/forward prefixes from common clients.
+    while True:
+        new = re.sub(r"^\s*(?:(?:re|fw|fwd)\s*:\s*)+", "", subject, flags=re.IGNORECASE).strip()
+        if new == subject:
+            break
+        subject = new
+    # Drop Hermes cron/system status suffixes that should live in the body.
+    subject = re.sub(r"\s*[-–—:]\s*Cronjob Response:.*$", "", subject, flags=re.IGNORECASE).strip()
+    subject = re.sub(r"\s*\(job_id:\s*[^)]*\)\s*$", "", subject, flags=re.IGNORECASE).strip()
+    return subject or "Hermes Agent"
+
+
+def _reply_subject(subject: str) -> str:
+    """Return a single Re: subject with the stable base subject."""
+    return f"Re: {_normalize_email_subject(subject)}"
+
+
+def _email_thread_root(message_id: str, in_reply_to: str = "", references: str = "") -> str:
+    """Choose a stable per-email-conversation key.
+
+    Use the first References id when present (root of the RFC thread), else the
+    first In-Reply-To id, else this message's id.  This lets Hermes keep
+    separate email conversations from the same sender isolated, and gives cron
+    origin delivery a reusable reply anchor.
+    """
+    ref_ids = _split_msg_ids(references)
+    if ref_ids:
+        return ref_ids[0]
+    reply_ids = _split_msg_ids(in_reply_to)
+    if reply_ids:
+        return reply_ids[0]
+    return message_id or ""
+
+
+def _append_unique_msg_id_chain(existing: str, *ids: str) -> str:
+    """Build a de-duplicated References header preserving existing order."""
+    out: List[str] = []
+    seen = set()
+    for value in (existing, *ids):
+        for msg_id in _split_msg_ids(value or ""):
+            if msg_id not in seen:
+                out.append(msg_id)
+                seen.add(msg_id)
+    return " ".join(out)
+
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID command identifying this client.
 
@@ -400,6 +467,7 @@ class EmailAdapter(BasePlatformAdapter):
                     subject = _decode_header_value(msg.get("Subject", "(no subject)"))
                     message_id = msg.get("Message-ID", "")
                     in_reply_to = msg.get("In-Reply-To", "")
+                    references = msg.get("References", "")
                     # Skip automated/noreply senders before any processing
                     msg_headers = dict(msg.items())
                     if _is_automated_sender(sender_addr, msg_headers):
@@ -415,6 +483,7 @@ class EmailAdapter(BasePlatformAdapter):
                         "subject": subject,
                         "message_id": message_id,
                         "in_reply_to": in_reply_to,
+                        "references": references,
                         "body": body,
                         "attachments": attachments,
                         "date": msg.get("Date", ""),
@@ -473,11 +542,22 @@ class EmailAdapter(BasePlatformAdapter):
             if att["type"] == "image":
                 msg_type = MessageType.PHOTO
 
-        # Store thread context for reply threading
-        self._thread_context[sender_addr] = {
-            "subject": subject,
-            "message_id": msg_data["message_id"],
+        # Store thread context for reply threading.  Key by sender + stable
+        # RFC thread root so two independent email conversations from the same
+        # user do not overwrite each other's subject/message-id.
+        references = msg_data.get("references", "")
+        message_id = msg_data["message_id"]
+        in_reply_to = msg_data.get("in_reply_to", "")
+        thread_id = _email_thread_root(message_id, in_reply_to, references)
+        ctx = {
+            "subject": _normalize_email_subject(subject),
+            "message_id": message_id,
+            "references": _append_unique_msg_id_chain(references, in_reply_to, message_id),
+            "thread_id": thread_id,
         }
+        self._thread_context[sender_addr] = ctx  # legacy fallback
+        if thread_id:
+            self._thread_context[f"{sender_addr}\0{thread_id}"] = ctx
 
         source = self.build_source(
             chat_id=sender_addr,
@@ -485,16 +565,19 @@ class EmailAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=sender_addr,
             user_name=msg_data["sender_name"] or sender_addr,
+            thread_id=thread_id or None,
+            chat_topic=ctx["subject"],
+            message_id=message_id or None,
         )
 
         event = MessageEvent(
             text=text or "(empty email)",
             message_type=msg_type,
             source=source,
-            message_id=msg_data["message_id"],
+            message_id=message_id,
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=msg_data["in_reply_to"] or None,
+            reply_to_message_id=in_reply_to or None,
         )
 
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
@@ -511,7 +594,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, chat_id, content, reply_to, metadata
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -523,24 +606,36 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        # Thread context for reply
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
+        # Thread context for reply.  Prefer explicit metadata thread_id (from
+        # the triggering email SessionSource / cron origin), then legacy
+        # per-sender context for backward compatibility.
+        metadata = metadata or {}
+        thread_id = metadata.get("thread_id")
+        ctx = {}
+        if thread_id:
+            ctx = self._thread_context.get(f"{to_addr}\0{thread_id}", {})
+        if not ctx:
+            ctx = self._thread_context.get(to_addr, {})
+        subject = _reply_subject(ctx.get("subject", metadata.get("subject") or "Hermes Agent"))
         msg["Subject"] = subject
 
-        # Threading headers
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        # Threading headers.  Gmail uses Message-ID/In-Reply-To/References plus
+        # stable subject/senders to decide conversation membership.  Keep the
+        # full References chain when we have it instead of replacing it with a
+        # single id.
+        original_msg_id = reply_to_msg_id or ctx.get("message_id") or thread_id
+        references = _append_unique_msg_id_chain(ctx.get("references", ""), original_msg_id or "")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+            if references:
+                msg["References"] = references
 
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"

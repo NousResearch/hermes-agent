@@ -593,6 +593,56 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["Subject"], "Re: Project question")
             self.assertFalse(send_call["Subject"].startswith("Re: Re:"))
 
+    def test_reply_strips_cron_status_from_subject(self):
+        """Cron/job metadata belongs in the body, not the Gmail thread subject."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "处理邮箱问题 - Cronjob Response: MailArchive import milestone watchdog (job_id: abc)",
+            "message_id": "<original@test.com>",
+        }
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", "Progress update.", None)
+
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Re: 处理邮箱问题")
+            self.assertNotIn("Cronjob Response", send_call["Subject"])
+            self.assertNotIn("job_id", send_call["Subject"])
+
+    def test_thread_context_is_keyed_by_email_thread_root(self):
+        """Independent email threads from the same sender keep separate reply anchors."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com\0<root-a@test.com>"] = {
+            "subject": "Topic A",
+            "message_id": "<latest-a@test.com>",
+            "references": "<root-a@test.com> <latest-a@test.com>",
+        }
+        adapter._thread_context["user@test.com\0<root-b@test.com>"] = {
+            "subject": "Topic B",
+            "message_id": "<latest-b@test.com>",
+            "references": "<root-b@test.com> <latest-b@test.com>",
+        }
+        adapter._thread_context["user@test.com"] = adapter._thread_context["user@test.com\0<root-b@test.com>"]
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email(
+                "user@test.com",
+                "Reply to A.",
+                None,
+                metadata={"thread_id": "<root-a@test.com>"},
+            )
+
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Re: Topic A")
+            self.assertEqual(send_call["In-Reply-To"], "<latest-a@test.com>")
+            self.assertEqual(send_call["References"], "<root-a@test.com> <latest-a@test.com>")
+
     def test_no_thread_context_uses_default_subject(self):
         """Without thread context, subject should be 'Re: Hermes Agent'."""
         adapter = self._make_adapter()
@@ -981,6 +1031,37 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertIn("Date", send_call)
             self.assertEqual(send_call["To"], "user@test.com")
             self.assertEqual(send_call["From"], "hermes@test.com")
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    })
+    def test_send_email_tool_threads_with_stable_origin_subject(self):
+        """Standalone cron email delivery should keep RFC headers and subject stable."""
+        import asyncio
+        from tools.send_message_tool import _send_email
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            result = asyncio.run(
+                _send_email(
+                    {"address": "hermes@test.com", "smtp_host": "smtp.test.com"},
+                    "user@test.com",
+                    "Cronjob Response: watchdog\n(job_id: abc)\n\nDone",
+                    thread_id="<root@test.com>",
+                    subject="处理邮箱问题 - Cronjob Response: noisy (job_id: abc)",
+                )
+            )
+
+            self.assertTrue(result["success"])
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Re: 处理邮箱问题")
+            self.assertEqual(send_call["In-Reply-To"], "<root@test.com>")
+            self.assertEqual(send_call["References"], "<root@test.com>")
 
     @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "hermes@test.com",

@@ -511,7 +511,16 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    email_subject=None,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -705,7 +714,13 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
-            result = await _send_email(pconfig.extra, chat_id, chunk)
+            result = await _send_email(
+                pconfig.extra,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                subject=email_subject,
+            )
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
         elif platform == Platform.MATTERMOST:
@@ -1352,8 +1367,13 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return _error(f"Signal send failed: {e}")
 
 
-async def _send_email(extra, chat_id, message):
-    """Send via SMTP (one-shot, no persistent connection needed)."""
+async def _send_email(extra, chat_id, message, thread_id=None, subject=None):
+    """Send via SMTP (one-shot, no persistent connection needed).
+
+    When ``thread_id`` is an RFC Message-ID from an email-origin cron job, use
+    it as the reply anchor so Gmail can keep the delivery in the original
+    conversation instead of creating a new standalone "Hermes Agent" thread.
+    """
     import smtplib
     from email.mime.text import MIMEText
     from email.utils import formatdate
@@ -1373,7 +1393,17 @@ async def _send_email(extra, chat_id, message):
         msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
         msg["To"] = chat_id
-        msg["Subject"] = "Hermes Agent"
+        if subject:
+            try:
+                from gateway.platforms.email import _reply_subject
+                msg["Subject"] = _reply_subject(subject) if thread_id else str(subject)
+            except Exception:
+                msg["Subject"] = f"Re: {subject}" if thread_id else str(subject)
+        else:
+            msg["Subject"] = "Re: Hermes Agent" if thread_id else "Hermes Agent"
+        if thread_id:
+            msg["In-Reply-To"] = str(thread_id)
+            msg["References"] = str(thread_id)
         msg["Date"] = formatdate(localtime=True)
 
         server = smtplib.SMTP(smtp_host, smtp_port)

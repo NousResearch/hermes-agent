@@ -433,11 +433,50 @@ class TestRoutingIntents:
 
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
+        for env_name in (
+            "SLACK_HOME_CHANNEL",
+            "EMAIL_HOME_ADDRESS",
+            "SMS_HOME_NUMBER",
+            "MATRIX_HOME_ROOM",
+            "MATTERMOST_HOME_CHANNEL",
+            "HOMEASSISTANT_HOME_TARGET",
+            "DINGTALK_HOME_TARGET",
+            "WECOM_HOME_TARGET",
+            "WHATSAPP_HOME_NUMBER",
+            "SIGNAL_HOME_NUMBER",
+            "FEISHU_HOME_TARGET",
+            "WEIXIN_HOME_CHANNEL",
+            "QQBOT_HOME_CHANNEL",
+            "BLUEBUBBLES_HOME_TARGET",
+            "YUANBAO_HOME_TARGET",
+        ):
+            monkeypatch.delenv(env_name, raising=False)
 
         for token in ("ALL", "All", "all"):
             targets = _resolve_delivery_targets({"deliver": token, "origin": None})
             platforms = sorted(t["platform"].lower() for t in targets)
             assert platforms == ["discord", "telegram"], f"token={token!r} -> {platforms}"
+
+    def test_origin_email_target_preserves_thread_id_and_subject(self):
+        """Email-origin cron jobs carry RFC reply anchor and stable subject forward."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        targets = _resolve_delivery_targets({
+            "deliver": "origin",
+            "origin": {
+                "platform": "email",
+                "chat_id": "user@test.com",
+                "thread_id": "<root@test.com>",
+                "chat_topic": "处理邮箱问题",
+            },
+        })
+
+        assert targets == [{
+            "platform": "email",
+            "chat_id": "user@test.com",
+            "thread_id": "<root@test.com>",
+            "subject": "处理邮箱问题",
+        }]
 
 
 class TestDeliverResultWrapping:
@@ -490,6 +529,34 @@ class TestDeliverResultWrapping:
 
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
         assert "Cronjob Response: abc-123" in sent_content
+
+    def test_email_origin_delivery_passes_subject_to_standalone_sender(self):
+        """Standalone email cron delivery should receive the origin subject for Gmail threading."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.EMAIL: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "email-job",
+                "name": "watchdog",
+                "deliver": "origin",
+                "origin": {
+                    "platform": "email",
+                    "chat_id": "user@test.com",
+                    "thread_id": "<root@test.com>",
+                    "chat_topic": "处理邮箱问题",
+                },
+            }
+            _deliver_result(job, "Done.")
+
+        send_mock.assert_called_once()
+        assert send_mock.call_args.kwargs["thread_id"] == "<root@test.com>"
+        assert send_mock.call_args.kwargs["email_subject"] == "处理邮箱问题"
 
     def test_delivery_skips_wrapping_when_config_disabled(self):
         """When cron.wrap_response is false, deliver raw content without header/footer."""

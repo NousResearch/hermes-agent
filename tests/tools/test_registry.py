@@ -318,6 +318,7 @@ class TestBuiltinDiscovery:
             "tools.todo_tool",
             "tools.tts_tool",
             "tools.vision_tools",
+            "tools.video_generation_tool",
             "tools.web_tools",
             "tools.yuanbao_tools",
         }

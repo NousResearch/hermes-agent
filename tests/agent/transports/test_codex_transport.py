@@ -180,6 +180,119 @@ class TestCodexBuildKwargs:
         # "minimal" should be clamped to "low" for xAI as well
         assert kw.get("reasoning", {}).get("effort") == "low"
 
+    # --- Grok reasoning-effort capability allowlist ---
+    # api.x.ai 400s with "Model X does not support parameter reasoningEffort"
+    # on grok-4 / grok-4-fast / grok-3 / grok-code-fast / grok-4.20-0309-*.
+    # Those models reason natively but don't expose the dial. The transport
+    # must omit the `reasoning` key for them while keeping the encrypted
+    # reasoning content include so we can capture native reasoning tokens.
+
+    def test_xai_grok_4_omits_reasoning_effort(self, transport):
+        """grok-4 / grok-4-0709 reject reasoning.effort with HTTP 400."""
+        messages = [{"role": "user", "content": "Hi"}]
+        for model in ("grok-4", "grok-4-0709"):
+            kw = transport.build_kwargs(
+                model=model, messages=messages, tools=[],
+                is_xai_responses=True,
+                reasoning_config={"effort": "high"},
+            )
+            assert "reasoning" not in kw, (
+                f"{model} must not receive a reasoning key (xAI rejects it)"
+            )
+            # Still capture native reasoning tokens
+            assert "reasoning.encrypted_content" in kw.get("include", [])
+
+    def test_xai_grok_4_fast_omits_reasoning_effort(self, transport):
+        """grok-4-fast and grok-4-1-fast variants reject reasoning.effort."""
+        messages = [{"role": "user", "content": "Hi"}]
+        for model in (
+            "grok-4-fast-reasoning",
+            "grok-4-fast-non-reasoning",
+            "grok-4-1-fast-reasoning",
+            "grok-4-1-fast-non-reasoning",
+        ):
+            kw = transport.build_kwargs(
+                model=model, messages=messages, tools=[],
+                is_xai_responses=True,
+                reasoning_config={"effort": "low"},
+            )
+            assert "reasoning" not in kw, (
+                f"{model} must not receive a reasoning key (xAI rejects it)"
+            )
+
+    def test_xai_grok_3_non_mini_omits_reasoning_effort(self, transport):
+        """Plain grok-3 rejects reasoning.effort — only grok-3-mini accepts it."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-3", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "medium"},
+        )
+        assert "reasoning" not in kw
+
+    def test_xai_grok_3_mini_keeps_reasoning_effort(self, transport):
+        """grok-3-mini and -fast variants do accept the effort dial."""
+        messages = [{"role": "user", "content": "Hi"}]
+        for model in ("grok-3-mini", "grok-3-mini-fast"):
+            kw = transport.build_kwargs(
+                model=model, messages=messages, tools=[],
+                is_xai_responses=True,
+                reasoning_config={"effort": "high"},
+            )
+            assert kw.get("reasoning") == {"effort": "high"}
+
+    def test_xai_grok_4_20_0309_variants_omit_reasoning_effort(self, transport):
+        """grok-4.20-0309-(non-)reasoning reject the effort dial.
+
+        Counterintuitively, only grok-4.20-multi-agent-0309 accepts it.
+        """
+        messages = [{"role": "user", "content": "Hi"}]
+        for model in ("grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning"):
+            kw = transport.build_kwargs(
+                model=model, messages=messages, tools=[],
+                is_xai_responses=True,
+                reasoning_config={"effort": "high"},
+            )
+            assert "reasoning" not in kw, f"{model} must not receive reasoning"
+
+    def test_xai_grok_4_20_multi_agent_keeps_reasoning_effort(self, transport):
+        """grok-4.20-multi-agent-0309 is the one grok-4.20 variant that accepts effort."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.20-multi-agent-0309", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "low"},
+        )
+        assert kw.get("reasoning") == {"effort": "low"}
+
+    def test_xai_grok_code_fast_omits_reasoning_effort(self, transport):
+        """grok-code-fast-1 rejects reasoning.effort."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-code-fast-1", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw
+
+    def test_xai_aggregator_prefix_stripped(self, transport):
+        """`x-ai/grok-3-mini` (OpenRouter-style slug) still resolves correctly."""
+        messages = [{"role": "user", "content": "Hi"}]
+        # Effort-capable
+        kw = transport.build_kwargs(
+            model="x-ai/grok-3-mini", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "high"},
+        )
+        assert kw.get("reasoning") == {"effort": "high"}
+        # Effort-incapable
+        kw = transport.build_kwargs(
+            model="x-ai/grok-4-0709", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "high"},
+        )
+        assert "reasoning" not in kw
+
 
 class TestCodexValidateResponse:
 

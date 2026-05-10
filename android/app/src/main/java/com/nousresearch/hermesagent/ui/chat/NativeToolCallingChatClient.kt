@@ -47,8 +47,13 @@ class NativeToolCallingChatClient(
         require(normalizedBaseUrl.startsWith("http://") || normalizedBaseUrl.startsWith("https://")) {
             "Native tool chat requires a local HTTP base URL; got '${baseUrl.ifBlank { "<blank>" }}'."
         }
+        executeExplicitDirectToolRequest(userText)?.let { return it }
+
+        var executedToolCalls = 0
+        var latestToolResult = ""
+        val initialToolSpecs = compactToolSpecsFor(userText)
         val messages = JSONArray()
-            .put(systemMessage())
+            .put(systemMessage(toolsEnabled = initialToolSpecs.length() > 0))
             .put(
                 ChatMessage(
                     role = "user",
@@ -56,12 +61,6 @@ class NativeToolCallingChatClient(
                     contentParts = userContentParts,
                 ).toJsonObject()
             )
-
-        executeExplicitDirectToolRequest(userText)?.let { return it }
-
-        var executedToolCalls = 0
-        var latestToolResult = ""
-        val initialToolSpecs = compactToolSpecsFor(userText)
         var assistant = postChatCompletion(
             normalizedBaseUrl = normalizedBaseUrl,
             modelName = modelName,
@@ -371,17 +370,19 @@ class NativeToolCallingChatClient(
             .toString()
     }
 
-    private fun systemMessage(): JSONObject {
+    private fun systemMessage(toolsEnabled: Boolean): JSONObject {
+        val content = if (toolsEnabled) {
+            "You are Hermes running inside the native Android app. " +
+                "Use tools when work requires real files, shell commands, Android UI, Android settings, Shizuku/Sui, or saved Tasker-style automation. " +
+                "Use terminal_tool for shell commands and inspection, file_write_tool for exact text file creation, android_ui_tool for visible-screen actions, android_system_tool for device/settings/Shizuku operations, and android_automation_tool for saved tasks, triggers, notifications, variables, widgets, and Tasker/Locale plugin actions. " +
+                "When the user asks to write or replace multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
+                "Ask for or report missing Android permissions instead of pretending protected settings changed. Keep replies brief and report real tool results."
+        } else {
+            "You are Hermes running inside the native Android app. Keep replies brief and direct."
+        }
         return JSONObject()
             .put("role", "system")
-            .put(
-                "content",
-                "You are Hermes running inside the native Android app. " +
-                    "Use tools when work requires real files, shell commands, Android UI, Android settings, Shizuku/Sui, or saved Tasker-style automation. " +
-                    "Use terminal_tool for shell commands and inspection, file_write_tool for exact text file creation, android_ui_tool for visible-screen actions, android_system_tool for device/settings/Shizuku operations, and android_automation_tool for saved tasks, triggers, notifications, variables, widgets, and Tasker/Locale plugin actions. " +
-                    "When the user asks to write or replace multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
-                    "Ask for or report missing Android permissions instead of pretending protected settings changed. Keep replies brief and report real tool results.",
-            )
+            .put("content", content)
     }
 
     private fun compactToolSpecs(): JSONArray {
@@ -491,8 +492,9 @@ class NativeToolCallingChatClient(
 
     private fun compactToolSpecsFor(userText: String): JSONArray {
         val selectedNames = explicitlyRequestedToolNames(userText)
+            .ifEmpty { inferredToolNames(userText) }
         if (selectedNames.isEmpty()) {
-            return compactToolSpecs()
+            return JSONArray()
         }
         val allTools = compactToolSpecs()
         return JSONArray().apply {
@@ -502,6 +504,91 @@ class NativeToolCallingChatClient(
                 if (name in selectedNames) {
                     put(tool)
                 }
+            }
+        }
+    }
+
+    private fun inferredToolNames(userText: String): Set<String> {
+        val lower = userText.lowercase()
+        return buildSet {
+            if (
+                listOf(
+                    "write file",
+                    "create file",
+                    "save file",
+                    "edit file",
+                    "delete file",
+                    "remove file",
+                    "html file",
+                    ".html",
+                    ".txt",
+                    ".json",
+                    ".md",
+                ).any { it in lower }
+            ) {
+                add("file_write_tool")
+            }
+            if (
+                listOf(
+                    "shell command",
+                    "terminal command",
+                    "run command",
+                    "execute command",
+                    "command output",
+                    "mkdir",
+                    "rm -",
+                    "ls ",
+                    "cat ",
+                    "python ",
+                ).any { it in lower }
+            ) {
+                add("terminal_tool")
+            }
+            if (
+                listOf(
+                    "android setting",
+                    "system setting",
+                    "phone setting",
+                    "shizuku",
+                    "sui",
+                    "permission",
+                    "force stop",
+                    "clear app data",
+                    "open browser",
+                    "open url",
+                ).any { it in lower }
+            ) {
+                add("android_system_tool")
+            }
+            if (
+                listOf(
+                    "tap ",
+                    "click ",
+                    "type ",
+                    "screen",
+                    "screenshot",
+                    "visible ui",
+                    "accessibility",
+                    "quick settings",
+                    "notifications shade",
+                ).any { it in lower }
+            ) {
+                add("android_ui_tool")
+            }
+            if (
+                listOf(
+                    "automation",
+                    "tasker",
+                    "cron",
+                    "schedule",
+                    "trigger",
+                    "watcher",
+                    "widget",
+                    "tile",
+                    "profile",
+                ).any { it in lower }
+            ) {
+                add("android_automation_tool")
             }
         }
     }
@@ -1692,7 +1779,7 @@ class NativeToolCallingChatClient(
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
         private const val TOOL_TIMEOUT_SECONDS = 60
         private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L
-        private const val NATIVE_TOOL_MAX_TOKENS = 4000
+        private const val NATIVE_TOOL_MAX_TOKENS = 1024
         private const val PRIVILEGED_TOOL_TIMEOUT_SECONDS = 30
         private const val MAX_TOOL_RESULT_CHARS = 12_000
         private const val MAX_NATIVE_ERROR_CHARS = 360

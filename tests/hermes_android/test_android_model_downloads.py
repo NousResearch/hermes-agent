@@ -193,7 +193,7 @@ def test_native_tool_loop_allows_long_file_generation_prompts():
     assert '.put("max_tokens", maxTokens)' in native_client
     assert '.put("chat_template_kwargs", JSONObject().put("enable_thinking", false))' in native_client
     assert 'private const val NATIVE_TOOL_GENERATION_TIMEOUT_MS = 300_000L' in native_client
-    assert 'private const val NATIVE_TOOL_MAX_TOKENS = 4000' in native_client
+    assert 'private const val NATIVE_TOOL_MAX_TOKENS = 1024' in native_client
     assert 'Native tool chat requires a local HTTP base URL' in native_client
     assert 'toolCompletionReply(latestToolResult)' in native_client
     assert 'executeExplicitDirectToolRequest(userText)' in native_client

@@ -61,6 +61,11 @@ def test_android_chat_ui_and_native_tool_prompt_stay_compact_on_large_font_phone
     assert 'softWrap = false' in app_shell
     assert 'style = MaterialTheme.typography.labelSmall' in app_shell
     assert 'compactToolSpecsFor(userText)' in native_tool_client
+    assert '.ifEmpty { inferredToolNames(userText) }' in native_tool_client
+    assert 'return JSONArray()' in native_tool_client
+    assert 'systemMessage(toolsEnabled = initialToolSpecs.length() > 0)' in native_tool_client
+    assert 'Keep replies brief and direct.' in native_tool_client
+    assert 'inferredToolNames(userText: String)' in native_tool_client
     assert 'explicitlyRequestedToolNames(userText)' in native_tool_client
     assert 'formatNativeChatError' in native_tool_client
     assert 'The local model ran out of context' in native_tool_client

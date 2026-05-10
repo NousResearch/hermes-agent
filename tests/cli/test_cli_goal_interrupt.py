@@ -58,6 +58,11 @@ def _make_cli_with_goal(session_id: str, goal_text: str = "build a thing"):
 
     mgr = GoalManager(session_id=session_id, default_max_turns=5)
     mgr.set(goal_text)
+    # Skip Phase-A decompose so tests can patch judge_goal_freeform directly
+    # for legacy verdict assertions.
+    mgr.state.decomposed = True
+    from hermes_cli.goals import save_goal as _sg
+    _sg(mgr.session_id, mgr.state)
     cli._goal_manager = mgr
     return cli, mgr
 
@@ -81,7 +86,7 @@ class TestInterruptAutoPause:
 
         # Judge MUST NOT run on an interrupted turn. If it does, we've
         # regressed — fail loudly instead of silently querying a mock.
-        with patch("hermes_cli.goals.judge_goal") as judge_mock:
+        with patch("hermes_cli.goals.judge_goal_freeform") as judge_mock:
             judge_mock.side_effect = AssertionError(
                 "judge_goal called on an interrupted turn"
             )
@@ -106,7 +111,7 @@ class TestInterruptAutoPause:
         cli.conversation_history = [
             {"role": "assistant", "content": "partial"},
         ]
-        with patch("hermes_cli.goals.judge_goal"):
+        with patch("hermes_cli.goals.judge_goal_freeform"):
             cli._maybe_continue_goal_after_turn()
         assert mgr.state.status == "paused"
 
@@ -125,7 +130,7 @@ class TestEmptyResponseSkip:
             {"role": "assistant", "content": "   \n\n   "},
         ]
 
-        with patch("hermes_cli.goals.judge_goal") as judge_mock:
+        with patch("hermes_cli.goals.judge_goal_freeform") as judge_mock:
             judge_mock.side_effect = AssertionError(
                 "judge_goal called on an empty response"
             )
@@ -144,7 +149,7 @@ class TestEmptyResponseSkip:
             {"role": "user", "content": "go"},
         ]
 
-        with patch("hermes_cli.goals.judge_goal") as judge_mock:
+        with patch("hermes_cli.goals.judge_goal_freeform") as judge_mock:
             judge_mock.side_effect = AssertionError(
                 "judge_goal called without an assistant response"
             )
@@ -169,7 +174,7 @@ class TestHealthyTurnStillRuns:
 
         # Force the judge to say "continue" without touching the network.
         with patch(
-            "hermes_cli.goals.judge_goal",
+            "hermes_cli.goals.judge_goal_freeform",
             return_value=("continue", "needs more steps", False),
         ):
             cli._maybe_continue_goal_after_turn()
@@ -189,7 +194,7 @@ class TestHealthyTurnStillRuns:
         ]
 
         with patch(
-            "hermes_cli.goals.judge_goal",
+            "hermes_cli.goals.judge_goal_freeform",
             return_value=("done", "goal satisfied", False),
         ):
             cli._maybe_continue_goal_after_turn()

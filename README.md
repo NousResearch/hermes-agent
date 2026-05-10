@@ -159,10 +159,10 @@ We welcome contributions! See the [Contributing Guide](https://hermes-agent.nous
 Quick start for contributors — clone and go with `setup-hermes.sh`:
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
+git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
-./setup-hermes.sh     # installs uv, creates venv, installs .[all], symlinks ~/.local/bin/hermes
-./hermes              # auto-detects the venv, no need to `source` first
+./setup-hermes.sh     # installs uv if needed, creates venv, prefers uv.lock, links ~/.local/bin/hermes
+./hermes              # runs from the repo venv directly, no `source` required
 ```
 
 Manual path (equivalent to the above):
@@ -171,9 +171,17 @@ Manual path (equivalent to the above):
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv .venv --python 3.11
 source .venv/bin/activate
-uv pip install -e ".[all,dev]"
+uv sync --all-extras
 scripts/run_tests.sh
 ```
+
+Windows contributors: prefer the [Windows (WSL2) guide](https://hermes-agent.nousresearch.com/docs/user-guide/windows-wsl-quickstart) for repo work. Native Windows is supported, but WSL2 is the path that matches Linux/macOS contributor workflows most closely.
+
+Common setup gotchas:
+
+- `hermes: command not found` after setup -> open a new shell or run `source ~/.bashrc`
+- slow `git status` / dev servers on Windows -> keep the repo inside WSL (`~/code/...`), not `/mnt/c/...`
+- missing optional tooling after clone -> rerun `git submodule update --init --recursive`
 
 > **RL Training (optional):** The RL/Atropos integration (`environments/`) — see [`CONTRIBUTING.md`](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#development-setup) for the full setup.
 

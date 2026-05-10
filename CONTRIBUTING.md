@@ -66,12 +66,21 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
+# Fast path: installer script (prefers uv.lock when present)
+./setup-hermes.sh
+./hermes
+```
+
+If you want the manual path instead:
+
+```bash
+
 # Create venv with Python 3.11
 uv venv venv --python 3.11
 export VIRTUAL_ENV="$(pwd)/venv"
 
 # Install with all extras (messaging, cron, CLI menus, dev tools)
-uv pip install -e ".[all,dev]"
+uv sync --all-extras
 
 # Optional: RL training submodule
 # git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
@@ -102,6 +111,15 @@ ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 hermes doctor
 hermes chat -q "Hello"
 ```
+
+### Contributor notes for Windows / WSL2
+
+- For repository development, prefer WSL2 over native Windows terminals. The
+  main guide is: `website/docs/user-guide/windows-wsl-quickstart.md`.
+- Keep the repo on the Linux side (`~/code/...`), not under `/mnt/c/...`, to
+  avoid slow file I/O and flaky file watchers.
+- If `hermes` is still not on PATH after setup, open a new shell or run
+  `source ~/.bashrc`.
 
 ### Run tests
 

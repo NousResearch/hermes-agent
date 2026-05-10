@@ -21,6 +21,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
+    require_gateway_restart_approval,
 )
 from hermes_cli.config import (
     get_env_value,
@@ -5189,6 +5190,15 @@ def _gateway_command_inner(args):
     
     elif subcmd == "restart":
         # Try service first, fall back to killing and restarting
+        approved = getattr(args, 'approved', False)
+        try:
+            require_gateway_restart_approval(
+                source="hermes gateway restart",
+                approved=approved,
+            )
+        except PermissionError as exc:
+            print_error(str(exc))
+            sys.exit(2)
         service_available = False
         system = getattr(args, 'system', False)
         restart_all = getattr(args, 'all', False)

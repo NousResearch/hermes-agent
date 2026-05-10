@@ -3095,7 +3095,7 @@ class GatewayRunner:
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
         shell_cmd = (
             f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
+            f"HERMES_GATEWAY_RESTART_APPROVED=1 {cmd} gateway restart --approved"
         )
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
@@ -6067,6 +6067,10 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
 
+            # /ctx is a read-only re-entry brief for the current session/thread.
+            if _cmd_def_inner and _cmd_def_inner.name == "ctx":
+                return await self._handle_ctx_command(event)
+
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
             # /btw is an alias of /background and resolves to the same canonical
@@ -6374,6 +6378,9 @@ class GatewayRunner:
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
+
+        if canonical == "ctx":
+            return await self._handle_ctx_command(event)
 
         if canonical == "restart":
             return await self._handle_restart_command(event)
@@ -7942,6 +7949,116 @@ class GatewayRunner:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
+    def _ctx_message_text(self, message: Dict[str, Any]) -> str:
+        """Return compact plain text for a stored transcript message."""
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    value = part.get("text") or part.get("content") or part.get("type")
+                    if value:
+                        parts.append(str(value))
+                elif part is not None:
+                    parts.append(str(part))
+            text = " ".join(parts)
+        elif content is None:
+            text = ""
+        else:
+            text = str(content)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _ctx_format_snippet(self, message: Dict[str, Any], *, limit: int = 170) -> str:
+        role = str(message.get("role") or "message")
+        text = self._ctx_message_text(message)
+        if len(text) > limit:
+            text = text[: limit - 1].rstrip() + "…"
+        return f"{role}: {text}" if text else f"{role}: (empty)"
+
+    def _ctx_pick_signal_lines(
+        self,
+        messages: List[Dict[str, Any]],
+        keywords: tuple[str, ...],
+        *,
+        limit: int = 3,
+    ) -> List[str]:
+        picked: List[str] = []
+        lowered_keywords = tuple(k.lower() for k in keywords)
+        for message in reversed(messages):
+            text = self._ctx_message_text(message)
+            haystack = text.lower()
+            if any(k in haystack for k in lowered_keywords):
+                snippet = self._ctx_format_snippet(message, limit=150)
+                if snippet not in picked:
+                    picked.append(snippet)
+            if len(picked) >= limit:
+                break
+        return list(reversed(picked))
+
+    def _ctx_render_brief(
+        self,
+        *,
+        source: SessionSource,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+    ) -> str:
+        user_assistant = [
+            msg for msg in messages
+            if str(msg.get("role") or "") in {"user", "assistant"}
+            and self._ctx_message_text(msg)
+        ]
+        if not user_assistant:
+            return (
+                "## Thread context\n\n"
+                "**전체 맥락:** 아직 이 세션에 복구할 대화 기록이 없어.\n\n"
+                "**최근 맥락:** 없음.\n\n"
+                "**다음 액션:** 먼저 이 thread/topic에서 대화를 이어가면 이후 `/ctx`가 요약을 만들 수 있어.\n\n"
+                "**결정 필요:** 없음."
+            )
+
+        first = user_assistant[:3]
+        recent = user_assistant[-5:]
+        action_lines = self._ctx_pick_signal_lines(
+            user_assistant,
+            (
+                "next action", "todo", "follow-up", "continue", "implement",
+                "action", "해야", "다음", "계속", "진행", "구현",
+            ),
+            limit=4,
+        )
+        decision_lines = self._ctx_pick_signal_lines(
+            user_assistant,
+            ("decision", "decide", "chosen", "default", "결정", "선택", "기본값"),
+            limit=3,
+        )
+
+        def bullets(items: List[str], *, empty: str) -> str:
+            if not items:
+                return f"- {empty}"
+            return "\n".join(f"- {item}" for item in items)
+
+        label = source.chat_name or source.chat_id or source.platform.value
+        if source.thread_id:
+            label = f"{label} / thread {source.thread_id}"
+
+        return (
+            "## Thread context\n\n"
+            f"**범위:** {label}\n"
+            f"**세션:** `{session_id}` · 메시지 {len(user_assistant)}개 기준\n\n"
+            "**전체 맥락:**\n"
+            f"{bullets([self._ctx_format_snippet(m) for m in first], empty='초기 맥락 없음')}\n\n"
+            "**최근 맥락:**\n"
+            f"{bullets([self._ctx_format_snippet(m) for m in recent], empty='최근 맥락 없음')}\n\n"
+            "**다음 액션:**\n"
+            f"{bullets(action_lines, empty='명시된 다음 액션을 찾지 못했어. 최근 맥락 기준으로 이어가면 돼.')}\n\n"
+            "**결정 필요:**\n"
+            f"{bullets(decision_lines, empty='아직 명시적 결정 대기 없음.')}\n\n"
+            "**주의/근거:** 저장된 Hermes session transcript에서 만든 추출형 brief라서, "
+            "정밀한 해석이 필요하면 이 brief를 시작점으로 다시 물어봐줘."
+        )
+
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.
 
@@ -8578,6 +8695,52 @@ class GatewayRunner:
             except Exception as exc:
                 logger.warning("/qa Telegram review buttons failed: %s", exc)
         return output
+
+    async def _handle_ctx_command(self, event: MessageEvent) -> str:
+        """Handle /ctx — compact re-entry brief for the current gateway thread."""
+        source = event.source
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return "## Thread context\n\nSession store is unavailable, so I can't build a context brief."
+
+        try:
+            store._ensure_loaded()
+        except Exception as exc:
+            logger.debug("/ctx failed to load session store: %s", exc)
+
+        try:
+            session_key = store._generate_session_key(source)
+        except Exception:
+            session_key = self._session_key_for_source(source)
+
+        entry = None
+        try:
+            entry = getattr(store, "_entries", {}).get(session_key)
+        except Exception:
+            entry = None
+        if entry is None:
+            return (
+                "## Thread context\n\n"
+                "**전체 맥락:** 아직 이 chat/thread에 연결된 Hermes session이 없어.\n\n"
+                "**다음 액션:** 먼저 일반 메시지를 보내 세션을 만든 뒤 `/ctx`를 다시 호출해줘."
+            )
+
+        session_id = getattr(entry, "session_id", "") or ""
+        db = getattr(store, "_db", None) or getattr(self, "_session_db", None)
+        if db is None or not session_id:
+            return (
+                "## Thread context\n\n"
+                "**전체 맥락:** transcript DB를 읽을 수 없어 session metadata만 확인됐어.\n"
+                f"**세션:** `{session_id or session_key}`"
+            )
+
+        try:
+            messages = list(db.get_messages(session_id) or [])
+        except Exception as exc:
+            logger.warning("/ctx failed to read transcript for %s: %s", session_id, exc)
+            return f"## Thread context\n\nTranscript read failed for `{session_id}`: {exc}"
+
+        return self._ctx_render_brief(source=source, session_id=session_id, messages=messages)
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
@@ -16670,6 +16833,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
+        try:
+            from gateway.restart import require_gateway_restart_approval
+            require_gateway_restart_approval(source="gateway SIGUSR1 restart")
+        except PermissionError as exc:
+            logger.warning("Blocked gateway SIGUSR1 restart: %s", exc)
+            return
+        except Exception:
+            pass
         runner.request_restart(detached=False, via_service=True)
     
     loop = asyncio.get_running_loop()

@@ -7828,6 +7828,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
         try:
+            from gateway.restart import require_gateway_restart_approval
+            require_gateway_restart_approval(source="hermes update auto-restart")
+        except PermissionError as exc:
+            print(f"⚠ {exc}")
+            print("  Update finished, but gateway restart was left pending by policy.")
+            print("  After approval, run: HERMES_GATEWAY_RESTART_APPROVED=1 hermes gateway restart --approved")
+            return
+        except Exception:
+            pass
+
+        try:
             from hermes_cli.gateway import (
                 is_macos,
                 supports_systemd_services,
@@ -9435,6 +9446,11 @@ def main():
         "--all",
         action="store_true",
         help="Kill ALL gateway processes across all profiles before restarting",
+    )
+    gateway_restart.add_argument(
+        "--approved",
+        action="store_true",
+        help="Confirm explicit user/operator approval when local restart policy requires it",
     )
 
     # gateway status

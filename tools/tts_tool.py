@@ -2317,6 +2317,17 @@ def text_to_speech_tool(
     # OpenAI handler.
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
 
+    # Strip markdown formatting before TTS dispatch.
+    # Without this, providers like Edge TTS verbalize raw markdown artifacts
+    # ("double-asterisk Bold double-asterisk" instead of just "Bold").
+    # The other two TTS call sites (_send_voice_reply in gateway/run.py and
+    # the Auto-TTS path in gateway/platforms/base.py) already strip markdown;
+    # this brings the agent-callable tool path in line with them.
+    # Command-providers can opt out via tts.providers.<name>.skip_markdown_strip
+    # for SSML-aware CLIs that want raw markup passed through.
+    if not (command_provider_config and command_provider_config.get("skip_markdown_strip")):
+        text = _strip_markdown_for_tts(text)
+
     # Truncate very long text with a warning. The cap is per-provider
     # (OpenAI 4096, xAI 15k, MiniMax 10k, ElevenLabs model-aware, etc.).
     max_len = _resolve_max_text_length(provider, tts_config)

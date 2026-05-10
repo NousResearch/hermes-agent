@@ -427,6 +427,21 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"skills must be a list of skill names, got {type(skills).__name__}"
         )
+    # Validate skills against known toolset names — orchestrator agents
+    # frequently confuse toolsets (runtime capabilities) with skills
+    # (named skill bundles), causing immediate worker crashes (#22921).
+    _KNOWN_TOOLSET_NAMES = {
+        "web", "browser", "browser-cdp", "terminal", "file", "mcp",
+        "hermes-cli", "discord", "telegram", "slack", "whatsapp",
+        "email", "sms", "matrix", "mattermost", "feishu", "dingtalk",
+    }
+    if skills:
+        bad = [s for s in skills if s in _KNOWN_TOOLSET_NAMES]
+        if bad:
+            return tool_error(
+                f"{', '.join(bad)} {'is' if len(bad) == 1 else 'are'} toolset name(s), not skill name(s). "
+                f"Add them to the profile config under toolsets: instead."
+            )
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):

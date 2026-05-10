@@ -2691,6 +2691,21 @@ def test_create_task_skills_rejects_comma_embedded(kanban_home):
         conn.close()
 
 
+def test_create_task_skills_rejects_toolset_names(kanban_home):
+    """Toolset names belong in profile config, not per-task skills."""
+    conn = kb.connect()
+    try:
+        with pytest.raises(ValueError, match="toolset name"):
+            kb.create_task(
+                conn,
+                title="bad toolset skill",
+                assignee="x",
+                skills=["web", "translation"],
+            )
+    finally:
+        conn.close()
+
+
 def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
     in addition to the built-in kanban-worker."""

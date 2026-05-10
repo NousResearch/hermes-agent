@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone, timedelta
 
 from hermes_cli.quick_actions import (
+    cli_main,
     discard_candidate,
     format_candidate_digest,
     list_candidates,
@@ -63,6 +64,19 @@ def test_format_candidate_digest_is_telegram_friendly(tmp_path):
     assert "state: candidate" in output
     assert "/qa promote tok123 --to cortex_todo" in output
     assert "/qa show <id>" in output
+
+
+def test_cli_list_uses_chat_friendly_digest(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_candidate(tmp_path, token="tok123", title="CLI digest candidate")
+
+    rc = cli_main(["list", "--limit", "5"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "Quick Actions review" in output
+    assert "`tok123` · save · memory" in output
+    assert "id\tstatus\taction" not in output
 
 
 def test_promote_candidate_marks_row_and_appends_promotion(tmp_path):

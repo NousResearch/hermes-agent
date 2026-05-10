@@ -338,12 +338,7 @@ def cli_main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.action in {"list", "ls"}:
         rows = list_candidates(status=args.status, limit=args.limit, verbose=args.verbose)
-        if not rows:
-            print("No Quick Action routing candidates.")
-            return 0
-        print("id\tstatus\taction\ttargets\tcaptured_at\ttitle")
-        for row in rows:
-            print(_format_candidate(row, verbose=args.verbose))
+        print(format_candidate_digest(rows, status=args.status, limit=args.limit, verbose=args.verbose))
         return 0
     if args.action == "show":
         _, row, _ = _find_candidate(args.id)

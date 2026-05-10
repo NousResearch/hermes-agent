@@ -537,7 +537,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 ## Profile Isolation
 
-Each provider's data is isolated per [profile](/docs/user-guide/profiles):
+Each provider's data is isolated per [profile](/user-guide/profiles):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
@@ -546,4 +546,4 @@ Each provider's data is isolated per [profile](/docs/user-guide/profiles):
 
 ## Building a Memory Provider
 
-See the [Developer Guide: Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) for how to create your own.
+See the [Developer Guide: Memory Provider Plugins](/developer-guide/memory-provider-plugin) for how to create your own.

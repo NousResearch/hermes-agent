@@ -488,7 +488,7 @@ security:
 
 When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_navigate`, and all URL-capable tools.
 
-See [Website Blocklist](/docs/user-guide/configuration#website-blocklist) in the configuration guide for full details.
+See [Website Blocklist](/user-guide/configuration#website-blocklist) in the configuration guide for full details.
 
 ### SSRF Protection
 

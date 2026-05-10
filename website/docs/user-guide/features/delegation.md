@@ -197,7 +197,7 @@ The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegat
 - Kill and pause controls — cancel a specific subagent mid-flight without interrupting its siblings
 - Post-hoc review: step through each subagent's turn-by-turn history even after they've returned to the parent
 
-The classic CLI just prints `/agents` as a text summary; the TUI is where the overlay shines. See [TUI — Slash commands](/docs/user-guide/tui#slash-commands).
+The classic CLI just prints `/agents` as a text summary; the TUI is where the overlay shines. See [TUI — Slash commands](/user-guide/tui#slash-commands).
 
 ## Depth Limit and Nested Orchestration
 

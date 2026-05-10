@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
+import Link from "@docusaurus/Link";
 import skills from "../../data/skills.json";
 import styles from "./styles.module.css";
 
@@ -253,13 +254,13 @@ function SkillCard({
               <code>hermes skills install {skill.name}</code>
             </div>
             {skill.docsPath && (
-              <a
+              <Link
                 className={styles.docsLink}
-                href={`/docs/user-guide/skills/${skill.docsPath}`}
+                to={`/user-guide/skills/${skill.docsPath}`}
                 onClick={(e) => e.stopPropagation()}
               >
                 View full documentation →
-              </a>
+              </Link>
             )}
           </div>
         )}

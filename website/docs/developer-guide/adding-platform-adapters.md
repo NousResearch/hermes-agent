@@ -9,7 +9,7 @@ This guide covers adding a new messaging platform to the Hermes gateway. A platf
 :::tip
 There are two ways to add a platform:
 - **Plugin** (recommended for community/third-party): Drop a plugin directory into `~/.hermes/plugins/` — zero core code changes needed. See [Plugin Path](#plugin-path-recommended) below.
-- **Built-in**: Modify 20+ files across code, config, and docs. Use the [Built-in Checklist](#step-by-step-checklist) below.
+- **Built-in**: Modify 20+ files across code, config, and docs. Use the [Built-in Checklist](#step-by-step-checklist-built-in-path) below.
 :::
 
 ## Architecture Overview

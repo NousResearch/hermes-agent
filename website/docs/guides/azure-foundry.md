@@ -152,6 +152,6 @@ model:
 
 ## Related
 
-- [Environment variables](/docs/reference/environment-variables)
-- [Configuration](/docs/user-guide/configuration)
-- [AWS Bedrock](/docs/guides/aws-bedrock) — the other major cloud provider integration
+- [Environment variables](/reference/environment-variables)
+- [Configuration](/user-guide/configuration)
+- [AWS Bedrock](/guides/aws-bedrock) — the other major cloud provider integration

@@ -543,7 +543,7 @@ The gateway does NOT need to be running for read operations (listing conversatio
 
 ## Related docs
 
-- [Use MCP with Hermes](/docs/guides/use-mcp-with-hermes)
-- [CLI Commands](/docs/reference/cli-commands)
-- [Slash Commands](/docs/reference/slash-commands)
-- [FAQ](/docs/reference/faq)
+- [Use MCP with Hermes](/guides/use-mcp-with-hermes)
+- [CLI Commands](/reference/cli-commands)
+- [Slash Commands](/reference/slash-commands)
+- [FAQ](/reference/faq)

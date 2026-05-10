@@ -12,7 +12,7 @@ Right now the primary consumer is the Teams meeting summary pipeline: Graph noti
 
 ## Prerequisites
 
-- Microsoft Graph application credentials — [Register a Microsoft Graph Application](/docs/guides/microsoft-graph-app-registration)
+- Microsoft Graph application credentials — [Register a Microsoft Graph Application](/guides/microsoft-graph-app-registration)
 - A **public HTTPS URL** that Microsoft Graph can reach (Graph does not call private endpoints). A dev tunnel works for testing; production needs a real domain with a valid certificate.
 - A strong shared secret to use as the `clientState` value. Generate with `openssl rand -hex 32` and put it in `~/.hermes/.env` as `MSGRAPH_WEBHOOK_CLIENT_STATE`.
 
@@ -67,7 +67,7 @@ All settings go under `platforms.msgraph_webhook.extra`:
 | `max_seen_receipts` | `5000` | Dedupe cache size for notification IDs. Oldest entries evicted when the cap is hit. |
 | `allowed_source_cidrs` | `[]` (allow all) | Optional source-IP allowlist. See below. |
 
-Each setting also has an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges into the config at gateway startup — see the [environment variables reference](/docs/reference/environment-variables#microsoft-graph-teams-meetings).
+Each setting also has an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges into the config at gateway startup — see the [environment variables reference](/reference/environment-variables#microsoft-graph-teams-meetings).
 
 ## Security Hardening
 
@@ -132,6 +132,6 @@ Status code table:
 
 ## Related Docs
 
-- [Register a Microsoft Graph Application](/docs/guides/microsoft-graph-app-registration) — Azure app registration prereq
-- [Environment Variables → Microsoft Graph](/docs/reference/environment-variables#microsoft-graph-teams-meetings) — full env var list
-- [Microsoft Teams bot setup](/docs/user-guide/messaging/teams) — the different platform that lets users chat with Hermes in Teams
+- [Register a Microsoft Graph Application](/guides/microsoft-graph-app-registration) — Azure app registration prereq
+- [Environment Variables → Microsoft Graph](/reference/environment-variables#microsoft-graph-teams-meetings) — full env var list
+- [Microsoft Teams bot setup](/user-guide/messaging/teams) — the different platform that lets users chat with Hermes in Teams

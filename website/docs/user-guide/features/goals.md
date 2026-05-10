@@ -103,7 +103,7 @@ goals:
 
 ### Choosing the judge model
 
-The judge uses the `goal_judge` auxiliary task. By default it resolves to your main model (see [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models)). If you want to route the judge to a cheap fast model to keep costs down, add an override:
+The judge uses the `goal_judge` auxiliary task. By default it resolves to your main model (see [Auxiliary Models](/user-guide/configuration#auxiliary-models)). If you want to route the judge to a cheap fast model to keep costs down, add an override:
 
 ```yaml
 auxiliary:

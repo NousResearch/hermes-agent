@@ -1,8 +1,9 @@
 {
-  // This file is not used in compilation. It is here just for a nice editor experience.
+  // Used by `npm run typecheck` and editor tooling.
   "extends": "@docusaurus/tsconfig",
   "compilerOptions": {
-    "baseUrl": "."
+    "baseUrl": ".",
+    "noEmit": true
   },
   "exclude": [".docusaurus", "build"]
 }

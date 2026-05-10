@@ -259,4 +259,4 @@ The gateway runs as a long-lived process, managed via:
 - [Cron Internals](./cron-internals.md)
 - [ACP Internals](./acp-internals.md)
 - [Agent Loop Internals](./agent-loop.md)
-- [Messaging Gateway (User Guide)](/docs/user-guide/messaging)
+- [Messaging Gateway (User Guide)](/user-guide/messaging)

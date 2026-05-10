@@ -217,7 +217,7 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
-See the [Security guide](/docs/user-guide/security#environment-variable-passthrough) for full details.
+See the [Security guide](/user-guide/security#environment-variable-passthrough) for full details.
 
 Hermes always writes the script and the auto-generated `hermes_tools.py` RPC stub into a temp staging directory that is cleaned up after execution. In `strict` mode the script also *runs* there; in `project` mode it runs in the session's working directory (the staging directory stays on `PYTHONPATH` so imports still resolve). The child process runs in its own process group so it can be cleanly killed on timeout or interruption.
 
@@ -231,7 +231,7 @@ Hermes always writes the script and the auto-generated `hermes_tools.py` RPC stu
 | Running a build or test suite | ❌ | ✅ |
 | Looping over search results | ✅ | ❌ |
 | Interactive/background processes | ❌ | ✅ |
-| Needs API keys in environment | ⚠️ Only via [passthrough](/docs/user-guide/security#environment-variable-passthrough) | ✅ (most pass through) |
+| Needs API keys in environment | ⚠️ Only via [passthrough](/user-guide/security#environment-variable-passthrough) | ✅ (most pass through) |
 
 **Rule of thumb:** Use `execute_code` when you need to call Hermes tools programmatically with logic between calls. Use `terminal` for running shell commands, builds, and processes.
 

@@ -1525,6 +1525,12 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},
         )
+    # Re-evaluate readiness after linking — handles two late-link cases:
+    # (1) child was 'ready' and we just linked an unfinished parent → demoted
+    #     above; recompute is a no-op for that path.
+    # (2) child is 'blocked' with a reason referencing this parent, and the
+    #     parent is already 'done' → auto-unblock now that the link exists.
+    recompute_ready(conn)
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -1813,10 +1819,19 @@ def _synthesize_ended_run(
 # ---------------------------------------------------------------------------
 
 def recompute_ready(conn: sqlite3.Connection) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done``.
+    """Promote ``todo`` tasks to ``ready`` when all parents are ``done``,
+    and auto-unblock dependency-blocked tasks when their parents complete.
 
-    Returns the number of tasks promoted.  Safe to call inside or outside
-    an existing transaction; it opens its own IMMEDIATE txn.
+    Returns the number of tasks promoted or auto-unblocked.  Safe to call
+    inside or outside an existing transaction; it opens its own IMMEDIATE
+    txn.
+
+    A blocked task is treated as dependency-blocked (and therefore eligible
+    for auto-unblock when all its parents are ``done``) iff the most recent
+    ``blocked`` event's ``reason`` references one of its parent task ids by
+    literal ``t_<hex>`` substring. This preserves manual-block semantics
+    (e.g. a worker pausing for an out-of-band human approval): those blocks
+    don't mention a parent id and stay blocked until human intervention.
     """
     promoted = 0
     with write_txn(conn):
@@ -1837,6 +1852,71 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                     (task_id,),
                 )
                 _append_event(conn, task_id, "promoted", None)
+                promoted += 1
+        # Auto-unblock dependency-blocked tasks whose parents all completed.
+        blocked_rows = conn.execute(
+            "SELECT id, current_run_id FROM tasks WHERE status = 'blocked'"
+        ).fetchall()
+        for row in blocked_rows:
+            task_id = row["id"]
+            parent_rows = conn.execute(
+                "SELECT t.id AS pid, t.status AS pstatus FROM tasks t "
+                "JOIN task_links l ON l.parent_id = t.id "
+                "WHERE l.child_id = ?",
+                (task_id,),
+            ).fetchall()
+            if not parent_rows:
+                continue
+            if not all(p["pstatus"] == "done" for p in parent_rows):
+                continue
+            parent_ids = {p["pid"] for p in parent_rows}
+            ev_row = conn.execute(
+                "SELECT payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'blocked' "
+                "ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if not ev_row:
+                continue
+            try:
+                payload = json.loads(ev_row["payload"] or "{}")
+            except (ValueError, TypeError):
+                payload = {}
+            reason_text = str(payload.get("reason") or "")
+            if not any(pid in reason_text for pid in parent_ids):
+                # Manual block (waiting on human approval, etc.) — leave it.
+                continue
+            now_ts = int(time.time())
+            if row["current_run_id"]:
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                       SET status = 'reclaimed', outcome = 'reclaimed',
+                           summary = COALESCE(
+                               summary,
+                               'invariant recovery on auto-unblock'
+                           ),
+                           ended_at = ?,
+                           claim_lock = NULL, claim_expires = NULL,
+                           worker_pid = NULL
+                     WHERE id = ? AND ended_at IS NULL
+                    """,
+                    (now_ts, int(row["current_run_id"])),
+                )
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', current_run_id = NULL "
+                "WHERE id = ? AND status = 'blocked'",
+                (task_id,),
+            )
+            if cur.rowcount == 1:
+                _append_event(
+                    conn, task_id, "unblocked",
+                    {
+                        "auto": True,
+                        "reason": "all parents complete",
+                        "parents_done": sorted(parent_ids),
+                    },
+                )
                 promoted += 1
     return promoted
 

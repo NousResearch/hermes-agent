@@ -145,6 +145,128 @@ def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
+def test_recompute_ready_auto_unblocks_dependency_blocked_child(kanban_home):
+    """A child blocked while waiting on a parent should auto-unblock
+    when that parent completes — the bug behind real-world stuck tasks."""
+    with kb.connect() as conn:
+        p = kb.create_task(conn, title="parent")
+        c = kb.create_task(conn, title="child", parents=[p])
+        # Worker tried to run child, found it needed the parent, blocked
+        # itself with a reason that references the parent id.
+        kb.claim_task(conn, c)  # ready -> running (parent already done? no — c is todo)
+    # c is in 'todo' (parent not done), so claim above returned None. Fix by
+    # completing parent first to put c in 'ready', then claiming.
+    with kb.connect() as conn:
+        kb.complete_task(conn, p)
+        assert kb.get_task(conn, c).status == "ready"
+        # Re-create the dependency scenario: link a NEW parent that's not done.
+        p2 = kb.create_task(conn, title="parent2")
+        kb.link_tasks(conn, p2, c)
+        assert kb.get_task(conn, c).status == "todo"
+        # Promote back to ready and claim, then block referencing p2.
+        kb.complete_task(conn, p2)
+        assert kb.get_task(conn, c).status == "ready"
+    # Simpler scenario for the test: brand-new parent+child, block child
+    # mentioning parent id, then complete parent.
+    with kb.connect() as conn:
+        pp = kb.create_task(conn, title="real-parent")
+        cc = kb.create_task(conn, title="real-child")
+        # Block child manually-but-with-parent-reason BEFORE linking; link
+        # after so the block reason references a real parent id.
+        kb.claim_task(conn, cc)
+        kb.block_task(
+            conn, cc,
+            reason=f"waiting on parent {pp}; please complete and resume",
+        )
+        kb.link_tasks(conn, pp, cc)
+        assert kb.get_task(conn, cc).status == "blocked"
+        kb.complete_task(conn, pp)
+        # complete_task calls recompute_ready, which should auto-unblock cc.
+        assert kb.get_task(conn, cc).status == "ready"
+        # Audit trail: an 'unblocked' event with auto=True should exist.
+        ev = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'unblocked' "
+            "ORDER BY id DESC LIMIT 1",
+            (cc,),
+        ).fetchone()
+        assert ev is not None
+        import json
+        payload = json.loads(ev["payload"])
+        assert payload.get("auto") is True
+        assert pp in payload.get("parents_done", [])
+
+
+def test_recompute_ready_preserves_manual_blocks(kanban_home):
+    """A block reason that does NOT mention any parent id should stay
+    blocked even when all parents complete — manual blocks (e.g. waiting
+    on human approval) must not be auto-cleared."""
+    with kb.connect() as conn:
+        p = kb.create_task(conn, title="parent")
+        c = kb.create_task(conn, title="child")
+        kb.link_tasks(conn, p, c)
+        kb.complete_task(conn, p)
+        assert kb.get_task(conn, c).status == "ready"
+        kb.claim_task(conn, c)
+        # Manual block — reason mentions no parent id; this is a human-gated
+        # pause (force-push approval, credential rotation, etc.).
+        kb.block_task(
+            conn, c,
+            reason="need approval to force-push to main",
+        )
+        assert kb.get_task(conn, c).status == "blocked"
+        # All parents are already done. Recompute should NOT touch this.
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, c).status == "blocked"
+
+
+def test_recompute_ready_auto_unblock_only_when_all_parents_done(kanban_home):
+    """When a dependency-blocked child has multiple parents, partial
+    completion should NOT auto-unblock; all parents must be done."""
+    with kb.connect() as conn:
+        p1 = kb.create_task(conn, title="p1")
+        p2 = kb.create_task(conn, title="p2")
+        c = kb.create_task(conn, title="c", parents=[p1, p2])
+        # Worker claims after both parents promoted? They aren't yet — c is
+        # 'todo'. Promote p1 first; c stays todo because p2 isn't done.
+        kb.complete_task(conn, p1)
+        assert kb.get_task(conn, c).status == "todo"
+        # Complete p2 to get c to ready, then claim+block referencing p2.
+        kb.complete_task(conn, p2)
+        # Re-block c to simulate a worker pause that mentioned p2.
+        kb.claim_task(conn, c)
+        # Add a NEW parent that's not done; the auto-unblock check requires
+        # ALL parents done.
+        p3 = kb.create_task(conn, title="p3")
+        kb.block_task(conn, c, reason=f"blocked on {p3}")
+        kb.link_tasks(conn, p3, c)
+        assert kb.get_task(conn, c).status == "blocked"
+        # p3 still in flight — recompute should leave c blocked.
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, c).status == "blocked"
+        # Finish p3 → auto-unblock fires.
+        kb.complete_task(conn, p3)
+        assert kb.get_task(conn, c).status == "ready"
+
+
+def test_link_tasks_auto_unblocks_when_late_linked_parent_is_done(kanban_home):
+    """If a worker blocks referencing a parent id and the link is created
+    AFTER the parent has already completed, linking should re-evaluate
+    readiness and auto-unblock the child."""
+    with kb.connect() as conn:
+        p = kb.create_task(conn, title="parent")
+        c = kb.create_task(conn, title="child")
+        kb.claim_task(conn, c)
+        kb.block_task(conn, c, reason=f"need {p} to finish first")
+        # Parent completes BEFORE the link exists.
+        kb.complete_task(conn, p)
+        assert kb.get_task(conn, c).status == "blocked"
+        # Now the orchestrator (or human) belatedly links the dependency.
+        kb.link_tasks(conn, p, c)
+        # link_tasks should call recompute_ready and auto-unblock c.
+        assert kb.get_task(conn, c).status == "ready"
+
+
 # ---------------------------------------------------------------------------
 # Atomic claim (CAS)
 # ---------------------------------------------------------------------------

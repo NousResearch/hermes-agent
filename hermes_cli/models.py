@@ -194,22 +194,34 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "copilot-acp",
     ],
     "copilot": [
+        # OpenAI / Azure OpenAI (newest first)
+        "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
-        "gpt-5-mini",
         "gpt-5.3-codex",
+        "gpt-5.2",
         "gpt-5.2-codex",
+        "gpt-5-mini",
         "gpt-4.1",
         "gpt-4o",
         "gpt-4o-mini",
+        # Anthropic (newest first; opus-4.7 reasoning variants are gated to internal accounts)
+        "claude-opus-4.7",
+        "claude-opus-4.7-high",
+        "claude-opus-4.7-xhigh",
+        "claude-opus-4.7-1m-internal",
+        "claude-opus-4.6",
+        "claude-opus-4.5",
         "claude-sonnet-4.6",
-        "claude-sonnet-4",
         "claude-sonnet-4.5",
+        "claude-sonnet-4",
         "claude-haiku-4.5",
+        # Google
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
         "gemini-3-flash-preview",
         "gemini-2.5-pro",
+        # xAI
         "grok-code-fast-1",
     ],
     "gemini": [

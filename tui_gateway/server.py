@@ -3251,6 +3251,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             decision = goal_mgr.evaluate_after_turn(
                                 raw,
                                 user_initiated=True,
+                                messages=list(session.get("history") or []),
                             )
                             verdict_msg = decision.get("message") or ""
                             if verdict_msg:

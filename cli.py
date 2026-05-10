@@ -7244,6 +7244,8 @@ class HermesCLI:
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "subgoal":
+            self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -7840,6 +7842,103 @@ class HermesCLI:
         except Exception:
             pass
 
+    def _handle_subgoal_command(self, cmd: str) -> None:
+        """Dispatch /subgoal subcommands.
+
+        Forms:
+          /subgoal                              show the checklist
+          /subgoal <text>                       append a user item
+          /subgoal complete <n>                 mark item n completed
+          /subgoal impossible <n>               mark item n impossible
+          /subgoal undo <n>                     revert item n to pending
+          /subgoal remove <n>                   delete item n
+          /subgoal clear                        wipe the checklist (judge re-decomposes)
+        """
+        parts = (cmd or "").strip().split(None, 2)
+        # parts[0] == "/subgoal"; remainder is what the user typed
+        arg = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+
+        mgr = self._get_goal_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Goals unavailable (no active session).{_RST}")
+            return
+
+        if not mgr.has_goal():
+            _cprint(f"  {_DIM}No active goal. Set one with /goal <text>.{_RST}")
+            return
+
+        # No args → show the checklist.
+        if not arg:
+            _cprint(f"  {mgr.status_line()}")
+            _cprint(f"  {mgr.render_checklist()}")
+            return
+
+        tokens = arg.split(None, 1)
+        verb = tokens[0].lower()
+        rest = tokens[1].strip() if len(tokens) > 1 else ""
+
+        # Action verbs operate on indices.
+        action_status_map = {
+            "complete": "completed",
+            "completed": "completed",
+            "done": "completed",
+            "impossible": "impossible",
+            "imp": "impossible",
+            "skip": "impossible",
+            "undo": "pending",
+            "pending": "pending",
+            "reset": "pending",
+        }
+        if verb in action_status_map:
+            if not rest:
+                _cprint(f"  Usage: /subgoal {verb} <n>")
+                return
+            try:
+                idx = int(rest.split()[0])
+            except ValueError:
+                _cprint(f"  /subgoal {verb}: <n> must be an integer (1-based index).")
+                return
+            try:
+                item = mgr.mark_subgoal(idx, action_status_map[verb])
+            except (IndexError, ValueError, RuntimeError) as exc:
+                _cprint(f"  /subgoal {verb}: {exc}")
+                return
+            _cprint(f"  ✓ Item {idx} → {item.status}: {item.text}")
+            return
+
+        if verb == "remove":
+            if not rest:
+                _cprint("  Usage: /subgoal remove <n>")
+                return
+            try:
+                idx = int(rest.split()[0])
+            except ValueError:
+                _cprint("  /subgoal remove: <n> must be an integer (1-based index).")
+                return
+            try:
+                removed = mgr.remove_subgoal(idx)
+            except (IndexError, RuntimeError) as exc:
+                _cprint(f"  /subgoal remove: {exc}")
+                return
+            _cprint(f"  ✓ Removed item {idx}: {removed.text}")
+            return
+
+        if verb == "clear":
+            mgr.clear_checklist()
+            _cprint(
+                "  ✓ Checklist cleared. The judge will re-decompose on the next turn."
+            )
+            return
+
+        # Otherwise: append `arg` as a user-authored checklist item.
+        try:
+            item = mgr.add_subgoal(arg)
+        except (ValueError, RuntimeError) as exc:
+            _cprint(f"  /subgoal: {exc}")
+            return
+        idx = len(mgr.state.checklist) if mgr.state else 0
+        _cprint(f"  ✓ Added subgoal {idx}: {item.text}")
+
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.
 
@@ -7917,7 +8016,11 @@ class HermesCLI:
         if not last_response.strip():
             return
 
-        decision = mgr.evaluate_after_turn(last_response, user_initiated=True)
+        decision = mgr.evaluate_after_turn(
+            last_response,
+            user_initiated=True,
+            messages=getattr(self, "conversation_history", None) or [],
+        )
         msg = decision.get("message") or ""
         if msg:
             _cprint(f"  {msg}")

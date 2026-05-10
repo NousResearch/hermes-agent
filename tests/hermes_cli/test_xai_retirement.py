@@ -87,7 +87,12 @@ class TestFindRetiredEdgeCases:
     def test_xai_valid_model_not_flagged(self):
         cfg = {
             "principal": {"model": "grok-4.3"},
-            "auxiliary": {"vision": {"model": "grok-4.20-0309-reasoning"}},
+            "auxiliary": {
+                "vision": {"model": "grok-4.20-0309-reasoning"},
+                "fast": {"model": "grok-4-fast"},
+                "fast_1": {"model": "grok-4-1-fast"},
+                "bare": {"model": "grok-4"},
+            },
         }
         assert find_retired_xai_refs(cfg) == []
 
@@ -113,7 +118,7 @@ class TestFindRetiredPerSlot:
     def test_auxiliary_multiple_slots(self):
         cfg = {
             "auxiliary": {
-                "vision":      {"model": "grok-4-fast"},
+                "vision":      {"model": "grok-4-fast-reasoning"},
                 "compression": {"model": "grok-code-fast-1"},
                 "curator":     {"model": "grok-4.3"},  # not retired
                 "approval":    {"model": "gpt-4o-mini"},  # not xAI
@@ -126,7 +131,7 @@ class TestFindRetiredPerSlot:
         ]
 
     def test_auxiliary_unknown_slot_still_scanned(self):
-        cfg = {"auxiliary": {"future_slot_xyz": {"model": "grok-4"}}}
+        cfg = {"auxiliary": {"future_slot_xyz": {"model": "grok-3"}}}
         issues = find_retired_xai_refs(cfg)
         assert len(issues) == 1
         assert issues[0].config_path == "auxiliary.future_slot_xyz.model"
@@ -157,9 +162,9 @@ class TestFindRetiredPerSlot:
     def test_full_trap_config(self):
         cfg = {
             "principal":  {"model": "grok-4-1-fast-non-reasoning"},
-            "auxiliary":  {"vision": {"model": "grok-4-fast"}},
+            "auxiliary":  {"vision": {"model": "grok-4-fast-reasoning"}},
             "delegation": {"model": "grok-code-fast-1"},
-            "tts":        {"xai": {"model": "grok-4"}},  # nonsense but valid path
+            "tts":        {"xai": {"model": "grok-3"}},  # text model in TTS slot, but valid path
             "plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-pro"}}},
         }
         issues = find_retired_xai_refs(cfg)
@@ -181,11 +186,10 @@ class TestMigrationSemantics:
         issue = find_retired_xai_refs(cfg)[0]
         assert issue.reasoning_effort is None
 
-    def test_ambiguous_short_name_has_note(self):
-        cfg = {"principal": {"model": "grok-4-fast"}}
+    def test_grok_3_maps_to_grok_4_3(self):
+        cfg = {"principal": {"model": "grok-3"}}
         issue = find_retired_xai_refs(cfg)[0]
-        assert issue.note is not None
-        assert "ambiguous" in issue.note.lower()
+        assert issue.replacement == "grok-4.3"
 
     def test_imagine_pro_maps_to_imagine_quality(self):
         cfg = {"plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-pro"}}}}
@@ -205,12 +209,12 @@ class TestFormatIssue:
     def test_basic_format(self):
         issue = RetirementIssue(
             config_path="principal.model",
-            current_model="grok-4",
+            current_model="grok-3",
             replacement="grok-4.3",
         )
         s = format_issue(issue)
         assert "principal.model" in s
-        assert "'grok-4'" in s
+        assert "'grok-3'" in s
         assert "'grok-4.3'" in s
 
     def test_includes_reasoning_effort_when_set(self):
@@ -236,7 +240,7 @@ class TestFormatIssue:
     def test_includes_note_when_set(self):
         issue = RetirementIssue(
             config_path="principal.model",
-            current_model="grok-4",
+            current_model="grok-3",
             replacement="grok-4.3",
             note="ambiguous variant",
         )
@@ -259,15 +263,13 @@ class TestModuleConstants:
     def test_retired_models_keyset_matches_doc(self):
         # Snapshot test: if xAI's list changes we want CI to flag it.
         expected = {
-            "grok-4",
             "grok-4-0709",
-            "grok-4-fast",
             "grok-4-fast-reasoning",
             "grok-4-fast-non-reasoning",
-            "grok-4-1-fast",
             "grok-4-1-fast-reasoning",
             "grok-4-1-fast-non-reasoning",
             "grok-code-fast-1",
+            "grok-3",
             "grok-imagine-image-pro",
         }
         assert set(_RETIRED_MODELS.keys()) == expected

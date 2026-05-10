@@ -150,3 +150,29 @@ def test_gate_default_true_when_config_missing():
     # treated as on despite the config error.  If the gate had been off
     # this would have returned 'once' without consulting the prompt.
     assert result is None
+
+
+def test_tui_mode_renders_dialog_via_cprint():
+    """When prompt_toolkit is active, the dialog should use the TUI-safe
+    output path instead of raw print()."""
+    from cli import HermesCLI
+
+    self_ = SimpleNamespace(
+        _app=object(),
+        _prompt_text_input=lambda _prompt: "1",
+    )
+
+    with patch(
+        "cli.load_cli_config",
+        return_value={"approvals": {"destructive_slash_confirm": True}},
+    ), patch("cli._cprint") as mock_cprint:
+        result = _bound(HermesCLI._confirm_destructive_slash, self_)(
+            "clear", "line one\nline two",
+        )
+
+    assert result == "once"
+    rendered = " ".join(str(call.args[0]) for call in mock_cprint.call_args_list if call.args)
+    assert "destroys conversation state" in rendered
+    assert "[1] Approve Once" in rendered
+    assert "line one" in rendered
+    assert "line two" in rendered

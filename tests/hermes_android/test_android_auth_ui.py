@@ -96,6 +96,7 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'authApiKeySetupReady(option.label)' in auth_view_model
     assert 'currentStrings().authOpenedCorr3xt(option.label)' in auth_view_model
     assert 'currentStrings().authNoBrowser()' in auth_view_model
+    assert 'addCategory(Intent.CATEGORY_BROWSABLE)' in auth_view_model
     assert 'authBaseUrlMustBeValid' in strings
     assert 'authConfigureCorr3xtFirst' in strings
     assert 'Configure a reachable Corr3xt URL to enable app sign-in' in strings
@@ -115,6 +116,9 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'normalizeConfiguredBaseUrl' in corr3xt_auth_client
     assert 'throw IllegalArgumentException("Corr3xt base URL is not configured")' in corr3xt_auth_client
     assert 'probeStartUri' in corr3xt_auth_client
+    assert 'probeHttpUri(probeUri, host, timeoutMs)' in corr3xt_auth_client
+    assert 'probeHttpUri(uri, host, timeoutMs)' in corr3xt_auth_client
+    assert 'status = "query_required"' in corr3xt_auth_client
     assert 'UnknownHostException' in corr3xt_auth_client
     assert 'status = "unknown_host"' in corr3xt_auth_client
     assert 'status = "network_error"' in corr3xt_auth_client
@@ -152,6 +156,7 @@ def test_settings_opens_official_provider_key_pages():
     assert "viewModel::openProviderKeyPage" in settings_screen
     assert "Intent.ACTION_VIEW" in settings_view_model
     assert "Uri.parse(target)" in settings_view_model
+    assert "addCategory(Intent.CATEGORY_BROWSABLE)" in settings_view_model
     assert "openProviderKeyPage(providerLabel)" in settings_screen
     assert "Open $providerLabel key page" in strings
     assert "ProviderPresets.androidSettingsDefaults.forEach" in settings_screen

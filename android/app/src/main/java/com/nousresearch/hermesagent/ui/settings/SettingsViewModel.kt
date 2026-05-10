@@ -100,6 +100,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             return
         }
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(target)).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         runCatching {

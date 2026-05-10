@@ -77,6 +77,35 @@ class Corr3xtAuthClientTest {
     }
 
     @Test
+    fun probeStartUri_acceptsOauthBackendsThatRequireQueryParameters() {
+        val option = requireNotNull(AuthCatalog.find("google"))
+        val server = TestHttpServer { target ->
+            when {
+                target == "/oauth/start" -> 404
+                target.startsWith("/oauth/start?") -> 200
+                else -> 404
+            }
+        }
+        try {
+            val uri = Corr3xtAuthClient.buildStartUri(
+                "http://127.0.0.1:${server.port}",
+                option,
+                "state-123",
+            )
+
+            val result = Corr3xtAuthClient.probeStartUri(uri, timeoutMs = 1_000)
+
+            assertTrue(result.reachable)
+            assertEquals("query_required", result.status)
+            assertEquals(2, server.seenRequests().size)
+            assertEquals("/oauth/start", server.seenRequests().first())
+            assertTrue(server.seenRequests().last().startsWith("/oauth/start?"))
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
     fun probeStartUri_rejectsReachableHostsWithoutOAuthStartRoute() {
         val option = requireNotNull(AuthCatalog.find("google"))
         val server = TestHttpServer { target -> if (target == "/") 200 else 404 }

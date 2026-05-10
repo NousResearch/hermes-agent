@@ -80,8 +80,22 @@ object Corr3xtAuthClient {
             .encodedQuery(null)
             .fragment(null)
             .build()
+        val safeRouteProbe = probeHttpUri(probeUri, host, timeoutMs)
+        if (safeRouteProbe.reachable) {
+            return safeRouteProbe
+        }
+        if (safeRouteProbe.status == "network_error" && safeRouteProbe.errorName in setOf("HTTP 404", "HTTP 410")) {
+            val fullStartProbe = probeHttpUri(uri, host, timeoutMs)
+            if (fullStartProbe.reachable) {
+                return fullStartProbe.copy(status = "query_required")
+            }
+        }
+        return safeRouteProbe
+    }
+
+    private fun probeHttpUri(uri: Uri, host: String, timeoutMs: Int): AuthStartProbeResult {
         return try {
-            val connection = (URL(probeUri.toString()).openConnection() as HttpURLConnection).apply {
+            val connection = (URL(uri.toString()).openConnection() as HttpURLConnection).apply {
                 connectTimeout = timeoutMs
                 readTimeout = timeoutMs
                 instanceFollowRedirects = false

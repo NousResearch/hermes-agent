@@ -104,6 +104,10 @@ object HermesAutomationBridge {
                 context = context,
                 arguments = arguments,
             )
+            "run_remote_dispatch", "submit_standby_dispatch", "operator_dispatch", "remote_dispatch", "run_opengui_dispatch" -> runRemoteDispatchJson(
+                context = context,
+                arguments = arguments,
+            )
             "run_shizuku_state_trigger", "trigger_shizuku_state", "check_shizuku_trigger", "shizuku_state" -> runShizukuStateTriggerJson(
                 context = context,
                 requestedState = stringArgument(arguments, "shizuku_state", "state", "expected_state", "trigger_state").orEmpty(),
@@ -1493,6 +1497,96 @@ object HermesAutomationBridge {
             .toString()
     }
 
+    fun runRemoteDispatchJson(context: Context, arguments: JSONObject): String {
+        val payload = dispatchPayloadFromArguments(arguments)
+        val store = HermesAutomationStore(context)
+        val automationId = stringArgument(payload, "automation_id", "automationId", "id").orEmpty().trim()
+        val taskName = stringArgument(payload, "task_name", "taskName", "remote_task_name", "label", "name").orEmpty().trim()
+        val allowDisabled = booleanArgument(payload, "allow_disabled", "allowDisabled") ?: false
+        val records = store.list()
+        val matchedRecords = when {
+            automationId.isNotBlank() -> records.filter { record -> record.id == automationId }
+            taskName.isNotBlank() -> records.filter { record ->
+                record.label.equals(taskName, ignoreCase = true) || record.id.equals(taskName, ignoreCase = true)
+            }
+            else -> records.filter { record -> record.triggerType == TRIGGER_REMOTE_DISPATCH }
+        }
+        if (matchedRecords.isEmpty()) {
+            return errorJson(
+                "No Android automation matched remote dispatch. Pass automation_id or taskName, or create an enabled automation with trigger remote_dispatch.",
+            )
+        }
+        val runnableRecords = if (allowDisabled) matchedRecords else matchedRecords.filter { it.enabled }
+        if (runnableRecords.isEmpty()) {
+            return errorJson("Remote dispatch matched only disabled automations; enable one or pass allow_disabled=true from a trusted local caller.")
+        }
+        val dispatch = dispatchContextFromPayload(payload)
+        setRemoteDispatchVariables(store, dispatch)
+        val results = JSONArray()
+        runnableRecords.forEach { record ->
+            results.put(runRecordJson(context, store, record, TRIGGER_REMOTE_DISPATCH, dispatch))
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("trigger", TRIGGER_REMOTE_DISPATCH)
+            .put("dispatch_source", dispatch.source)
+            .put("dispatch_channel", dispatch.channel)
+            .put("remote_execution_id", dispatch.executionId)
+            .put("remote_task_id", dispatch.taskId)
+            .put("remote_task_name", dispatch.taskName)
+            .put("matched_count", runnableRecords.size)
+            .put("results", results)
+            .toString()
+    }
+
+    private data class HermesAutomationDispatchContext(
+        val source: String = "",
+        val channel: String = "",
+        val executionId: String = "",
+        val taskId: String = "",
+        val taskName: String = "",
+    )
+
+    private fun dispatchPayloadFromArguments(arguments: JSONObject): JSONObject {
+        return jsonObjectArgument(arguments, "payload")
+            ?: jsonObjectArgument(arguments, "dispatch")
+            ?: jsonObjectArgument(arguments, "standby_dispatch")
+            ?: arguments
+    }
+
+    private fun dispatchContextFromPayload(payload: JSONObject): HermesAutomationDispatchContext {
+        return HermesAutomationDispatchContext(
+            source = stringArgument(payload, "dispatch_source", "source", allowEmpty = true)
+                .orEmpty()
+                .ifBlank { "opengui_standby" }
+                .take(MAX_EVENT_VALUE_CHARS),
+            channel = stringArgument(payload, "dispatch_channel", "channel", allowEmpty = true)
+                .orEmpty()
+                .ifBlank { "standby" }
+                .take(MAX_EVENT_VALUE_CHARS),
+            executionId = stringArgument(payload, "execution_id", "executionId", "remote_execution_id", allowEmpty = true)
+                .orEmpty()
+                .take(MAX_EVENT_VALUE_CHARS),
+            taskId = stringArgument(payload, "task_id", "taskId", "remote_task_id", allowEmpty = true)
+                .orEmpty()
+                .take(MAX_EVENT_VALUE_CHARS),
+            taskName = stringArgument(payload, "task_name", "taskName", "remote_task_name", "label", "name", allowEmpty = true)
+                .orEmpty()
+                .take(MAX_EVENT_VALUE_CHARS),
+        )
+    }
+
+    private fun setRemoteDispatchVariables(store: HermesAutomationStore, dispatch: HermesAutomationDispatchContext) {
+        store.setVariable("DISPATCH_SOURCE", dispatch.source)
+        store.setVariable("DISPATCH_CHANNEL", dispatch.channel)
+        store.setVariable("DISPATCH_EXECUTION_ID", dispatch.executionId)
+        store.setVariable("DISPATCH_TASK_ID", dispatch.taskId)
+        store.setVariable("DISPATCH_TASK_NAME", dispatch.taskName)
+        store.setVariable("REMOTE_EXECUTION_ID", dispatch.executionId)
+        store.setVariable("REMOTE_TASK_ID", dispatch.taskId)
+        store.setVariable("REMOTE_TASK_NAME", dispatch.taskName)
+    }
+
     fun runShizukuStateTriggerJson(context: Context, requestedState: String = ""): String {
         val store = HermesAutomationStore(context)
         val status = HermesPrivilegedAccessBridge.readStatus(context)
@@ -1525,6 +1619,7 @@ object HermesAutomationBridge {
         store: HermesAutomationStore,
         record: HermesAutomationRecord,
         trigger: String,
+        dispatch: HermesAutomationDispatchContext = HermesAutomationDispatchContext(),
     ): JSONObject {
         if (trigger == TRIGGER_TIME) {
             setTimeEventVariables(store)
@@ -1584,6 +1679,11 @@ object HermesAutomationBridge {
                 result = resultText,
                 startedAtEpochMs = startedAtEpochMs,
                 finishedAtEpochMs = finishedAtEpochMs,
+                dispatchSource = dispatch.source,
+                dispatchChannel = dispatch.channel,
+                remoteExecutionId = dispatch.executionId,
+                remoteTaskId = dispatch.taskId,
+                remoteTaskName = dispatch.taskName,
             )
         )
         runCatching {
@@ -3413,20 +3513,54 @@ object HermesAutomationBridge {
     private fun standbySummaryJson(records: List<HermesAutomationRecord>, store: HermesAutomationStore): JSONObject {
         val enabledRecords = records.filter { it.enabled }
         val externalRecords = enabledRecords.filter { it.triggerType == TRIGGER_EXTERNAL }
+        val remoteDispatchRecords = enabledRecords.filter { it.triggerType == TRIGGER_REMOTE_DISPATCH }
         val recentRuns = store.listRunEvents(5)
         val latestRun = recentRuns.firstOrNull()
+        val latestDispatch = recentRuns.firstOrNull { event ->
+            event.trigger == TRIGGER_REMOTE_DISPATCH || event.dispatchSource.isNotBlank()
+        }
         return JSONObject()
             .put("ready", enabledRecords.isNotEmpty())
             .put("automation_count", records.size)
             .put("enabled_automation_count", enabledRecords.size)
             .put("external_trigger_count", externalRecords.size)
+            .put("remote_dispatch_count", remoteDispatchRecords.size)
             .put("recent_run_count", recentRuns.size)
             .put("last_run_epoch_ms", latestRun?.finishedAtEpochMs ?: JSONObject.NULL)
             .put("last_run_success", latestRun?.success ?: JSONObject.NULL)
             .put("last_run_label", latestRun?.automationLabel.orEmpty())
             .put("last_run_trigger", latestRun?.trigger.orEmpty())
             .put("last_run_result", latestRun?.result.orEmpty())
-            .put("supported_dispatch_channels", JSONArray(listOf("manual", "external_broadcast", "quick_settings_tile", "home_screen_widget", "launcher_shortcut", "Tasker plugin")))
+            .put("last_dispatch_epoch_ms", latestDispatch?.finishedAtEpochMs ?: JSONObject.NULL)
+            .put("last_dispatch_source", latestDispatch?.dispatchSource.orEmpty())
+            .put("last_dispatch_channel", latestDispatch?.dispatchChannel.orEmpty())
+            .put("last_dispatch_execution_id", latestDispatch?.remoteExecutionId.orEmpty())
+            .put("last_dispatch_task_id", latestDispatch?.remoteTaskId.orEmpty())
+            .put("last_dispatch_task_name", latestDispatch?.remoteTaskName.orEmpty())
+            .put(
+                "supported_dispatch_channels",
+                JSONArray(
+                    listOf(
+                        "manual",
+                        "external_broadcast",
+                        "OpenGUI standby payload",
+                        "quick_settings_tile",
+                        "home_screen_widget",
+                        "launcher_shortcut",
+                        "Tasker plugin",
+                    )
+                )
+            )
+            .put(
+                "compatible_dispatch_payloads",
+                JSONArray(
+                    listOf(
+                        "OpenGUI standby:dispatch {executionId, taskId, taskName}",
+                        "Hermes android_automation_tool run_remote_dispatch",
+                        "token-protected Hermes external broadcast",
+                    )
+                )
+            )
     }
 
     private fun automationBundleFromArguments(arguments: JSONObject): JSONObject? {
@@ -4334,6 +4468,8 @@ object HermesAutomationBridge {
         "run_location_trigger",
         "run_sensor_trigger",
         "run_external_trigger",
+        "run_remote_dispatch",
+        "submit_standby_dispatch",
         "run_shizuku_state_trigger",
         "run_time_trigger",
         "delete",
@@ -4425,6 +4561,7 @@ object HermesAutomationBridge {
         TRIGGER_SENSOR,
         TRIGGER_LOGCAT_ENTRY,
         TRIGGER_EXTERNAL,
+        TRIGGER_REMOTE_DISPATCH,
         TRIGGER_SHIZUKU_AVAILABLE,
         TRIGGER_SHIZUKU_UNAVAILABLE,
     )
@@ -4486,6 +4623,12 @@ object HermesAutomationBridge {
         "external_app" to TRIGGER_EXTERNAL,
         "third_party_trigger" to TRIGGER_EXTERNAL,
         "tasker_trigger_app" to TRIGGER_EXTERNAL,
+        "remote" to TRIGGER_REMOTE_DISPATCH,
+        "remote_dispatch" to TRIGGER_REMOTE_DISPATCH,
+        "standby" to TRIGGER_REMOTE_DISPATCH,
+        "standby_dispatch" to TRIGGER_REMOTE_DISPATCH,
+        "opengui" to TRIGGER_REMOTE_DISPATCH,
+        "opengui_standby" to TRIGGER_REMOTE_DISPATCH,
         "clock" to TRIGGER_TIME,
         "clock_time" to TRIGGER_TIME,
         "daily_time" to TRIGGER_TIME,

@@ -209,12 +209,26 @@ private fun OperatorStandbyCard(uiState: DeviceUiState) {
                 strings.operatorStandbyRunHistory(uiState.recentAutomationRunCount),
                 style = MaterialTheme.typography.bodySmall,
             )
+            Text(
+                strings.operatorStandbyRemoteDispatch(uiState.remoteDispatchCount),
+                style = MaterialTheme.typography.bodySmall,
+            )
             if (uiState.lastAutomationRunLabel.isNotBlank() || uiState.lastAutomationRunResult.isNotBlank()) {
                 Text(
                     strings.operatorStandbyLastRun(
                         label = uiState.lastAutomationRunLabel,
                         success = uiState.lastAutomationRunSuccess,
                         result = uiState.lastAutomationRunResult,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (uiState.lastDispatchTaskName.isNotBlank() || uiState.lastDispatchSource.isNotBlank()) {
+                Text(
+                    strings.operatorStandbyLastDispatch(
+                        taskName = uiState.lastDispatchTaskName,
+                        source = uiState.lastDispatchSource,
+                        channel = uiState.lastDispatchChannel,
                     ),
                     style = MaterialTheme.typography.bodySmall,
                 )

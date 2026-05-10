@@ -12,9 +12,7 @@ class TestSplitGuard(unittest.TestCase):
 
     def test_split_zero_guard_exists(self):
         """cli.py must contain guards against empty split results."""
-        cli_path = REPO_ROOT / "cli.py"
-        with open(cli_path) as f:
-            source = f.read()
+        source = (REPO_ROOT / "cli.py").read_text()
         # Check for the guard pattern we added
         guards = [
             "text.split()[0] if text.strip() else",

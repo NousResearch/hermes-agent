@@ -543,7 +543,8 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        parts = self._address.split('@')
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{parts[1]}>" if len(parts) > 1 else f"<hermes-{uuid.uuid4().hex[:12]}@invalid.address>"
         msg["Message-ID"] = msg_id
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
@@ -652,7 +653,8 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        parts = self._address.split('@')
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{parts[1]}>" if len(parts) > 1 else f"<hermes-{uuid.uuid4().hex[:12]}@invalid.address>"
         msg["Message-ID"] = msg_id
 
         if body:
@@ -733,7 +735,8 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        parts = self._address.split('@')
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{parts[1]}>" if len(parts) > 1 else f"<hermes-{uuid.uuid4().hex[:12]}@invalid.address>"
         msg["Message-ID"] = msg_id
 
         if body:

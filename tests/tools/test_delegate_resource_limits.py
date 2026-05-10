@@ -219,5 +219,263 @@ class TestResourceLimitChecks(unittest.TestCase):
         )
 
 
+class TestResourceLimitEdgeCases(unittest.TestCase):
+    """Test edge cases and boundary conditions for resource limits."""
+
+    def _make_mock_child(self, input_tokens=1000, output_tokens=2000, model="test-model"):
+        """Create a mock child agent with token counts."""
+        child = MagicMock()
+        child.session_prompt_tokens = input_tokens
+        child.session_completion_tokens = output_tokens
+        child.model = model
+        child.session_estimated_cost_usd = 0.01
+        child.session_reasoning_tokens = 0
+        child._delegate_role = "leaf"
+        
+        # Mock run_conversation to return a simple result
+        child.run_conversation.return_value = {
+            "final_response": "Task completed",
+            "messages": [],
+            "completed": True,
+            "interrupted": False,
+        }
+        
+        return child
+
+    @patch("tools.delegate_tool._get_max_context_tokens")
+    @patch("tools.delegate_tool._get_context_growth_ratio")
+    @patch("tools.delegate_tool._get_child_timeout")
+    @patch("tools.delegate_tool.file_state")
+    def test_zero_input_tokens_no_growth_check(
+        self, mock_file_state, mock_timeout, mock_growth_ratio, mock_max_tokens
+    ):
+        """Growth ratio check skipped when input_tokens = 0 (division by zero)."""
+        mock_max_tokens.return_value = 100000
+        mock_growth_ratio.return_value = 2.5
+        mock_timeout.return_value = 600
+        mock_file_state.known_reads.return_value = []
+        mock_file_state.writes_since.return_value = {}
+
+        # Child with 0 input tokens (growth ratio check should be skipped)
+        child = self._make_mock_child(input_tokens=0, output_tokens=5000)
+        
+        result = _run_single_child(
+            task_index=0,
+            goal="Test task",
+            child=child,
+            parent_agent=None,
+        )
+
+        # Should complete successfully (no growth ratio check)
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("resource_warnings", result)
+
+    @patch("tools.delegate_tool._get_max_context_tokens")
+    @patch("tools.delegate_tool._get_context_growth_ratio")
+    @patch("tools.delegate_tool._get_child_timeout")
+    @patch("tools.delegate_tool.file_state")
+    def test_boundary_exactly_at_token_limit(
+        self, mock_file_state, mock_timeout, mock_growth_ratio, mock_max_tokens
+    ):
+        """Tokens exactly at limit should NOT trigger failure."""
+        mock_max_tokens.return_value = 50000
+        mock_growth_ratio.return_value = 2.5
+        mock_timeout.return_value = 600
+        mock_file_state.known_reads.return_value = []
+        mock_file_state.writes_since.return_value = {}
+
+        # Exactly 50000 tokens (at limit, not exceeding)
+        child = self._make_mock_child(input_tokens=25000, output_tokens=25000)
+        
+        result = _run_single_child(
+            task_index=0,
+            goal="Test task",
+            child=child,
+            parent_agent=None,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("resource_warnings", result)
+
+    @patch("tools.delegate_tool._get_max_context_tokens")
+    @patch("tools.delegate_tool._get_context_growth_ratio")
+    @patch("tools.delegate_tool._get_child_timeout")
+    @patch("tools.delegate_tool.file_state")
+    def test_boundary_one_token_over_limit(
+        self, mock_file_state, mock_timeout, mock_growth_ratio, mock_max_tokens
+    ):
+        """One token over limit should trigger failure."""
+        mock_max_tokens.return_value = 50000
+        mock_growth_ratio.return_value = 2.5
+        mock_timeout.return_value = 600
+        mock_file_state.known_reads.return_value = []
+        mock_file_state.writes_since.return_value = {}
+
+        # 50001 tokens (1 over limit)
+        child = self._make_mock_child(input_tokens=25000, output_tokens=25001)
+        
+        result = _run_single_child(
+            task_index=0,
+            goal="Test task",
+            child=child,
+            parent_agent=None,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["exit_reason"], "resource_limit_exceeded")
+
+    @patch("tools.delegate_tool._get_max_context_tokens")
+    @patch("tools.delegate_tool._get_context_growth_ratio")
+    @patch("tools.delegate_tool._get_child_timeout")
+    @patch("tools.delegate_tool.file_state")
+    def test_boundary_exactly_at_growth_ratio(
+        self, mock_file_state, mock_timeout, mock_growth_ratio, mock_max_tokens
+    ):
+        """Growth ratio exactly at limit should NOT trigger failure."""
+        mock_max_tokens.return_value = 100000
+        mock_growth_ratio.return_value = 2.5
+        mock_timeout.return_value = 600
+        mock_file_state.known_reads.return_value = []
+        mock_file_state.writes_since.return_value = {}
+
+        # Growth ratio exactly 2.5 (2000 input, 5000 output)
+        child = self._make_mock_child(input_tokens=2000, output_tokens=5000)
+        
+        result = _run_single_child(
+            task_index=0,
+            goal="Test task",
+            child=child,
+            parent_agent=None,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("resource_warnings", result)
+
+    @patch("tools.delegate_tool._get_max_context_tokens")
+    @patch("tools.delegate_tool._get_context_growth_ratio")
+    @patch("tools.delegate_tool._get_child_timeout")
+    @patch("tools.delegate_tool.file_state")
+    def test_boundary_slightly_over_growth_ratio(
+        self, mock_file_state, mock_timeout, mock_growth_ratio, mock_max_tokens
+    ):
+        """Growth ratio slightly over limit should trigger failure."""
+        mock_max_tokens.return_value = 100000
+        mock_growth_ratio.return_value = 2.5
+        mock_timeout.return_value = 600
+        mock_file_state.known_reads.return_value = []
+        mock_file_state.writes_since.return_value = {}
+
+        # Growth ratio 2.501 (2000 input, 5002 output)
+        child = self._make_mock_child(input_tokens=2000, output_tokens=5002)
+        
+        result = _run_single_child(
+            task_index=0,
+            goal="Test task",
+            child=child,
+            parent_agent=None,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["exit_reason"], "resource_limit_exceeded")
+
+    @patch("tools.delegate_tool._get_max_context_tokens")
+    @patch("tools.delegate_tool._get_context_growth_ratio")
+    @patch("tools.delegate_tool._get_child_timeout")
+    @patch("tools.delegate_tool.file_state")
+    def test_missing_token_attributes(
+        self, mock_file_state, mock_timeout, mock_growth_ratio, mock_max_tokens
+    ):
+        """Child without token attributes defaults to 0 (no failure)."""
+        mock_max_tokens.return_value = 100000
+        mock_growth_ratio.return_value = 2.5
+        mock_timeout.return_value = 600
+        mock_file_state.known_reads.return_value = []
+        mock_file_state.writes_since.return_value = {}
+
+        # Child with explicit 0 token values (simulating missing attributes)
+        child = MagicMock()
+        child.session_prompt_tokens = 0
+        child.session_completion_tokens = 0
+        child.model = "test-model"
+        child.session_estimated_cost_usd = 0.01
+        child.session_reasoning_tokens = 0
+        child._delegate_role = "leaf"
+        
+        child.run_conversation.return_value = {
+            "final_response": "Task completed",
+            "messages": [],
+            "completed": True,
+            "interrupted": False,
+        }
+        
+        # Mock get_activity_summary to avoid AttributeError
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 0,
+            "max_iterations": 0,
+        }
+        
+        result = _run_single_child(
+            task_index=0,
+            goal="Test task",
+            child=child,
+            parent_agent=None,
+        )
+
+        # Should complete (0 tokens don't exceed limits)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["tokens"]["input"], 0)
+        self.assertEqual(result["tokens"]["output"], 0)
+
+    @patch("tools.delegate_tool._get_max_context_tokens")
+    @patch("tools.delegate_tool._get_context_growth_ratio")
+    @patch("tools.delegate_tool._get_child_timeout")
+    @patch("tools.delegate_tool.file_state")
+    def test_non_numeric_token_values(
+        self, mock_file_state, mock_timeout, mock_growth_ratio, mock_max_tokens
+    ):
+        """Non-numeric token values are handled gracefully."""
+        mock_max_tokens.return_value = 100000
+        mock_growth_ratio.return_value = 2.5
+        mock_timeout.return_value = 600
+        mock_file_state.known_reads.return_value = []
+        mock_file_state.writes_since.return_value = {}
+
+        # Child with 0 token values (code uses getattr with default 0)
+        child = MagicMock()
+        child.session_prompt_tokens = 0
+        child.session_completion_tokens = 0
+        child.model = "test-model"
+        child.session_estimated_cost_usd = 0.01
+        child.session_reasoning_tokens = 0
+        child._delegate_role = "leaf"
+        
+        child.run_conversation.return_value = {
+            "final_response": "Task completed",
+            "messages": [],
+            "completed": True,
+            "interrupted": False,
+        }
+        
+        # Mock get_activity_summary to avoid AttributeError
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 0,
+            "max_iterations": 0,
+        }
+        
+        result = _run_single_child(
+            task_index=0,
+            goal="Test task",
+            child=child,
+            parent_agent=None,
+        )
+
+        # Should complete (0 tokens don't exceed limits)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["tokens"]["input"], 0)
+        self.assertEqual(result["tokens"]["output"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

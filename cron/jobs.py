@@ -729,6 +729,7 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_at": None,
             "paused_reason": None,
             "next_run_at": next_run_at,
+            "consecutive_failures": 0,
         },
     )
 
@@ -800,8 +801,43 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         save_jobs(jobs)
                         return
                 
+                # ── Self-healing: consecutive failure tracking ──
+                if success:
+                    job["consecutive_failures"] = 0
+                else:
+                    job["consecutive_failures"] = job.get("consecutive_failures", 0) + 1
+
+                # Auto-pause after 3 consecutive failures
+                _AUTO_PAUSE_THRESHOLD = 3
+                if job.get("consecutive_failures", 0) >= _AUTO_PAUSE_THRESHOLD:
+                    job["state"] = "paused"
+                    job["enabled"] = False
+                    job["paused_reason"] = (
+                        f"Auto-paused after {job['consecutive_failures']} consecutive failures. "
+                        f"Last error: {error or 'unknown'}. "
+                        f"Use 'hermes cron resume {job_id}' to re-enable."
+                    )
+                    job["paused_at"] = now
+                    logger.warning(
+                        "Job '%s' auto-paused after %d consecutive failures",
+                        job.get("name", job_id), job["consecutive_failures"],
+                    )
+                    save_jobs(jobs)
+                    return
+
                 # Compute next run
                 job["next_run_at"] = compute_next_run(job["schedule"], now)
+
+                # Exponential backoff on failure: delay next run by 2^(failures-1) minutes
+                if not success and job.get("consecutive_failures", 0) > 0 and job.get("next_run_at"):
+                    _backoff_minutes = min(2 ** (job["consecutive_failures"] - 1), 60)
+                    from datetime import timedelta as _td
+                    _next_dt = datetime.fromisoformat(job["next_run_at"])
+                    job["next_run_at"] = (_next_dt + _td(minutes=_backoff_minutes)).isoformat()
+                    logger.info(
+                        "Job '%s': backoff %d min (failure #%d)",
+                        job.get("name", job_id), _backoff_minutes, job["consecutive_failures"],
+                    )
 
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't

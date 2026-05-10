@@ -655,6 +655,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     return None
 
 
+def _classify_error(error_msg: str) -> str:
+    """Classify an error message into a category string for feedback tracking."""
+    msg = (error_msg or "").lower()
+    if "timeout" in msg or "timed out" in msg:
+        return "timeout"
+    if "rate limit" in msg or "429" in msg or "too many requests" in msg:
+        return "rate_limit"
+    if "401" in msg or "403" in msg or "unauthorized" in msg or "forbidden" in msg:
+        return "auth_error"
+    if "500" in msg or "502" in msg or "503" in msg or "504" in msg or "server error" in msg:
+        return "api_error"
+    if "connection" in msg or "network" in msg or "dns" in msg:
+        return "network_error"
+    if "empty response" in msg:
+        return "empty_response"
+    if "model" in msg or "provider" in msg:
+        return "model_error"
+    return "unknown"
+
+
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
@@ -1730,6 +1750,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
+            import time as _time
+            _job_start = _time.monotonic()
             try:
                 success, output, final_response, error = run_job(job)
 
@@ -1762,11 +1784,42 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+
+                # Record feedback for sloop dashboard
+                try:
+                    from tools.feedback_collector import record_feedback
+                    _duration_ms = (_time.monotonic() - _job_start) * 1000
+                    record_feedback(
+                        job_id=job["id"],
+                        job_name=job.get("name"),
+                        success=success,
+                        duration_ms=_duration_ms,
+                        error_type=_classify_error(error) if error else None,
+                        error_msg=error,
+                        delivery_ok=not bool(delivery_error),
+                    )
+                except Exception as _fb_err:
+                    logger.debug("Feedback recording failed for job %s: %s", job["id"], _fb_err)
+
                 return True
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
+                # Record feedback for exception case
+                try:
+                    from tools.feedback_collector import record_feedback
+                    _duration_ms = (_time.monotonic() - _job_start) * 1000
+                    record_feedback(
+                        job_id=job["id"],
+                        job_name=job.get("name"),
+                        success=False,
+                        duration_ms=_duration_ms,
+                        error_type=_classify_error(str(e)),
+                        error_msg=str(e),
+                    )
+                except Exception:
+                    pass
                 return False
 
         # Partition due jobs: those with a per-job workdir mutate

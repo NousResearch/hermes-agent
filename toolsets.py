@@ -149,6 +149,12 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
+
+    "sloop": {
+        "description": "Sloop loop system - feedback collection, health dashboard, self-healing for cron jobs",
+        "tools": ["sloop_feedback", "sloop_dashboard"],
+        "includes": []
+    },
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",

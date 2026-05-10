@@ -74,13 +74,11 @@ def test_show_session_status_prints_gateway_style_summary():
         cli_obj._show_session_status()
 
     printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
-    assert "Hermes CLI Status" in printed
-    assert "Session ID: session-123" in printed
-    assert "Path: ~/.hermes" in printed
-    assert "Title: My titled session" in printed
-    assert "Model: openai/gpt-5.4 (openai)" in printed
-    assert "Tokens: 321" in printed
-    assert "Agent Running: No" in printed
+    assert "Agent Status Panel" in printed
+    assert "session-123" in printed
+    assert "My titled session" in printed
+    assert "gpt-5.4" in printed
+    assert "openai" in printed
     _, kwargs = cli_obj.console.print.call_args
     assert kwargs.get("highlight") is False
     assert kwargs.get("markup") is False

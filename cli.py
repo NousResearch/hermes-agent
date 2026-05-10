@@ -4937,7 +4937,9 @@ class HermesCLI:
         )
 
     def _show_session_status(self):
-        """Show gateway-style status for the current CLI session."""
+        """Show the full agent status panel for the current CLI session."""
+        from tools.agent_status_panel import collect_status, format_status_panel
+
         session_meta = {}
         if self._session_db:
             try:
@@ -4946,48 +4948,18 @@ class HermesCLI:
                 session_meta = {}
 
         title = (session_meta.get("title") or "").strip()
+        provider = getattr(self, "provider", None) or ""
+        model = getattr(self, "model", None) or ""
 
-        created_at = self.session_start
-        started_at = session_meta.get("started_at")
-        if started_at:
-            try:
-                created_at = datetime.fromtimestamp(float(started_at))
-            except Exception:
-                created_at = self.session_start
-
-        updated_at = created_at
-        for field in ("updated_at", "last_updated_at", "last_activity_at"):
-            value = session_meta.get(field)
-            if not value:
-                continue
-            try:
-                updated_at = datetime.fromtimestamp(float(value))
-                break
-            except Exception:
-                pass
-
-        agent = getattr(self, "agent", None)
-        total_tokens = getattr(agent, "session_total_tokens", 0) or 0
-        provider = getattr(self, "provider", None) or "unknown"
-        model = getattr(self, "model", None) or "(unknown)"
-        is_running = bool(getattr(self, "_agent_running", False))
-
-        lines = [
-            "Hermes CLI Status",
-            "",
-            f"Session ID: {self.session_id}",
-            f"Path: {display_hermes_home()}",
-        ]
-        if title:
-            lines.append(f"Title: {title}")
-        lines.extend([
-            f"Model: {model} ({provider})",
-            f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
-            f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"Tokens: {total_tokens:,}",
-            f"Agent Running: {'Yes' if is_running else 'No'}",
-        ])
-        self._console_print("\n".join(lines), highlight=False, markup=False)
+        data = collect_status(
+            session_db=self._session_db,
+            session_id=self.session_id,
+            model=model,
+            provider=provider,
+            title=title,
+        )
+        panel = format_status_panel(data)
+        self._console_print(panel, highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:
         try:
@@ -6660,7 +6632,7 @@ class HermesCLI:
             # don't kill the interactive session.
             pass
         except Exception as exc:
-            print(f"(._.) curator: {exc}")
+            print(f"(. _.) curator: {exc}")
 
     def _handle_kanban_command(self, cmd: str):
         """Handle the /kanban command — delegate to the shared kanban CLI.
@@ -6679,9 +6651,71 @@ class HermesCLI:
         try:
             output = run_slash(rest)
         except Exception as exc:  # pragma: no cover - defensive
-            output = f"(._.) kanban error: {exc}"
+            output = f"(. _.) kanban error: {exc}"
         if output:
             print(output)
+
+    def _handle_sloop_command(self, cmd: str):
+        """Handle /sloop command — shows loop health status, feedback, cleanup."""
+        import shlex
+        parts = shlex.split(cmd) if cmd else ["/sloop"]
+        sub = parts[1] if len(parts) > 1 else "status"
+
+        if sub == "status":
+            try:
+                from tools.sloop_dashboard import get_sloop_dashboard_data, render_sloop_status
+                data = get_sloop_dashboard_data()
+                display = render_sloop_status(
+                    success_rate=data["success_rate"],
+                    avg_duration_ms=data["avg_duration_ms"],
+                    failure_trend=data["failure_trend"],
+                    recent_entries=data["recent_entries"],
+                    error_types=data["error_types"],
+                    consecutive_failures=data["consecutive_failures"],
+                )
+                print(display)
+            except Exception as e:
+                print(f"(. _.) Error loading sloop status: {e}")
+
+        elif sub == "feedback":
+            limit = 20
+            if len(parts) > 2 and parts[2].isdigit():
+                limit = int(parts[2])
+            try:
+                from tools.feedback_collector import get_recent_feedback
+                entries = get_recent_feedback(limit=limit)
+                if not entries:
+                    print("  No feedback entries yet.")
+                    return
+                print(f"\n  Recent Feedback ({len(entries)} entries):")
+                print(f"  {'Time':<20} {'Job':<20} {'Status':<8} {'Duration':<10} {'Error'}")
+                print("  " + "─" * 72)
+                for e in entries:
+                    ts = e.get("timestamp", "?")[:19]
+                    name = (e.get("job_name") or e.get("job_id", "?"))[:20]
+                    ok = "✅" if e.get("success") else "❌"
+                    dur = e.get("duration_ms")
+                    dur_str = f"{dur:.0f}ms" if dur else "-"
+                    err = (e.get("error_type") or "")[:30]
+                    print(f"  {ts:<20} {name:<20} {ok:<8} {dur_str:<10} {err}")
+                print()
+            except Exception as e:
+                print(f"(. _.) Error loading feedback: {e}")
+
+        elif sub == "cleanup":
+            days = 90
+            if len(parts) > 2 and parts[2].isdigit():
+                days = int(parts[2])
+            try:
+                from tools.feedback_collector import cleanup_old_feedback
+                deleted = cleanup_old_feedback(days=days)
+                print(f"  🧹 Cleaned up {deleted} feedback entries older than {days} days.")
+            except Exception as e:
+                print(f"(. _.) Error during cleanup: {e}")
+
+        else:
+            print(f"(. _.) Unknown sloop command: {sub}")
+            print("  Available: status, feedback, cleanup")
 
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
@@ -6952,6 +6986,8 @@ class HermesCLI:
             self._handle_curator_command(cmd_original)
         elif canonical == "kanban":
             self._handle_kanban_command(cmd_original)
+        elif canonical == "sloop":
+            self._handle_sloop_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)

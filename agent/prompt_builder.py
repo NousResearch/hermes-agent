@@ -1847,6 +1847,42 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
         return None
 
 
+def load_home_agents_md(context_length: Optional[int] = None) -> Optional[str]:
+    """Load AGENTS.md from HERMES_HOME and return its content, or None.
+
+    Operational policy file — parallel to SOUL.md (identity), but for
+    workflow rules, coding policy, safety guardrails, etc. Loaded
+    cwd-independently so the same baseline rules apply across all
+    sessions/platforms (CLI, gateway, cron, subagents).
+
+    A separate cwd-local AGENTS.md (project context) can still be loaded
+    via ``_load_agents_md()`` and will be appended after this one — so
+    project context overrides/augments home policy.
+    """
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading AGENTS.md: %s", e)
+
+    agents_path = get_hermes_home() / "AGENTS.md"
+    if not agents_path.exists():
+        return None
+    try:
+        content = agents_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _scan_context_content(content, "AGENTS.md")
+        result = f"## AGENTS.md (operational policy from HERMES_HOME)\n\n{content}"
+        return _truncate_content(
+            result, "AGENTS.md", context_length=context_length,
+            read_path=str(agents_path),
+        )
+    except Exception as e:
+        logger.debug("Could not read AGENTS.md from %s: %s", agents_path, e)
+        return None
+
+
 def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.hermes.md / HERMES.md — walk to git root."""
     hermes_md_path = _find_hermes_md(cwd_path)
@@ -1958,6 +1994,9 @@ def build_context_files_prompt(
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
     SOUL.md from HERMES_HOME is independent and always included when present.
+    AGENTS.md from HERMES_HOME (operational policy) is also independent and
+    always included when present — loaded BEFORE the cwd-local project context
+    so project AGENTS.md can override/augment baseline policy.
 
     Each context source is capped before injection. The cap defaults to the
     model's context window (scaled — see ``_dynamic_context_file_max_chars``)
@@ -1972,6 +2011,11 @@ def build_context_files_prompt(
 
     cwd_path = Path(cwd).resolve()
     sections = []
+
+    # Operational policy from HERMES_HOME — cwd-independent baseline
+    home_agents = load_home_agents_md(context_length)
+    if home_agents:
+        sections.append(home_agents)
 
     # Priority-based project context: first match wins
     project_context = (

@@ -13,14 +13,15 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | File | Purpose | Discovery |
 |------|---------|-----------| 
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
-| **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
+| **AGENTS.md** (cwd) | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
+| **AGENTS.md** (HERMES_HOME) | Global operational policy — workflow rules, coding policy, safety guardrails — applied across all sessions/cwds | `HERMES_HOME/AGENTS.md` only |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
 :::info Priority system
-Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+Only **one** project context type is loaded per session from the working directory (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** and the **HERMES_HOME `AGENTS.md`** load independently and always (when present), regardless of cwd. Home-level `AGENTS.md` is appended *before* the cwd project context, so project files can override or augment baseline policy.
 :::
 
 ## AGENTS.md
@@ -93,6 +94,29 @@ Important details:
 - Hermes does not probe the working directory for `SOUL.md`
 - If the file is empty, nothing from `SOUL.md` is added to the prompt
 - If the file has content, the content is injected verbatim after scanning and truncation
+
+## AGENTS.md (HERMES_HOME)
+
+In addition to the cwd-based `AGENTS.md` (project context), Hermes also loads an `AGENTS.md` from your `HERMES_HOME` if present. This is the right home for **operational policy** — workflow rules, coding/test conventions, safety guardrails, formatting preferences — that should apply across every session, regardless of working directory.
+
+**Location:**
+
+- `~/.hermes/AGENTS.md`
+- or `$HERMES_HOME/AGENTS.md` if you run Hermes with a custom home directory
+
+**Why both?**
+
+- **`HERMES_HOME/AGENTS.md`** = baseline policy that follows you everywhere (CLI sessions, Telegram/Discord gateway, cron jobs, subagents, any cwd).
+- **cwd `AGENTS.md`** = project-specific context (architecture, conventions, repo-local quirks). Loaded when you run Hermes inside that project.
+
+When both exist they coexist: home AGENTS.md is appended **first**, then the cwd project context is appended after, so the project file can override or extend home rules. The cwd-based progressive subdirectory discovery still works for the project tree.
+
+**When to use this vs. SOUL.md:**
+
+- **SOUL.md** → identity, personality, voice, tone (*who* the agent is)
+- **AGENTS.md** → workflow rules, policies, procedures (*how* the agent operates)
+
+If you find yourself writing imperative procedural rules in SOUL.md, move them to `~/.hermes/AGENTS.md` to keep identity and policy cleanly separated.
 
 ## .cursorrules
 

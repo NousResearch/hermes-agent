@@ -1,0 +1,6 @@
+name: opportunistic-flagging
+version: 1.0.0
+description: "Auto-append self-assessment comments to kanban tasks when token usage, retries, or duration cross configurable thresholds."
+author: "NousResearch"
+hooks:
+  - post_tool_call

@@ -301,6 +301,25 @@ class EventBridge:
                 key=lambda a: a.get("created_at", ""),
             )
 
+    def _read_last_poll_timestamp(self, session_key: str) -> float:
+        """Lock-safe read of _last_poll_timestamps[session_key].
+
+        Centralises the lock invariant for #23096 so every caller — most
+        notably the background _poll_once loop — cannot accidentally drop
+        the lock again.
+        """
+        with self._lock:
+            return self._last_poll_timestamps.get(session_key, 0.0)
+
+    def _record_last_poll_timestamp(self, session_key: str, timestamp: float) -> None:
+        """Lock-safe write of _last_poll_timestamps[session_key].
+
+        See `_read_last_poll_timestamp` for the rationale; both helpers
+        exist purely to make the lock discipline impossible to forget.
+        """
+        with self._lock:
+            self._last_poll_timestamps[session_key] = timestamp
+
     def respond_to_approval(self, approval_id: str, decision: str) -> dict:
         """Resolve a pending approval (best-effort without gateway IPC)."""
         with self._lock:
@@ -386,10 +405,9 @@ class EventBridge:
             # _last_poll_timestamps is shared with foreground bridge methods
             # (_enqueue, poll_events, wait_for_event, list_pending_approvals,
             # respond_to_approval) and must be touched under self._lock — see
-            # issue #23096. Hold the lock only for the dict access; never for
-            # db.get_messages, which performs blocking I/O.
-            with self._lock:
-                last_seen = self._last_poll_timestamps.get(session_key, 0.0)
+            # issue #23096. The dedicated helpers below ensure the lock
+            # discipline cannot be forgotten by future contributors.
+            last_seen = self._read_last_poll_timestamp(session_key)
 
             try:
                 messages = db.get_messages(session_id)
@@ -441,16 +459,15 @@ class EventBridge:
                     },
                 ))
 
-            # Update last seen to the most recent message timestamp.
-            # See note on the read above — write under the lock for the same
-            # reason. The latest timestamp is computed without the lock so
-            # _ts_float and max() do not block other bridge methods.
+            # Update last seen to the most recent message timestamp. The
+            # latest timestamp is computed without the lock so _ts_float and
+            # max() do not block other bridge methods; the lock is only
+            # taken inside _record_last_poll_timestamp for the dict write.
             all_ts = [_ts_float(m.get("timestamp", 0)) for m in messages]
             if all_ts:
                 latest = max(all_ts)
                 if latest > last_seen:
-                    with self._lock:
-                        self._last_poll_timestamps[session_key] = latest
+                    self._record_last_poll_timestamp(session_key, latest)
 
 
 # ---------------------------------------------------------------------------

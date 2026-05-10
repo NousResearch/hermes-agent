@@ -5744,6 +5744,92 @@ def _print_curator_first_run_notice() -> None:
     )
 
 
+def _print_curator_recent_run_notice() -> None:
+    """Print the most recent curator run summary, exactly once.
+
+    The curator runs in the background (gateway tick + CLI session start),
+    so users learn about skill consolidations only by stumbling into a
+    rename. ``hermes update`` is a high-attention surface — surface the
+    most recent run's rename map here, once.
+
+    Show-once: state stamps ``last_run_summary_shown_at`` after printing.
+    Subsequent ``hermes update`` invocations skip the block until a newer
+    curator run lands. Silent when the curator has never run, when the
+    most recent summary has already been shown, or when the summary has
+    no rename information to display (no archives).
+    """
+    try:
+        from agent import curator
+    except Exception:
+        return
+    try:
+        state = curator.load_state()
+    except Exception:
+        return
+
+    last_run_at = state.get("last_run_at")
+    if not last_run_at:
+        return  # no curator run yet — first-run notice handles this case
+
+    if state.get("last_run_summary_shown_at") == last_run_at:
+        return  # already shown for this run
+
+    summary = state.get("last_run_summary") or ""
+    if not summary:
+        return
+
+    # Only print when there's something interesting to show — i.e. the
+    # rename map block was appended (multi-line summary). A bare "auto:
+    # no changes; llm: no change" doesn't warrant interrupting the
+    # update flow.
+    if "\n" not in summary:
+        # Still stamp it shown so we don't reconsider it on every update.
+        try:
+            state["last_run_summary_shown_at"] = last_run_at
+            curator.save_state(state)
+        except Exception:
+            pass
+        return
+
+    # Format the timestamp as "Xh ago" for readability.
+    when = _format_time_ago(last_run_at)
+    print()
+    print(f"ℹ Skill curator — last run {when}")
+    for line in summary.splitlines():
+        print(f"  {line}")
+    print(
+        "  (This message shows once per curator run. "
+        "View anytime: hermes curator status)"
+    )
+
+    # Stamp shown so we don't repeat on the next update.
+    try:
+        state["last_run_summary_shown_at"] = last_run_at
+        curator.save_state(state)
+    except Exception:
+        pass
+
+
+def _format_time_ago(iso_ts: str) -> str:
+    """Render an ISO timestamp as `Xh ago` / `Xd ago` / `Xm ago`. Best effort."""
+    try:
+        from datetime import datetime, timezone
+        ts = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - ts
+        secs = int(delta.total_seconds())
+        if secs < 60:
+            return "just now"
+        if secs < 3600:
+            return f"{secs // 60}m ago"
+        if secs < 86400:
+            return f"{secs // 3600}h ago"
+        return f"{secs // 86400}d ago"
+    except Exception:
+        return "recently"
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
 ) -> None:
@@ -5989,6 +6075,10 @@ def _update_via_zip(args):
         _print_curator_first_run_notice()
     except Exception as e:
         logger.debug("Curator first-run notice failed: %s", e)
+    try:
+        _print_curator_recent_run_notice()
+    except Exception as e:
+        logger.debug("Curator recent-run notice failed: %s", e)
     _kill_stale_dashboard_processes()
 
 
@@ -7601,6 +7691,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _print_curator_first_run_notice()
         except Exception as e:
             logger.debug("Curator first-run notice failed: %s", e)
+
+        # Most-recent curator run notice — show-once per run. Surfaces the
+        # rename map (`old-name → umbrella`) on the high-attention update
+        # surface so users learn about consolidations without having to
+        # check `hermes curator status`. Self-stamps after printing so it
+        # never repeats for the same run.
+        try:
+            _print_curator_recent_run_notice()
+        except Exception as e:
+            logger.debug("Curator recent-run notice failed: %s", e)
 
         # Repair RHEL-family root installs where /usr/local/bin isn't on PATH
         # for non-login interactive shells.  No-op on every other platform.

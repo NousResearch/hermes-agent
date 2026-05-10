@@ -179,6 +179,29 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
 
 export { offsetFromPosition }
 
+type ReturnDecisionKey = {
+  ctrl: boolean
+  meta: boolean
+  return?: boolean
+  shift?: boolean
+  super?: boolean
+}
+
+export function shouldInsertNewlineOnReturn(key: ReturnDecisionKey, sequence = ''): boolean {
+  if (!key.return) {
+    return false
+  }
+
+  if (key.shift || key.ctrl || (isMac ? isActionMod(key) : key.meta)) {
+    return true
+  }
+
+  // Some macOS terminals collapse Ctrl+J / modified Enter into a bare LF.
+  // Preserve Enter submit on CR while still giving TUI a reliable multiline
+  // fallback when the terminal strips the modifier on the wire.
+  return isMac && sequence === '\n'
+}
+
 function renderWithCursor(value: string, cursor: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
 
@@ -762,7 +785,9 @@ export function TextInput({
       }
 
       if (k.return) {
-        if (k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
+        const eventSequence = (event.keypress as { sequence?: string }).sequence ?? eventRaw ?? ''
+
+        if (shouldInsertNewlineOnReturn(k, eventSequence)) {
           flushParentChange()
           commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
         } else {

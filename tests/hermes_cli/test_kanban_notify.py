@@ -197,3 +197,107 @@ async def test_notifier_second_blocked_delivers(kanban_home):
         f"Should receive 2 blocked notification, but only get {len(blocked_deliveries)} count\n"
         f"Message {delivered_msgs}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: gateway watchers must not double-init the kanban DB.
+#
+# Both the notifier watcher (`_kanban_notifier_watcher`) and the dispatcher
+# tick (`_tick_once_for_board`) used to call `_kb.connect(board=slug)`
+# immediately followed by `_kb.init_db(board=slug)`. Since `connect()`
+# already runs the schema + idempotent migration on first open per process,
+# the explicit `init_db()` was redundant — and worse, `init_db()`
+# deliberately busts the per-process cache and re-runs the migration on a
+# *second* connection, which races the first.  On legacy DBs this surfaced
+# as `duplicate column name: <col>` (now tolerated by
+# `_add_column_if_missing`) and intermittent `database is locked` errors
+# (issue #21378).
+#
+# The fix removes the `init_db()` calls in both watchers; this regression
+# test pins that behaviour so we don't reintroduce them.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_notifier_does_not_call_init_db(kanban_home):
+    """Notifier watcher path must not invoke `_kb.init_db` (issue #21378)."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
+
+    init_db_calls: list[object] = []
+    real_init_db = kb.init_db
+
+    def _spy_init_db(*args, **kwargs):
+        init_db_calls.append((args, kwargs))
+        return real_init_db(*args, **kwargs)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+         patch("hermes_cli.kanban_db.init_db", side_effect=_spy_init_db):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    assert init_db_calls == [], (
+        "_kanban_notifier_watcher must not call init_db on every tick — "
+        "connect() handles first-run schema init. "
+        "Reintroducing init_db revives issue #21378. "
+        f"Got {len(init_db_calls)} call(s): {init_db_calls}"
+    )
+
+
+def test_dispatcher_tick_does_not_call_init_db(kanban_home, monkeypatch):
+    """`_tick_once_for_board` must not invoke `_kb.init_db` (issue #21378).
+
+    `connect()` already runs the schema + idempotent migration on first open
+    per process. The explicit `init_db()` call was redundant and triggered a
+    second migration on a second connection that raced the first.
+    """
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from unittest.mock import patch
+
+    runner = object.__new__(GatewayRunner)
+
+    init_db_calls: list[object] = []
+    real_init_db = kb.init_db
+
+    def _spy_init_db(*args, **kwargs):
+        init_db_calls.append((args, kwargs))
+        return real_init_db(*args, **kwargs)
+
+    # The dispatcher watcher's tick lives as a local closure inside
+    # `_kanban_dispatcher_watcher`. Read the source and assert the
+    # specific patterns that would reintroduce the bug are absent.
+    import inspect
+    src = inspect.getsource(GatewayRunner._kanban_dispatcher_watcher)
+    assert "_kb.init_db(board=slug)" not in src, (
+        "_kanban_dispatcher_watcher must not call _kb.init_db(board=slug) — "
+        "see issue #21378. Use connect() alone; it runs migrations on first "
+        "open per process."
+    )
+
+    notifier_src = inspect.getsource(GatewayRunner._kanban_notifier_watcher)
+    assert "_kb.init_db(board=slug)" not in notifier_src, (
+        "_kanban_notifier_watcher must not call _kb.init_db(board=slug) — "
+        "see issue #21378."
+    )

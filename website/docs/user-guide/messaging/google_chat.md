@@ -189,6 +189,60 @@ tombstones.
 
 ---
 
+## Cloud Run relay / "Format 3" envelope (optional)
+
+The Pub/Sub setup above is the default path. Some operators instead run a Cloud
+Run relay that receives Google Chat events and republishes a flattened envelope
+into the Hermes topic. Hermes supports that relay shape too.
+
+### Relay envelope contract
+
+For relay-forwarded events, Hermes expects a flat payload with these fields:
+
+| Field | Required | Notes |
+|---|---|---|
+| `event_type` | Yes | Usually `MESSAGE`, `ADDED_TO_SPACE`, or another Chat event type. |
+| `sender_email` | Yes | Used for allowlist checks and session identity. |
+| `sender_type` | Yes | Must be `"HUMAN"` or `"BOT"` for correct self-filtering. |
+| `space_name` | Yes | Chat space resource name, e.g. `spaces/AAAA...`. |
+| `message_name` | Yes | Chat message resource name. |
+| `text` | Yes | Flattened message text delivered to Hermes. |
+| `thread_name` | No | Include when the upstream message belongs to a thread. |
+
+Minimal example:
+
+```json
+{
+  "event_type": "MESSAGE",
+  "sender_email": "alice@example.com",
+  "sender_type": "HUMAN",
+  "space_name": "spaces/AAAA123",
+  "message_name": "spaces/AAAA123/messages/msg-42",
+  "thread_name": "spaces/AAAA123/threads/thread-7",
+  "text": "summarize the last action items"
+}
+```
+
+### `sender_type` is the critical field
+
+Your relay must forward the upstream Google Chat `sender.type` into
+`sender_type`.
+
+- `sender_type: "BOT"` -> Hermes drops the event as a bot-originated reply.
+- `sender_type: "HUMAN"` -> Hermes passes it into the agent loop normally.
+
+If the field is missing, Hermes falls back to `HUMAN` for backward
+compatibility. That keeps old relays working, but it also disables the bot-loop
+guard for that event. In practice, a misconfigured relay can echo the bot's own
+messages back into Hermes as if they came from a real user.
+
+### Trust boundary
+
+The relay is trusted infrastructure. Anyone who can publish arbitrary envelopes
+to the topic can spoof `sender_email`, `sender_type`, or message text. Format 3
+support solves compatibility and self-filtering; it is not a signed-envelope
+security layer.
+
 ## Formatting and capabilities
 
 Google Chat renders a limited markdown subset:

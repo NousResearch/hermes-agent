@@ -173,7 +173,14 @@ class TestSubmit:
         ])
         # Add poll + results scripted entries:
         router.scripted.append({"match": ("GET", "/batches/batch-1/results"), "resp": _results_resp([
-            {"batch_request_id": "req-00000-aaa", "response": {"choices": [{"message": {"content": "ok"}}]}}
+            {
+                "batch_request_id": "req-00000-aaa",
+                "batch_result": {
+                    "response": {
+                        "chat_get_completion": {"choices": [{"message": {"content": "ok"}}]}
+                    }
+                },
+            }
         ])})
 
         out = xai_batch_chat([{"prompt": "hello", "request_id": "req-00000-aaa"}])
@@ -279,8 +286,22 @@ class TestPoll:
             {"match": ("GET", "/batches/batch-abc"), "resp": _state_resp(num_pending=0, num_success=2)},
             # results
             {"match": ("GET", "/results"), "resp": _results_resp([
-                {"batch_request_id": "r0", "response": {"choices": [{"message": {"content": "first"}}]}},
-                {"batch_request_id": "r1", "response": {"choices": [{"message": {"content": "second"}}]}},
+                {
+                    "batch_request_id": "r0",
+                    "batch_result": {
+                        "response": {
+                            "chat_get_completion": {"choices": [{"message": {"content": "first"}}]}
+                        }
+                    },
+                },
+                {
+                    "batch_request_id": "r1",
+                    "batch_result": {
+                        "response": {
+                            "chat_get_completion": {"choices": [{"message": {"content": "second"}}]}
+                        }
+                    },
+                },
             ])},
         ])
         out = xai_batch_chat([
@@ -313,12 +334,15 @@ class TestResults:
             {"match": ("GET", "/batches/batch-abc"), "resp": _state_resp(num_pending=0, num_success=3)},
             # Page 1 with token
             {"match": ("GET", "/results"), "resp": _results_resp(
-                [{"batch_request_id": "r0", "response": {"x": 1}}, {"batch_request_id": "r1", "response": {"x": 2}}],
+                [
+                    {"batch_request_id": "r0", "batch_result": {"response": {"chat_get_completion": {"x": 1}}}},
+                    {"batch_request_id": "r1", "batch_result": {"response": {"chat_get_completion": {"x": 2}}}},
+                ],
                 page_token="next-page",
             )},
             # Page 2 final
             {"match": ("GET", "/results"), "resp": _results_resp(
-                [{"batch_request_id": "r2", "response": {"x": 3}}],
+                [{"batch_request_id": "r2", "batch_result": {"response": {"chat_get_completion": {"x": 3}}}}],
             )},
         ])
         out = xai_batch_chat([
@@ -335,7 +359,7 @@ class TestResults:
             _resp_add(),
             {"match": ("GET", "/batches/batch-abc"), "resp": _state_resp(num_pending=0, num_success=1)},
             {"match": ("GET", "/results"), "resp": _results_resp([
-                {"batch_request_id": "r0", "response": {"x": 1}},
+                {"batch_request_id": "r0", "batch_result": {"response": {"chat_get_completion": {"x": 1}}}},
                 # r1 missing from results entirely
             ])},
         ])

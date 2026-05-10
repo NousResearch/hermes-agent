@@ -195,7 +195,7 @@ def xai_batch_chat(
         item = by_id.get(rid, {})
         ordered.append({
             "request_id": rid,
-            "response": item.get("response") or item.get("batch_result", {}).get("response"),
+            "response": _extract_chat_response(item),
             "error": item.get("error"),
         })
 
@@ -232,6 +232,18 @@ def _build_chat_body(req: Dict[str, Any], *, default_model: str) -> Dict[str, An
         for k, v in extra.items():
             body[k] = v
     return body
+
+
+def _extract_chat_response(result_item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return the chat completion body from a Batch API result item."""
+    response = result_item.get("response")
+    if response is None:
+        batch_result = result_item.get("batch_result")
+        if isinstance(batch_result, dict):
+            response = batch_result.get("response")
+    if isinstance(response, dict) and isinstance(response.get("chat_get_completion"), dict):
+        return response["chat_get_completion"]
+    return response if isinstance(response, dict) else None
 
 
 def _request(method: str, url: str, headers: Dict[str, str], **kw: Any) -> httpx.Response:

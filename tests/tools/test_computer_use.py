@@ -76,6 +76,13 @@ class TestSchema:
         modes = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["mode"]["enum"])
         assert modes == {"som", "vision", "ax"}
 
+    def test_schema_exposes_max_elements_cap_for_capture(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        assert "max_elements" in props
+        assert props["max_elements"]["type"] == "integer"
+        assert props["max_elements"].get("minimum", 1) >= 1
+
 
 class TestRegistration:
     def test_tool_registers_with_registry(self):
@@ -336,6 +343,105 @@ class TestCaptureResponse:
         assert "#1" in text_part["text"]
         assert "AXButton" in text_part["text"]
         assert "AXTextField" in text_part["text"]
+
+    def _ax_backend_with(self, count: int):
+        """Construct a fake backend that yields ``count`` AX elements."""
+        from tools.computer_use.backend import CaptureResult, UIElement
+
+        elements = [
+            UIElement(index=i + 1, role="AXButton", label=f"el-{i}", bounds=(0, 0, 1, 1))
+            for i in range(count)
+        ]
+
+        class FakeBackend:
+            def start(self): pass
+            def stop(self): pass
+            def is_available(self): return True
+            def capture(self, mode="som", app=None):
+                return CaptureResult(
+                    mode=mode, width=800, height=600,
+                    png_b64="",
+                    elements=list(elements),
+                    app="Obsidian",
+                )
+            def click(self, **kw): ...
+            def drag(self, **kw): ...
+            def scroll(self, **kw): ...
+            def type_text(self, text): ...
+            def key(self, keys): ...
+            def list_apps(self): return []
+            def focus_app(self, app, raise_window=False): ...
+
+        return FakeBackend()
+
+    def test_capture_ax_caps_elements_at_default_for_dense_trees(self):
+        """Regression for #22865: an Electron-style 600-element AX tree must
+        not emit the entire array verbatim into the tool result.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(600)
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+            out = cu_tool.handle_computer_use({"action": "capture", "mode": "ax"})
+
+        parsed = json.loads(out)
+        assert parsed["mode"] == "ax"
+        assert parsed["total_elements"] == 600
+        assert len(parsed["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS
+        assert parsed["truncated_elements"] == 600 - cu_tool._DEFAULT_MAX_ELEMENTS
+        # Truncation must be visible in the human summary so the model knows
+        # the JSON view is partial and can re-issue with a tighter scope.
+        assert "truncated to" in parsed["summary"]
+
+    def test_capture_ax_honors_explicit_max_elements_override(self):
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(600)
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+            out = cu_tool.handle_computer_use(
+                {"action": "capture", "mode": "ax", "max_elements": 250}
+            )
+
+        parsed = json.loads(out)
+        assert len(parsed["elements"]) == 250
+        assert parsed["truncated_elements"] == 350
+
+    def test_capture_ax_below_cap_is_unchanged(self):
+        """Backwards-compat: small captures keep the full elements array and
+        do not surface a `truncated_elements` field.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(5)
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+            out = cu_tool.handle_computer_use({"action": "capture", "mode": "ax"})
+
+        parsed = json.loads(out)
+        assert len(parsed["elements"]) == 5
+        assert parsed["total_elements"] == 5
+        assert "truncated_elements" not in parsed
+        assert "truncated to" not in parsed["summary"]
+
+    def test_capture_ax_invalid_max_elements_falls_back_to_default(self):
+        """Malformed `max_elements` (string, negative, zero) must not silently
+        disable the cap and re-introduce the original unbounded behavior.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(600)
+        cu_tool.reset_backend_for_tests()
+        for bad in ("not-a-number", 0, -10):
+            with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+                out = cu_tool.handle_computer_use(
+                    {"action": "capture", "mode": "ax", "max_elements": bad}
+                )
+            parsed = json.loads(out)
+            assert len(parsed["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS, (
+                f"bad max_elements={bad!r} disabled the cap"
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -1457,6 +1457,80 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["max_tokens"] == 65536
 
+    def test_openrouter_claude_uses_anthropic_max_output_fallback(self, agent):
+        """Regression guard: OpenRouter + Claude without explicit max_tokens
+        falls back to _get_anthropic_max_output."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "anthropic/claude-opus-4-6"
+        agent.max_tokens = None
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("max_tokens") == 128_000
+
+    def test_custom_proxy_claude_uses_anthropic_max_output_fallback(self, agent):
+        """Any chat_completions proxy serving Claude (AWS Bedrock gateway,
+        NVIDIA inference API, self-hosted LiteLLM, etc.) should get the
+        real Anthropic max output cap as a floor — otherwise the upstream
+        proxy picks a surprise default (Bedrock historically = 4096) and
+        responses get truncated with finish_reason='length'."""
+        agent.base_url = "https://integrate.api.nvidia.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "aws/anthropic/bedrock-claude-opus-4-7"
+        agent.max_tokens = None
+        agent.provider = "custom"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        # Must be set (not None) and well above Bedrock's 4096 default
+        assert kwargs.get("max_tokens") is not None
+        assert kwargs["max_tokens"] >= 32_000
+
+    def test_custom_proxy_minimax_uses_fallback(self, agent):
+        """The fallback is not Claude-specific: any Anthropic-compatible
+        model served via chat_completions benefits.  MiniMax's
+        Anthropic-compatible endpoints (listed in _ANTHROPIC_OUTPUT_LIMITS)
+        should also receive an explicit max_tokens regardless of proxy URL."""
+        agent.base_url = "https://example-proxy.internal/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "MiniMax-M2"
+        agent.max_tokens = None
+        agent.provider = "custom"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs.get("max_tokens") == 131_072
+
+    def test_custom_proxy_unknown_non_anthropic_model_skips_fallback(self, agent):
+        """Models not in _ANTHROPIC_OUTPUT_LIMITS (GPT-oss served via a
+        non-OpenAI proxy, etc.) must NOT get the Anthropic 128K fallback.
+        Some proxies (NVIDIA NIM) apply their own lower default — that's a
+        separate code path; what matters here is that the Anthropic
+        table-driven fallback does not fire for these models."""
+        agent.base_url = "https://example-proxy.internal/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "openai/gpt-oss-120b"
+        agent.max_tokens = None
+        agent.provider = "custom"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        # The Anthropic 128K fallback must not fire; the proxy-agnostic
+        # path leaves max_tokens unset for unknown models.
+        assert kwargs.get("max_tokens") != 128_000
+
+    def test_fallback_condition_does_not_hardcode_claude_substring(self, agent):
+        """Meta-test: the fallback condition must dispatch on a known model
+        table, not on a hardcoded 'claude' substring.  Otherwise future
+        non-Claude Anthropic-compatible models (or Claude-branded models
+        with an unusual name) would silently regress.
+
+        This test asserts that the ``_matches_anthropic_compatible_model``
+        helper returns True for a known non-Claude Anthropic-compat entry
+        (MiniMax) — proving the check is table-driven, not string-driven.
+        """
+        agent.model = "MiniMax-M2"
+        assert agent._matches_anthropic_compatible_model() is True
+        agent.model = "some-future-model-without-claude-in-the-name"
+        assert agent._matches_anthropic_compatible_model() is False
+
     def test_ollama_think_false_on_effort_none(self, agent):
         """Custom (Ollama) provider with effort=none should inject think=false."""
         agent.provider = "custom"

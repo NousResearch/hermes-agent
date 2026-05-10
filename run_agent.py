@@ -3513,6 +3513,27 @@ class AIAgent:
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
+    def _matches_anthropic_compatible_model(self) -> bool:
+        """Return True when ``self.model`` matches a known Anthropic-compatible
+        model in ``_ANTHROPIC_OUTPUT_LIMITS``.
+
+        Used to decide whether to inject an explicit ``max_tokens`` fallback
+        for chat_completions requests whose upstream proxy translates to
+        Anthropic's Messages API (which requires ``max_tokens`` as a mandatory
+        field).  The check is proxy-agnostic: any base_url is fine, only the
+        model name matters.  Unknown models return False so we don't risk
+        sending an oversized ``max_tokens`` to providers with their own
+        (possibly lower) ceilings.
+        """
+        if not self.model:
+            return False
+        try:
+            from agent.anthropic_adapter import _ANTHROPIC_OUTPUT_LIMITS
+        except Exception:
+            return False
+        m = self.model.lower().replace(".", "-")
+        return any(key in m for key in _ANTHROPIC_OUTPUT_LIMITS)
+
     def _has_content_after_think_block(self, content: str) -> bool:
         """
         Check if content has actual text after any reasoning/thinking blocks.
@@ -9316,9 +9337,30 @@ class AIAgent:
         if self.provider_data_collection:
             _prefs["data_collection"] = self.provider_data_collection
 
-        # Claude max-output override on aggregators
+        # Anthropic-compatible max-output override
+        #
+        # Any chat_completions proxy that translates to Anthropic's Messages
+        # API requires ``max_tokens`` as a mandatory field.  When omitted,
+        # proxies pick their own defaults that can be too low:
+        #   • AWS Bedrock historically defaults to 4096 (reasoning + one
+        #     write_file tool call easily exceeds it → finish_reason=length
+        #     → continuation retries → rollback → user-visible truncation)
+        #   • OpenRouter and Nous Portal also pick low defaults
+        #   • NVIDIA inference API, self-hosted LiteLLM / vLLM / custom
+        #     gateways: unpredictable, sometimes 4096 or smaller
+        #
+        # Previously this override was gated on the base_url being OpenRouter
+        # or Nous, which silently excluded every other proxy.  The gate is
+        # now the model name itself: if the model matches a known
+        # Anthropic-compatible entry in ``_ANTHROPIC_OUTPUT_LIMITS``, we
+        # send the documented output limit regardless of which proxy URL
+        # serves it.
+        #
+        # Anthropic's own API uses api_mode='anthropic_messages' and never
+        # reaches this code path, so there is no conflict with the
+        # first-party SDK.
         _ant_max = None
-        if (_is_or or _is_nous) and "claude" in (self.model or "").lower():
+        if self._matches_anthropic_compatible_model():
             try:
                 from agent.anthropic_adapter import _get_anthropic_max_output
                 _ant_max = _get_anthropic_max_output(self.model)

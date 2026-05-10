@@ -8,6 +8,12 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.SocketException
+import java.util.Collections
 
 @RunWith(RobolectricTestRunner::class)
 class Corr3xtAuthClientTest {
@@ -48,6 +54,91 @@ class Corr3xtAuthClientTest {
         assertEquals("hermes-android", uri.getQueryParameter("client"))
         assertEquals("hermesagent://auth/callback", uri.getQueryParameter("redirect_uri"))
         assertEquals("state-123", uri.getQueryParameter("state"))
+    }
+
+    @Test
+    fun probeStartUri_checksOAuthStartRouteWithoutTriggeringQuerySideEffects() {
+        val option = requireNotNull(AuthCatalog.find("google"))
+        val server = TestHttpServer { target -> if (target == "/oauth/start") 400 else 404 }
+        try {
+            val uri = Corr3xtAuthClient.buildStartUri(
+                "http://127.0.0.1:${server.port}",
+                option,
+                "state-123",
+            )
+
+            val result = Corr3xtAuthClient.probeStartUri(uri, timeoutMs = 1_000)
+
+            assertTrue(result.reachable)
+            assertEquals(listOf("/oauth/start"), server.seenRequests())
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun probeStartUri_rejectsReachableHostsWithoutOAuthStartRoute() {
+        val option = requireNotNull(AuthCatalog.find("google"))
+        val server = TestHttpServer { target -> if (target == "/") 200 else 404 }
+        try {
+            val uri = Corr3xtAuthClient.buildStartUri(
+                "http://127.0.0.1:${server.port}",
+                option,
+                "state-123",
+            )
+
+            val result = Corr3xtAuthClient.probeStartUri(uri, timeoutMs = 1_000)
+
+            assertEquals(false, result.reachable)
+            assertEquals("network_error", result.status)
+            assertEquals("HTTP 404", result.errorName)
+        } finally {
+            server.close()
+        }
+    }
+
+    private class TestHttpServer(private val responseCodeForTarget: (String) -> Int) : AutoCloseable {
+        private val serverSocket = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+        private val requests = Collections.synchronizedList(mutableListOf<String>())
+        private val thread = Thread {
+            try {
+                while (!serverSocket.isClosed) {
+                    val socket = serverSocket.accept()
+                    socket.use { client ->
+                        val reader = BufferedReader(InputStreamReader(client.getInputStream()))
+                        val requestLine = reader.readLine().orEmpty()
+                        val target = requestLine.split(" ").getOrNull(1).orEmpty()
+                        requests.add(target)
+                        val code = responseCodeForTarget(target)
+                        val reason = when (code) {
+                            200 -> "OK"
+                            400 -> "Bad Request"
+                            404 -> "Not Found"
+                            else -> "Status"
+                        }
+                        client.getOutputStream().write(
+                            "HTTP/1.1 $code $reason\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                .toByteArray(Charsets.UTF_8)
+                        )
+                    }
+                }
+            } catch (_: SocketException) {
+                // Closing the server socket stops the test server.
+            }
+        }.apply {
+            isDaemon = true
+            start()
+        }
+
+        val port: Int
+            get() = serverSocket.localPort
+
+        fun seenRequests(): List<String> = requests.toList()
+
+        override fun close() {
+            serverSocket.close()
+            thread.join(1_000)
+        }
     }
 
     @Test

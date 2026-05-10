@@ -271,6 +271,7 @@ object LiteRtLmOpenAiProxy {
             for ((backend, label) in backends) {
                 var candidate: Engine? = null
                 try {
+                    ExperimentalFlags.enableSpeculativeDecoding = speculativeDecoding.enabled
                     candidate = Engine(
                         EngineConfig(
                             modelPath = modelPath,
@@ -282,7 +283,6 @@ object LiteRtLmOpenAiProxy {
                             cacheDir = context.cacheDir.absolutePath,
                         )
                     )
-                    ExperimentalFlags.enableSpeculativeDecoding = speculativeDecoding.enabled
                     candidate.initialize()
                     ExperimentalFlags.enableSpeculativeDecoding = false
                     return EngineInitResult(

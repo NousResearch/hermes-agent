@@ -76,13 +76,7 @@ object Corr3xtAuthClient {
 
     fun probeStartUri(uri: Uri, timeoutMs: Int = 4_000): AuthStartProbeResult {
         val host = uri.host.orEmpty()
-        val oauthStartSuffix = "/oauth/start"
-        val basePath = uri.encodedPath
-            .orEmpty()
-            .removeSuffix(oauthStartSuffix)
-            .ifBlank { "/" }
         val probeUri = uri.buildUpon()
-            .encodedPath(basePath)
             .encodedQuery(null)
             .fragment(null)
             .build()
@@ -94,8 +88,17 @@ object Corr3xtAuthClient {
                 requestMethod = "GET"
             }
             connection.use {
-                responseCode
-                AuthStartProbeResult(reachable = true)
+                val code = responseCode
+                if (code == HttpURLConnection.HTTP_NOT_FOUND || code == HttpURLConnection.HTTP_GONE || code >= 500) {
+                    AuthStartProbeResult(
+                        reachable = false,
+                        status = "network_error",
+                        host = host,
+                        errorName = "HTTP $code",
+                    )
+                } else {
+                    AuthStartProbeResult(reachable = true)
+                }
             }
         } catch (_: UnknownHostException) {
             AuthStartProbeResult(

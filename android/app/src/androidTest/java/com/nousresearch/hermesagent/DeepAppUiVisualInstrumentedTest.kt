@@ -26,8 +26,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.BufferedReader
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStreamReader
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.SocketException
+import java.util.Collections
 
 @RunWith(AndroidJUnit4::class)
 class DeepAppUiVisualInstrumentedTest {
@@ -142,12 +148,98 @@ class DeepAppUiVisualInstrumentedTest {
         )
     }
 
+    @Test
+    fun corr3xtSignInRejectsReachableHostWithoutOAuthStartRoute() {
+        val server = TestHttpServer { target -> if (target == "/") 200 else 404 }
+        try {
+            AppSettingsStore(app).save(
+                AppSettings(
+                    provider = "openrouter",
+                    baseUrl = "https://openrouter.ai/api/v1",
+                    model = "anthropic/claude-sonnet-4",
+                    corr3xtBaseUrl = "http://127.0.0.1:${server.port}",
+                    onDeviceBackend = BackendKind.NONE.persistedValue,
+                    languageTag = "en",
+                )
+            )
+
+            composeRule.setContent {
+                AppShellScreen(
+                    bootUiState = BootUiState(
+                        status = "Hermes backend is ready",
+                        ready = true,
+                        probeResult = "corr3xt-route-test",
+                        baseUrl = "http://127.0.0.1:15436/v1",
+                    ),
+                    onRetryHermes = {},
+                )
+            }
+
+            composeRule.onNodeWithTag("HermesNavAccounts").performClick()
+            composeRule.onAllNodesWithText("Accounts")[0].assertIsDisplayed()
+            composeRule.onAllNodesWithText("Sign in")[1].performClick()
+            composeRule.waitUntil(timeoutMillis = 5_000) {
+                composeRule.onAllNodesWithText(
+                    "Corr3xt app sign-in page could not be reached: HTTP 404",
+                    substring = true,
+                ).fetchSemanticsNodes().isNotEmpty()
+            }
+            assertTrue(server.seenRequests().contains("/oauth/start"))
+        } finally {
+            server.close()
+        }
+    }
+
     private fun capture(name: String) {
         composeRule.waitForIdle()
         val outputDir = File(app.filesDir, "hermes-ui-visuals").apply { mkdirs() }
         val bitmap = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
         FileOutputStream(File(outputDir, "$name.png")).use { output ->
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+        }
+    }
+
+    private class TestHttpServer(private val responseCodeForTarget: (String) -> Int) : AutoCloseable {
+        private val serverSocket = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+        private val requests = Collections.synchronizedList(mutableListOf<String>())
+        private val thread = Thread {
+            try {
+                while (!serverSocket.isClosed) {
+                    val socket = serverSocket.accept()
+                    socket.use { client ->
+                        val reader = BufferedReader(InputStreamReader(client.getInputStream()))
+                        val requestLine = reader.readLine().orEmpty()
+                        val target = requestLine.split(" ").getOrNull(1).orEmpty()
+                        requests.add(target)
+                        val code = responseCodeForTarget(target)
+                        val reason = when (code) {
+                            200 -> "OK"
+                            400 -> "Bad Request"
+                            404 -> "Not Found"
+                            else -> "Status"
+                        }
+                        client.getOutputStream().write(
+                            "HTTP/1.1 $code $reason\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                .toByteArray(Charsets.UTF_8)
+                        )
+                    }
+                }
+            } catch (_: SocketException) {
+                // Closing the server socket stops the test server.
+            }
+        }.apply {
+            isDaemon = true
+            start()
+        }
+
+        val port: Int
+            get() = serverSocket.localPort
+
+        fun seenRequests(): List<String> = requests.toList()
+
+        override fun close() {
+            serverSocket.close()
+            thread.join(1_000)
         }
     }
 }

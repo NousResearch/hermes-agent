@@ -109,6 +109,7 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     assert 'ExperimentalFlags.enableSpeculativeDecoding' in litert_proxy
     assert 'speculativeDecodingDecision(modelPath)' in litert_proxy
     assert 'ExperimentalFlags.enableSpeculativeDecoding = false' in litert_proxy
+    assert litert_proxy.index('ExperimentalFlags.enableSpeculativeDecoding = speculativeDecoding.enabled') < litert_proxy.index('candidate = Engine(')
     assert 'Build.SUPPORTED_ABIS.any { it.startsWith("x86") }' in litert_proxy
     assert 'Capabilities(modelPath).use' in litert_proxy
     assert 'capabilities.hasSpeculativeDecodingSupport()' in litert_proxy

@@ -1562,8 +1562,14 @@ def _cprint(text: str):
     # prompt, prints, and redraws.  Fire-and-forget — if scheduling
     # fails we fall back to a direct print so the line isn't lost.
     def _schedule():
+        # run_in_terminal() returns a coroutine (Future) that must be
+        # scheduled on the running event loop, not called synchronously.
+        # Calling it bare in a thread-safe callback would leave the coroutine
+        # unawaited, silently dropping the output (fixes #23185 Bug A).
         try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            import asyncio as _aio
+            coro = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            _aio.ensure_future(coro)
         except Exception:
             try:
                 _pt_print(_PT_ANSI(text))

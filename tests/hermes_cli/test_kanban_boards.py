@@ -490,3 +490,36 @@ class TestCLI:
         res = _cli(["boards", "list", "--json"], env_extra=env)
         slugs = [b["slug"] for b in json.loads(res.stdout)]
         assert "rmme" not in slugs
+
+
+def test_boards_delete_alias_hard_deletes_not_archives(fresh_home):
+    """hermes kanban boards delete <slug> must hard-delete, not archive (fixes #23139).
+
+    The 'delete' alias for the 'rm' subparser doesn't carry the --delete flag,
+    so boards_action=='delete' must be detected explicitly in _cmd_boards_rm.
+    """
+    from hermes_cli.kanban import _cmd_boards_rm
+    import argparse
+
+    kb.create_board("testboard", name="Test Board")
+
+    # Simulate: hermes kanban boards delete testboard
+    # (boards_action='delete', no --delete flag set)
+    args = argparse.Namespace(slug="testboard", boards_action="delete")
+    # 'delete' attribute intentionally absent — mimics argparse alias behavior
+
+    result = _cmd_boards_rm(args)
+
+    assert result == 0
+    board_path = kb.board_dir("testboard")
+    assert not board_path.exists(), (
+        "Board directory still exists after 'boards delete' — "
+        "alias was archiving instead of deleting (issue #23139)"
+    )
+    # Archived copy must NOT exist either
+    archived = kb.boards_root() / "_archived"
+    if archived.exists():
+        archived_boards = list(archived.glob("testboard-*"))
+        assert not archived_boards, (
+            f"Board was archived instead of deleted: {archived_boards}"
+        )

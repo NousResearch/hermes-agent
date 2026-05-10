@@ -152,11 +152,11 @@ class TestNormalizeReferenceImages:
         result = _normalize_reference_images([" https://example.com/img.png "])
         assert result == ["https://example.com/img.png"]
 
-    def test_max_5(self):
+    def test_max_7(self):
         from tools.video_generation_tool import _normalize_reference_images
         images = [f"https://example.com/{i}.png" for i in range(10)]
         result = _normalize_reference_images(images)
-        assert len(result) == 5
+        assert len(result) == 7
 
     def test_skips_non_strings(self):
         from tools.video_generation_tool import _normalize_reference_images
@@ -259,7 +259,7 @@ class TestVideoGenerateTool:
         submit_resp = MagicMock()
         submit_resp.status_code = 200
         submit_resp.raise_for_status = MagicMock()
-        submit_resp.json = MagicMock(return_value={"id": "job-123"})
+        submit_resp.json = MagicMock(return_value={"request_id": "req-123"})
 
         # Mock poll response (done)
         poll_resp = MagicMock()
@@ -288,6 +288,14 @@ class TestVideoGenerateTool:
         assert parsed["status"] == "done"
         assert parsed["video_url"] == "https://xai.video/result.mp4"
         assert parsed["tool"] == "video_generate"
+        post_url = mock_client.post.call_args.args[0]
+        post_body = mock_client.post.call_args.kwargs["json"]
+        poll_url = mock_client.get.call_args.args[0]
+        assert post_url.endswith("/videos/generations")
+        assert poll_url.endswith("/videos/req-123")
+        assert post_body["prompt"] == "A cat playing piano"
+        assert post_body["resolution"] == "720p"
+        assert "operation" not in post_body
 
     @pytest.mark.asyncio
     async def test_failed_generation(self):
@@ -297,7 +305,7 @@ class TestVideoGenerateTool:
         submit_resp = MagicMock()
         submit_resp.status_code = 200
         submit_resp.raise_for_status = MagicMock()
-        submit_resp.json = MagicMock(return_value={"id": "job-456"})
+        submit_resp.json = MagicMock(return_value={"request_id": "req-456"})
 
         poll_resp = MagicMock()
         poll_resp.status_code = 200
@@ -357,7 +365,7 @@ class TestVideoGenerateTool:
         submit_resp = MagicMock()
         submit_resp.status_code = 200
         submit_resp.raise_for_status = MagicMock()
-        submit_resp.json = MagicMock(return_value={"id": "job-789"})
+        submit_resp.json = MagicMock(return_value={"request_id": "req-789"})
 
         poll_resp = MagicMock()
         poll_resp.status_code = 200
@@ -383,6 +391,123 @@ class TestVideoGenerateTool:
         parsed = json.loads(result)
         assert parsed["status"] == "done"
         assert parsed["video_url"] == "https://xai.video/img2vid.mp4"
+        post_body = mock_client.post.call_args.kwargs["json"]
+        assert post_body["image"] == {"url": "https://example.com/cat.png"}
+        assert "image_url" not in post_body
+
+    @pytest.mark.asyncio
+    async def test_edit_uses_official_endpoint_and_video_url(self):
+        """Test video edit request shape."""
+        from tools.video_generation_tool import video_generate_tool
+
+        submit_resp = MagicMock()
+        submit_resp.status_code = 200
+        submit_resp.raise_for_status = MagicMock()
+        submit_resp.json = MagicMock(return_value={"request_id": "edit-1"})
+
+        poll_resp = MagicMock()
+        poll_resp.status_code = 200
+        poll_resp.raise_for_status = MagicMock()
+        poll_resp.json = MagicMock(return_value={
+            "status": "done",
+            "video": {"url": "https://xai.video/edit.mp4"},
+        })
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=submit_resp)
+        mock_client.get = AsyncMock(return_value=poll_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("tools.video_generation_tool.httpx.AsyncClient", return_value=mock_client):
+            await video_generate_tool(
+                prompt="Add sunglasses",
+                operation="edit",
+                video_url="https://example.com/source.mp4",
+                timeout_seconds=30,
+                poll_interval_seconds=1,
+            )
+
+        post_url = mock_client.post.call_args.args[0]
+        post_body = mock_client.post.call_args.kwargs["json"]
+        assert post_url.endswith("/videos/edits")
+        assert post_body["video_url"] == "https://example.com/source.mp4"
+
+    @pytest.mark.asyncio
+    async def test_extend_uses_official_endpoint_and_video_object(self):
+        """Test video extension request shape."""
+        from tools.video_generation_tool import video_generate_tool
+
+        submit_resp = MagicMock()
+        submit_resp.status_code = 200
+        submit_resp.raise_for_status = MagicMock()
+        submit_resp.json = MagicMock(return_value={"request_id": "extend-1"})
+
+        poll_resp = MagicMock()
+        poll_resp.status_code = 200
+        poll_resp.raise_for_status = MagicMock()
+        poll_resp.json = MagicMock(return_value={
+            "status": "done",
+            "video": {"url": "https://xai.video/extend.mp4"},
+        })
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=submit_resp)
+        mock_client.get = AsyncMock(return_value=poll_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("tools.video_generation_tool.httpx.AsyncClient", return_value=mock_client):
+            await video_generate_tool(
+                prompt="Pan left",
+                operation="extend",
+                video_url="https://example.com/source.mp4",
+                timeout_seconds=30,
+                poll_interval_seconds=1,
+            )
+
+        post_url = mock_client.post.call_args.args[0]
+        post_body = mock_client.post.call_args.kwargs["json"]
+        assert post_url.endswith("/videos/extensions")
+        assert post_body["video"] == {"url": "https://example.com/source.mp4"}
+
+    @pytest.mark.asyncio
+    async def test_reference_images_are_url_objects(self):
+        """Test reference-to-video request shape."""
+        from tools.video_generation_tool import video_generate_tool
+
+        submit_resp = MagicMock()
+        submit_resp.status_code = 200
+        submit_resp.raise_for_status = MagicMock()
+        submit_resp.json = MagicMock(return_value={"request_id": "ref-1"})
+
+        poll_resp = MagicMock()
+        poll_resp.status_code = 200
+        poll_resp.raise_for_status = MagicMock()
+        poll_resp.json = MagicMock(return_value={
+            "status": "done",
+            "video": {"url": "https://xai.video/ref.mp4"},
+        })
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=submit_resp)
+        mock_client.get = AsyncMock(return_value=poll_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("tools.video_generation_tool.httpx.AsyncClient", return_value=mock_client):
+            await video_generate_tool(
+                prompt="Use the reference",
+                reference_images=["https://example.com/a.png", "https://example.com/b.png"],
+                timeout_seconds=30,
+                poll_interval_seconds=1,
+            )
+
+        post_body = mock_client.post.call_args.kwargs["json"]
+        assert post_body["reference_images"] == [
+            {"url": "https://example.com/a.png"},
+            {"url": "https://example.com/b.png"},
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,8 @@
 Video Generation Tool — Generate videos via xAI's grok-imagine-video API.
 
 Supports text-to-video, image-to-video, video editing, and video extension.
-Uses async submit + polling pattern.
+Uses the async submit + polling pattern:
+POST /v1/videos/generations|edits|extensions, then GET /v1/videos/{request_id}.
 
 Requires ``XAI_API_KEY`` in ``~/.hermes/.env``.
 
@@ -53,6 +54,11 @@ VALID_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 VALID_RESOLUTIONS = {"480p", "720p"}
 VALID_SIZES = {"848x480", "1696x960", "1280x720", "1920x1080"}
 VALID_OPERATIONS = {"generate", "edit", "extend"}
+OPERATION_ENDPOINTS = {
+    "generate": "generations",
+    "edit": "edits",
+    "extend": "extensions",
+}
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -173,7 +179,7 @@ def _normalize_reference_images(
     for img in images:
         if isinstance(img, str) and img.strip():
             cleaned.append(img.strip())
-    return cleaned[:5]  # max 5 reference images
+    return cleaned[:7]  # xAI allows up to 7 reference images
 
 
 # ---------------------------------------------------------------------------
@@ -228,17 +234,18 @@ async def video_generate_tool(
     # Build submit body
     submit_body: Dict[str, Any] = {
         "model": _get_model(),
-        "operation": normalized_op,
     }
 
     if prompt:
         submit_body["prompt"] = prompt.strip()
     if image_url and normalized_op == "generate":
-        submit_body["image_url"] = image_url.strip()
-    if video_url and normalized_op in ("edit", "extend"):
+        submit_body["image"] = {"url": image_url.strip()}
+    if video_url and normalized_op == "edit":
         submit_body["video_url"] = video_url.strip()
+    if video_url and normalized_op == "extend":
+        submit_body["video"] = {"url": video_url.strip()}
     if ref_images:
-        submit_body["reference_images"] = ref_images
+        submit_body["reference_images"] = [{"url": img} for img in ref_images]
 
     # Duration for generate/extend
     if normalized_op in ("generate", "extend"):
@@ -261,7 +268,7 @@ async def video_generate_tool(
         # Step 1: Submit generation request
         try:
             submit_response = await client.post(
-                f"{base_url}/video/generate",
+                f"{base_url}/videos/{OPERATION_ENDPOINTS[normalized_op]}",
                 headers=headers,
                 json=submit_body,
                 timeout=30,
@@ -283,11 +290,11 @@ async def video_generate_tool(
             return tool_error(f"Video generation connection error: {exc}")
 
         submit_payload = submit_response.json()
-        job_id = submit_payload.get("id") or submit_payload.get("job_id")
-        if not job_id:
-            return tool_error("Video generation: no job ID returned")
+        request_id = submit_payload.get("request_id")
+        if not request_id:
+            return tool_error("Video generation: no request_id returned")
 
-        logger.info("video_gen submitted: job_id=%s, op=%s", job_id, normalized_op)
+        logger.info("video_gen submitted: request_id=%s, op=%s", request_id, normalized_op)
 
         # Step 2: Poll for completion
         elapsed = 0
@@ -299,7 +306,7 @@ async def video_generate_tool(
 
             try:
                 status_response = await client.get(
-                    f"{base_url}/video/generate/{job_id}",
+                    f"{base_url}/videos/{request_id}",
                     headers=headers,
                     timeout=15,
                 )
@@ -329,8 +336,8 @@ async def video_generate_tool(
                 }
 
                 logger.info(
-                    "video_gen completed: job_id=%s, url=%s",
-                    job_id, video_url_result[:100] if video_url_result else "none",
+                    "video_gen completed: request_id=%s, url=%s",
+                    request_id, video_url_result[:100] if video_url_result else "none",
                 )
 
                 return json.dumps(result, ensure_ascii=False)
@@ -341,7 +348,7 @@ async def video_generate_tool(
                     or status_payload.get("message")
                     or f"Video generation ended with status '{last_status}'"
                 )
-                logger.error("video_gen failed: job_id=%s, status=%s", job_id, last_status)
+                logger.error("video_gen failed: request_id=%s, status=%s", request_id, last_status)
                 return tool_error(f"Video generation {last_status}: {err_msg}")
 
             logger.debug("video_gen status: %s (%ds elapsed)", last_status, elapsed)

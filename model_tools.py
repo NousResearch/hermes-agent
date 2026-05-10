@@ -702,6 +702,27 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    # CC-name aliasing on the OAuth path. When the wire request shipped
+    # canonical Claude Code tools (Bash/Read/Edit/Write/Grep/...) instead
+    # of hermes's native names, the model emits tool_use blocks with
+    # those CC names. Translate (name, args) back to the hermes-side
+    # equivalents BEFORE coerce_tool_args / dispatch — coerce_tool_args
+    # looks up the schema by name, and dispatching ``Bash`` would
+    # 404 the registry. The adapter is a no-op when the name has no
+    # alias mapping (CC name dictionary lives in agent/cc_aliases.py).
+    try:
+        from agent import cc_aliases as _cc
+        if _cc.is_enabled():
+            function_name, function_args = _cc.adapt_tool_use(
+                function_name, function_args
+            )
+    except Exception:
+        # Aliasing is best-effort; if it fails, fall through to the
+        # normal dispatch path (which will likely 404 if the model
+        # used a CC name and the alias module crashed, but that's a
+        # clearer signal than silently mistranslating).
+        pass
+
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 

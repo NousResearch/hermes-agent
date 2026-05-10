@@ -3381,6 +3381,21 @@ def build_anthropic_kwargs(
         kwargs["system"] = system
 
     if anthropic_tools:
+        # CC-name aliasing on the OAuth path. Real Claude Code's eager
+        # tool surface (Bash/Read/Edit/Write/Grep/...) is what
+        # Anthropic's billing classifier on personal Max accounts
+        # accepts as plan-budget; hermes-named tools at low byte counts
+        # still route to extra-usage and 400 with "out of extra usage"
+        # even though no extra usage is billed. Substituting hermes
+        # tools for their CC canonical equivalents (preserved in
+        # ``agent/cc_canonical/tools_eager.json``) makes the wire
+        # request look like real CC. Inbound tool_use dispatch routes
+        # CC names back to hermes handlers — see ``cc_aliases.adapt_tool_use``
+        # called from run_agent.py's tool dispatcher.
+        if is_oauth:
+            from agent import cc_aliases as _cc
+            if _cc.is_enabled():
+                anthropic_tools = _cc.replace_with_cc_canonical(anthropic_tools)
         anthropic_tools = _apply_tool_search(anthropic_tools, tool_search_config)
         if cache_tools:
             from agent.prompt_caching import apply_anthropic_tools_cache_control

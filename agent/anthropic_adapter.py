@@ -3136,13 +3136,17 @@ def _apply_tool_search(
             # via the tool_search server tool), and Anthropic's server
             # hydrates the full schema from its registry when
             # tool_search returns the entry.
-            stub = {
+            stub: Dict[str, Any] = {
                 "name": name,
-                "type": tool.get("type", "function") if "type" in tool else "function",
                 "defer_loading": True,
             }
             # Preserve cache_control if the caller had set it; it
             # affects prompt-caching boundary placement and is cheap.
+            # NOTE: do NOT set ``type`` — custom (function) tool
+            # entries don't carry that field at all; Anthropic's API
+            # only accepts ``type`` for server-side tools (e.g.
+            # ``bash_20250124``) and rejects ``type: function`` with
+            # a validation 400.
             if "cache_control" in tool:
                 stub["cache_control"] = tool["cache_control"]
             transformed.append(stub)

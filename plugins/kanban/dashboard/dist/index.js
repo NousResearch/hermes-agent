@@ -371,6 +371,8 @@
 
     const [selectedTaskId, setSelectedTaskId] = useState(null);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
+    const [lastSelectedId, setLastSelectedId] = useState(null);
+    const [failedIds, setFailedIds] = useState(() => new Set());
     // Per-task event counter incremented whenever the WS stream reports
     // a new event for that task id. TaskDrawer useEffect-depends on its
     // own task's counter so it reloads itself on live events instead of
@@ -520,7 +522,7 @@
         if (tenantFilter && t.tenant !== tenantFilter) return false;
         if (assigneeFilter && t.assignee !== assigneeFilter) return false;
         if (q) {
-          const hay = `${t.id} ${t.title || ""} ${t.assignee || ""} ${t.tenant || ""}`.toLowerCase();
+          const hay = `${t.id} ${t.title || ""} ${t.body || ""} ${t.result || ""} ${t.latest_summary || ""} ${t.summary || ""} ${t.assignee || ""} ${t.tenant || ""}`.toLowerCase();
           if (hay.indexOf(q) === -1) return false;
         }
         return true;
@@ -564,6 +566,55 @@
       });
     }, [loadBoard, board]);
 
+    const clearSelected = useCallback(function () {
+      setSelectedIds(new Set());
+      setLastSelectedId(null);
+      setFailedIds(new Set());
+    }, []);
+    const moveSelected = useCallback(function (newStatus) {
+      const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
+      if (confirmMsg && !window.confirm(confirmMsg)) return;
+      if (selectedIds.size === 0) return;
+      const patch = withCompletionSummary({ status: newStatus }, selectedIds.size);
+      if (!patch) return;
+      const ids = Array.from(selectedIds);
+      // Optimistic UI: remove selected from all columns and prepend to target.
+      setBoardData(function (b) {
+        if (!b) return b;
+        const moved = [];
+        const columns = b.columns.map(function (col) {
+          const kept = [];
+          for (const t of col.tasks) {
+            if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: newStatus }));
+            else kept.push(t);
+          }
+          return Object.assign({}, col, { tasks: kept });
+        });
+        const dest = columns.find(function (c) { return c.name === newStatus; });
+        if (dest) dest.tasks = moved.concat(dest.tasks);
+        return Object.assign({}, b, { columns });
+      });
+      SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Object.assign({ ids }, patch)),
+      }).then(function (res) {
+        const failed = (res.results || []).filter(function (r) { return !r.ok; });
+        if (failed.length > 0) {
+          setError(`Bulk move: ${failed.length} of ${res.results.length} failed`);
+          setFailedIds(new Set(failed.map(function (f) { return f.id; })));
+        } else {
+          setFailedIds(new Set());
+        }
+        clearSelected();
+        loadBoard();
+      }).catch(function (err) {
+        setError(`Move failed: ${err.message || err}`);
+        setFailedIds(new Set(selectedIds));
+        loadBoard();
+      });
+    }, [selectedIds, loadBoard, clearSelected, board]);
+
     const createTask = useCallback(function (body) {
       return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
         method: "POST",
@@ -590,8 +641,66 @@
         else next.add(id);
         return next;
       });
+      setLastSelectedId(id);
+      setFailedIds(function (prev) {
+        if (prev.has(id)) {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        }
+        return prev;
+      });
     }, []);
-    const clearSelected = useCallback(function () { setSelectedIds(new Set()); }, []);
+
+    const toggleRange = useCallback(function (toId) {
+      // Build flat visible task order from filteredBoard columns.
+      setSelectedIds(function (prev) {
+        const next = new Set(prev);
+        if (!filteredBoard || !filteredBoard.columns) return next;
+        const order = [];
+        for (const col of filteredBoard.columns) {
+          for (const t of col.tasks || []) order.push(t.id);
+        }
+        const anchor = lastSelectedId;
+        if (!anchor || anchor === toId) {
+          next.has(toId) ? next.delete(toId) : next.add(toId);
+          return next;
+        }
+        const aIdx = order.indexOf(anchor);
+        const bIdx = order.indexOf(toId);
+        if (aIdx === -1 || bIdx === -1) {
+          next.has(toId) ? next.delete(toId) : next.add(toId);
+          return next;
+        }
+        const lo = Math.min(aIdx, bIdx);
+        const hi = Math.max(aIdx, bIdx);
+        for (let i = lo; i <= hi; i++) next.add(order[i]);
+        return next;
+      });
+    }, [filteredBoard, lastSelectedId]);
+
+    const selectAllVisible = useCallback(function () {
+      if (!filteredBoard || !filteredBoard.columns) return;
+      const next = new Set();
+      for (const col of filteredBoard.columns) {
+        for (const t of col.tasks || []) next.add(t.id);
+      }
+      setSelectedIds(next);
+      if (next.size > 0) {
+        const first = Array.from(next)[0];
+        setLastSelectedId(first);
+      }
+    }, [filteredBoard]);
+
+    const selectAllInColumn = useCallback(function (columnName) {
+      if (!filteredBoard || !filteredBoard.columns) return;
+      const col = filteredBoard.columns.find(function (c) { return c.name === columnName; });
+      if (!col) return;
+      const next = new Set(selectedIds);
+      for (const t of col.tasks || []) next.add(t.id);
+      setSelectedIds(next);
+      if (col.tasks && col.tasks.length > 0) setLastSelectedId(col.tasks[0].id);
+    }, [filteredBoard, selectedIds]);
 
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
@@ -609,11 +718,17 @@
           if (failed.length > 0) {
             setError(`Bulk: ${failed.length} of ${res.results.length} failed: ` +
               failed.slice(0, 3).map(function (f) { return `${f.id} (${f.error})`; }).join("; "));
+            setFailedIds(new Set(failed.map(function (f) { return f.id; })));
+          } else {
+            setFailedIds(new Set());
           }
           clearSelected();
           loadBoard();
         })
-        .catch(function (e) { setError(String(e.message || e)); });
+        .catch(function (e) {
+          setError(String(e.message || e));
+          setFailedIds(new Set(selectedIds));
+        });
     }, [selectedIds, loadBoard, clearSelected, board]);
 
     // --- board switching ----------------------------------------------------
@@ -627,7 +742,13 @@
       setLoading(true);
       setBoard(nextSlug);
       writeSelectedBoard(nextSlug);
-    }, [board]);
+      // Reset filters so stale search/tenant/assignee don't persist across boards.
+      setSearch("");
+      setTenantFilter("");
+      setAssigneeFilter("");
+      setIncludeArchived(false);
+      clearSelected();
+    }, [board, clearSelected]);
 
     const createNewBoard = useCallback(function (payload) {
       return SDK.fetchJSON(`${API}/boards`, {
@@ -709,14 +830,19 @@
           assignees: (boardData && boardData.assignees) || [],
           onApply: applyBulk,
           onClear: clearSelected,
+          onSelectAllVisible: selectAllVisible,
         }) : null,
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
         h(BoardColumns, {
           board: filteredBoard,
           laneByProfile,
           selectedIds,
+          failedIds,
           toggleSelected,
+          toggleRange,
+          selectAllInColumn,
           onMove: moveTask,
+          onMoveSelected: moveSelected,
           onOpen: setSelectedTaskId,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -1415,6 +1541,16 @@
         size: "sm",
         title: "Reload the board from the database. The board auto-refreshes on task events; this is for forcing a re-read.",
       }, "Refresh"),
+      h(Button, {
+        onClick: function () {
+          props.setSearch("");
+          props.setTenantFilter("");
+          props.setAssigneeFilter("");
+          props.setIncludeArchived(false);
+        },
+        size: "sm",
+        title: "Clear all active filters (search, tenant, assignee, archived).",
+      }, "Clear filters"),
     );
   }
 
@@ -1424,14 +1560,33 @@
 
   function BulkActionBar(props) {
     const [assignee, setAssignee] = useState("");
+    const [reclaimFirst, setReclaimFirst] = useState(false);
+    const [priority, setPriority] = useState("");
     return h("div", { className: "hermes-kanban-bulk" },
       h("span", { className: "hermes-kanban-bulk-count" },
         `${props.count} selected`),
+      h(Button, {
+        onClick: function () { props.onApply({ status: "todo" }); },
+        size: "sm",
+        title: "Move selected tasks to Todo.",
+      }, "→ todo"),
       h(Button, {
         onClick: function () { props.onApply({ status: "ready" }); },
         size: "sm",
         title: "Move selected tasks to Ready. Ready tasks are picked up by the dispatcher on the next tick.",
       }, "→ ready"),
+      h(Button, {
+        onClick: function () { props.onApply({ status: "blocked" },
+          `Block ${props.count} task(s)?`); },
+        size: "sm",
+        title: "Block selected tasks. Releases any active claims.",
+      }, "Block"),
+      h(Button, {
+        onClick: function () { props.onApply({ status: "ready" },
+          `Unblock ${props.count} task(s)?`); },
+        size: "sm",
+        title: "Unblock selected tasks (promote to Ready).",
+      }, "Unblock"),
       h(Button, {
         onClick: function () {
           props.onApply({ status: "done" },
@@ -1448,6 +1603,25 @@
         size: "sm",
         title: "Archive selected tasks. They disappear from the default board view but remain in the database.",
       }, "Archive"),
+      h("div", { className: "hermes-kanban-bulk-priority",
+                 title: "Set priority on selected tasks. Higher = claimed first." },
+        h(Input, {
+          type: "number",
+          value: priority,
+          onChange: function (e) { setPriority(e.target.value); },
+          placeholder: "pri",
+          className: "h-7 text-xs w-16",
+        }),
+        h(Button, {
+          onClick: function () {
+            if (priority === "") return;
+            props.onApply({ priority: Number(priority) });
+            setPriority("");
+          },
+          disabled: priority === "",
+          size: "sm",
+        }, "Set priority"),
+      ),
       h("div", { className: "hermes-kanban-bulk-reassign",
                  title: "Reassign selected tasks to a different Hermes profile. Pick a profile (or unassign) and click Apply." },
         h(Select, {
@@ -1464,7 +1638,7 @@
         h(Button, {
           onClick: function () {
             if (!assignee) return;
-            props.onApply({ assignee: assignee === "__none__" ? "" : assignee });
+            props.onApply({ assignee: assignee === "__none__" ? "" : assignee, reclaim_first: reclaimFirst });
             setAssignee("");
           },
           disabled: !assignee,
@@ -1472,7 +1646,20 @@
           title: "Apply the selected assignee to all selected tasks.",
         }, "Apply"),
       ),
+      h("label", { className: "hermes-kanban-bulk-reclaim-first", title: "Reclaim any active claims before reassigning" },
+        h("input", {
+          type: "checkbox",
+          checked: reclaimFirst,
+          onChange: function (e) { setReclaimFirst(e.target.checked); },
+        }),
+        "Reclaim first",
+      ),
       h("div", { className: "flex-1" }),
+      h(Button, {
+        onClick: props.onSelectAllVisible,
+        size: "sm",
+        title: "Select all visible cards across columns.",
+      }, "Select all visible"),
       h(Button, {
         onClick: props.onClear,
         size: "sm",
@@ -1493,8 +1680,12 @@
           column: col,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
+          failedIds: props.failedIds,
           toggleSelected: props.toggleSelected,
+          toggleRange: props.toggleRange,
+          selectAllInColumn: props.selectAllInColumn,
           onMove: props.onMove,
+          onMoveSelected: props.onMoveSelected,
           onOpen: props.onOpen,
           onCreate: props.onCreate,
           allTasks: props.allTasks,
@@ -1514,7 +1705,12 @@
       const el = colRef.current;
       function onTouchDrop(e) {
         if (e.detail && e.detail.status === props.column.name) {
-          props.onMove(e.detail.taskId, props.column.name);
+          const taskId = e.detail.taskId;
+          if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1 && props.onMoveSelected) {
+            props.onMoveSelected(props.column.name);
+          } else {
+            props.onMove(taskId, props.column.name);
+          }
         }
       }
       el.addEventListener("hermes-kanban:drop", onTouchDrop);
@@ -1531,7 +1727,12 @@
       e.preventDefault();
       setDragOver(false);
       const taskId = e.dataTransfer.getData(MIME_TASK);
-      if (taskId) props.onMove(taskId, props.column.name);
+      if (!taskId) return;
+      if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1) {
+        if (props.onMoveSelected) props.onMoveSelected(props.column.name);
+      } else {
+        props.onMove(taskId, props.column.name);
+      }
     };
 
     const lanes = useMemo(function () {
@@ -1559,6 +1760,18 @@
     },
       h("div", { className: "hermes-kanban-column-header",
                  title: COLUMN_HELP[props.column.name] || "" },
+        h("input", {
+          type: "checkbox",
+          className: "hermes-kanban-col-check",
+          title: "Select all tasks in this column",
+          "aria-label": `Select all tasks in ${COLUMN_LABEL[props.column.name] || props.column.name}`,
+          checked: props.column.tasks.length > 0 && props.column.tasks.every(function (t) { return props.selectedIds.has(t.id); }),
+          onChange: function (e) {
+            e.stopPropagation();
+            if (props.selectAllInColumn) props.selectAllInColumn(props.column.name);
+          },
+          onClick: function (e) { e.stopPropagation(); },
+        }),
         h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[props.column.name]) }),
         h("span", { className: "hermes-kanban-column-label" },
           COLUMN_LABEL[props.column.name] || props.column.name),
@@ -1596,7 +1809,9 @@
                     return h(TaskCard, {
                       key: t.id, task: t,
                       selected: props.selectedIds.has(t.id),
+                      failed: props.failedIds && props.failedIds.has(t.id),
                       toggleSelected: props.toggleSelected,
+                      toggleRange: props.toggleRange,
                       onOpen: props.onOpen,
                     });
                   }),
@@ -1606,7 +1821,9 @@
                 return h(TaskCard, {
                   key: t.id, task: t,
                   selected: props.selectedIds.has(t.id),
+                  failed: props.failedIds && props.failedIds.has(t.id),
                   toggleSelected: props.toggleSelected,
+                  toggleRange: props.toggleRange,
                   onOpen: props.onOpen,
                 });
               }),
@@ -1652,14 +1869,28 @@
       e.dataTransfer.effectAllowed = "move";
     };
     const handleClick = function (e) {
-      // Shift-click or ctrl/cmd-click toggles selection instead of opening.
-      if (e.shiftKey || e.ctrlKey || e.metaKey) {
+      if (e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
-        props.toggleSelected(t.id, e.ctrlKey || e.metaKey);
+        if (props.toggleRange) props.toggleRange(t.id);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        props.toggleSelected(t.id, true);
         return;
       }
       props.onOpen(t.id);
+    };
+    const handleKeyDown = function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        props.onOpen(t.id);
+      }
+      if (e.key === "Escape") {
+        if (props.toggleSelected) props.toggleSelected(t.id, false);
+      }
     };
     const handleCheckbox = function (e) {
       e.stopPropagation();
@@ -1673,23 +1904,34 @@
       className: cn(
         "hermes-kanban-card",
         props.selected ? "hermes-kanban-card--selected" : "",
+        props.failed ? "hermes-kanban-card--failed" : "",
         stalenessClass(t),
       ),
       draggable: true,
+      tabIndex: 0,
+      role: "button",
+      "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.status}`,
       onDragStart: handleDragStart,
       onClick: handleClick,
+      onKeyDown: handleKeyDown,
     },
       h(Card, null,
         h(CardContent, { className: "hermes-kanban-card-content" },
           h("div", { className: "hermes-kanban-card-row" },
-            h("input", {
-              type: "checkbox",
-              className: "hermes-kanban-card-check",
-              checked: props.selected,
-              onChange: handleCheckbox,
-              onClick: function (e) { e.stopPropagation(); },
+            h("label", {
+              className: "hermes-kanban-card-check-wrap",
               title: "Select for bulk actions",
-            }),
+              onClick: function (e) { e.stopPropagation(); },
+            },
+              h("input", {
+                type: "checkbox",
+                className: "hermes-kanban-card-check",
+                checked: props.selected,
+                onChange: handleCheckbox,
+                onClick: function (e) { e.stopPropagation(); },
+                "aria-label": `Select task ${t.id}`,
+              }),
+            ),
             h("span", { className: "hermes-kanban-card-id",
                         title: `Task id: ${t.id}. Use this id with kanban_show, /kanban show, or hermes kanban show.` }, t.id),
             t.warnings && t.warnings.count > 0

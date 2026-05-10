@@ -685,6 +685,50 @@ TELEGRAM_GROUP_ALLOWED_USERS="-1001234567890"
 TELEGRAM_GROUP_ALLOWED_CHATS="-1001234567890"
 ```
 
+## Slash Command Access Control
+
+By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the platform's `extra` block:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        # Existing allowlists (unchanged)
+        allow_from:
+          - "123456789"     # admin
+          - "555555555"     # regular user
+          - "777777777"     # regular user
+
+        # NEW — admins get all slash commands (built-in + plugin)
+        allow_admin_from:
+          - "123456789"
+
+        # NEW — non-admin allowed users can only run these slash commands.
+        # /help and /whoami are always allowed so users can see their access.
+        user_allowed_commands:
+          - status
+          - model
+          - history
+
+        # Optional: separate admin/command lists for groups
+        group_allow_admin_from:
+          - "123456789"
+        group_user_allowed_commands:
+          - status
+```
+
+**Behavior:**
+
+- A user listed in `allow_admin_from` for a scope (DM or group) can run **every** registered slash command — built-in commands AND plugin-registered ones — through the live registry.
+- A user in `allow_from` but **not** in `allow_admin_from` can only run commands listed in `user_allowed_commands`, plus the always-allowed floor: `/help` and `/whoami`.
+- Plain chat (non-slash messages) is unaffected. Non-admin users can still talk to the agent normally, they just can't trigger arbitrary commands.
+- **Backward compat:** if `allow_admin_from` is not set for a scope, slash command gating is disabled for that scope. Existing installs keep working with no changes.
+- DM admin status does not imply group admin status. Each scope has its own admin list.
+- If only `group_allow_admin_from` is set, DM scope stays in unrestricted (backward-compat) mode.
+
+Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
+
 ## Interactive Model Picker
 
 When you send `/model` with no arguments in a Telegram chat, Hermes shows an interactive inline keyboard for switching models:

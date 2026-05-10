@@ -134,6 +134,7 @@ hermes gateway status --system         # Linux only: inspect the system service 
 | `/retry` | Retry the last message |
 | `/undo` | Remove the last exchange |
 | `/status` | Show session info |
+| `/whoami` | Show your slash command access on this scope (admin / user / unrestricted) |
 | `/stop` | Stop the running agent |
 | `/approve` | Approve a pending dangerous command |
 | `/deny` | Reject a pending dangerous command |
@@ -220,6 +221,33 @@ hermes pairing revoke telegram 123456789  # Remove access
 ```
 
 Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
+
+### Slash Command Access Control
+
+Once users are allowed in, you can split them into **admins** (full slash command access) and **regular users** (only the slash commands you explicitly enable). This applies per platform and per scope (DM vs group/channel) and works through the live command registry, so it covers built-in AND plugin-registered slash commands without per-feature wiring.
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      extra:
+        allow_from: ["111", "222", "333"]
+        allow_admin_from: ["111"]                    # admins → all slash commands
+        user_allowed_commands: [status, model]       # what non-admins may run
+        # Optional: separate group/channel scope
+        group_allow_admin_from: ["111"]
+        group_user_allowed_commands: [status]
+```
+
+Behavior:
+
+- A user in `allow_admin_from` for a scope can run **every** registered slash command.
+- A user in `allow_from` but not in `allow_admin_from` can only run commands in `user_allowed_commands`, plus the always-allowed floor: `/help` and `/whoami`.
+- Plain chat is unaffected. Non-admins can still talk to the agent normally; they just can't trigger arbitrary commands.
+- **Backward compat:** if `allow_admin_from` is not set for a scope, slash gating is disabled for that scope. Existing installs keep working with no changes.
+- DM admin status does not imply group/channel admin status. Each scope has its own admin list.
+
+Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. See the [Telegram](/docs/user-guide/messaging/telegram#slash-command-access-control) and [Discord](/docs/user-guide/messaging/discord#slash-command-access-control) pages for platform-specific examples.
 
 ## Interrupting the Agent
 

@@ -63,6 +63,7 @@ AUTHOR_MAP = {
     "mason@growagainorchids.com": "masonjames",
     "ytchen0719@gmail.com": "liquidchen",
     "am@studio1.tailb672fe.ts.net": "subtract0",
+    "mike@grossmann.at": "ReqX",
     "axmaiqiu@gmail.com": "qWaitCrypto",
     "44045911+kidonng@users.noreply.github.com": "kidonng",
     "daniellsmarta@gmail.com": "DanielLSM",

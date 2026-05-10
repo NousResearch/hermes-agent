@@ -25,6 +25,7 @@ object HermesAutomationBridge {
         return when (action.lowercase().ifBlank { "list" }) {
             "list", "list_automations", "status" -> listJson(context)
             "run_history", "automation_run_history", "recent_runs", "operator_run_history" -> runHistoryJson(context, arguments)
+            "operator_devices", "devices", "standby_devices", "remote_devices", "opengui_devices" -> operatorDevicesJson(context)
             "operator_standby_status", "standby_status", "remote_dispatch_status", "dispatch_status" -> operatorStandbyStatusJson(context)
             "operator_execution_status", "execution_status", "remote_execution_status", "opengui_execution_status" -> operatorExecutionStatusJson(context, arguments)
             "create_shell_task", "create_shell", "create" -> createShellTaskJson(context, arguments)
@@ -162,6 +163,48 @@ object HermesAutomationBridge {
         return JSONObject()
             .put("success", true)
             .put("standby_dispatch", standbySummaryJson(context, store.list(), store))
+            .toString()
+    }
+
+    fun operatorDevicesJson(context: Context): String {
+        val store = HermesAutomationStore(context)
+        val standby = standbySummaryJson(context, store.list(), store)
+        val device = JSONObject()
+            .put("device_id", standby.optString("device_id"))
+            .put("device_name", standby.optString("device_name"))
+            .put("online", true)
+            .put("standby_ready", standby.optBoolean("ready"))
+            .put("last_seen_epoch_ms", System.currentTimeMillis())
+            .put("standby_namespace", standby.optString("standby_namespace"))
+            .put("standby_heartbeat_event", standby.optString("standby_heartbeat_event"))
+            .put("standby_dispatch_event", standby.optString("standby_dispatch_event"))
+            .put("heartbeat_interval_seconds", standby.optInt("heartbeat_interval_seconds"))
+            .put("automation_count", standby.optInt("automation_count"))
+            .put("enabled_automation_count", standby.optInt("enabled_automation_count"))
+            .put("remote_dispatch_count", standby.optInt("remote_dispatch_count"))
+            .put("external_trigger_count", standby.optInt("external_trigger_count"))
+            .put("recent_run_count", standby.optInt("recent_run_count"))
+            .put("last_dispatch_epoch_ms", standby.opt("last_dispatch_epoch_ms"))
+            .put("last_dispatch_task_name", standby.optString("last_dispatch_task_name"))
+            .put("supported_dispatch_channels", standby.optJSONArray("supported_dispatch_channels") ?: JSONArray())
+            .put("compatible_dispatch_payloads", standby.optJSONArray("compatible_dispatch_payloads") ?: JSONArray())
+        return JSONObject()
+            .put("success", true)
+            .put("device_count", 1)
+            .put("online_device_count", 1)
+            .put("devices", JSONArray().put(device))
+            .put("standby_dispatch", standby)
+            .put(
+                "compatible_device_queries",
+                JSONArray(
+                    listOf(
+                        "OpenGUI devices",
+                        "OpenGUI /devices",
+                        "Hermes android_automation_tool operator_devices",
+                        "Hermes android_automation_tool operator_standby_status",
+                    )
+                )
+            )
             .toString()
     }
 
@@ -4481,6 +4524,7 @@ object HermesAutomationBridge {
 
     private val AUTOMATION_ACTIONS = listOf(
         "list",
+        "operator_devices",
         "operator_standby_status",
         "operator_execution_status",
         "run_history",

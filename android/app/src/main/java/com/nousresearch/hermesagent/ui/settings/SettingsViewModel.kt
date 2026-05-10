@@ -1,6 +1,9 @@
 package com.nousresearch.hermesagent.ui.settings
 
 import android.app.Application
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
@@ -99,18 +102,42 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         if (target.isBlank()) {
             return
         }
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(target)).apply {
+        val uri = Uri.parse(target)
+        if (uri.scheme !in setOf("http", "https")) {
+            _uiState.update { it.copy(status = "Provider setup URL must start with https:// or http://") }
+            return
+        }
+        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
             addCategory(Intent.CATEGORY_BROWSABLE)
+        }
+        val chooser = Intent.createChooser(intent, "Open provider setup page").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         runCatching {
-            getApplication<Application>().startActivity(intent)
+            getApplication<Application>().startActivity(chooser)
         }.onSuccess {
-            _uiState.update { it.copy(status = "Opened provider key page") }
+            _uiState.update { it.copy(status = "Opened provider setup page. If your browser stalls, copy the setup URL and paste it into another browser.") }
         }.onFailure { error ->
+            copyProviderKeyPage(target, updateSuccessStatus = false)
             _uiState.update {
-                it.copy(status = "Unable to open provider key page: ${error::class.java.simpleName}")
+                it.copy(status = "Unable to open browser (${error::class.java.simpleName}); copied the provider setup URL.")
             }
+        }
+    }
+
+    fun copyProviderKeyPage(url: String) {
+        copyProviderKeyPage(url, updateSuccessStatus = true)
+    }
+
+    private fun copyProviderKeyPage(url: String, updateSuccessStatus: Boolean) {
+        val target = url.trim()
+        if (target.isBlank()) {
+            return
+        }
+        val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText("Hermes provider setup URL", target))
+        if (updateSuccessStatus) {
+            _uiState.update { it.copy(status = "Copied provider setup URL") }
         }
     }
 

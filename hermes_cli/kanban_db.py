@@ -1275,6 +1275,12 @@ def create_task(
     if skills is not None:
         cleaned: list[str] = []
         seen: set[str] = set()
+        # Collect all toolset-name confusions up front so the user sees the
+        # whole list at once. Raising on the first hit is friendly when the
+        # input has one mistake, but agents that confuse skills with toolsets
+        # usually pass several at once (`skills=["web", "browser", "terminal"]`)
+        # and serial-correcting one per failure round-trips wastes tokens.
+        toolset_typos: list[str] = []
         for s in skills:
             if not s:
                 continue
@@ -1287,14 +1293,22 @@ def create_task(
                     f"(pass a list of separate names instead of a comma-joined string)"
                 )
             if name.casefold() in KNOWN_TOOLSET_NAMES:
-                raise ValueError(
-                    f"{name!r} is a toolset name, not a skill name. "
-                    "Put it in the assignee profile's toolsets instead of task skills."
-                )
+                toolset_typos.append(name)
+                continue
             if name in seen:
                 continue
             seen.add(name)
             cleaned.append(name)
+        if toolset_typos:
+            quoted = ", ".join(repr(n) for n in toolset_typos)
+            noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
+            raise ValueError(
+                f"{quoted} {noun}, not skill name(s). "
+                "Put toolsets in the assignee profile's `toolsets:` config "
+                "instead of per-task skills. Skills are named skill bundles "
+                "(e.g. `kanban-worker`, `blogwatcher`); toolsets are runtime "
+                "capabilities (e.g. `web`, `browser`, `terminal`)."
+            )
         skills_list = cleaned
 
     # Idempotency check — return the existing task instead of creating a

@@ -258,6 +258,8 @@ class TestRunSingleChildTimeoutDump:
 
         assert result["status"] == "timeout"
         assert result["api_calls"] == 0
+        assert result["model"] == "test/model"
+        assert result["provider"] == "testprov"
         assert result["diagnostic_path"] is not None
         dump_path = Path(result["diagnostic_path"])
         assert dump_path.is_file()
@@ -284,3 +286,90 @@ class TestRunSingleChildTimeoutDump:
         if logs_dir.is_dir():
             dumps = list(logs_dir.glob("subagent-timeout-*.log"))
             assert dumps == []
+
+
+class TestTimeoutFallbackRedelegation:
+    def test_timeout_result_is_retried_with_configured_acp_fallback(self, monkeypatch):
+        from tools import delegate_tool
+
+        built = []
+        fallback_child = MagicMock()
+
+        def fake_build_child_agent(**kwargs):
+            built.append(kwargs)
+            return fallback_child
+
+        monkeypatch.setattr(delegate_tool, "_build_child_agent", fake_build_child_agent)
+        monkeypatch.setattr(
+            delegate_tool,
+            "_run_single_child",
+            lambda idx, goal, child, parent: {
+                "task_index": idx,
+                "status": "completed",
+                "summary": "fallback child completed",
+                "api_calls": 1,
+                "duration_seconds": 0.01,
+                "model": "claude-sonnet-4-6",
+            },
+        )
+
+        parent = MagicMock()
+        primary = {
+            "task_index": 0,
+            "status": "timeout",
+            "summary": None,
+            "error": "primary timed out",
+            "api_calls": 20,
+            "model": "kimi-k2.6",
+        }
+        result = delegate_tool._retry_timeout_results_with_fallbacks(
+            results=[primary],
+            task_list=[{"goal": "do work", "context": "ctx", "toolsets": ["file"]}],
+            cfg={
+                "fallbacks": [
+                    {
+                        "model": "claude-sonnet-4-6",
+                        "acp_command": "claude",
+                        "acp_args": ["--print", "--output-format", "stream-json"],
+                    }
+                ]
+            },
+            effective_max_iter=7,
+            parent_agent=parent,
+            default_toolsets=["terminal"],
+        )
+
+        assert result[0]["status"] == "completed"
+        assert result[0]["summary"] == "fallback child completed"
+        assert result[0]["fallback_attempt"] == 1
+        assert result[0]["fallback_of_status"] == "timeout"
+        assert result[0]["primary_error"] == "primary timed out"
+        assert result[0]["primary_model"] == "kimi-k2.6"
+        assert built[0]["override_acp_command"] == "claude"
+        assert built[0]["override_acp_args"] == ["--print", "--output-format", "stream-json"]
+        assert built[0]["model"] == "claude-sonnet-4-6"
+        assert built[0]["toolsets"] == ["file"]
+
+    def test_no_fallback_config_preserves_timeout_result(self):
+        from tools import delegate_tool
+
+        primary = {"task_index": 0, "status": "timeout", "error": "primary timed out"}
+        result = delegate_tool._retry_timeout_results_with_fallbacks(
+            results=[primary],
+            task_list=[{"goal": "do work"}],
+            cfg={},
+            effective_max_iter=7,
+            parent_agent=MagicMock(),
+            default_toolsets=["terminal"],
+        )
+
+        assert result == [primary]
+
+    def test_fallback_specs_accept_json_string_from_config_set(self):
+        from tools import delegate_tool
+
+        specs = delegate_tool._get_timeout_fallback_specs(
+            {"fallbacks": '[{"provider":"anthropic","model":"claude-sonnet-4-6"}]'}
+        )
+
+        assert specs == [{"provider": "anthropic", "model": "claude-sonnet-4-6"}]

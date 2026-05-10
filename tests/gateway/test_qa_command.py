@@ -49,9 +49,11 @@ async def test_qa_list_shows_candidates(monkeypatch, tmp_path):
 
     output = await runner._handle_qa_command(event)
 
-    assert "id\tstatus\taction" in output
-    assert "tok123" in output
+    assert "Quick Actions review" in output
+    assert "`tok123` · save · memory" in output
     assert "Candidate title" in output
+    assert "/qa promote tok123 --to cortex_memory" in output
+    assert "id\tstatus\taction" not in output
 
 
 @pytest.mark.asyncio

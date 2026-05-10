@@ -8434,8 +8434,8 @@ class GatewayRunner:
         from hermes_cli.quick_actions import (
             _candidate_id,
             _find_candidate,
-            _format_candidate,
             discard_candidate,
+            format_candidate_digest,
             list_candidates,
             promote_candidate,
             prune_active_actions,
@@ -8504,11 +8504,7 @@ class GatewayRunner:
                     limit = max(1, min(limit, 25))
                     verbose = "-v" in args or "--verbose" in args
                     rows = list_candidates(status=status, limit=limit)
-                    if not rows:
-                        return "No Quick Action routing candidates."
-                    lines = ["id\tstatus\taction\ttargets\tcaptured_at\ttitle"]
-                    lines.extend(_format_candidate(row, verbose=verbose) for row in rows)
-                    output = "\n".join(lines)
+                    output = format_candidate_digest(rows, status=status, limit=limit, verbose=verbose)
                     if len(output) > 3800:
                         output = output[:3800] + "\n… (truncated; use `/qa list --limit 25` or terminal `hermes qa list` for full output)"
                     return output

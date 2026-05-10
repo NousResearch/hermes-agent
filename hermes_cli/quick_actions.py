@@ -71,6 +71,106 @@ def _candidate_id(row: dict[str, Any]) -> str:
     return str(row.get("id") or row.get("token") or row.get("_line_no") or "")
 
 
+def _shorten(text: Any, limit: int = 96) -> str:
+    value = str(text or "").replace("\n", " ").strip()
+    value = " ".join(value.split())
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _target_alias(target: str) -> str:
+    aliases = {
+        "cortex_memory": "memory",
+        "cortex_todo": "todo",
+        "brain_sync_wiki_candidate": "wiki",
+        "kanban_candidate": "kanban",
+    }
+    return aliases.get(target, target)
+
+
+def _candidate_targets(row: dict[str, Any]) -> list[str]:
+    targets = [str(t) for t in (row.get("recommended_targets") or []) if t]
+    promoted_to = row.get("promoted_to")
+    if promoted_to and not targets:
+        targets = [str(promoted_to)]
+    return [_target_alias(t) for t in targets]
+
+
+def _candidate_time(row: dict[str, Any]) -> str:
+    captured = str(row.get("captured_at") or row.get("promoted_at") or row.get("discarded_at") or "")
+    if not captured:
+        return "time unknown"
+    try:
+        dt = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%m-%d %H:%MZ")
+    except Exception:
+        return captured[:16]
+
+
+def format_candidate_card(row: dict[str, Any], *, index: int | None = None, verbose: bool = False) -> str:
+    """Format one routing candidate for compact chat surfaces.
+
+    This intentionally avoids TSV tables: Telegram renders dense tabular text
+    poorly, so the gateway uses small review cards with the actionable command
+    beside the candidate id.
+    """
+    cid = _candidate_id(row)
+    status = str(row.get("status") or "candidate")
+    action = str(row.get("action") or "?")
+    prefix = f"{index}. " if index is not None else ""
+    title = _shorten(row.get("title") or row.get("content") or "(untitled)", 110)
+    targets = ", ".join(_candidate_targets(row)) or "no target"
+    lines = [
+        f"{prefix}`{cid}` · {action} · {targets}",
+        title,
+        f"state: {status} · captured: {_candidate_time(row)}",
+    ]
+    if verbose:
+        content = _shorten(row.get("content") or "", 240)
+        if content and content != title:
+            lines.append(f"content: {content}")
+    if status == "candidate":
+        default_target = (_candidate_targets(row) or ["cortex_memory"])[0]
+        target_for_command = {
+            "memory": "cortex_memory",
+            "todo": "cortex_todo",
+            "wiki": "brain_sync_wiki_candidate",
+            "kanban": "kanban_candidate",
+        }.get(default_target, default_target)
+        lines.append(f"actions: `/qa promote {cid} --to {target_for_command}` · `/qa discard {cid}`")
+    else:
+        lines.append(f"details: `/qa show {cid}`")
+    return "\n".join(lines)
+
+
+def format_candidate_digest(rows: list[dict[str, Any]], *, status: str, limit: int, verbose: bool = False) -> str:
+    if not rows:
+        return f"Quick Actions: no {status} candidates."
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("action") or "?")
+        counts[key] = counts.get(key, 0) + 1
+    mix = ", ".join(f"{key} {value}" for key, value in sorted(counts.items()))
+    lines = [
+        "**Quick Actions review**",
+        f"showing: {len(rows)} latest · status: {status} · mix: {mix}",
+        "",
+    ]
+    for idx, row in enumerate(rows, start=1):
+        if idx > 1:
+            lines.append("")
+        lines.append(format_candidate_card(row, index=idx, verbose=verbose))
+    lines.extend([
+        "",
+        f"More: `/qa list --status {status} --limit {min(max(limit * 2, 5), 25)}`",
+        "Detail: `/qa show <id>`",
+    ])
+    return "\n".join(lines)
+
+
 def _find_candidate(identifier: str, *, home: Path | None = None) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
     rows = _read_jsonl(_jsonl_path(ROUTING_CANDIDATES, home))
     ident = str(identifier)

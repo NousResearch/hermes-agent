@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 
 from hermes_cli.quick_actions import (
     discard_candidate,
+    format_candidate_digest,
     list_candidates,
     promote_candidate,
     prune_active_actions,
@@ -42,6 +43,26 @@ def test_list_candidates_filters_candidate_status(tmp_path):
     rows = list_candidates(home=tmp_path)
 
     assert [r["token"] for r in rows] == ["a"]
+
+
+def test_format_candidate_digest_is_telegram_friendly(tmp_path):
+    _write_candidate(
+        tmp_path,
+        token="tok123",
+        action="todo",
+        title="A very useful follow-up that should be short enough to scan in Telegram",
+        recommended_targets=["cortex_todo", "kanban_candidate"],
+    )
+
+    rows = list_candidates(home=tmp_path)
+    output = format_candidate_digest(rows, status="candidate", limit=5)
+
+    assert "Quick Actions review" in output
+    assert "id\tstatus\taction" not in output
+    assert "`tok123` · todo · todo, kanban" in output
+    assert "state: candidate" in output
+    assert "/qa promote tok123 --to cortex_todo" in output
+    assert "/qa show <id>" in output
 
 
 def test_promote_candidate_marks_row_and_appends_promotion(tmp_path):

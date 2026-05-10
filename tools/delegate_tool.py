@@ -1584,6 +1584,10 @@ def _run_single_child(
                 "exit_reason": "timeout" if is_timeout else "error",
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
+                "model": getattr(child, "model", None) if isinstance(getattr(child, "model", None), str) else None,
+                "provider": getattr(child, "provider", None) if isinstance(getattr(child, "provider", None), str) else None,
+                "acp_command": getattr(child, "acp_command", None) if isinstance(getattr(child, "acp_command", None), str) else None,
+                "acp_args": list(getattr(child, "acp_args", []) or []),
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
@@ -1895,6 +1899,154 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _get_timeout_fallback_specs(cfg: dict) -> List[Dict[str, Any]]:
+    """Return configured timeout re-delegation fallback targets.
+
+    ``delegation.fallbacks`` is intentionally separate from the top-level
+    provider fallback chain. The top-level chain runs *inside* an AIAgent API
+    retry loop (rate limits, 5xx, auth), while this list is used by
+    ``delegate_task`` after the whole child has exceeded
+    ``delegation.child_timeout_seconds``. That second case needs a fresh child
+    runtime, not the parent agent doing the work itself.
+
+    Supported entries mirror delegate_task's per-call overrides:
+      - provider/model/base_url/api_key/api_mode for direct API subagents
+      - acp_command/acp_args for ACP CLI subagents
+
+    Backward-compatible aliases accepted: ``timeout_fallbacks`` and
+    ``fallback_providers`` under the ``delegation`` section.
+    """
+    raw = (
+        cfg.get("fallbacks")
+        or cfg.get("timeout_fallbacks")
+        or cfg.get("fallback_providers")
+        or []
+    )
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    specs: List[Dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        spec = dict(entry)
+        provider = str(spec.get("provider") or "").strip()
+        model = str(spec.get("model") or "").strip()
+        acp_command = str(spec.get("acp_command") or spec.get("command") or "").strip()
+        if not provider and not acp_command:
+            continue
+        if provider and not model and not acp_command:
+            continue
+        specs.append(spec)
+    return specs
+
+
+def _resolve_timeout_fallback_credentials(spec: Dict[str, Any], parent_agent) -> Dict[str, Any]:
+    """Resolve one fallback spec into _build_child_agent override kwargs."""
+    provider = str(spec.get("provider") or "").strip() or None
+    model = str(spec.get("model") or "").strip() or None
+    acp_command = str(spec.get("acp_command") or spec.get("command") or "").strip() or None
+    acp_args = spec.get("acp_args") if "acp_args" in spec else spec.get("args")
+    if acp_args is None:
+        acp_args_list = None
+    elif isinstance(acp_args, list):
+        acp_args_list = [str(a) for a in acp_args]
+    else:
+        acp_args_list = [str(acp_args)]
+
+    if acp_command:
+        return {
+            "model": model,
+            "provider": provider,
+            "base_url": str(spec.get("base_url") or "").strip() or None,
+            "api_key": str(spec.get("api_key") or "").strip() or None,
+            "api_mode": str(spec.get("api_mode") or "").strip() or None,
+            "command": acp_command,
+            "args": acp_args_list or [],
+        }
+
+    cfg = {
+        "provider": provider,
+        "model": model,
+        "base_url": str(spec.get("base_url") or "").strip(),
+        "api_key": str(spec.get("api_key") or "").strip(),
+    }
+    creds = _resolve_delegation_credentials(cfg, parent_agent)
+    if spec.get("api_mode"):
+        creds["api_mode"] = str(spec.get("api_mode")).strip()
+    return creds
+
+
+def _retry_timeout_results_with_fallbacks(
+    *,
+    results: List[Dict[str, Any]],
+    task_list: List[Dict[str, Any]],
+    cfg: dict,
+    effective_max_iter: int,
+    parent_agent,
+    default_toolsets: Optional[List[str]],
+) -> List[Dict[str, Any]]:
+    """Re-run timed-out delegated tasks on configured fresh child fallbacks."""
+    fallback_specs = _get_timeout_fallback_specs(cfg)
+    if not fallback_specs:
+        return results
+
+    repaired = list(results)
+    for pos, entry in enumerate(list(repaired)):
+        if entry.get("status") != "timeout":
+            continue
+        idx = int(entry.get("task_index", pos) or 0)
+        if idx < 0 or idx >= len(task_list):
+            continue
+        task = task_list[idx]
+        primary_entry = dict(entry)
+        for attempt, spec in enumerate(fallback_specs, start=1):
+            try:
+                creds = _resolve_timeout_fallback_credentials(spec, parent_agent)
+                fallback_child = _build_child_agent(
+                    task_index=idx,
+                    goal=task["goal"],
+                    context=task.get("context"),
+                    toolsets=task.get("toolsets") or default_toolsets,
+                    model=creds.get("model"),
+                    max_iterations=effective_max_iter,
+                    task_count=len(task_list),
+                    parent_agent=parent_agent,
+                    override_provider=creds.get("provider"),
+                    override_base_url=creds.get("base_url"),
+                    override_api_key=creds.get("api_key"),
+                    override_api_mode=creds.get("api_mode"),
+                    override_acp_command=creds.get("command"),
+                    override_acp_args=creds.get("args"),
+                    role=_normalize_role(task.get("role")),
+                )
+                fallback_result = _run_single_child(idx, task["goal"], fallback_child, parent_agent)
+                fallback_result["fallback_attempt"] = attempt
+                fallback_result["fallback_of_status"] = primary_entry.get("status")
+                fallback_result["primary_error"] = primary_entry.get("error")
+                fallback_result["primary_model"] = primary_entry.get("model")
+                fallback_result["primary_api_calls"] = primary_entry.get("api_calls")
+                repaired[pos] = fallback_result
+                if fallback_result.get("status") != "timeout":
+                    break
+            except Exception as exc:
+                logger.warning(
+                    "Subagent %d timeout fallback attempt %d failed: %s",
+                    idx,
+                    attempt,
+                    exc,
+                )
+                continue
+    return repaired
+
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2191,6 +2343,18 @@ def delegate_task(
 
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])
+
+    # If a child timed out, try configured fresh child fallback runtimes before
+    # returning control to the parent LLM. This prevents the main agent from
+    # silently doing the delegated work itself after a timeout.
+    results = _retry_timeout_results_with_fallbacks(
+        results=results,
+        task_list=task_list,
+        cfg=cfg,
+        effective_max_iter=effective_max_iter,
+        parent_agent=parent_agent,
+        default_toolsets=toolsets,
+    )
 
     # Notify parent's memory provider of delegation outcomes
     if (

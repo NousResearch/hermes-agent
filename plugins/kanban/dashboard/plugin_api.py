@@ -823,6 +823,7 @@ class BulkTaskBody(BaseModel):
     result: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    reclaim_first: bool = False
 
 
 @router.post("/tasks/bulk")
@@ -877,9 +878,16 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         entry.update(ok=False, error=f"transition to {s!r} refused")
                 if payload.assignee is not None:
                     try:
-                        if not kanban_db.assign_task(
-                            conn, tid, payload.assignee or None,
-                        ):
+                        if payload.reclaim_first:
+                            ok = kanban_db.reassign_task(
+                                conn, tid, payload.assignee or None,
+                                reclaim_first=True,
+                            )
+                        else:
+                            ok = kanban_db.assign_task(
+                                conn, tid, payload.assignee or None,
+                            )
+                        if not ok:
                             entry.update(ok=False, error="assign refused")
                     except RuntimeError as e:
                         entry.update(ok=False, error=str(e))

@@ -1263,10 +1263,9 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     return targets[0] if targets else None
 
 
-# Media extension sets — audio routing is centralized in gateway.platforms.base
-# via should_send_media_as_audio() so Telegram-specific rules stay in one place.
-_VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
-_IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
+# Media extension sets — centralized in gateway.platforms.base so cron and
+# adapters share the same canonical lists and never drift out of sync.
+from gateway.platforms.base import _VIDEO_EXTS, _IMAGE_EXTS
 
 
 def _send_media_via_adapter(

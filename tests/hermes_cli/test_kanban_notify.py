@@ -76,7 +76,13 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 @pytest.mark.parametrize('kind', ["gave_up", "crashed", "timed_out"])
 async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     """
-    Event kind of gave_up, crashed, time_out would be cover, and remove subscription
+    Event kinds gave_up / crashed / timed_out send a notification but DO
+    NOT delete the subscription. The dispatcher may respawn the task and
+    fire the same event kind again (e.g. a worker that crashes, gets
+    reclaimed, and crashes a second time); the user must hear about the
+    second event too. Subscriptions are removed only when the task hits
+    a truly final status (done / archived) — see the comment on
+    TERMINAL_KINDS in gateway/run.py and PR #21398.
     """
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
@@ -114,15 +120,27 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
             timeout=10.0,
         )
 
+    # The user is notified about the abnormal event...
     fake_adapter.send.assert_called_once()
     assert kind.replace('_', ' ') in fake_adapter.send.call_args[0][1]
 
+    # ...but the subscription survives so a respawn-then-same-event cycle
+    # reaches the user too. The cursor (last_event_id) advanced inside
+    # the same write txn as the claim, so the same event won't re-fire.
     conn = kb.connect()
     try:
         subs = kb.list_notify_subs(conn, tid)
     finally:
         conn.close()
-    assert subs == [], "Subscription should be unsub after abnormal crash"
+    assert len(subs) == 1, (
+        f"Subscription should survive {kind!r} so the next cycle of the "
+        f"same event reaches the user; got {subs!r}"
+    )
+    assert int(subs[0]["last_event_id"]) >= 1, (
+        "Cursor should have advanced past the delivered event "
+        "(claim_unseen_events_for_sub advances atomically inside the "
+        "same write txn as the read)."
+    )
 
 
 @pytest.mark.asyncio

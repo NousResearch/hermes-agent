@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # xAI Responses API (stateful chat with store/previous_response_id, gated on XAI_API_KEY)
+    "xai_responses_chat",
 ]
 
 
@@ -114,6 +116,17 @@ TOOLSETS = {
             "or keyboard focus. Works with any tool-capable model."
         ),
         "tools": ["computer_use"],
+        "includes": []
+    },
+
+    "xai_responses": {
+        "description": (
+            "xAI Responses API stateful surface — store=true (server-side "
+            "30-day history), previous_response_id chaining, max_turns "
+            "agentic budget. For long autonomous workflows where re-uploading "
+            "context every turn is wasteful."
+        ),
+        "tools": ["xai_responses_chat"],
         "includes": []
     },
 

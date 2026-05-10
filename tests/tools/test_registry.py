@@ -319,6 +319,7 @@ class TestBuiltinDiscovery:
             "tools.tts_tool",
             "tools.vision_tools",
             "tools.web_tools",
+            "tools.xai_responses_chat_tool",
             "tools.yuanbao_tools",
         }
 

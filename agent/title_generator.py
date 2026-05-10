@@ -58,7 +58,11 @@ def generate_title(
             task="title_generation",
             messages=messages,
             max_tokens=500,
-            temperature=0.3,
+            # Title generation is a background convenience task. Azure/OpenAI
+            # reasoning models can reject non-default temperature values, and
+            # surfacing that retry as a Telegram warning is noisier than using
+            # the provider default. Keep this call provider-neutral.
+            temperature=None,
             timeout=timeout,
             main_runtime=main_runtime,
         )

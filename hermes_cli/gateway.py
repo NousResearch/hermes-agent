@@ -40,6 +40,67 @@ from hermes_cli.colors import Colors, color
 
 
 # =============================================================================
+# Proxy environment detection for systemd drop-in
+# =============================================================================
+
+# Proxy vars that aiohttp (trust_env=True) and other HTTP libraries read from
+# os.environ. When present in the installing shell, we mirror them into a
+# systemd drop-in so the gateway service inherits them across restarts.
+# Without this, users behind proxies (e.g. WSL + Clash/V2Ray in China) get
+# silent connection failures — the gateway reports "Connected" but the poll
+# loop can't reach external APIs.
+_SYSTEMD_PROXY_VARS = (
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+)
+
+
+def _proxy_dropin_content() -> str | None:
+    """Return systemd drop-in content for proxy env vars, or None."""
+    lines: list[str] = ["[Service]"]
+    has_any = False
+    for var in _SYSTEMD_PROXY_VARS:
+        value = os.environ.get(var)
+        if value:
+            lines.append(f'Environment="{var}={value}"')
+            has_any = True
+    if not has_any:
+        return None
+    return "\n".join(lines) + "\n"
+
+
+def _proxy_dropin_path(system: bool = False) -> Path:
+    """Return the path to the proxy drop-in conf file."""
+    return get_systemd_unit_path(system=system).with_suffix(".service.d") / "proxy.conf"
+
+
+def _ensure_proxy_dropin(system: bool = False) -> None:
+    """Sync the proxy drop-in with the current environment.
+
+    Creates the drop-in when proxy env vars are present; removes a stale
+    drop-in when they are absent (the user may have turned off the proxy).
+    """
+    dropin_path = _proxy_dropin_path(system=system)
+    content = _proxy_dropin_content()
+    if content is not None:
+        dropin_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = dropin_path.read_text(encoding="utf-8") if dropin_path.exists() else ""
+        if existing != content:
+            dropin_path.write_text(content, encoding="utf-8")
+            print_info(f"  Proxy drop-in written: {dropin_path}")
+    elif dropin_path.exists():
+        dropin_path.unlink()
+        try:
+            dropin_path.parent.rmdir()  # remove only if empty
+        except OSError:
+            pass
+
+
+# =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
 
@@ -2440,6 +2501,9 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
     print(f"Installing {_service_scope_label(system)} systemd service to: {unit_path}")
     unit_path.write_text(generate_systemd_unit(system=system, run_as_user=run_as_user), encoding="utf-8")
 
+    # Mirror proxy environment variables into a systemd drop-in
+    _ensure_proxy_dropin(system=system)
+
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
 
@@ -2500,6 +2564,7 @@ def systemd_start(system: bool = False):
         _preflight_user_systemd()
     _require_service_installed("start", system=system)
     refresh_systemd_unit_if_needed(system=system)
+    _ensure_proxy_dropin(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
 

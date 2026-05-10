@@ -6082,6 +6082,12 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
 
+            # /qa is a Quick Actions control-plane command.  It only reviews
+            # local routing candidates or marks them promoted/discarded for a
+            # later executor, so it is safe to run while an agent is active.
+            if _cmd_def_inner and _cmd_def_inner.name == "qa":
+                return await self._handle_qa_command(event)
+
             # /goal is safe mid-run for status/pause/clear (inspection and
             # control-plane only — doesn't interrupt the running turn).
             # Setting a new goal text mid-run is rejected with the same
@@ -6398,6 +6404,9 @@ class GatewayRunner:
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical == "qa":
+            return await self._handle_qa_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -8408,6 +8417,151 @@ class GatewayRunner:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    async def _handle_qa_command(self, event: MessageEvent) -> str:
+        """Handle /qa — Telegram Quick Actions review control plane.
+
+        This mirrors the terminal ``hermes qa`` CLI but keeps execution inside
+        the gateway process.  ``promote`` remains intentionally conservative:
+        it marks a routing candidate as promoted and appends a
+        ``pending_execution`` event; it does not directly mutate Cortex,
+        brain-sync, or Kanban.
+        """
+        import asyncio
+        import json
+        import shlex
+
+        from hermes_cli.quick_actions import (
+            _candidate_id,
+            _find_candidate,
+            _format_candidate,
+            discard_candidate,
+            list_candidates,
+            promote_candidate,
+            prune_active_actions,
+        )
+
+        usage = (
+            "Usage:\n"
+            "`/qa list [--status candidate|promoted|discarded|all] [--limit N] [-v]`\n"
+            "`/qa show <id>`\n"
+            "`/qa promote <id> --to cortex|wiki|kanban|cortex_memory|cortex_todo|brain_sync_wiki_candidate|kanban_candidate`\n"
+            "`/qa discard <id> [--reason text]`\n"
+            "`/qa prune-active [--older-than-days N] [--drop-undated]`"
+        )
+
+        raw = (event.get_command_args() or "").strip()
+        if not raw:
+            return usage
+        try:
+            parts = shlex.split(raw)
+        except ValueError as exc:
+            return f"⚠️ Could not parse /qa arguments: {exc}"
+        if not parts:
+            return usage
+
+        action = parts[0]
+        args = parts[1:]
+        source = event.source
+        actor_name = str(getattr(source, "user_name", "") or getattr(source, "user_id", "") or "gateway")
+        actor = f"gateway:{actor_name}"
+
+        def _get_opt(name: str, default: str | None = None) -> str | None:
+            if name not in args:
+                return default
+            idx = args.index(name)
+            if idx + 1 >= len(args):
+                raise ValueError(f"{name} requires a value")
+            return args[idx + 1]
+
+        def _positional() -> list[str]:
+            out: list[str] = []
+            skip_next = False
+            value_opts = {"--status", "--limit", "--to", "--reason", "--older-than-days"}
+            flag_opts = {"-v", "--verbose", "--drop-undated"}
+            for item in args:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if item in value_opts:
+                    skip_next = True
+                    continue
+                if item in flag_opts:
+                    continue
+                out.append(item)
+            return out
+
+        def _run() -> str:
+            try:
+                if action in ("list", "ls"):
+                    status = _get_opt("--status", "candidate") or "candidate"
+                    if status not in {"candidate", "promoted", "discarded", "all"}:
+                        return "⚠️ --status must be one of: candidate, promoted, discarded, all"
+                    try:
+                        limit = int(_get_opt("--limit", "10") or "10")
+                    except ValueError:
+                        return "⚠️ --limit must be an integer"
+                    limit = max(1, min(limit, 25))
+                    verbose = "-v" in args or "--verbose" in args
+                    rows = list_candidates(status=status, limit=limit)
+                    if not rows:
+                        return "No Quick Action routing candidates."
+                    lines = ["id\tstatus\taction\ttargets\tcaptured_at\ttitle"]
+                    lines.extend(_format_candidate(row, verbose=verbose) for row in rows)
+                    output = "\n".join(lines)
+                    if len(output) > 3800:
+                        output = output[:3800] + "\n… (truncated; use `/qa list --limit 25` or terminal `hermes qa list` for full output)"
+                    return output
+
+                if action == "show":
+                    pos = _positional()
+                    if not pos:
+                        return "Usage: `/qa show <id>`"
+                    _, row, _ = _find_candidate(pos[0])
+                    output = json.dumps(row, ensure_ascii=False, indent=2)
+                    if len(output) > 3800:
+                        output = output[:3800] + "\n… (truncated; use terminal `hermes qa show <id>` for full JSON)"
+                    return f"```json\n{output}\n```"
+
+                if action == "promote":
+                    pos = _positional()
+                    target = _get_opt("--to")
+                    if not pos or not target:
+                        return "Usage: `/qa promote <id> --to <target>`"
+                    allowed = {"cortex", "wiki", "kanban", "cortex_memory", "cortex_todo", "brain_sync_wiki_candidate", "kanban_candidate"}
+                    if target not in allowed:
+                        return "⚠️ --to must be one of: " + ", ".join(sorted(allowed))
+                    row = promote_candidate(pos[0], target=target, actor=actor)
+                    return f"✅ Promoted `{_candidate_id(row)}` -> `{target}`\nQueued as `pending_execution`; no downstream mutation was performed."
+
+                if action == "discard":
+                    pos = _positional()
+                    if not pos:
+                        return "Usage: `/qa discard <id> [--reason text]`"
+                    reason = _get_opt("--reason", "") or ""
+                    row = discard_candidate(pos[0], reason=reason, actor=actor)
+                    suffix = f" reason={reason!r}" if reason else ""
+                    return f"🗑️ Discarded `{_candidate_id(row)}`{suffix}"
+
+                if action == "prune-active":
+                    try:
+                        older = int(_get_opt("--older-than-days", "14") or "14")
+                    except ValueError:
+                        return "⚠️ --older-than-days must be an integer"
+                    drop_undated = "--drop-undated" in args
+                    result = prune_active_actions(older_than_days=older, drop_undated=drop_undated)
+                    return "```json\n" + json.dumps(result, ensure_ascii=False) + "\n```"
+
+                return usage
+            except SystemExit as exc:
+                return f"⚠️ {exc}"
+            except ValueError as exc:
+                return f"⚠️ {exc}"
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("/qa command failed: %s", exc)
+                return f"⚠️ qa error: {exc}"
+
+        return await asyncio.to_thread(_run)
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

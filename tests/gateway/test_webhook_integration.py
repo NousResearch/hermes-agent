@@ -264,6 +264,59 @@ class TestCrossPlatformDelivery:
         assert chat_id in adapter._delivery_info
 
 
+    @pytest.mark.asyncio
+    async def test_cross_platform_delivery_includes_action_buttons(self):
+        routes = {
+            "sentry": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "🚨 Sentry: {title}",
+                "deliver": "telegram",
+                "deliver_extra": {
+                    "chat_id": "12345",
+                    "actions": [
+                        {"label": "Create PR", "kind": "sentry", "action": "create_pr"}
+                    ],
+                },
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+
+        mock_tg_adapter = AsyncMock()
+        mock_tg_adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform.TELEGRAM: mock_tg_adapter}
+        mock_runner.config = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
+        )
+        adapter.gateway_runner = mock_runner
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/sentry",
+                json={"project": "incremnt", "title": "Crash in onboarding"},
+                headers={"X-GitHub-Delivery": "sentry-001"},
+            )
+            assert resp.status == 202
+
+        chat_id = "webhook:sentry:sentry-001"
+        with patch(
+            "gateway.platforms.webhook.build_action_buttons",
+            return_value=[{"label": "Create PR", "callback_data": "ar:sentry-abc"}],
+        ) as mock_build:
+            result = await adapter.send(chat_id, "Likely onboarding crash. Create a PR?")
+
+        assert result.success is True
+        mock_build.assert_called_once()
+        mock_tg_adapter.send.assert_awaited_once_with(
+            "12345",
+            "Likely onboarding crash. Create a PR?",
+            metadata={"action_buttons": [{"label": "Create PR", "callback_data": "ar:sentry-abc"}]},
+        )
+
+
 # ===================================================================
 # Test 4: GitHub comment delivery via gh CLI
 # ===================================================================

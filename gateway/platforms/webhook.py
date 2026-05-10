@@ -51,6 +51,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from gateway.action_requests import build_action_buttons
 
 logger = logging.getLogger(__name__)
 
@@ -664,14 +665,21 @@ class WebhookAdapter(BasePlatformAdapter):
     def _render_delivery_extra(
         self, extra: dict, payload: dict
     ) -> dict:
-        """Render delivery_extra template values with payload data."""
-        rendered: Dict[str, Any] = {}
-        for key, value in extra.items():
+        """Render delivery_extra template values with payload data.
+
+        Values may be nested dicts/lists so routes can define action button
+        metadata without writing a custom webhook adapter.
+        """
+        def _render(value: Any) -> Any:
             if isinstance(value, str):
-                rendered[key] = self._render_prompt(value, payload, "", "")
-            else:
-                rendered[key] = value
-        return rendered
+                return self._render_prompt(value, payload, "", "")
+            if isinstance(value, list):
+                return [_render(item) for item in value]
+            if isinstance(value, dict):
+                return {str(k): _render(v) for k, v in value.items()}
+            return value
+
+        return {str(key): _render(value) for key, value in extra.items()}
 
     # ------------------------------------------------------------------
     # Response delivery
@@ -796,10 +804,17 @@ class WebhookAdapter(BasePlatformAdapter):
                     error=f"No chat_id or home channel for {platform_name}",
                 )
 
-        # Pass thread_id from deliver_extra so Telegram forum topics work
-        metadata = None
+        # Pass thread_id/action metadata from deliver_extra so Telegram forum
+        # topics and action-card buttons work on cross-platform deliveries.
+        metadata: Dict[str, Any] = {}
         thread_id = extra.get("message_thread_id") or extra.get("thread_id")
         if thread_id:
-            metadata = {"thread_id": thread_id}
+            metadata["thread_id"] = thread_id
+        actions = extra.get("actions")
+        if isinstance(actions, list):
+            metadata["action_buttons"] = build_action_buttons(
+                actions,
+                delivery.get("payload") if isinstance(delivery.get("payload"), dict) else {},
+            )
 
-        return await adapter.send(chat_id, content, metadata=metadata)
+        return await adapter.send(chat_id, content, metadata=metadata or None)

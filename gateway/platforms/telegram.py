@@ -1426,6 +1426,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
+                action_buttons = None
+                if i == 0 and metadata and isinstance(metadata.get("action_buttons"), list):
+                    rows = []
+                    for button in metadata.get("action_buttons") or []:
+                        if not isinstance(button, dict):
+                            continue
+                        label = str(button.get("label") or "Run")[:64]
+                        callback_data = str(button.get("callback_data") or "")[:64]
+                        if callback_data:
+                            rows.append([InlineKeyboardButton(label, callback_data=callback_data)])
+                    if rows:
+                        action_buttons = InlineKeyboardMarkup(rows)
+
                 msg = None
                 for _send_attempt in range(3):
                     try:
@@ -1436,6 +1449,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=action_buttons,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -1450,6 +1464,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=action_buttons,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -2308,6 +2323,39 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._bot.send_message(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Gateway action-card callbacks (ar:<request_id>) ---
+        if data.startswith("ar:"):
+            request_id = data.split(":", 1)[1]
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to run this action.")
+                return
+            try:
+                from gateway.action_requests import dispatch_action_request
+                dispatch_action_request(request_id)
+                await query.answer(text="Starting PR task…")
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+                if query.message:
+                    await self._bot.send_message(
+                        chat_id=int(query.message.chat_id),
+                        text="I’m starting a fresh Codex PR task for that Sentry issue. I’ll report back with the PR link.",
+                        parse_mode=ParseMode.MARKDOWN,
+                        **self._link_preview_kwargs(),
+                    )
+            except Exception as exc:
+                logger.error("[%s] action callback failed: %s", self.name, exc, exc_info=True)
+                await query.answer(text="Could not start action. Check Hermes logs.")
             return
 
         # --- Update prompt callbacks ---

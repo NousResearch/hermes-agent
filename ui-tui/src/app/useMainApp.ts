@@ -423,6 +423,12 @@ export function useMainApp(gw: GatewayClient) {
       clearTimeout(timer)
       timer = setTimeout(() => {
         timer = undefined
+        // Fix for Issue #22976: clear the terminal before re-rendering on resize
+        // to prevent ghost separator lines from accumulating. Ink's VDOM diff
+        // does not invalidate old output when the canvas geometry changes.
+        if (stdout && typeof stdout.write === 'function') {
+          stdout.write('\x1b[2J\x1b[H')
+        }
         void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
       }, 100)
     }

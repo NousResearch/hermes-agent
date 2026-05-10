@@ -231,11 +231,18 @@ def test_android_automation_exposes_operator_standby_history_for_remote_dispatch
     assert 'addRunEvent' in store
     assert 'listRunEvents' in store
     assert 'operator_standby_status' in bridge
+    assert 'operator_execution_status' in bridge
+    assert 'OpenGUI /status [executionId]' in bridge
     assert 'run_history' in bridge
     assert 'run_remote_dispatch' in bridge
     assert 'submit_standby_dispatch' in bridge
     assert 'TRIGGER_REMOTE_DISPATCH' in bridge
     assert 'dispatchPayloadFromArguments' in bridge
+    assert 'standby:register' in bridge
+    assert 'standby:heartbeat' in bridge
+    assert 'standby:dispatch' in bridge
+    assert 'device_name' in bridge
+    assert 'heartbeat_interval_seconds' in bridge
     assert 'DISPATCH_EXECUTION_ID' in bridge
     assert 'standby_dispatch' in bridge
     assert 'supported_dispatch_channels' in bridge

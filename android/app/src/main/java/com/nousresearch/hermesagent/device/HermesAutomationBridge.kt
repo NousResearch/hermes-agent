@@ -1,6 +1,8 @@
 package com.nousresearch.hermesagent.device
 
 import android.content.Context
+import android.os.Build
+import android.provider.Settings
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
@@ -24,6 +26,7 @@ object HermesAutomationBridge {
             "list", "list_automations", "status" -> listJson(context)
             "run_history", "automation_run_history", "recent_runs", "operator_run_history" -> runHistoryJson(context, arguments)
             "operator_standby_status", "standby_status", "remote_dispatch_status", "dispatch_status" -> operatorStandbyStatusJson(context)
+            "operator_execution_status", "execution_status", "remote_execution_status", "opengui_execution_status" -> operatorExecutionStatusJson(context, arguments)
             "create_shell_task", "create_shell", "create" -> createShellTaskJson(context, arguments)
             "create_file_write_task", "create_file_write", "write_file_task" -> createFileWriteTaskJson(context, arguments)
             "create_file_delete_task", "create_file_delete", "delete_file_task" -> createFileDeleteTaskJson(context, arguments)
@@ -136,7 +139,7 @@ object HermesAutomationBridge {
             .put("success", true)
             .put("automations", recordsToJson(records))
             .put("variables", store.listVariables())
-            .put("standby_dispatch", standbySummaryJson(records, store))
+            .put("standby_dispatch", standbySummaryJson(context, records, store))
             .put("recent_run_events", runEventsToJson(store.listRunEvents(10)))
             .put("available_actions", JSONArray(AUTOMATION_ACTIONS))
             .put("available_triggers", JSONArray(AUTOMATION_TRIGGERS))
@@ -158,7 +161,74 @@ object HermesAutomationBridge {
         val store = HermesAutomationStore(context)
         return JSONObject()
             .put("success", true)
-            .put("standby_dispatch", standbySummaryJson(store.list(), store))
+            .put("standby_dispatch", standbySummaryJson(context, store.list(), store))
+            .toString()
+    }
+
+    fun operatorExecutionStatusJson(context: Context, arguments: JSONObject): String {
+        val limit = arguments.optInt("limit", 5).coerceIn(1, 25)
+        val executionId = stringArgument(arguments, "execution_id", "executionId", "remote_execution_id", allowEmpty = true)
+            .orEmpty()
+            .trim()
+        val taskId = stringArgument(arguments, "task_id", "taskId", "remote_task_id", allowEmpty = true)
+            .orEmpty()
+            .trim()
+        val taskName = stringArgument(arguments, "task_name", "taskName", "remote_task_name", "label", "name", allowEmpty = true)
+            .orEmpty()
+            .trim()
+        val hasFilter = executionId.isNotBlank() || taskId.isNotBlank() || taskName.isNotBlank()
+        val events = HermesAutomationStore(context).listRunEvents(50)
+        val matchedEvents = events.filter { event ->
+            val executionMatches = executionId.isBlank() ||
+                event.remoteExecutionId == executionId ||
+                event.id == executionId
+            val taskIdMatches = taskId.isBlank() ||
+                event.remoteTaskId == taskId ||
+                event.automationId == taskId
+            val taskNameMatches = taskName.isBlank() ||
+                event.remoteTaskName.equals(taskName, ignoreCase = true) ||
+                event.automationLabel.equals(taskName, ignoreCase = true) ||
+                event.automationId.equals(taskName, ignoreCase = true)
+            executionMatches && taskIdMatches && taskNameMatches
+        }
+        val latest = matchedEvents.firstOrNull()
+        val status = when {
+            latest == null && hasFilter -> "not_found"
+            latest == null -> "idle"
+            latest.success -> "completed"
+            else -> "failed"
+        }
+        val execution = JSONObject()
+            .put("status", status)
+            .put("terminal", latest != null)
+            .put("source", latest?.dispatchSource.orEmpty().ifBlank { "hermes_android" })
+            .put("channel", latest?.dispatchChannel.orEmpty())
+            .put("execution_id", latest?.remoteExecutionId.orEmpty().ifBlank { executionId })
+            .put("task_id", latest?.remoteTaskId.orEmpty().ifBlank { taskId })
+            .put("task_name", latest?.remoteTaskName.orEmpty().ifBlank { taskName.ifBlank { latest?.automationLabel.orEmpty() } })
+            .put("automation_id", latest?.automationId.orEmpty())
+            .put("automation_label", latest?.automationLabel.orEmpty())
+            .put("started_at_epoch_ms", latest?.startedAtEpochMs ?: JSONObject.NULL)
+            .put("finished_at_epoch_ms", latest?.finishedAtEpochMs ?: JSONObject.NULL)
+            .put("success", latest?.success ?: JSONObject.NULL)
+            .put("exit_code", latest?.exitCode ?: JSONObject.NULL)
+            .put("result", latest?.result.orEmpty())
+        return JSONObject()
+            .put("success", latest != null || !hasFilter)
+            .put("status", status)
+            .put("matched_run_count", matchedEvents.size)
+            .put("execution", execution)
+            .put("runs", runEventsToJson(matchedEvents.take(limit)))
+            .put(
+                "compatible_status_queries",
+                JSONArray(
+                    listOf(
+                        "OpenGUI /status [executionId]",
+                        "Hermes android_automation_tool operator_execution_status",
+                        "Hermes android_automation_tool run_history",
+                    )
+                )
+            )
             .toString()
     }
 
@@ -3510,7 +3580,7 @@ object HermesAutomationBridge {
         }
     }
 
-    private fun standbySummaryJson(records: List<HermesAutomationRecord>, store: HermesAutomationStore): JSONObject {
+    private fun standbySummaryJson(context: Context, records: List<HermesAutomationRecord>, store: HermesAutomationStore): JSONObject {
         val enabledRecords = records.filter { it.enabled }
         val externalRecords = enabledRecords.filter { it.triggerType == TRIGGER_EXTERNAL }
         val remoteDispatchRecords = enabledRecords.filter { it.triggerType == TRIGGER_REMOTE_DISPATCH }
@@ -3519,8 +3589,23 @@ object HermesAutomationBridge {
         val latestDispatch = recentRuns.firstOrNull { event ->
             event.trigger == TRIGGER_REMOTE_DISPATCH || event.dispatchSource.isNotBlank()
         }
+        val deviceId = runCatching {
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+        }.getOrNull().orEmpty().ifBlank { "unknown" }
+        val deviceName = listOf(Build.MANUFACTURER, Build.MODEL)
+            .map { it.orEmpty().trim() }
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+            .ifBlank { Build.DEVICE.orEmpty().ifBlank { "Android device" } }
         return JSONObject()
             .put("ready", enabledRecords.isNotEmpty())
+            .put("device_id", deviceId)
+            .put("device_name", deviceName)
+            .put("standby_namespace", "/standby")
+            .put("standby_register_event", "standby:register")
+            .put("standby_heartbeat_event", "standby:heartbeat")
+            .put("standby_dispatch_event", "standby:dispatch")
+            .put("heartbeat_interval_seconds", 30)
             .put("automation_count", records.size)
             .put("enabled_automation_count", enabledRecords.size)
             .put("external_trigger_count", externalRecords.size)
@@ -3556,7 +3641,9 @@ object HermesAutomationBridge {
                 JSONArray(
                     listOf(
                         "OpenGUI standby:dispatch {executionId, taskId, taskName}",
+                        "OpenGUI /status [executionId]",
                         "Hermes android_automation_tool run_remote_dispatch",
+                        "Hermes android_automation_tool operator_execution_status",
                         "token-protected Hermes external broadcast",
                     )
                 )
@@ -4395,6 +4482,7 @@ object HermesAutomationBridge {
     private val AUTOMATION_ACTIONS = listOf(
         "list",
         "operator_standby_status",
+        "operator_execution_status",
         "run_history",
         "create_shell_task",
         "create_file_write_task",

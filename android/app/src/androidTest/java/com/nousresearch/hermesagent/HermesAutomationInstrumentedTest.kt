@@ -246,11 +246,30 @@ class HermesAutomationInstrumentedTest {
         assertEquals("7", latestRun.getString("remote_task_id"))
         assertEquals("OpenGUI dispatch smoke", latestRun.getString("remote_task_name"))
 
+        val executionStatus = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "operator_execution_status",
+                JSONObject().put("executionId", 42),
+            )
+        )
+        assertTrue(executionStatus.toString(), executionStatus.getBoolean("success"))
+        assertEquals("completed", executionStatus.getString("status"))
+        assertEquals(1, executionStatus.getInt("matched_run_count"))
+        val execution = executionStatus.getJSONObject("execution")
+        assertEquals("42", execution.getString("execution_id"))
+        assertEquals("7", execution.getString("task_id"))
+        assertEquals("OpenGUI dispatch smoke", execution.getString("task_name"))
+        assertEquals("opengui_standby", execution.getString("source"))
+
         val standby = JSONObject(HermesAutomationBridge.performActionJson(app, "operator_standby_status"))
             .getJSONObject("standby_dispatch")
         assertEquals(1, standby.getInt("remote_dispatch_count"))
         assertEquals("OpenGUI dispatch smoke", standby.getString("last_dispatch_task_name"))
         assertTrue(standby.getJSONArray("compatible_dispatch_payloads").toString().contains("OpenGUI standby:dispatch"))
+        assertEquals("/standby", standby.getString("standby_namespace"))
+        assertEquals("standby:heartbeat", standby.getString("standby_heartbeat_event"))
+        assertTrue(standby.getJSONArray("compatible_dispatch_payloads").toString().contains("status"))
     }
 
     @Test

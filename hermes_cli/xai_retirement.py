@@ -21,15 +21,13 @@ RETIREMENT_DATE = "May 15, 2026"
 # have a one-to-one replacement: ``grok-4.3`` reasons by default, so emulating
 # ``*-non-reasoning`` behavior on it requires ``reasoning_effort="none"``.
 _RETIRED_MODELS: Dict[str, Dict[str, Optional[str]]] = {
-    "grok-4":                       {"replacement": "grok-4.3", "reasoning_effort": None,  "note": "ambiguous (reasoning vs non-reasoning) — defaulting to grok-4.3"},
     "grok-4-0709":                  {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
-    "grok-4-fast":                  {"replacement": "grok-4.3", "reasoning_effort": None,  "note": "ambiguous variant — verify reasoning vs non-reasoning intent"},
     "grok-4-fast-reasoning":        {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
     "grok-4-fast-non-reasoning":    {"replacement": "grok-4.3", "reasoning_effort": "none", "note": None},
-    "grok-4-1-fast":                {"replacement": "grok-4.3", "reasoning_effort": None,  "note": "ambiguous variant — verify reasoning vs non-reasoning intent"},
     "grok-4-1-fast-reasoning":      {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
     "grok-4-1-fast-non-reasoning":  {"replacement": "grok-4.3", "reasoning_effort": "none", "note": None},
     "grok-code-fast-1":             {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
+    "grok-3":                       {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
     "grok-imagine-image-pro":       {"replacement": "grok-imagine-image-quality", "reasoning_effort": None, "note": None},
 }
 

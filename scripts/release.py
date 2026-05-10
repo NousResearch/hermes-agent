@@ -59,6 +59,8 @@ AUTHOR_MAP = {
     "50326054+nocturnum91@users.noreply.github.com": "nocturnum91",
     "223003280+Abd0r@users.noreply.github.com": "Abd0r",
     "HuangYuChuh@users.noreply.github.com": "HuangYuChuh",
+    "aaronwong1989@gmail.com": "hrygo",
+    "26729613+hrygo@users.noreply.github.com": "hrygo",
     "ra2157218@gmail.com": "Abd0r",
     "abdielv@proton.me": "AJV20",
     "mason@growagainorchids.com": "masonjames",

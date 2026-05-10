@@ -132,3 +132,124 @@ def format_issue(issue: RetirementIssue) -> str:
     if issue.note:
         parts.append(f"[note: {issue.note}]")
     return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Apply migration to config.yaml (round-trip preserves comments/order/types)
+# ---------------------------------------------------------------------------
+
+import datetime as _dt
+from pathlib import Path
+import shutil
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    """Outcome of an apply_migration call."""
+
+    file_path: Path
+    backup_path: Optional[Path]
+    issues_resolved: List[RetirementIssue]
+    config_changed: bool
+
+
+def _walk_to_parent(yaml_doc: Any, dotted_path: str) -> "tuple[Any, str]":
+    """Resolve a dotted slot path to (parent_mapping, leaf_key).
+
+    Example: "auxiliary.vision.model" -> (yaml_doc["auxiliary"]["vision"], "model").
+    Raises KeyError if any intermediate node is missing or not a mapping.
+    """
+    parts = dotted_path.split(".")
+    if len(parts) < 2:
+        raise ValueError(f"Path must have at least one parent: {dotted_path!r}")
+    node = yaml_doc
+    for segment in parts[:-1]:
+        if not isinstance(node, dict) or segment not in node:
+            raise KeyError(f"Path segment {segment!r} missing in {dotted_path!r}")
+        node = node[segment]
+    return node, parts[-1]
+
+
+def apply_migration(
+    config_path: Path,
+    issues: List[RetirementIssue],
+    backup: bool = True,
+) -> ApplyResult:
+    """Rewrite ``config_path`` in-place so each issue is resolved.
+
+    For every issue, the model name is replaced by ``issue.replacement``. If the
+    issue has ``reasoning_effort`` set (i.e. the migration is from a
+    ``*-non-reasoning`` variant), a sibling ``reasoning_effort`` key is added
+    or updated alongside the model.
+
+    Uses ``ruamel.yaml`` round-trip mode so comments, key order, indentation,
+    and type literals (booleans, ints) are preserved.
+
+    A backup copy is written to
+    ``<config_path>.bak-pre-migrate-xai-YYYYMMDD-HHMMSS`` before rewriting,
+    unless ``backup=False``.
+    """
+    from ruamel.yaml import YAML  # local import — avoid hard dep at module load
+
+    config_path = Path(config_path)
+    if not config_path.exists():
+        raise FileNotFoundError(config_path)
+
+    if not issues:
+        return ApplyResult(
+            file_path=config_path,
+            backup_path=None,
+            issues_resolved=[],
+            config_changed=False,
+        )
+
+    yaml = YAML(typ="rt")
+    yaml.preserve_quotes = True
+    with config_path.open("r", encoding="utf-8") as fh:
+        doc = yaml.load(fh)
+
+    if doc is None:
+        return ApplyResult(
+            file_path=config_path,
+            backup_path=None,
+            issues_resolved=[],
+            config_changed=False,
+        )
+
+    resolved: List[RetirementIssue] = []
+    for issue in issues:
+        try:
+            parent, leaf = _walk_to_parent(doc, issue.config_path)
+        except KeyError:
+            # Slot vanished between scan and apply — skip silently
+            continue
+        parent[leaf] = issue.replacement
+        if issue.reasoning_effort:
+            parent["reasoning_effort"] = issue.reasoning_effort
+        resolved.append(issue)
+
+    if not resolved:
+        return ApplyResult(
+            file_path=config_path,
+            backup_path=None,
+            issues_resolved=[],
+            config_changed=False,
+        )
+
+    backup_path: Optional[Path] = None
+    if backup:
+        ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_path = config_path.with_name(
+            f"{config_path.name}.bak-pre-migrate-xai-{ts}"
+        )
+        shutil.copy2(config_path, backup_path)
+
+    with config_path.open("w", encoding="utf-8") as fh:
+        yaml.dump(doc, fh)
+
+    return ApplyResult(
+        file_path=config_path,
+        backup_path=backup_path,
+        issues_resolved=resolved,
+        config_changed=True,
+    )

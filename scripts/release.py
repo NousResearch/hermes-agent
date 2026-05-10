@@ -947,6 +947,7 @@ AUTHOR_MAP = {
     "zhicheng.han@mathematik.uni-goettingen.de": "hanzckernel",  # PR #20311 (api-server approval events)
     "agentsmithlaor@gmail.com": "oferlaor",  # PR #22356 salvage (cron origin sender identity)
     "jhin.lee@unity3d.com": "leehack",  # PR #22053 salvage (telegram DM topic reply fallback)
+    "dockerpaula@gmail.com": "dockerpaula",  # PR #22716 fix (multi-line /model error)
     # pander: empty email, salvaged via PR #19665 from #16126 by @ms-alan
     "ayman.a.kamal@hotmail.com": "A-kamal",  # PR #18678 (xAI image resolution fix)
 }

@@ -1510,7 +1510,13 @@ def _cprint(text: str):
     # fails we fall back to a direct print so the line isn't lost.
     def _schedule():
         try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            result = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            try:
+                import inspect as _inspect
+                if _inspect.isawaitable(result):
+                    loop.create_task(result)
+            except Exception:
+                pass
         except Exception:
             try:
                 _pt_print(_PT_ANSI(text))
@@ -5793,9 +5799,71 @@ class HermesCLI:
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
     
+    def _run_terminal_callable_sync(self, func, *, render_cli_done: bool = False, in_executor: bool = False):
+        """Run a synchronous callable through prompt_toolkit's terminal bridge.
+
+        ``prompt_toolkit.application.run_in_terminal`` returns an awaitable in
+        current prompt_toolkit releases.  Slash-command handlers usually run in
+        ``process_loop`` (a background thread), so simply calling it creates an
+        unawaited coroutine and the command is dropped.  When the prompt app is
+        active, schedule the awaitable on the app loop and block this caller for
+        the result; otherwise fall back to calling ``func`` directly.
+        """
+        if not self._app:
+            return func()
+
+        try:
+            from prompt_toolkit.application import run_in_terminal
+        except Exception:
+            return func()
+
+        import asyncio as _asyncio
+        import inspect as _inspect
+
+        loop = getattr(self._app, "loop", None)
+        if loop is not None:
+            try:
+                loop_running = loop.is_running()
+            except Exception:
+                loop_running = False
+            try:
+                current_loop = _asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+            except Exception:
+                current_loop = None
+
+            if loop_running and current_loop is not loop:
+                async def _run_on_app_loop():
+                    result = run_in_terminal(
+                        func,
+                        render_cli_done=render_cli_done,
+                        in_executor=in_executor,
+                    )
+                    if _inspect.isawaitable(result):
+                        return await result
+                    return result
+
+                return _asyncio.run_coroutine_threadsafe(_run_on_app_loop(), loop).result()
+
+        result = run_in_terminal(
+            func,
+            render_cli_done=render_cli_done,
+            in_executor=in_executor,
+        )
+        if not _inspect.isawaitable(result):
+            return result
+
+        # No usable running app loop.  Close the coroutine before falling back
+        # so Python does not emit "coroutine was never awaited" warnings.
+        try:
+            result.close()
+        except Exception:
+            pass
+        return func()
+
     def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
         """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
-        import threading
         from hermes_cli.curses_ui import curses_single_select
 
         result = [None]
@@ -5803,18 +5871,12 @@ class HermesCLI:
         def _pick():
             result[0] = curses_single_select(title, items, default_index=default_index)
 
-        # run_in_terminal requires an asyncio event loop — only exists in the
-        # main prompt_toolkit thread.  If we're in a background thread (e.g.
-        # process_loop), fall back to direct curses call.
-        in_main_thread = threading.current_thread() is threading.main_thread()
-
-        if self._app and in_main_thread:
-            from prompt_toolkit.application import run_in_terminal
+        if self._app:
             was_visible = self._status_bar_visible
             self._status_bar_visible = False
             self._app.invalidate()
             try:
-                run_in_terminal(_pick)
+                self._run_terminal_callable_sync(_pick)
             finally:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
@@ -5834,12 +5896,11 @@ class HermesCLI:
                 pass
 
         if self._app:
-            from prompt_toolkit.application import run_in_terminal
             was_visible = self._status_bar_visible
             self._status_bar_visible = False
             self._app.invalidate()
             try:
-                run_in_terminal(_ask)
+                self._run_terminal_callable_sync(_ask)
             finally:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
@@ -11268,7 +11329,13 @@ class HermesCLI:
             def _suspend():
                 os.write(1, msg.encode())
                 os.kill(0, _sig.SIGTSTP)
-            run_in_terminal(_suspend)
+            result = run_in_terminal(_suspend)
+            try:
+                import inspect as _inspect
+                if _inspect.isawaitable(result):
+                    event.app.create_background_task(result)
+            except Exception:
+                pass
 
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search).

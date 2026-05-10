@@ -12,8 +12,12 @@ These tests verify the routing logic without spinning up a real PT app.
 
 from __future__ import annotations
 
+import asyncio
+import builtins
 import sys
+import threading
 import types
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -213,6 +217,74 @@ def test_cprint_swallows_prompt_toolkit_import_error(monkeypatch):
         sys.meta_path.remove(blocker)
 
     assert direct_prints == ["fallback2"]
+
+
+def test_prompt_text_input_schedules_awaitable_run_in_terminal_from_bg_thread(monkeypatch):
+    """Regression: /new confirmation prompts run from process_loop.
+
+    prompt_toolkit 3.x returns an awaitable from run_in_terminal().  The CLI
+    must schedule that awaitable on the active Application loop when a slash
+    command asks for text input from a background thread; merely calling it
+    drops the prompt and emits "coroutine was never awaited".
+    """
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+    loop_thread_id = []
+
+    def _run_loop():
+        asyncio.set_event_loop(loop)
+        loop_thread_id.append(threading.get_ident())
+        ready.set()
+        loop.run_forever()
+
+    loop_thread = threading.Thread(target=_run_loop, daemon=True)
+    loop_thread.start()
+    ready.wait(timeout=2)
+
+    async def _fake_run_in_terminal(func, **_kwargs):
+        assert threading.get_ident() == loop_thread_id[0]
+        return func()
+
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.run_in_terminal = _fake_run_in_terminal
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+    monkeypatch.setattr(builtins, "input", lambda _prompt: "1")
+
+    app = SimpleNamespace(loop=loop, invalidate=lambda: None)
+    hermes_cli = cli.HermesCLI.__new__(cli.HermesCLI)
+    hermes_cli._app = app
+    hermes_cli._status_bar_visible = True
+
+    result = []
+    errors = []
+    caught = []
+
+    def _call_from_process_loop_thread():
+        try:
+            with warnings.catch_warnings(record=True) as warning_records:
+                warnings.simplefilter("always")
+                result.append(hermes_cli._prompt_text_input("Choice [1/2/3]: "))
+                caught.extend(warning_records)
+        except BaseException as exc:  # pragma: no cover - assertion aid
+            errors.append(exc)
+
+    caller_thread = threading.Thread(target=_call_from_process_loop_thread)
+    try:
+        caller_thread.start()
+        caller_thread.join(timeout=2)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2)
+        loop.close()
+
+    assert not caller_thread.is_alive()
+    assert not errors
+    assert result == ["1"]
+    assert hermes_cli._status_bar_visible is True
+    assert not [
+        warning for warning in caught
+        if "coroutine" in str(warning.message) and "never awaited" in str(warning.message)
+    ]
 
 
 def test_output_history_strips_ansi_and_keeps_recent_lines():

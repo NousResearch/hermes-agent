@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli import kanban_control_surface as control_surface
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_closeout
 from hermes_cli import kanban_native_admission as native_admission
@@ -571,6 +572,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_stats.add_argument("--json", action="store_true")
 
+    # --- control-surface / ledger ---
+    p_control = sub.add_parser(
+        "control-surface",
+        aliases=["control", "ledger"],
+        help="Compact read-only Work Ledger control surface by queue label",
+    )
+    p_control.add_argument("--tenant", default=None, help="Only include one tenant namespace")
+    p_control.add_argument("--archived", action="store_true", help="Include archived closed tasks")
+    p_control.add_argument("--limit", type=int, default=8, help="Max rows per queue (default: 8)")
+    p_control.add_argument("--json", action="store_true")
+
     # --- notify subscribe / list / remove ---
     p_nsub = sub.add_parser(
         "notify-subscribe",
@@ -842,6 +854,9 @@ def kanban_command(args: argparse.Namespace) -> int:
         "daemon":   _cmd_daemon,
         "watch":    _cmd_watch,
         "stats":    _cmd_stats,
+        "control-surface": _cmd_control_surface,
+        "control": _cmd_control_surface,
+        "ledger": _cmd_control_surface,
         "log":      _cmd_log,
         "runs":     _cmd_runs,
         "heartbeat": _cmd_heartbeat,
@@ -2160,6 +2175,21 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     age = stats["oldest_ready_age_seconds"]
     if age is not None:
         print(f"\nOldest ready task age: {int(age)}s")
+    return 0
+
+
+def _cmd_control_surface(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        surface = control_surface.build_control_surface(
+            conn,
+            tenant=getattr(args, "tenant", None),
+            include_archived=bool(getattr(args, "archived", False)),
+            limit_per_bucket=max(0, int(getattr(args, "limit", 8) or 0)),
+        )
+    if getattr(args, "json", False):
+        print(json.dumps(surface.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+    print(control_surface.format_control_surface(surface))
     return 0
 
 

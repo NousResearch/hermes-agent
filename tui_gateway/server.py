@@ -1378,7 +1378,7 @@ def _session_info(agent) -> dict:
         "fast": service_tier == "priority",
         "tools": {},
         "skills": {},
-        "cwd": os.getcwd(),
+        "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
         "version": "",
         "release_date": "",
         "update_behind": None,

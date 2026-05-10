@@ -719,6 +719,7 @@ AUTHOR_MAP = {
     "gufo0125@gmail.com": "guglielmofonda",
     "102474490+yehuosi@users.noreply.github.com": "yehuosi",
     "yehuosi@users.noreply.github.com": "yehuosi",
+    "31932854+jelrod27@users.noreply.github.com": "jelrod27",
     "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
     "haimu0x0@proton.me": "haimu0x",
     "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",

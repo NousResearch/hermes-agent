@@ -1547,6 +1547,15 @@ def run_doctor(args):
         
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
+        try:
+            import yaml as _yaml
+            _doctor_cfg = _yaml.safe_load((HERMES_HOME / "config.yaml").read_text(encoding="utf-8")) or {}
+            _doctor_disabled_toolsets = {
+                str(_ts)
+                for _ts in (_doctor_cfg.get("agent") or {}).get("disabled_toolsets", [])
+            }
+        except Exception:
+            _doctor_disabled_toolsets = set()
         
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})
@@ -1561,7 +1570,11 @@ def run_doctor(args):
                 check_warn(item["name"], "(system dependency not met)")
 
         # Count disabled tools with API key requirements
-        api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
+        api_disabled = [
+            u for u in unavailable
+            if (u.get("missing_vars") or u.get("env_vars"))
+            and u.get("name") not in _doctor_disabled_toolsets
+        ]
         if api_disabled:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:

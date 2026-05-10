@@ -71,10 +71,23 @@ class FactRetriever:
 
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
         """
-        # Stage 1: Get candidates from FTS5 (always needed as base pool)
+        # Stage 1: Get candidates from FTS5 (base pool)
+        # Note: other channels (Jaccard/HRR/vec) search independently, so even if
+        # FTS5 returns 0 we continue — the RRF fusion needs a candidate pool but
+        # can work with other channels' results
         fts_candidates = self._fts_candidates(query, category, min_trust, limit * 4)
+
+        # If FTS5 returned nothing, fall back to getting recent facts from DB
+        # so other channels (Jaccard/HRR/vec) still have candidates to score
         if not fts_candidates:
-            return []
+            fallback_rows = self.store._conn.execute(
+                "SELECT * FROM facts WHERE trust_score >= ? ORDER BY fact_id DESC LIMIT ?",
+                (min_trust, limit * 4),
+            ).fetchall()
+            if fallback_rows:
+                fts_candidates = [dict(row) for row in fallback_rows]
+            else:
+                return []
 
         query_tokens = self._tokenize(query)
         query_vec = hrr.encode_text(query, self.hrr_dim) if self.hrr_weight > 0 else None

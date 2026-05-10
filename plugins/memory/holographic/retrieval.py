@@ -560,11 +560,35 @@ class FactRetriever:
         """
         conn = self.store._conn
 
+        # Normalize query: for multi-character queries (no spaces), OR the tokens
+        # to maximize recall. FTS5 treats spaces as AND which returns 0 for compounds
+        # like "张哥偏好" that don't appear as-is in content.
+        # Single tokens (1 word) are left as-is for exact matching.
+        # Note: we must not OR single characters (FTS5 interprets OR as a search token
+        # rather than an operator when not surrounded by spaces).
+        tokens = query.split()
+        if len(tokens) == 1 and len(tokens[0]) > 3:
+            # Single compound query like "张哥偏好" or "微信图片"
+            # Split into 2-char Chinese chunks + remaining, OR them
+            # e.g., "张哥偏好" → "张哥 OR 偏好"
+            chars = tokens[0]
+            # Group into 2-char chunks (most meaningful Chinese unit)
+            chunks = [chars[i:i+2] for i in range(0, len(chars)-1, 2)]
+            if len(chunks) > 1:
+                normalized_query = " OR ".join(chunks)
+            else:
+                normalized_query = query
+        elif len(tokens) > 1:
+            # Multi-token query — OR the tokens for maximum recall
+            normalized_query = " OR ".join(tokens)
+        else:
+            normalized_query = query
+
         # Build query - FTS5 rank is negative (lower = better match)
         # We need to join facts_fts with facts to get all columns
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
+        params.append(normalized_query)
 
         if category:
             where_clauses.append("f.category = ?")

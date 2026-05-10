@@ -229,4 +229,4 @@ select = ["PLW1514"]
 "plugins/**" = ["PLW1514"]
 
 [tool.uv]
-exclude-newer = "7 days"
+exclude-newer = "2026-05-02T00:00:00Z"

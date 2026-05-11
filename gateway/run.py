@@ -63,6 +63,43 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_MATTERMOST_PLAINTEXT_APPROVAL_WORDS = frozenset({
+    "approve",
+    "deny",
+})
+_MATTERMOST_PLAINTEXT_APPROVAL_ARGS = frozenset({
+    "all",
+    "session",
+    "ses",
+    "always",
+    "permanent",
+    "permanently",
+})
+
+
+def _mattermost_plaintext_approval_alias(text: str) -> Optional[str]:
+    """Return a slash-command equivalent for safe Mattermost approval aliases.
+
+    Mattermost consumes unregistered slash commands client/server-side, so a
+    user typing ``/approve`` may never produce a normal post that Hermes can see.
+    During a live dangerous-command approval, accept an intentionally tiny set
+    of bare-text aliases (``approve``, ``approve session``, ``deny all``, …)
+    and rewrite them to the existing gateway slash-command handlers.
+
+    We deliberately do *not* accept conversational words like ``yes`` or ``ok``:
+    approving a shell command must still require an explicit approval word.
+    """
+    raw = (text or "").strip().lower()
+    if not raw or raw.startswith("/"):
+        return None
+    parts = raw.split()
+    if not parts or parts[0] not in _MATTERMOST_PLAINTEXT_APPROVAL_WORDS:
+        return None
+    if any(part not in _MATTERMOST_PLAINTEXT_APPROVAL_ARGS for part in parts[1:]):
+        return None
+    if parts[0] == "deny" and any(part != "all" for part in parts[1:]):
+        return None
+    return "/" + " ".join(parts)
 
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
@@ -5311,6 +5348,35 @@ class GatewayRunner:
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+
+        # Mattermost intercepts unregistered slash commands before they become
+        # normal posts, so `/approve` may never reach Hermes.  While a
+        # dangerous-command approval is actively blocking this session, accept
+        # explicit bare aliases (`approve`, `approve session`, `deny all`, ...)
+        # and route them through the normal /approve|/deny handlers.  This is
+        # scoped to Mattermost + live approval state and intentionally excludes
+        # ambiguous replies like "yes".
+        if source.platform == Platform.MATTERMOST and not event.is_command():
+            _approval_alias = _mattermost_plaintext_approval_alias(event.text)
+            if _approval_alias:
+                try:
+                    from tools.approval import has_blocking_approval as _has_mm_blocking_approval
+                    _mm_approval_live = _has_mm_blocking_approval(_quick_key)
+                except Exception:
+                    _mm_approval_live = False
+                if _mm_approval_live:
+                    logger.info(
+                        "Mattermost plaintext approval alias %r rewritten to %s for %s",
+                        event.text,
+                        _approval_alias,
+                        _quick_key,
+                    )
+                    event = dataclasses.replace(
+                        event,
+                        text=_approval_alias,
+                        message_type=MessageType.COMMAND,
+                    )
+
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -6138,8 +6204,9 @@ class GatewayRunner:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
         
         # Pending exec approvals are handled by /approve and /deny commands above.
-        # No bare text matching — "yes" in normal conversation must not trigger
-        # execution of a dangerous command.
+        # Mattermost has an earlier, narrowly-scoped bare `approve`/`deny` shim
+        # because that client consumes unregistered slash commands.  We still do
+        # not accept conversational replies like "yes" for dangerous commands.
 
         if self._is_telegram_topic_root_lobby(source):
             # Debounce the lobby reminder so a user who forgets about
@@ -14564,12 +14631,24 @@ class GatewayRunner:
 
                 # Fallback: plain text approval prompt
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                if source.platform == Platform.MATTERMOST:
+                    # Mattermost eats unknown slash commands before Hermes can
+                    # see them.  The gateway rewrites these explicit bare
+                    # aliases to the same handlers while an approval is live.
+                    approval_instructions = (
+                        "Reply `approve` to execute, `approve session` to approve this pattern "
+                        "for the session, `approve always` to approve permanently, or `deny` to cancel."
+                    )
+                else:
+                    approval_instructions = (
+                        "Reply `/approve` to execute, `/approve session` to approve this pattern "
+                        "for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+                    )
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
-                    f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                    f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+                    f"{approval_instructions}"
                 )
                 try:
                     asyncio.run_coroutine_threadsafe(

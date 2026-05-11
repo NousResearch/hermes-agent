@@ -352,6 +352,51 @@ class TestBareTextNoLongerApproves:
         assert not entry.event.is_set()
 
 
+class TestMattermostPlaintextApprovalAliases:
+    """Mattermost-safe aliases for approval prompts.
+
+    Mattermost consumes unregistered slash commands like /approve before the
+    gateway can see them, so the adapter prompt tells users to type explicit
+    bare aliases during a live approval.  Keep this alias surface tiny: no
+    conversational yes/ok matching.
+    """
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("approve", "/approve"),
+            ("approve all", "/approve all"),
+            ("approve session", "/approve session"),
+            ("approve all session", "/approve all session"),
+            ("approve always", "/approve always"),
+            ("deny", "/deny"),
+            ("deny all", "/deny all"),
+            ("  APPROVE SESSION  ", "/approve session"),
+        ],
+    )
+    def test_supported_aliases_rewrite_to_slash_commands(self, text, expected):
+        from gateway.run import _mattermost_plaintext_approval_alias
+
+        assert _mattermost_plaintext_approval_alias(text) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "yes",
+            "ok",
+            "confirm",
+            "approve this please",
+            "deny session",
+            "/approve",
+            "normal conversation",
+        ],
+    )
+    def test_ambiguous_or_regular_text_does_not_rewrite(self, text):
+        from gateway.run import _mattermost_plaintext_approval_alias
+
+        assert _mattermost_plaintext_approval_alias(text) is None
+
+
 # ------------------------------------------------------------------
 # End-to-end blocking flow
 # ------------------------------------------------------------------

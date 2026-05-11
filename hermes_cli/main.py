@@ -5601,6 +5601,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
+    # First attempt
     r2 = subprocess.run(
         [npm, "run", "build"],
         cwd=web_dir,
@@ -5610,10 +5611,40 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         errors="replace",
     )
     if r2.returncode != 0:
+        # Retry once after a short delay — covers boot-time races on Windows
+        # (antivirus scanning Node.js binaries, npm cache not ready, transient
+        # I/O when launched via Scheduled Task at logon). See issue #23817.
+        _time.sleep(3)
+        r2 = subprocess.run(
+            [npm, "run", "build"],
+            cwd=web_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    if r2.returncode != 0:
+        stderr_preview = (r2.stderr or "").strip()
+        stderr_tail = "\n  ".join(stderr_preview.splitlines()[-10:]) if stderr_preview else ""
+        dist_dir = web_dir.parent / "hermes_cli" / "web_dist"
+        dist_index = dist_dir / "index.html"
+
+        # If a stale dist exists, serve it as a fallback instead of failing.
+        # A stale UI is far better than no UI for non-interactive callers
+        # (Windows Scheduled Tasks, CI) — issue #23817.
+        if dist_index.exists():
+            print("  ⚠ Web UI build failed — serving stale dist as fallback")
+            if stderr_tail:
+                print(f"  Build error:\n  {stderr_tail}")
+            return True
+
         print(
             f"  {'✗' if fatal else '⚠'} Web UI build failed"
             + ("" if fatal else " (hermes web will not be available)")
         )
+        if stderr_tail:
+            print(f"  Build error:\n  {stderr_tail}")
         if fatal:
             print("  Run manually:  cd web && npm install && npm run build")
         return False
@@ -9086,7 +9117,7 @@ def cmd_dashboard(args):
         print(f"Import error: {e}")
         sys.exit(1)
 
-    if "HERMES_WEB_DIST" not in os.environ:
+    if "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
 
@@ -11563,6 +11594,15 @@ Examples:
         help=(
             "Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). "
             "Alternatively set HERMES_DASHBOARD_TUI=1."
+        ),
+    )
+    dashboard_parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help=(
+            "Skip the web UI build step and serve the existing dist directly. "
+            "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
+            "where npm may not be available. Pre-build with: cd web && npm run build"
         ),
     )
     # Lifecycle flags — mutually exclusive with each other and with the

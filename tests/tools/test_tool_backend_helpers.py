@@ -308,7 +308,7 @@ class TestResolveModalBackendState:
 # resolve_openai_audio_api_key
 # ---------------------------------------------------------------------------
 class TestResolveOpenaiAudioApiKey:
-    """Priority: VOICE_TOOLS_OPENAI_KEY > OPENAI_API_KEY."""
+    """Priority: VOICE_TOOLS_OPENAI_KEY > OPENAI_API_KEY > tts.openai.api_key."""
 
     def test_voice_key_preferred(self, monkeypatch):
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "voice-key")
@@ -328,9 +328,92 @@ class TestResolveOpenaiAudioApiKey:
     def test_no_keys_returns_empty(self, monkeypatch):
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # Also clear config-based fallback
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {},
+        )
         assert resolve_openai_audio_api_key() == ""
 
     def test_strips_whitespace(self, monkeypatch):
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "  voice-key  ")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         assert resolve_openai_audio_api_key() == "voice-key"
+
+    # --- config.yaml fallback (tts.openai.api_key) ---
+
+    def test_falls_back_to_config_api_key(self, monkeypatch):
+        """When no env var is set, use tts.openai.api_key from config.yaml."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"tts": {"openai": {"api_key": "sk-or-v1-config"}}},
+        )
+        assert resolve_openai_audio_api_key() == "sk-or-v1-config"
+
+    def test_env_var_wins_over_config_api_key(self, monkeypatch):
+        """Env vars take precedence over config-based fallback."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "env-key")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"tts": {"openai": {"api_key": "config-key"}}},
+        )
+        assert resolve_openai_audio_api_key() == "env-key"
+
+    def test_openai_key_wins_over_config_api_key(self, monkeypatch):
+        """OPENAI_API_KEY env var also beats the config fallback."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "general-key")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"tts": {"openai": {"api_key": "config-key"}}},
+        )
+        assert resolve_openai_audio_api_key() == "general-key"
+
+    def test_empty_config_api_key_returns_empty(self, monkeypatch):
+        """Empty/whitespace api_key in config is treated as unset."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"tts": {"openai": {"api_key": "   "}}},
+        )
+        assert resolve_openai_audio_api_key() == ""
+
+    def test_strips_config_api_key_whitespace(self, monkeypatch):
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"tts": {"openai": {"api_key": "  config-key  "}}},
+        )
+        assert resolve_openai_audio_api_key() == "config-key"
+
+    def test_missing_tts_section_safe(self, monkeypatch):
+        """Missing or non-dict tts/openai sections must not raise."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"unrelated": "data"},
+        )
+        assert resolve_openai_audio_api_key() == ""
+
+    def test_load_config_exception_returns_empty(self, monkeypatch):
+        """When load_config() raises, resolver returns "" — never propagates."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        def _boom():
+            raise RuntimeError("simulated config read failure")
+
+        monkeypatch.setattr("hermes_cli.config.load_config", _boom)
+        assert resolve_openai_audio_api_key() == ""
+
+    def test_load_config_returns_none_safe(self, monkeypatch):
+        """load_config() returning None must not crash the resolver."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: None)
+        assert resolve_openai_audio_api_key() == ""

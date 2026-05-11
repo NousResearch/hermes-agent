@@ -101,11 +101,37 @@ def resolve_modal_backend_state(
 
 
 def resolve_openai_audio_api_key() -> str:
-    """Prefer the voice-tools key, but fall back to the normal OpenAI key."""
-    return (
+    """Resolve the API key for OpenAI-compatible audio endpoints.
+
+    Priority order:
+      1. ``VOICE_TOOLS_OPENAI_KEY`` env var (dedicated key, recommended)
+      2. ``OPENAI_API_KEY`` env var (general OpenAI key)
+      3. ``tts.openai.api_key`` from config.yaml (works with any
+         OpenAI-compatible endpoint like OpenRouter or Vercel AI Gateway)
+
+    The config-based fallback lets users point ``tts.openai.base_url`` at a
+    third-party endpoint (e.g. ``https://openrouter.ai/api/v1``) and supply a
+    matching key in config.yaml, without polluting the global env namespace
+    with a non-OpenAI key.
+    """
+    env_key = (
         os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
         or os.getenv("OPENAI_API_KEY", "")
     ).strip()
+    if env_key:
+        return env_key
+
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        tts_section = cfg.get("tts") or {}
+        openai_section = tts_section.get("openai") or {}
+        config_key = (openai_section.get("api_key") or "").strip()
+        if config_key:
+            return config_key
+    except Exception:
+        pass
+    return ""
 
 
 def prefers_gateway(config_section: str) -> bool:

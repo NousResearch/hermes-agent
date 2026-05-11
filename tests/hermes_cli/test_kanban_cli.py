@@ -119,6 +119,31 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def test_run_slash_create_accepts_policy_flags_and_show_surfaces_them(kanban_home):
+    out = kc.run_slash(
+        "create 'policy task' --assignee alice "
+        "--worker-policy read_only --checkpoint-policy off --json"
+    )
+    payload = json.loads(out)
+    tid = payload["id"]
+    assert payload["worker_policy"] == "read_only"
+    assert payload["checkpoint_policy"] == "off"
+
+    show = kc.run_slash(f"show {tid}")
+    assert "worker-policy: read_only" in show
+    assert "checkpoint-policy: off" in show
+
+
+def test_run_slash_create_rejects_invalid_policy(kanban_home, capsys):
+    root = argparse.ArgumentParser(prog="/")
+    sub = root.add_subparsers(dest="cmd")
+    kc.build_parser(sub)
+    with pytest.raises(SystemExit):
+        root.parse_args(["kanban", "create", "bad policy", "--worker-policy", "root_vm"])
+    err = capsys.readouterr().err
+    assert "argument --worker-policy: invalid choice" in err
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

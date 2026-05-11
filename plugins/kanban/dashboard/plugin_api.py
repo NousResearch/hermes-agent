@@ -519,6 +519,8 @@ class CreateTaskBody(BaseModel):
     idempotency_key: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     skills: Optional[list[str]] = None
+    worker_policy: str = kanban_db.DEFAULT_WORKER_POLICY
+    checkpoint_policy: str = kanban_db.DEFAULT_CHECKPOINT_POLICY
 
 
 @router.post("/tasks")
@@ -541,6 +543,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             idempotency_key=payload.idempotency_key,
             max_runtime_seconds=payload.max_runtime_seconds,
             skills=payload.skills,
+            worker_policy=payload.worker_policy,
+            checkpoint_policy=payload.checkpoint_policy,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}

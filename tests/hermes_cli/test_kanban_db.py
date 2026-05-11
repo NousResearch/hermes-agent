@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -78,6 +79,19 @@ def test_create_task_unknown_parent_errors(kanban_home):
 def test_workspace_kind_validation(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="workspace_kind"):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
+
+
+def test_create_task_defaults_worker_and_checkpoint_policy(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="policy defaults")
+        task = kb.get_task(conn, tid)
+    assert task.worker_policy == "standard"
+    assert task.checkpoint_policy == "auto"
+
+
+def test_create_task_rejects_invalid_worker_policy(kanban_home):
+    with kb.connect() as conn, pytest.raises(ValueError, match="worker_policy"):
+        kb.create_task(conn, title="bad policy", worker_policy="root_vm")
 
 
 # ---------------------------------------------------------------------------
@@ -1084,6 +1098,195 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+
+    def test_default_spawn_injects_worker_policy_checkpoint_and_capabilities(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        task = kb.Task(
+            id="t_dispatch_policy_env",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            current_run_id=7,
+            worker_policy="sandbox_strict",
+        )
+        checkpoint = kb.create_workspace_checkpoint(task, workspace)
+        setattr(task, "checkpoint_id", checkpoint["id"])
+        task.checkpoint_policy = "auto"
+        task.workspace_path = str(workspace)
+
+        kb._default_spawn(task, str(workspace))
+
+        env = captured["env"]
+        assert env["HERMES_KANBAN_WORKER_POLICY"] == "sandbox_strict"
+        assert env["HERMES_KANBAN_CHECKPOINT_ID"] == checkpoint["id"]
+        caps = kb.json.loads(env["HERMES_KANBAN_ISOLATION_CAPABILITIES"])
+        assert caps["os_sandbox"] is False
+        assert caps["workspace_kind"] == "scratch"
+
+
+def test_dispatcher_records_checkpoint_event_and_run_metadata(kanban_home, monkeypatch):
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _profile: True)
+    spawned: list[tuple[str, str]] = []
+
+    def fake_spawn(task, workspace):
+        spawned.append((task.id, workspace))
+        return 1234
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="dispatch metadata",
+            assignee="alice",
+            worker_policy="code_edit",
+            checkpoint_policy="manifest",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=1)
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert res.spawned and spawned
+    assert task.workspace_path
+    assert any(e.kind == "workspace_checkpoint" for e in events)
+    assert run.metadata["worker_policy"]["name"] == "code_edit"
+    assert run.metadata["checkpoint"]["policy"] == "manifest"
+    assert run.metadata["workspace_capabilities"]["os_sandbox"] is False
+
+
+def test_git_workspace_evidence_is_bounded_and_reports_status(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    (repo / "untracked.txt").write_text("new\n", encoding="utf-8")
+
+    task = kb.Task(
+        id="t_git_evidence",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="dir",
+        workspace_path=str(repo),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+    evidence = kb.collect_workspace_evidence(task, repo)
+
+    assert evidence["kind"] == "git"
+    assert evidence["head"]
+    assert " M tracked.txt" in evidence["status_short"]
+    assert "?? untracked.txt" in evidence["status_short"]
+    assert "tracked.txt" in evidence["diff_stat"]
+    assert "diff --git" not in evidence["diff_stat"]
+    assert len(evidence["status_short"]) <= kb.WORKSPACE_EVIDENCE_MAX_TEXT_BYTES
+
+
+def test_local_workspace_capability_does_not_overclaim_os_sandbox(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    task = kb.Task(
+        id="t_caps",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="ready",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=str(workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        worker_policy="sandbox_strict",
+    )
+    caps = kb.workspace_capabilities(task, workspace)
+    assert caps["os_sandbox"] is False
+    assert caps["container_sandbox"] is False
+    assert caps["policy_enforced_by"] == "contract"
+
+
+def test_workspace_rollback_plan_is_safe_descriptor_not_execution(tmp_path):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=workspace, check=True)
+    (workspace / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=workspace, check=True, capture_output=True, text=True)
+
+    task = kb.Task(
+        id="t_rollback_plan",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        checkpoint_policy="git",
+    )
+    checkpoint = kb.create_workspace_checkpoint(task, workspace)
+    (workspace / "tracked.txt").write_text("changed\n", encoding="utf-8")
+
+    plan = kb.workspace_rollback_plan(task, checkpoint)
+
+    assert plan["checkpoint_id"] == checkpoint["id"]
+    assert plan["kind"] == "git"
+    assert plan["can_rollback"] is True
+    assert plan["executes"] is False
+    assert plan["requires_human_review"] is True
+    assert plan["target_ref"] == checkpoint["evidence"]["head"]
+    assert "git reset --hard" in plan["suggested_commands"]
+    assert (workspace / "tracked.txt").read_text(encoding="utf-8") == "changed\n"
 
 
 # ---------------------------------------------------------------------------

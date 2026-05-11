@@ -21,7 +21,7 @@ Implement the first production-safe slice of the Managed-Agents style Multica/He
 ## Phases
 
 ### Phase 1 — Stateless workspace evidence
-Status: pending
+Status: done
 
 Acceptance:
 - Worker dispatch records a pre-run workspace snapshot/checkpoint event.
@@ -29,7 +29,7 @@ Acceptance:
 - Post-run completion/block metadata can include artifact/diff evidence without manual shell scraping.
 
 ### Phase 2 — Permission/policy layer
-Status: pending
+Status: done
 
 Acceptance:
 - Kanban tasks can carry a policy/profile such as `standard`, `read_only`, `code_edit`, `test_only`, `sandbox_strict`.
@@ -38,7 +38,7 @@ Acceptance:
 - Policy language is explicit: it is a runtime contract/guardrail, not hard OS sandbox unless the workspace backend provides it.
 
 ### Phase 3 — Checkpoint/fork/rollback semantics
-Status: pending
+Status: done
 
 Acceptance:
 - Workspace checkpoint data is deterministic and bounded.
@@ -47,7 +47,7 @@ Acceptance:
 - Tests cover checkpoint creation and evidence capture without touching real user repos.
 
 ### Phase 4 — Sandbox runner interface
-Status: pending
+Status: done
 
 Acceptance:
 - Code exposes a sandbox-capability descriptor for each workspace/policy combination.
@@ -75,3 +75,5 @@ Acceptance:
 
 ## Discussion / decision notes
 - 2026-05-11: Dragon clarified current system has no true sandbox. Target is sandbox-capable workers; current safe implementation should start with worktree/workspace isolation, explicit policy, checkpoints, and evidence.
+- 2026-05-11: Implemented backward-compatible worker_policy/checkpoint_policy fields, checkpoint/evidence metadata, capability descriptors with os_sandbox=false for local workers, safe rollback-plan descriptor (no execution), CLI/dashboard create support, and tests.
+- 2026-05-11 verification: `python -m pytest tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py tests/tools/test_kanban_tools.py -q` => 136 passed, 4 dependency deprecation warnings. `git diff --check` => clean.

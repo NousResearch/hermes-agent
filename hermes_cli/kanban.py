@@ -71,6 +71,8 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "worker_policy": t.worker_policy,
+        "checkpoint_policy": t.checkpoint_policy,
     }
 
 
@@ -294,6 +296,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--worker-policy", choices=sorted(kb.VALID_WORKER_POLICIES),
+                          default=kb.DEFAULT_WORKER_POLICY,
+                          help="Worker execution contract metadata")
+    p_create.add_argument("--checkpoint-policy", choices=sorted(kb.VALID_CHECKPOINT_POLICIES),
+                          default=kb.DEFAULT_CHECKPOINT_POLICY,
+                          help="Workspace checkpoint/evidence strategy")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
@@ -1115,6 +1123,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            worker_policy=getattr(args, "worker_policy", kb.DEFAULT_WORKER_POLICY),
+            checkpoint_policy=getattr(args, "checkpoint_policy", kb.DEFAULT_CHECKPOINT_POLICY),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1240,6 +1250,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  tenant:    {task.tenant}")
     print(f"  workspace: {task.workspace_kind}" +
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
+    print(f"  worker-policy: {task.worker_policy}")
+    print(f"  checkpoint-policy: {task.checkpoint_policy}")
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
     # Effective retry threshold. Show the per-task override if set,

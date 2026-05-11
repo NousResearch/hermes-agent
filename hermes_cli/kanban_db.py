@@ -94,6 +94,54 @@ VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "arch
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+VALID_WORKER_POLICIES = {
+    "standard",
+    "read_only",
+    "code_edit",
+    "test_only",
+    "sandbox_strict",
+}
+VALID_CHECKPOINT_POLICIES = {"off", "auto", "manifest", "git"}
+
+WORKER_POLICY_DESCRIPTORS: dict[str, dict[str, Any]] = {
+    "standard": {
+        "name": "standard",
+        "description": "current worker behavior with bounded workspace evidence",
+        "allows_edits": True,
+        "allows_destructive_commands": True,
+    },
+    "read_only": {
+        "name": "read_only",
+        "description": "contract forbids file edits and destructive commands",
+        "allows_edits": False,
+        "allows_destructive_commands": False,
+    },
+    "code_edit": {
+        "name": "code_edit",
+        "description": "permits code edits inside the assigned workspace",
+        "allows_edits": True,
+        "allows_destructive_commands": False,
+    },
+    "test_only": {
+        "name": "test_only",
+        "description": "permits build/test commands; edits should be limited to temporary artifacts",
+        "allows_edits": False,
+        "allows_destructive_commands": False,
+    },
+    "sandbox_strict": {
+        "name": "sandbox_strict",
+        "description": "requires strongest available workspace isolation; local workspaces are contract-only",
+        "allows_edits": True,
+        "allows_destructive_commands": False,
+        "requires_strongest_available_isolation": True,
+    },
+}
+
+DEFAULT_WORKER_POLICY = "standard"
+DEFAULT_CHECKPOINT_POLICY = "auto"
+WORKSPACE_EVIDENCE_MAX_TEXT_BYTES = 16 * 1024
+WORKSPACE_EVIDENCE_MAX_FILES = 200
+WORKSPACE_EVIDENCE_MAX_TOTAL_BYTES = 64 * 1024
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -607,6 +655,8 @@ class Task:
     # ``kanban.failure_limit`` config, and then to ``DEFAULT_FAILURE_LIMIT``.
     # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
     max_retries: Optional[int] = None
+    worker_policy: str = DEFAULT_WORKER_POLICY
+    checkpoint_policy: str = DEFAULT_CHECKPOINT_POLICY
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -670,6 +720,14 @@ class Task:
             skills=skills_value,
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
+            ),
+            worker_policy=(
+                row["worker_policy"] if "worker_policy" in keys and row["worker_policy"]
+                else DEFAULT_WORKER_POLICY
+            ),
+            checkpoint_policy=(
+                row["checkpoint_policy"] if "checkpoint_policy" in keys and row["checkpoint_policy"]
+                else DEFAULT_CHECKPOINT_POLICY
             ),
         )
 
@@ -797,7 +855,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
-    max_retries          INTEGER
+    max_retries          INTEGER,
+    -- Worker execution contract. This is policy metadata/context, not
+    -- an OS/container sandbox assertion.
+    worker_policy        TEXT NOT NULL DEFAULT 'standard',
+    -- Workspace checkpoint/evidence strategy for dispatcher-spawned runs.
+    checkpoint_policy    TEXT NOT NULL DEFAULT 'auto'
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1076,6 +1139,20 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # which is the correct default (they keep the global behaviour
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
+    if "worker_policy" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "worker_policy",
+            "worker_policy TEXT NOT NULL DEFAULT 'standard'",
+        )
+    if "checkpoint_policy" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "checkpoint_policy",
+            "checkpoint_policy TEXT NOT NULL DEFAULT 'auto'",
+        )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -1228,6 +1305,31 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def validate_worker_policy(policy: Optional[str]) -> str:
+    value = (policy or DEFAULT_WORKER_POLICY).strip()
+    if value not in VALID_WORKER_POLICIES:
+        raise ValueError(
+            f"worker_policy must be one of {sorted(VALID_WORKER_POLICIES)}, "
+            f"got {policy!r}"
+        )
+    return value
+
+
+def validate_checkpoint_policy(policy: Optional[str]) -> str:
+    value = (policy or DEFAULT_CHECKPOINT_POLICY).strip()
+    if value not in VALID_CHECKPOINT_POLICIES:
+        raise ValueError(
+            f"checkpoint_policy must be one of {sorted(VALID_CHECKPOINT_POLICIES)}, "
+            f"got {policy!r}"
+        )
+    return value
+
+
+def worker_policy_descriptor(policy: Optional[str]) -> dict[str, Any]:
+    value = validate_worker_policy(policy)
+    return dict(WORKER_POLICY_DESCRIPTORS[value])
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -1245,6 +1347,8 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    worker_policy: str = DEFAULT_WORKER_POLICY,
+    checkpoint_policy: str = DEFAULT_CHECKPOINT_POLICY,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1278,6 +1382,8 @@ def create_task(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
             f"got {workspace_kind!r}"
         )
+    worker_policy = validate_worker_policy(worker_policy)
+    checkpoint_policy = validate_checkpoint_policy(checkpoint_policy)
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -1378,8 +1484,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         tenant, idempotency_key, max_runtime_seconds, skills,
-                        max_retries
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        max_retries, worker_policy, checkpoint_policy
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1397,6 +1503,8 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        worker_policy,
+                        checkpoint_policy,
                     ),
                 )
                 for pid in parents:
@@ -1414,6 +1522,8 @@ def create_task(
                         "parents": list(parents),
                         "tenant": tenant,
                         "skills": list(skills_list) if skills_list else None,
+                        "worker_policy": worker_policy,
+                        "checkpoint_policy": checkpoint_policy,
                     },
                 )
             return task_id
@@ -1733,6 +1843,7 @@ def _end_run(
     if not row or not row["current_run_id"]:
         return None
     run_id = int(row["current_run_id"])
+    merged_metadata = _merge_run_metadata(conn, run_id, metadata)
     conn.execute(
         """
         UPDATE task_runs
@@ -1753,7 +1864,7 @@ def _end_run(
             outcome,
             summary,
             error,
-            json.dumps(metadata, ensure_ascii=False) if metadata else None,
+            json.dumps(merged_metadata, ensure_ascii=False) if merged_metadata else None,
             now,
             run_id,
         ),
@@ -2454,7 +2565,7 @@ def complete_task(
             conn, task_id,
             outcome="completed", status="done",
             summary=summary if summary is not None else result,
-            metadata=metadata,
+            metadata=_final_workspace_metadata(conn, task_id, metadata),
         )
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
@@ -2465,7 +2576,7 @@ def complete_task(
                 conn, task_id,
                 outcome="completed",
                 summary=summary if summary is not None else result,
-                metadata=metadata,
+                metadata=_final_workspace_metadata(conn, task_id, metadata),
             )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
@@ -2638,6 +2749,7 @@ def block_task(
             conn, task_id,
             outcome="blocked", status="blocked",
             summary=reason,
+            metadata=_final_workspace_metadata(conn, task_id),
         )
         # Synthesize a run when blocking a never-claimed task so the
         # reason is preserved in attempt history.
@@ -2646,6 +2758,7 @@ def block_task(
                 conn, task_id,
                 outcome="blocked",
                 summary=reason,
+                metadata=_final_workspace_metadata(conn, task_id),
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
         return True
@@ -3063,6 +3176,283 @@ def set_workspace_path(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
             (str(path), task_id),
         )
+
+
+def _cap_text(text: str, limit: int = WORKSPACE_EVIDENCE_MAX_TEXT_BYTES) -> str:
+    if len(text.encode("utf-8", errors="replace")) <= limit:
+        return text
+    encoded = text.encode("utf-8", errors="replace")[:limit]
+    return encoded.decode("utf-8", errors="ignore") + "\n[truncated]"
+
+
+def _run_git(workspace: Path, args: list[str], *, timeout: float = 5.0) -> Optional[str]:
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=str(workspace),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return _cap_text(proc.stdout.rstrip("\n"))
+
+
+def _is_git_workspace(workspace: Path) -> bool:
+    out = _run_git(workspace, ["rev-parse", "--is-inside-work-tree"])
+    return bool(out and out.strip() == "true")
+
+
+def workspace_capabilities(task: Task, workspace: Path | str) -> dict[str, Any]:
+    """Describe worker isolation honestly for the resolved workspace.
+
+    These are capability descriptors, not enforcement claims. Local
+    Kanban workspaces currently provide path-scoped coordination and
+    policy context only; they are not OS or container sandboxes.
+    """
+    path = Path(workspace).expanduser()
+    policy = validate_worker_policy(task.worker_policy)
+    return {
+        "workspace_kind": task.workspace_kind or "scratch",
+        "workspace_path": str(path),
+        "worker_policy": policy,
+        "policy_enforced_by": "contract",
+        "path_scoped_workspace": True,
+        "workspace_exists": path.exists(),
+        "git_repository": _is_git_workspace(path) if path.exists() else False,
+        "os_sandbox": False,
+        "container_sandbox": False,
+        "network_sandbox": False,
+        "process_sandbox": False,
+        "notes": (
+            "Local Kanban workers receive policy/capability metadata and a "
+            "bounded workspace evidence trail; no OS/container isolation is claimed."
+        ),
+    }
+
+
+def collect_workspace_evidence(task: Task, workspace: Path | str) -> dict[str, Any]:
+    """Collect a bounded workspace manifest/diff summary.
+
+    The payload is intentionally small and content-free: git status, diff
+    stat, HEAD for repositories; otherwise relative path/size/mtime
+    manifest capped by count and JSON byte budget.
+    """
+    path = Path(workspace).expanduser()
+    base: dict[str, Any] = {
+        "task_id": task.id,
+        "workspace": str(path),
+        "workspace_kind": task.workspace_kind or "scratch",
+        "captured_at": int(time.time()),
+        "bounded": True,
+    }
+    if not path.exists():
+        return {**base, "kind": "missing", "exists": False}
+
+    if _is_git_workspace(path):
+        status = _run_git(path, ["status", "--short"]) or ""
+        diff_stat = _run_git(path, ["diff", "--stat", "--compact-summary"]) or ""
+        head = _run_git(path, ["rev-parse", "HEAD"]) or None
+        return {
+            **base,
+            "kind": "git",
+            "exists": True,
+            "head": head,
+            "status_short": status,
+            "diff_stat": diff_stat,
+        }
+
+    files: list[dict[str, Any]] = []
+    total_bytes = 0
+    omitted = 0
+    for child in sorted(path.rglob("*")):
+        try:
+            if child.is_dir():
+                continue
+            rel = str(child.relative_to(path))
+            stat = child.stat()
+        except OSError:
+            omitted += 1
+            continue
+        entry = {
+            "path": rel,
+            "size": int(stat.st_size),
+            "mtime": int(stat.st_mtime),
+        }
+        encoded_len = len(json.dumps(entry, ensure_ascii=False))
+        if (
+            len(files) >= WORKSPACE_EVIDENCE_MAX_FILES
+            or total_bytes + encoded_len > WORKSPACE_EVIDENCE_MAX_TOTAL_BYTES
+        ):
+            omitted += 1
+            continue
+        total_bytes += encoded_len
+        files.append(entry)
+    return {
+        **base,
+        "kind": "manifest",
+        "exists": True,
+        "files": files,
+        "file_count": len(files),
+        "omitted_count": omitted,
+    }
+
+
+def create_workspace_checkpoint(task: Task, workspace: Path | str) -> dict[str, Any]:
+    policy = validate_checkpoint_policy(task.checkpoint_policy)
+    if policy == "off":
+        return {
+            "id": "off",
+            "policy": policy,
+            "enabled": False,
+            "created_at": int(time.time()),
+        }
+    path = Path(workspace).expanduser()
+    evidence = collect_workspace_evidence(task, path)
+    effective = policy
+    if policy == "auto":
+        effective = "git" if evidence.get("kind") == "git" else "manifest"
+    raw = json.dumps(
+        {
+            "task": task.id,
+            "path": str(path),
+            "policy": policy,
+            "effective_policy": effective,
+            "captured_at": evidence.get("captured_at"),
+            "head": evidence.get("head"),
+            "status": evidence.get("status_short"),
+            "files": evidence.get("file_count"),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    import hashlib
+
+    checkpoint_id = f"cp_{task.id}_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:12]}"
+    return {
+        "id": checkpoint_id,
+        "policy": policy,
+        "effective_policy": effective,
+        "enabled": True,
+        "created_at": int(evidence.get("captured_at") or time.time()),
+        "evidence": evidence,
+    }
+
+
+def workspace_rollback_plan(task: Task, checkpoint: dict[str, Any]) -> dict[str, Any]:
+    """Return a safe rollback/discard descriptor for a checkpoint.
+
+    This helper deliberately does not execute rollback commands. It gives
+    coordinators/reviewers enough structured information to decide whether a
+    worker run can be discarded or manually reset, while preserving the rule
+    that destructive workspace changes require explicit review.
+    """
+    evidence = checkpoint.get("evidence") if isinstance(checkpoint, dict) else None
+    evidence = evidence if isinstance(evidence, dict) else {}
+    kind = str(evidence.get("kind") or checkpoint.get("effective_policy") or checkpoint.get("policy") or "unknown")
+    workspace = str(evidence.get("workspace") or task.workspace_path or "")
+    checkpoint_id = str(checkpoint.get("id") or "")
+    base: dict[str, Any] = {
+        "checkpoint_id": checkpoint_id,
+        "task_id": task.id,
+        "workspace": workspace,
+        "workspace_kind": task.workspace_kind or "scratch",
+        "kind": kind,
+        "executes": False,
+        "requires_human_review": True,
+        "can_rollback": False,
+        "safe_to_auto_discard": False,
+        "suggested_commands": "",
+        "notes": "Descriptor only; Hermes does not execute destructive rollback from this helper.",
+    }
+    if kind == "git" and evidence.get("head"):
+        target = str(evidence["head"])
+        return {
+            **base,
+            "can_rollback": True,
+            "target_ref": target,
+            "suggested_commands": f"cd {workspace!r} && git reset --hard {target} && git clean -fd",
+            "notes": (
+                "Git checkpoint can be restored by a reviewer with reset/clean. "
+                "This helper only returns the plan and never runs it."
+            ),
+        }
+    if (task.workspace_kind or "scratch") == "scratch" and workspace:
+        return {
+            **base,
+            "can_rollback": True,
+            "safe_to_auto_discard": True,
+            "suggested_commands": f"rm -rf {workspace!r}",
+            "notes": (
+                "Scratch workspace can normally be discarded after artifact review; "
+                "caller must still enforce path safety before deletion."
+            ),
+        }
+    return base
+
+
+def _load_metadata(raw: Optional[str]) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _merge_run_metadata(
+    conn: sqlite3.Connection,
+    run_id: Optional[int],
+    metadata: Optional[dict],
+) -> Optional[dict]:
+    if run_id is None:
+        return metadata
+    row = conn.execute(
+        "SELECT metadata FROM task_runs WHERE id = ?", (int(run_id),),
+    ).fetchone()
+    current = _load_metadata(row["metadata"] if row else None)
+    if metadata:
+        current.update(metadata)
+    return current or None
+
+
+def _set_run_metadata(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+) -> None:
+    target_run_id = run_id if run_id is not None else _current_run_id(conn, task_id)
+    if target_run_id is None:
+        return
+    merged = _merge_run_metadata(conn, target_run_id, metadata)
+    conn.execute(
+        "UPDATE task_runs SET metadata = ? WHERE id = ?",
+        (json.dumps(merged, ensure_ascii=False) if merged else None, target_run_id),
+    )
+
+
+def _final_workspace_metadata(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict] = None,
+) -> Optional[dict]:
+    out = dict(metadata or {})
+    task = get_task(conn, task_id)
+    if task and task.workspace_path:
+        try:
+            workspace = Path(task.workspace_path).expanduser()
+            out.setdefault("workspace_final_evidence", collect_workspace_evidence(task, workspace))
+            out.setdefault("workspace_capabilities", workspace_capabilities(task, workspace))
+        except Exception as exc:
+            out.setdefault("workspace_final_evidence_error", str(exc)[:400])
+    return out or None
 
 
 # ---------------------------------------------------------------------------
@@ -4009,6 +4399,46 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
+        claimed.workspace_path = str(workspace)
+        try:
+            policy_meta = worker_policy_descriptor(claimed.worker_policy)
+            capabilities = workspace_capabilities(claimed, workspace)
+            checkpoint = create_workspace_checkpoint(claimed, workspace)
+            pre_evidence = collect_workspace_evidence(claimed, workspace)
+            run_meta = {
+                "worker_policy": policy_meta,
+                "checkpoint_policy": validate_checkpoint_policy(claimed.checkpoint_policy),
+                "checkpoint": {
+                    k: v for k, v in checkpoint.items()
+                    if k != "evidence"
+                },
+                "workspace_capabilities": capabilities,
+                "workspace_pre_evidence": pre_evidence,
+            }
+            with write_txn(conn):
+                _set_run_metadata(
+                    conn,
+                    claimed.id,
+                    run_meta,
+                    run_id=claimed.current_run_id,
+                )
+                _append_event(
+                    conn,
+                    claimed.id,
+                    "workspace_checkpoint",
+                    run_meta,
+                    run_id=claimed.current_run_id,
+                )
+            setattr(claimed, "checkpoint_id", checkpoint.get("id") or "")
+            setattr(claimed, "workspace_capabilities", capabilities)
+        except Exception as exc:
+            auto = _record_spawn_failure(
+                conn, claimed.id, f"checkpoint: {exc}",
+                failure_limit=failure_limit,
+            )
+            if auto:
+                result.auto_blocked.append(claimed.id)
+            continue
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -4236,6 +4666,22 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    env["HERMES_KANBAN_WORKER_POLICY"] = validate_worker_policy(task.worker_policy)
+    checkpoint_id = getattr(task, "checkpoint_id", None)
+    if not checkpoint_id:
+        try:
+            checkpoint_id = create_workspace_checkpoint(task, workspace).get("id")
+        except Exception:
+            checkpoint_id = ""
+    env["HERMES_KANBAN_CHECKPOINT_ID"] = str(checkpoint_id or "")
+    capabilities = getattr(task, "workspace_capabilities", None)
+    if not isinstance(capabilities, dict):
+        capabilities = workspace_capabilities(task, workspace)
+    env["HERMES_KANBAN_ISOLATION_CAPABILITIES"] = json.dumps(
+        capabilities,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     if task.current_run_id is not None:
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
@@ -4452,6 +4898,26 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(f"Max runtime: {task.max_runtime_seconds}s")
         if effective_terminal_timeout:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
+    lines.append(f"Worker policy: {task.worker_policy}")
+    lines.append(f"Checkpoint policy: {task.checkpoint_policy}")
+    run_meta: dict[str, Any] = {}
+    if task.current_run_id:
+        row = conn.execute(
+            "SELECT metadata FROM task_runs WHERE id = ?", (task.current_run_id,),
+        ).fetchone()
+        run_meta = _load_metadata(row["metadata"] if row else None)
+    if run_meta:
+        checkpoint = run_meta.get("checkpoint") or {}
+        caps = run_meta.get("workspace_capabilities") or {}
+        if checkpoint:
+            lines.append(f"Checkpoint: {checkpoint.get('id') or '-'} ({checkpoint.get('policy') or '-'})")
+        if caps:
+            lines.append(
+                "Isolation: "
+                f"os_sandbox={bool(caps.get('os_sandbox'))}, "
+                f"container_sandbox={bool(caps.get('container_sandbox'))}, "
+                f"enforced_by={caps.get('policy_enforced_by') or 'unknown'}"
+            )
     lines.append("")
 
     if task.body and task.body.strip():

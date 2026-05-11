@@ -40,8 +40,10 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
-# concurrent mark_job_run / advance_next_run calls can clobber each other.
-_jobs_file_lock = threading.Lock()
+# concurrent create/update/remove/mark_job_run/advance_next_run calls can
+# clobber each other. RLock keeps nested callers safe when a locked path
+# triggers auto-repair and save_jobs() during load_jobs().
+_jobs_file_lock = threading.RLock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
@@ -412,13 +414,15 @@ def load_jobs() -> List[Dict[str, Any]]:
         # Retry with strict=False to handle bare control chars in string values
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
-                data = json.loads(f.read(), strict=False)
-                jobs = data.get("jobs", [])
-                if jobs:
-                    # Auto-repair: rewrite with proper escaping
+                raw = f.read()
+            data = json.loads(raw, strict=False)
+            jobs = data.get("jobs", [])
+            if jobs:
+                # Auto-repair: rewrite with proper escaping
+                with _jobs_file_lock:
                     save_jobs(jobs)
-                    logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-                return jobs
+                logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+            return jobs
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
             raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
@@ -629,9 +633,10 @@ def create_job(
         "workdir": normalized_workdir,
     }
 
-    jobs = load_jobs()
-    jobs.append(job)
-    save_jobs(jobs)
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        jobs.append(job)
+        save_jobs(jobs)
 
     return job
 
@@ -655,50 +660,72 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] != job_id:
-            continue
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
 
-        # Validate / normalize workdir if present in updates.  Empty string or
-        # None both mean "clear the field" (restore old behaviour).
-        if "workdir" in updates:
-            _wd = updates["workdir"]
-            if _wd in (None, "", False):
-                updates["workdir"] = None
-            else:
-                updates["workdir"] = _normalize_workdir(_wd)
+            normalized_updates = dict(updates)
 
-        updated = _apply_skill_fields({**job, **updates})
-        schedule_changed = "schedule" in updates
+            if "model" in normalized_updates:
+                _model = normalized_updates["model"]
+                normalized_updates["model"] = str(_model).strip() if isinstance(_model, str) else None
+                normalized_updates["model"] = normalized_updates["model"] or None
 
-        if "skills" in updates or "skill" in updates:
-            normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
-            updated["skills"] = normalized_skills
-            updated["skill"] = normalized_skills[0] if normalized_skills else None
+            if "provider" in normalized_updates:
+                _provider = normalized_updates["provider"]
+                normalized_updates["provider"] = str(_provider).strip() if isinstance(_provider, str) else None
+                normalized_updates["provider"] = normalized_updates["provider"] or None
 
-        if schedule_changed:
-            updated_schedule = updated["schedule"]
-            # The API may pass schedule as a raw string (e.g. "every 10m")
-            # instead of a pre-parsed dict.  Normalize it the same way
-            # create_job() does so downstream code can call .get() safely.
-            if isinstance(updated_schedule, str):
-                updated_schedule = parse_schedule(updated_schedule)
-                updated["schedule"] = updated_schedule
-            updated["schedule_display"] = updates.get(
-                "schedule_display",
-                updated_schedule.get("display", updated.get("schedule_display")),
-            )
-            if updated.get("state") != "paused":
-                updated["next_run_at"] = compute_next_run(updated_schedule)
+            if "base_url" in normalized_updates:
+                _base_url = normalized_updates["base_url"]
+                normalized_updates["base_url"] = (
+                    str(_base_url).strip().rstrip("/")
+                    if isinstance(_base_url, str)
+                    else None
+                )
+                normalized_updates["base_url"] = normalized_updates["base_url"] or None
 
-        if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
-            updated["next_run_at"] = compute_next_run(updated["schedule"])
+            # Validate / normalize workdir if present in updates.  Empty string or
+            # None both mean "clear the field" (restore old behaviour).
+            if "workdir" in normalized_updates:
+                _wd = normalized_updates["workdir"]
+                if _wd in (None, "", False):
+                    normalized_updates["workdir"] = None
+                else:
+                    normalized_updates["workdir"] = _normalize_workdir(_wd)
 
-        jobs[i] = updated
-        save_jobs(jobs)
-        return _normalize_job_record(jobs[i])
-    return None
+            updated = _apply_skill_fields({**job, **normalized_updates})
+            schedule_changed = "schedule" in normalized_updates
+
+            if "skills" in normalized_updates or "skill" in normalized_updates:
+                normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
+                updated["skills"] = normalized_skills
+                updated["skill"] = normalized_skills[0] if normalized_skills else None
+
+            if schedule_changed:
+                updated_schedule = updated["schedule"]
+                # The API may pass schedule as a raw string (e.g. "every 10m")
+                # instead of a pre-parsed dict.  Normalize it the same way
+                # create_job() does so downstream code can call .get() safely.
+                if isinstance(updated_schedule, str):
+                    updated_schedule = parse_schedule(updated_schedule)
+                    updated["schedule"] = updated_schedule
+                updated["schedule_display"] = normalized_updates.get(
+                    "schedule_display",
+                    updated_schedule.get("display", updated.get("schedule_display")),
+                )
+                if updated.get("state") != "paused":
+                    updated["next_run_at"] = compute_next_run(updated_schedule)
+
+            if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
+                updated["next_run_at"] = compute_next_run(updated["schedule"])
+
+            jobs[i] = updated
+            save_jobs(jobs)
+            return _normalize_job_record(jobs[i])
+        return None
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -752,17 +779,18 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 def remove_job(job_id: str) -> bool:
     """Remove a job by ID."""
-    jobs = load_jobs()
-    original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != job_id]
-    if len(jobs) < original_len:
-        save_jobs(jobs)
-        # Clean up output directory to prevent orphaned dirs accumulating
-        job_output_dir = OUTPUT_DIR / job_id
-        if job_output_dir.exists():
-            shutil.rmtree(job_output_dir)
-        return True
-    return False
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        original_len = len(jobs)
+        jobs = [j for j in jobs if j["id"] != job_id]
+        if len(jobs) < original_len:
+            save_jobs(jobs)
+            # Clean up output directory to prevent orphaned dirs accumulating
+            job_output_dir = OUTPUT_DIR / job_id
+            if job_output_dir.exists():
+                shutil.rmtree(job_output_dir)
+            return True
+        return False
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,

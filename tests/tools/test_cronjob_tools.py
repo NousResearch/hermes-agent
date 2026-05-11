@@ -219,6 +219,29 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["provider"] == "openrouter"
         assert updated["job"]["base_url"] is None
 
+    def test_update_preserves_runtime_overrides_when_not_supplied(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check",
+                schedule="every 1h",
+                model="gpt-5.5",
+                provider="openai-codex",
+            )
+        )
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                enabled_toolsets=["terminal", "file", "skills"],
+            )
+        )
+
+        assert updated["success"] is True
+        assert updated["job"]["model"] == "gpt-5.5"
+        assert updated["job"]["provider"] == "openai-codex"
+
     def test_create_skill_backed_job(self):
         result = json.loads(
             cronjob(

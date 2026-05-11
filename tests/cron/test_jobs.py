@@ -227,6 +227,30 @@ class TestJobCRUD:
         assert jobs[0]["schedule_display"] == "every 60m"
         assert jobs[0]["state"] == "scheduled"
 
+    def test_load_jobs_auto_repair_rewrites_invalid_control_chars(self, tmp_cron_dir):
+        raw = (
+            '{\n'
+            '  "jobs": [\n'
+            '    {\n'
+            '      "id": "abc123deadbe",\n'
+            '      "name": "bad job",\n'
+            '      "prompt": "line1\x01line2",\n'
+            '      "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},\n'
+            '      "enabled": true\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+        )
+        jobs_path = tmp_cron_dir / "cron" / "jobs.json"
+        jobs_path.parent.mkdir(parents=True, exist_ok=True)
+        jobs_path.write_text(raw, encoding="utf-8")
+
+        jobs = load_jobs()
+
+        assert jobs[0]["prompt"] == "line1\x01line2"
+        reloaded = json.loads(jobs_path.read_text(encoding="utf-8"))
+        assert reloaded["jobs"][0]["prompt"] == "line1\u0001line2"
+
     def test_remove_job(self, tmp_cron_dir):
         job = create_job(prompt="Temp job", schedule="30m")
         assert remove_job(job["id"]) is True
@@ -299,6 +323,87 @@ class TestUpdateJob:
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})
         assert result is None
+
+    def test_update_preserves_runtime_overrides_when_not_specified(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Pinned runtime",
+            schedule="every 1h",
+            model="gpt-5.5",
+            provider="openai-codex",
+        )
+
+        updated = update_job(job["id"], {"prompt": "Prompt only update"})
+
+        assert updated is not None
+        assert updated["prompt"] == "Prompt only update"
+        assert updated["model"] == "gpt-5.5"
+        assert updated["provider"] == "openai-codex"
+
+    def test_concurrent_updates_do_not_corrupt_other_jobs(self, tmp_cron_dir):
+        target = create_job(
+            prompt="Target",
+            schedule="every 1h",
+            model="gpt-5.5",
+            provider="openai-codex",
+        )
+        untouched = create_job(
+            prompt="Untouched",
+            schedule="every 2h",
+            model="claude-sonnet-4",
+            provider="openrouter",
+        )
+
+        started = threading.Barrier(3)
+
+        def _run_update(payload):
+            started.wait()
+            update_job(target["id"], payload)
+
+        t1 = threading.Thread(
+            target=_run_update,
+            args=({"skills": ["hermes-memory-compaction"], "prompt": "update-1"},),
+        )
+        t2 = threading.Thread(
+            target=_run_update,
+            args=({"enabled_toolsets": ["terminal", "file", "skills"], "prompt": "update-2"},),
+        )
+
+        t1.start()
+        t2.start()
+        started.wait()
+        t1.join()
+        t2.join()
+
+        reloaded_target = get_job(target["id"])
+        reloaded_untouched = get_job(untouched["id"])
+
+        assert reloaded_target is not None
+        assert reloaded_target["model"] == "gpt-5.5"
+        assert reloaded_target["provider"] == "openai-codex"
+
+        assert reloaded_untouched is not None
+        assert reloaded_untouched["prompt"] == "Untouched"
+        assert reloaded_untouched["model"] == "claude-sonnet-4"
+        assert reloaded_untouched["provider"] == "openrouter"
+
+    def test_update_normalizes_blank_runtime_overrides_to_none(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Pinned runtime",
+            schedule="every 1h",
+            model="gpt-5.5",
+            provider="openai-codex",
+            base_url="https://api.openai.com/v1",
+        )
+
+        updated = update_job(
+            job["id"],
+            {"model": "   ", "provider": "", "base_url": " https://api.openai.com/v1/ "},
+        )
+
+        assert updated is not None
+        assert updated["model"] is None
+        assert updated["provider"] is None
+        assert updated["base_url"] == "https://api.openai.com/v1"
 
 
 class TestPauseResumeJob:

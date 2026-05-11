@@ -50,6 +50,20 @@ _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float from an environment variable, with fallback."""
+    val = os.environ.get(name)
+    if val is not None:
+        try:
+            return float(val)
+        except ValueError:
+            pass
+    return default
+
+_MATTERMOST_HTTP_TIMEOUT = _env_float("HERMES_MATTERMOST_HTTP_TIMEOUT", 30.0)
+_MATTERMOST_UPLOAD_TIMEOUT = _env_float("HERMES_MATTERMOST_UPLOAD_TIMEOUT", 60.0)
+
+
 def check_mattermost_requirements() -> bool:
     """Return True if the Mattermost adapter can be used."""
     token = os.getenv("MATTERMOST_TOKEN", "")
@@ -114,7 +128,7 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=_MATTERMOST_HTTP_TIMEOUT)) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
@@ -133,7 +147,7 @@ class MattermostAdapter(BasePlatformAdapter):
         try:
             async with self._session.post(
                 url, headers=self._headers(), json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
+                timeout=aiohttp.ClientTimeout(total=_MATTERMOST_HTTP_TIMEOUT)
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
@@ -179,7 +193,7 @@ class MattermostAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=_MATTERMOST_UPLOAD_TIMEOUT)) as resp:
             if resp.status >= 400:
                 body = await resp.text()
                 logger.error("MM file upload → %s: %s", resp.status, body[:200])
@@ -201,7 +215,7 @@ class MattermostAdapter(BasePlatformAdapter):
             return False
 
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
+            timeout=aiohttp.ClientTimeout(total=_MATTERMOST_HTTP_TIMEOUT)
         )
         self._closing = False
 
@@ -419,7 +433,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         for attempt in range(3):
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=_MATTERMOST_HTTP_TIMEOUT)) as resp:
                     if resp.status >= 500 or resp.status == 429:
                         if attempt < 2:
                             logger.debug("Mattermost download retry %d/2 for %s (status %d)",
@@ -677,7 +691,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 async with self._session.get(
                     dl_url,
                     headers={"Authorization": f"Bearer {self._token}"},
-                    timeout=aiohttp.ClientTimeout(total=30),
+                    timeout=aiohttp.ClientTimeout(total=_MATTERMOST_HTTP_TIMEOUT),
                 ) as resp:
                     if resp.status < 400:
                         file_data = await resp.read()

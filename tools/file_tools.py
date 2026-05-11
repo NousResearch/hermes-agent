@@ -5,8 +5,10 @@ import errno
 import json
 import logging
 import os
+import platform
+import re
 import threading
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
@@ -116,8 +118,120 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     return None
 
 
+# ── OS-aware path validation and normalization ──────────────────────
+# On Windows the model sometimes generates Unix-style paths
+# (/Users/... instead of C:\\Users\\...) due to training-data bias.
+# This helper detects and normalises those patterns.
+
+_WINDOWS_DRIVE_RE = re.compile(r'^[A-Za-z]:[/\\]')
+
+
+def _normalize_windows_path(path: str) -> str:
+    """Normalize a path for the current OS.
+
+    On Windows, if the model supplied a Unix-style path (e.g.
+    /Users/zimu/project/src/main.py), detect it and convert to the
+    equivalent Windows path (C:\\Users\\<current_user>\\...).
+
+    Also catches any hardcoded usernames from training data that
+    do not match the current user and issues a warning.
+    """
+    is_windows = platform.system() == "Windows"
+
+    if is_windows:
+        # ── Case 1: already a valid Windows absolute path ──
+        if _WINDOWS_DRIVE_RE.match(path):
+            return path.replace("/", "\\")
+
+        # ── Case 2: Unix-style path on Windows ──
+        # e.g. /Users/someone/project → C:\Users\<current_user>\project
+        unix_abs = re.match(r'^/([^/]+)(/.*)?$', path)
+        if unix_abs:
+            segments = path.strip("/").split("/")
+            if segments:
+                # The first segment after "/" is typically the username in Unix
+                # paths (e.g. /Users/someone → "Users" is root, "someone" is user).
+                # Map to C:\Users\<current_user>...
+                home = Path.home()
+                # If it looks like /Users/username/... or /home/username/...
+                if segments[0].lower() in ("users", "home") and len(segments) > 1:
+                    # Reconstruct relative to the actual home directory
+                    relative = segments[2:]  # strip "Users"/"username"
+                    normalized = str(home / "/".join(relative))
+                    logger.warning(
+                        "write_file: converted Unix-style path %r to Windows path %r. "
+                        "This indicates the model generated a path from training data.",
+                        path, normalized,
+                    )
+                    return normalized.replace("/", "\\")
+                # Generic Unix absolute path — just attach it to the user's
+                # current drive letter as a fallback.
+                relative = segments[1:] if segments else []
+                normalized = str(Path.home() / "/".join(relative))
+                logger.warning(
+                    "write_file: converted Unix-style path %r to Windows path %r.",
+                    path, normalized,
+                )
+                return normalized.replace("/", "\\")
+
+        # ── Case 3: relative path — normalise separators ──
+        return path.replace("/", "\\")
+
+    # ── Non-Windows: reject Windows-style paths ──
+    if _WINDOWS_DRIVE_RE.match(path):
+        logger.warning(
+            "write_file: received Windows-style path %r on %s. "
+            "Attempting to interpret as a relative path.",
+            path, platform.system(),
+        )
+        # Strip drive letter and treat as relative
+        clean = re.sub(r'^[A-Za-z]:', '', path).replace("\\", "/").lstrip("/")
+        return clean if clean else path
+
+    return path
+
+
+def _detect_hardcoded_username(path: str) -> Optional[str]:
+    """Check if the path contains a hardcoded username that differs from
+    the current system user, and return the username if found.
+
+    This catches training-data contamination where the model generates
+    paths like /Users/zimu/... on a machine whose actual username differs.
+    """
+    current_user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    if not current_user:
+        return None
+
+    is_windows = platform.system() == "Windows"
+    if is_windows:
+        # Windows: check for C:\Users\<hardcoded_user>
+        m = re.search(r'[/\\]Users[/\\]([^/\\]+)', path, re.IGNORECASE)
+    else:
+        # Unix: check for /Users/<hardcoded_user> or /home/<hardcoded_user>
+        m = re.search(r'/(Users|home)/([^/]+)', path)
+
+    if m:
+        username = m.group(2)
+        if username != current_user:
+            return username
+    return None
+
+
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's live terminal cwd when possible."""
+    # OS-aware path normalisation (Windows fix for model-generated Unix paths)
+    filepath = _normalize_windows_path(filepath)
+    # Warn about hardcoded usernames that don't match the current user
+    hardcoded_user = _detect_hardcoded_username(filepath)
+    if hardcoded_user:
+        logger.warning(
+            "write_file: path %r contains hardcoded username %r. "
+            "Current system user is %r. This looks like training-data "
+            "contamination in the model output.",
+            filepath, hardcoded_user,
+            os.environ.get("USER") or os.environ.get("LOGNAME") or "?",
+        )
+
     p = Path(filepath).expanduser()
     if not p.is_absolute():
         base = _get_live_tracking_cwd(task_id) or os.environ.get(
@@ -800,6 +914,55 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
             "Refusing to write internal read_file status text as file content. "
             "Re-read the file or reconstruct the intended file contents before writing."
         )
+
+    # ── OS-aware path validation ────────────────────────────────────────
+    # Check for hardcoded usernames (training-data contamination)
+    hardcoded_user = _detect_hardcoded_username(path)
+    if hardcoded_user:
+        current_user = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
+        logger.warning(
+            "write_file: path %r contains hardcoded username %r, "
+            "current user is %r — this looks like model training-data contamination",
+            path, hardcoded_user, current_user,
+        )
+
+    # Normalize path for the current OS
+    normalized_path = _normalize_windows_path(path)
+    if normalized_path != path:
+        logger.info(
+            "write_file: path normalized from %r to %r for %s",
+            path, normalized_path, platform.system(),
+        )
+        path = normalized_path
+
+    # ── Parent directory check ──────────────────────────────────────────
+    # On Windows, verify parent directory exists before attempting write.
+    # Also detect if the write would fail due to a missing intermediate
+    # directory that the shell back-end might not create correctly.
+    if platform.system() == "Windows":
+        parent = os.path.dirname(path)
+        if parent and not os.path.exists(parent):
+            logger.info(
+                "write_file: parent directory %r does not exist, will create it.",
+                parent,
+            )
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except OSError as e:
+                return tool_error(
+                    f"Failed to create parent directory {parent}: {e}"
+                )
+    else:
+        # Non-Windows: shell `mkdir -p` handles it, but log a warning if the
+        # path looks like it could be wrong (e.g. contains a drive letter)
+        if re.match(r'^[A-Za-z]:', path):
+            logger.warning(
+                "write_file: path %r contains a Windows drive letter on %s. "
+                "This will likely fail. The model may have generated a "
+                "platform-inappropriate path.",
+                path, platform.system(),
+            )
+
     try:
         # Resolve once for the registry lock + stale check.  Failures here
         # fall back to the legacy path — write proceeds, per-task staleness

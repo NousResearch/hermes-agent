@@ -1144,6 +1144,14 @@ def list_authenticated_providers(
 
     def _has_aws_sdk_creds_for_listing(slug: str) -> bool:
         """Credential check for AWS SDK providers in non-runtime discovery."""
+        # Respect bedrock.discovery.enabled: false to hide Bedrock from the
+        # model picker when the user explicitly disabled auto-detection. (#20738)
+        try:
+            from hermes_cli.config import load_config as _ld
+            if not (_ld().get("bedrock", {}).get("discovery", {}).get("enabled", True)):
+                return False
+        except Exception:
+            pass
         slug_norm = str(slug or "").strip().lower()
         current_norm = str(current_provider or "").strip().lower()
         if _has_fast_aws_sdk_signal():

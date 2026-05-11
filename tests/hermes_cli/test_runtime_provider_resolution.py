@@ -2285,3 +2285,65 @@ def test_minimax_oauth_runtime_uses_inference_base_url(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="minimax-oauth")
 
     assert MINIMAX_OAUTH_CN_INFERENCE.rstrip("/") in resolved["base_url"]
+
+
+def test_resolve_provider_auto_skips_bedrock_when_discovery_disabled(monkeypatch):
+    """When bedrock.discovery.enabled is False, auto-detection must not
+    select Bedrock even if boto3 finds credentials via IMDS. (#20738)"""
+    from hermes_cli.auth import resolve_provider
+
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+
+    # Simulate IMDS returning credentials
+    monkeypatch.setattr(
+        "agent.bedrock_adapter.has_aws_credentials", lambda **kw: True
+    )
+    # Disable discovery
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"bedrock": {"discovery": {"enabled": False}}},
+    )
+
+    with pytest.raises(Exception):
+        # Should raise AuthError("No inference provider configured")
+        # instead of returning "bedrock"
+        resolve_provider("auto")
+
+
+def test_resolve_provider_auto_detects_bedrock_when_discovery_enabled(monkeypatch):
+    """When bedrock.discovery.enabled is True (default), auto-detection
+    should still return bedrock when credentials are available. (#20738)"""
+    from hermes_cli.auth import resolve_provider
+
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+
+    monkeypatch.setattr(
+        "agent.bedrock_adapter.has_aws_credentials", lambda **kw: True
+    )
+    # Explicitly enabled (or default)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"bedrock": {"discovery": {"enabled": True}}},
+    )
+
+    assert resolve_provider("auto") == "bedrock"
+
+
+def test_resolve_provider_custom_never_returns_bedrock(monkeypatch):
+    """resolve_provider('custom') must always return 'custom',
+    never falling through to Bedrock auto-detection. (#20738)"""
+    from hermes_cli.auth import resolve_provider
+
+    monkeypatch.setattr(
+        "agent.bedrock_adapter.has_aws_credentials", lambda **kw: True
+    )
+
+    assert resolve_provider("custom") == "custom"

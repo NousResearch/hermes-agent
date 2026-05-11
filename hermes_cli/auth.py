@@ -1458,12 +1458,23 @@ def resolve_provider(
 
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
     # This runs after API-key providers so explicit keys always win.
+    # Respect bedrock.discovery.enabled: false to prevent IMDS-based
+    # auto-detection on cloud instances (EKS, EC2, ECS) where boto3
+    # discovers credentials from the instance metadata service even when
+    # the user explicitly chose a different provider. (#20738)
     try:
-        from agent.bedrock_adapter import has_aws_credentials
-        if has_aws_credentials():
-            return "bedrock"
-    except ImportError:
-        pass  # boto3 not installed — skip Bedrock auto-detection
+        from hermes_cli.config import load_config as _load_bedrock_cfg
+        _bedrock_disc = (_load_bedrock_cfg().get("bedrock", {})
+                         .get("discovery", {}).get("enabled", True))
+    except Exception:
+        _bedrock_disc = True  # safe default — don't break if config unreadable
+    if _bedrock_disc:
+        try:
+            from agent.bedrock_adapter import has_aws_credentials
+            if has_aws_credentials():
+                return "bedrock"
+        except ImportError:
+            pass  # boto3 not installed — skip Bedrock auto-detection
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "

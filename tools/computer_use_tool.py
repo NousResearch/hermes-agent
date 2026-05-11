@@ -190,6 +190,19 @@ def _coord(args: dict[str, Any], xkey="x", ykey="y") -> str | None:
     return f"{int(x)},{int(y)}"
 
 
+def _cliclick_key_command(key: str) -> str:
+    """Return the right cliclick command for a key.
+
+    cliclick's `kp:` command only accepts named non-printing keys (return, tab,
+    arrows, etc.). Printable one-character keys must be sent with `t:`; this is
+    especially important for shortcuts like Cmd-N or Cmd-L.
+    """
+    key = str(key)
+    if len(key) == 1 and key.isprintable():
+        return f"t:{key}"
+    return f"kp:{key}"
+
+
 def _desktop_action(args: dict[str, Any], **kw) -> str:
     action = args.get("action")
     cc = _require_cliclick()
@@ -253,7 +266,7 @@ def _desktop_action(args: dict[str, Any], **kw) -> str:
                 f.write("t:" + shlex.quote(str(text)) + "\n")
                 fname = f.name
             try:
-                res = _run([cc, "-f", fname], timeout=max(10, min(120, len(str(text)) / 20 + 10)))
+                res = _run([cc, "-f", fname], timeout=max(30, min(180, len(str(text)) / 2 + 15)))
             finally:
                 try:
                     os.unlink(fname)
@@ -266,14 +279,14 @@ def _desktop_action(args: dict[str, Any], **kw) -> str:
             key = args.get("key")
             if not key:
                 return tool_error("key is required for key")
-            commands = [f"kp:{key}"]
+            commands = [_cliclick_key_command(key)]
         elif action == "hotkey":
             key = args.get("key")
             mods = args.get("modifiers") or []
             if not key or not mods:
                 return tool_error("key and modifiers are required for hotkey")
             modstr = ",".join(mods)
-            commands = [f"kd:{modstr}", f"kp:{key}", f"ku:{modstr}"]
+            commands = [f"kd:{modstr}", _cliclick_key_command(key), f"ku:{modstr}"]
         else:
             return tool_error(f"unknown desktop action: {action}")
 

@@ -50,7 +50,37 @@ def test_desktop_action_hotkey_builds_modifier_sequence(monkeypatch):
 
     result = json.loads(tool._desktop_action({"action": "hotkey", "modifiers": ["cmd", "shift"], "key": "4"}))
     assert result["success"] is True
-    assert calls[-1] == ["/opt/homebrew/bin/cliclick", "kd:cmd,shift", "kp:4", "ku:cmd,shift"]
+    assert calls[-1] == ["/opt/homebrew/bin/cliclick", "kd:cmd,shift", "t:4", "ku:cmd,shift"]
+
+
+def test_desktop_action_hotkey_keeps_named_keys_as_keypress(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, timeout=20):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(tool, "_cliclick", lambda: "/opt/homebrew/bin/cliclick")
+    monkeypatch.setattr(tool, "_run", fake_run)
+
+    result = json.loads(tool._desktop_action({"action": "hotkey", "modifiers": ["cmd"], "key": "return"}))
+    assert result["success"] is True
+    assert calls[-1] == ["/opt/homebrew/bin/cliclick", "kd:cmd", "kp:return", "ku:cmd"]
+
+
+def test_desktop_action_key_types_single_printable_character(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, timeout=20):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(tool, "_cliclick", lambda: "/opt/homebrew/bin/cliclick")
+    monkeypatch.setattr(tool, "_run", fake_run)
+
+    result = json.loads(tool._desktop_action({"action": "key", "key": "n"}))
+    assert result["success"] is True
+    assert calls[-1] == ["/opt/homebrew/bin/cliclick", "t:n"]
 
 
 def test_desktop_screenshot_returns_error_when_screencapture_fails(monkeypatch, tmp_path):

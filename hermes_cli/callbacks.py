@@ -15,22 +15,28 @@ from hermes_cli.config import save_env_value_secure
 from hermes_constants import display_hermes_home
 
 
-def clarify_callback(cli, question, choices):
+def clarify_callback(cli, question, choices, multi_select=False):
     """Prompt for clarifying question through the TUI.
 
     Sets up the interactive selection UI, then blocks until the user
     responds. Returns the user's choice or a timeout message.
+
+    When ``multi_select`` is True, shows checkboxes and the user can
+    select multiple options with Space, confirming with Enter.
     """
     from cli import CLI_CONFIG
 
     timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
     response_queue = queue.Queue()
     is_open_ended = not choices
+    effective_multi = multi_select and not is_open_ended
 
     cli._clarify_state = {
         "question": question,
         "choices": choices if not is_open_ended else [],
         "selected": 0,
+        "multi_select": effective_multi,
+        "selected_indices": set() if effective_multi else None,
         "response_queue": response_queue,
     }
     cli._clarify_deadline = _time.monotonic() + timeout

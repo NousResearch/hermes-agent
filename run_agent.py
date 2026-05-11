@@ -1143,7 +1143,7 @@ class AIAgent:
                 None or empty = let OpenRouter pick the strongest available coder.
             session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
-            clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
+            clarify_callback (callable): Callback function(question, choices, multi_select=False) -> str for interactive user questions.
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
@@ -10347,6 +10347,7 @@ class AIAgent:
             return _clarify_tool(
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
+                multi_select=function_args.get("multi_select", False),
                 callback=self.clarify_callback,
             )
         elif function_name == "delegate_task":
@@ -10976,6 +10977,7 @@ class AIAgent:
                 function_result = _clarify_tool(
                     question=function_args.get("question", ""),
                     choices=function_args.get("choices"),
+                    multi_select=function_args.get("multi_select", False),
                     callback=self.clarify_callback,
                 )
                 tool_duration = time.time() - tool_start_time

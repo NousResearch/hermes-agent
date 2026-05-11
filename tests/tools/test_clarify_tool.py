@@ -193,3 +193,189 @@ class TestClarifySchema:
     def test_max_choices_is_four(self):
         """MAX_CHOICES constant should be 4."""
         assert MAX_CHOICES == 4
+
+    def test_schema_multi_select_optional(self):
+        """multi_select should not be in required list."""
+        assert "multi_select" not in CLARIFY_SCHEMA["parameters"]["required"]
+
+    def test_schema_multi_select_is_boolean(self):
+        """multi_select should be a boolean parameter."""
+        ms_spec = CLARIFY_SCHEMA["parameters"]["properties"].get("multi_select")
+        assert ms_spec is not None
+        assert ms_spec["type"] == "boolean"
+
+    def test_schema_multi_select_default_false(self):
+        """multi_select should default to false (not in required)."""
+        # The model should treat it as false when omitted
+        assert "multi_select" not in CLARIFY_SCHEMA["parameters"]["required"]
+
+
+class TestClarifyToolMultiSelect:
+    """Tests for multi_select (checkbox) support added to clarify_tool."""
+
+    def test_multi_select_false_keeps_existing_behavior(self):
+        """When multi_select=False, user_response should be a single string."""
+        def mock_callback(question, choices):
+            return "blue"
+
+        result = json.loads(clarify_tool(
+            "What color?",
+            choices=["red", "blue", "green"],
+            multi_select=False,
+            callback=mock_callback,
+        ))
+        assert result["user_response"] == "blue"
+        assert isinstance(result["user_response"], str)
+
+    def test_multi_select_true_returns_list(self):
+        """When multi_select=True, user_response should be a list of strings."""
+        def mock_callback(question, choices):
+            return "red, blue"
+
+        result = json.loads(clarify_tool(
+            "Which colors?",
+            choices=["red", "blue", "green"],
+            multi_select=True,
+            callback=mock_callback,
+        ))
+        assert result["user_response"] == ["red", "blue"]
+        assert isinstance(result["user_response"], list)
+
+    def test_multi_select_single_choice_still_list(self):
+        """Even a single selection should be a list when multi_select=True."""
+        def mock_callback(question, choices):
+            return "red"
+
+        result = json.loads(clarify_tool(
+            "Which color?",
+            choices=["red", "blue"],
+            multi_select=True,
+            callback=mock_callback,
+        ))
+        assert result["user_response"] == ["red"]
+        assert isinstance(result["user_response"], list)
+
+    def test_multi_select_with_json_array_response(self):
+        """Callback can return a JSON array string for multi-select."""
+        def mock_callback(question, choices):
+            return '["red", "blue"]'
+
+        result = json.loads(clarify_tool(
+            "Which colors?",
+            choices=["red", "blue", "green"],
+            multi_select=True,
+            callback=mock_callback,
+        ))
+        assert result["user_response"] == ["red", "blue"]
+
+    def test_multi_select_no_choices_falls_back_to_single_string(self):
+        """When choices is None, multi_select has no effect on response type."""
+        def mock_callback(question, choices):
+            return "free form answer"
+
+        result = json.loads(clarify_tool(
+            "What do you think?",
+            multi_select=True,
+            callback=mock_callback,
+        ))
+        # Without choices, falls back to single string response
+        assert result["user_response"] == "free form answer"
+        assert isinstance(result["user_response"], str)
+
+    def test_multi_select_default_is_false(self):
+        """Default multi_select should be False (backward compatible)."""
+        def mock_callback(question, choices):
+            return "picked"
+
+        result = json.loads(clarify_tool(
+            "Pick one",
+            choices=["a", "b"],
+            callback=mock_callback,
+        ))
+        assert result["user_response"] == "picked"
+        assert isinstance(result["user_response"], str)
+
+    def test_multi_select_callback_receives_flag(self):
+        """Callback should receive multi_select keyword argument when supported."""
+        received_flag = []
+
+        def mock_callback(question, choices, **kwargs):
+            received_flag.append(kwargs.get("multi_select"))
+            return "a, b"
+
+        clarify_tool(
+            "Pick",
+            choices=["a", "b", "c"],
+            multi_select=True,
+            callback=mock_callback,
+        )
+        assert received_flag == [True]
+
+    def test_multi_select_backward_compatible_callback(self):
+        """Callback that does not accept multi_select keyword should still work."""
+        def mock_callback(question, choices):
+            return "a, b"
+
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=["a", "b", "c"],
+            multi_select=True,
+            callback=mock_callback,
+        ))
+        assert result["user_response"] == ["a", "b"]
+
+    def test_multi_select_empty_selection_returns_empty_list(self):
+        """Empty response should produce empty list when multi_select=True."""
+        def mock_callback(question, choices):
+            return ""
+
+        result = json.loads(clarify_tool(
+            "Which?",
+            choices=["a", "b"],
+            multi_select=True,
+            callback=mock_callback,
+        ))
+        assert result["user_response"] == []
+
+    def test_multi_select_whitespace_choices_stripped(self):
+        """Individual selections should be stripped of whitespace."""
+        def mock_callback(question, choices):
+            return "  a , b ,  c  "
+
+        result = json.loads(clarify_tool(
+            "Which?",
+            choices=["a", "b", "c"],
+            multi_select=True,
+            callback=mock_callback,
+        ))
+        assert result["user_response"] == ["a", "b", "c"]
+
+    def test_multi_select_choices_offered_preserved(self):
+        """choices_offered should match what was passed in, not the response."""
+        def mock_callback(question, choices):
+            return "red, blue"
+
+        result = json.loads(clarify_tool(
+            "Which?",
+            choices=["red", "blue", "green"],
+            multi_select=True,
+            callback=mock_callback,
+        ))
+        assert result["choices_offered"] == ["red", "blue", "green"]
+
+    def test_multi_select_max_choices_enforced(self):
+        """MAX_CHOICES enforcement should still work with multi_select."""
+        choices_passed = []
+
+        def mock_callback(question, choices):
+            choices_passed.extend(choices or [])
+            return "a, b, c, d"
+
+        many_choices = ["a", "b", "c", "d", "e", "f"]
+        clarify_tool(
+            "Pick some",
+            choices=many_choices,
+            multi_select=True,
+            callback=mock_callback,
+        )
+        assert len(choices_passed) == MAX_CHOICES

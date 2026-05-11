@@ -9829,6 +9829,17 @@ def main():
     daemon_create.add_argument("--title", default=None, help="Optional session title")
     daemon_create.add_argument("--source", default="daemon", help="Session source label")
     daemon_create.add_argument("--model", default=None, help="Optional model label")
+    daemon_send = daemon_subparsers.add_parser("send", help="Send a message to a daemon-owned session run")
+    daemon_send.add_argument("message", help="User message to send")
+    daemon_send.add_argument("--session-id", default=None, help="Existing session id or title to continue")
+    daemon_send.add_argument("--title", default=None, help="Title when creating a new session")
+    daemon_send.add_argument("--source", default="daemon", help="Session source label for new sessions")
+    daemon_send.add_argument("--model", default=None, help="Optional model override")
+    daemon_events = daemon_subparsers.add_parser("events", help="Read daemon run/session events")
+    daemon_events.add_argument("--session-id", default=None, help="Filter by session id")
+    daemon_events.add_argument("--run-id", default=None, help="Filter by run id")
+    daemon_events.add_argument("--since", type=int, default=0, help="Only return events after this sequence")
+    daemon_events.add_argument("--limit", type=int, default=100, help="Max events to return")
     daemon_parser.set_defaults(func=cmd_daemon)
 
     # =========================================================================

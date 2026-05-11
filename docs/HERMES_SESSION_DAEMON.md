@@ -12,14 +12,15 @@ agent process.
 
 ## MVP Scope
 
-The first slice is intentionally small and safe:
+The daemon is intentionally small and local-first:
 
 - one local daemon per Hermes profile
 - Unix-domain socket only: `$HERMES_HOME/runtime/hermes-daemon.sock`
 - PID file: `$HERMES_HOME/runtime/hermes-daemon.pid`
 - log file: `$HERMES_HOME/runtime/hermes-daemon.log`
 - JSON-lines protocol, one request and one response per line
-- session registry operations only; no model calls or tool execution yet
+- existing `SessionDB` remains the durable session/transcript store
+- agent turns run in daemon-owned background threads after explicit `session.send`
 
 Commands:
 
@@ -28,6 +29,8 @@ hermes daemon start
 hermes daemon status [--json]
 hermes daemon sessions [--limit N] [--json]
 hermes daemon create-session [--title T] [--source S] [--model M]
+hermes daemon send "message" [--session-id ID] [--title T] [--source S] [--model M]
+hermes daemon events [--session-id ID] [--run-id ID] [--since N] [--limit N]
 hermes daemon stop
 hermes daemon serve      # foreground/debug mode
 ```
@@ -38,6 +41,9 @@ Protocol methods:
 - `session.list`
 - `session.create`
 - `session.get`
+- `session.send`
+- `session.events`
+- `run.get`
 - `shutdown`
 
 ## Design Rules
@@ -54,10 +60,12 @@ Protocol methods:
 
 ## Next Slices
 
-1. Add live runtime attachment: daemon-owned `AIAgent` workers keyed by session id.
-2. Add `session.send` and event streaming with status states: idle, running,
-   tool_wait, blocked, error.
-3. Add read-only Mission Control panel consuming `ping` + `session.list`.
-4. Add approval-gated controls: stop, fork, resume, attach.
+1. Add read-only Mission Control panel consuming `ping`, `session.list`, and
+   `session.events`.
+2. Expand event fidelity: tool start/complete, approval-wait, blocked, error,
+   and cancellation states.
+3. Add approval-gated controls: stop, fork, resume, attach.
+4. Add durable event snapshots for long-running sessions while keeping
+   transcripts in `SessionDB`.
 5. Add memory graph retrieval as a separate local service path, not coupled to
    the daemon MVP.

@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -49,6 +49,34 @@ class DaemonPaths:
     socket_path: Path
     pid_path: Path
     log_path: Path
+
+
+@dataclass
+class DaemonRun:
+    run_id: str
+    session_id: str
+    status: str = "queued"
+    started_at: float = field(default_factory=time.time)
+    finished_at: float | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+    def public(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "run_id": self.run_id,
+            "session_id": self.session_id,
+            "status": self.status,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+        }
+        if self.result is not None:
+            data["result"] = self.result
+        if self.error:
+            data["error"] = self.error
+        return data
+
+
+AgentRunner = Callable[[str, str, dict[str, Any], Callable[[str, dict[str, Any] | None], None]], dict[str, Any]]
 
 
 def daemon_paths() -> DaemonPaths:
@@ -110,12 +138,22 @@ def _session_public(row: dict[str, Any]) -> dict[str, Any]:
 class HermesDaemonServer:
     """Small blocking Unix-socket server for local session registry operations."""
 
-    def __init__(self, paths: DaemonPaths | None = None, db_factory: Callable[[], SessionDB] | None = None):
+    def __init__(
+        self,
+        paths: DaemonPaths | None = None,
+        db_factory: Callable[[], SessionDB] | None = None,
+        agent_runner: AgentRunner | None = None,
+    ):
         self.paths = paths or daemon_paths()
         self.db_factory = db_factory or SessionDB
+        self.agent_runner = agent_runner or self._run_agent_turn
         self.started_at = time.time()
         self._stop = threading.Event()
         self._sock: socket.socket | None = None
+        self._lock = threading.RLock()
+        self._runs: dict[str, DaemonRun] = {}
+        self._events: list[dict[str, Any]] = []
+        self._event_seq = 0
 
     def serve_forever(self) -> int:
         if os.name == "nt":
@@ -194,6 +232,7 @@ class HermesDaemonServer:
                     "started_at": self.started_at,
                     "uptime_seconds": max(0.0, time.time() - self.started_at),
                     "socket_path": str(self.paths.socket_path),
+                    "active_runs": self._active_run_count(),
                 },
             }
         if method == "session.list":
@@ -202,6 +241,12 @@ class HermesDaemonServer:
             return self._session_create(params)
         if method == "session.get":
             return self._session_get(params)
+        if method == "session.send":
+            return self._session_send(params)
+        if method == "session.events":
+            return self._session_events(params)
+        if method == "run.get":
+            return self._run_get(params)
         if method == "shutdown":
             self.stop()
             return {"ok": True, "result": {"stopping": True}}
@@ -257,6 +302,182 @@ class HermesDaemonServer:
         if not row:
             return _json_error(f"session not found: {session_id}", code="not_found")
         return {"ok": True, "result": {"session": _session_public(dict(row))}}
+
+
+    def _active_run_count(self) -> int:
+        with self._lock:
+            return sum(1 for run in self._runs.values() if run.status in {"queued", "running"})
+
+    def _emit_event(
+        self,
+        session_id: str,
+        run_id: str,
+        event: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        with self._lock:
+            self._event_seq += 1
+            self._events.append(
+                {
+                    "seq": self._event_seq,
+                    "time": time.time(),
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "event": event,
+                    "data": data or {},
+                }
+            )
+            # Keep the daemon bounded; this is a live control-plane event buffer,
+            # not durable transcript storage. Transcripts remain in SessionDB.
+            if len(self._events) > 1000:
+                del self._events[: len(self._events) - 1000]
+
+    def _session_send(self, params: dict[str, Any]) -> dict[str, Any]:
+        message = params.get("message")
+        if not isinstance(message, str) or not message.strip():
+            return _json_error("session.send requires non-empty params.message", code="bad_request")
+
+        session_id = params.get("id") or params.get("session_id")
+        if session_id:
+            session_id = str(session_id)
+            db = self.db_factory()
+            try:
+                resolved = db.resolve_session_id(session_id) or session_id
+                row = db.get_session(resolved)
+            finally:
+                db.close()
+            if not row:
+                return _json_error(f"session not found: {session_id}", code="not_found")
+            session_id = resolved
+        else:
+            created = self._session_create(
+                {
+                    "title": params.get("title") or message.strip()[:80],
+                    "source": params.get("source") or DEFAULT_SOURCE,
+                    "model": params.get("model"),
+                    "parent_session_id": params.get("parent_session_id"),
+                }
+            )
+            if not created.get("ok"):
+                return created
+            session_id = created["result"]["session"]["id"]
+
+        run_id = str(params.get("run_id") or uuid.uuid4().hex)
+        run = DaemonRun(run_id=run_id, session_id=session_id)
+        with self._lock:
+            self._runs[run_id] = run
+        self._emit_event(session_id, run_id, "queued", {"message_preview": message.strip()[:200]})
+
+        thread = threading.Thread(
+            target=self._run_send_worker,
+            args=(run_id, session_id, message, dict(params)),
+            daemon=True,
+        )
+        thread.start()
+        return {"ok": True, "result": {"accepted": True, "run": run.public()}}
+
+    def _run_send_worker(self, run_id: str, session_id: str, message: str, params: dict[str, Any]) -> None:
+        def event_cb(event: str, data: dict[str, Any] | None = None) -> None:
+            self._emit_event(session_id, run_id, event, data)
+
+        with self._lock:
+            run = self._runs[run_id]
+            run.status = "running"
+        event_cb("running", {})
+        try:
+            result = self.agent_runner(session_id, message, params, event_cb) or {}
+            with self._lock:
+                run = self._runs[run_id]
+                run.status = "completed"
+                run.finished_at = time.time()
+                run.result = result
+            event_cb("completed", {"result": result})
+        except Exception as exc:  # Keep daemon alive if one agent run fails.
+            with self._lock:
+                run = self._runs[run_id]
+                run.status = "failed"
+                run.finished_at = time.time()
+                run.error = str(exc)
+            event_cb("failed", {"error": str(exc), "error_type": type(exc).__name__})
+
+    def _session_events(self, params: dict[str, Any]) -> dict[str, Any]:
+        since = int(params.get("since") or 0)
+        limit = max(1, min(int(params.get("limit") or 100), 500))
+        session_id = params.get("id") or params.get("session_id")
+        run_id = params.get("run_id")
+        with self._lock:
+            events = [event for event in self._events if event["seq"] > since]
+            if session_id:
+                events = [event for event in events if event.get("session_id") == str(session_id)]
+            if run_id:
+                events = [event for event in events if event.get("run_id") == str(run_id)]
+            events = events[-limit:]
+        return {"ok": True, "result": {"events": events, "next_since": events[-1]["seq"] if events else since}}
+
+    def _run_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        run_id = params.get("run_id") or params.get("id")
+        if not run_id:
+            return _json_error("run.get requires params.run_id", code="bad_request")
+        with self._lock:
+            run = self._runs.get(str(run_id))
+            data = run.public() if run else None
+        if not data:
+            return _json_error(f"run not found: {run_id}", code="not_found")
+        return {"ok": True, "result": {"run": data}}
+
+    def _run_agent_turn(
+        self,
+        session_id: str,
+        message: str,
+        params: dict[str, Any],
+        event_cb: Callable[[str, dict[str, Any] | None], None],
+    ) -> dict[str, Any]:
+        from hermes_cli.config import load_config
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from run_agent import AIAgent
+
+        cfg = load_config()
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        configured_model = ""
+        if isinstance(model_cfg, dict):
+            configured_model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+        elif isinstance(cfg.get("model"), str):
+            configured_model = str(cfg.get("model")).strip()
+        model = str(params.get("model") or os.getenv("HERMES_MODEL") or configured_model or "anthropic/claude-sonnet-4").strip()
+        requested_provider = params.get("provider") or (model_cfg.get("provider") if isinstance(model_cfg, dict) else None)
+        runtime = resolve_runtime_provider(requested=requested_provider, target_model=model)
+        db = self.db_factory()
+        try:
+            history = db.get_messages_as_conversation(session_id, include_ancestors=True)
+            agent_cfg = cfg.get("agent", {}) if isinstance(cfg.get("agent"), dict) else {}
+            max_turns = int(params.get("max_turns") or agent_cfg.get("max_turns") or 90)
+            event_cb("agent_start", {"model": model, "provider": runtime.get("provider")})
+            agent = AIAgent(
+                model=model,
+                api_key=runtime.get("api_key"),
+                base_url=runtime.get("base_url"),
+                provider=runtime.get("provider"),
+                api_mode=runtime.get("api_mode"),
+                credential_pool=runtime.get("credential_pool"),
+                max_iterations=max_turns,
+                enabled_toolsets=params.get("enabled_toolsets"),
+                disabled_toolsets=params.get("disabled_toolsets"),
+                quiet_mode=True,
+                session_id=session_id,
+                platform="daemon",
+                session_db=db,
+                stream_delta_callback=lambda delta: event_cb("delta", {"text": delta}) if delta else None,
+            )
+            result = agent.run_conversation(message, conversation_history=history, task_id=f"daemon-{session_id}")
+            final_response = result.get("final_response") if isinstance(result, dict) else None
+            return {
+                "final_response": final_response,
+                "completed": bool(final_response),
+                "model": model,
+                "provider": runtime.get("provider"),
+            }
+        finally:
+            db.close()
 
 
 def request(method: str, params: dict[str, Any] | None = None, *, timeout: float = 2.0, paths: DaemonPaths | None = None) -> dict[str, Any]:
@@ -407,6 +628,31 @@ def daemon_command(args: argparse.Namespace) -> int:
                 print(json.dumps(resp, indent=2, sort_keys=True), file=sys.stderr)
                 return 1
             return 0
+        if action == "send":
+            resp = request(
+                "session.send",
+                {
+                    "id": getattr(args, "session_id", None),
+                    "message": getattr(args, "message", None),
+                    "title": getattr(args, "title", None),
+                    "source": getattr(args, "source", None) or DEFAULT_SOURCE,
+                    "model": getattr(args, "model", None),
+                },
+            )
+            print(json.dumps(resp, indent=2, sort_keys=True))
+            return 0 if resp.get("ok") else 1
+        if action == "events":
+            resp = request(
+                "session.events",
+                {
+                    "id": getattr(args, "session_id", None),
+                    "run_id": getattr(args, "run_id", None),
+                    "since": getattr(args, "since", 0),
+                    "limit": getattr(args, "limit", 100),
+                },
+            )
+            print(json.dumps(resp, indent=2, sort_keys=True))
+            return 0 if resp.get("ok") else 1
         if action == "create-session":
             resp = request(
                 "session.create",

@@ -89,3 +89,67 @@ def test_daemon_bad_method_returns_structured_error(tmp_path):
     resp = server.handle_request({"method": "missing.method", "params": {}})
     assert resp["ok"] is False
     assert resp["error"]["code"] == "unknown_method"
+
+
+
+def test_daemon_session_send_runs_worker_and_records_events(tmp_path):
+    db_path = tmp_path / "state.db"
+
+    def fake_runner(session_id, message, params, event_cb):
+        event_cb("delta", {"text": "pong"})
+        db = SessionDB(db_path)
+        try:
+            db.append_message(session_id, "user", message)
+            db.append_message(session_id, "assistant", "pong")
+        finally:
+            db.close()
+        return {"final_response": "pong", "completed": True}
+
+    server = HermesDaemonServer(
+        paths=_paths(tmp_path),
+        db_factory=lambda: SessionDB(db_path),
+        agent_runner=fake_runner,
+    )
+    created = server.handle_request(
+        {"method": "session.create", "params": {"id": "send-test-1", "source": "daemon-test"}}
+    )
+    assert created["ok"] is True
+
+    sent = server.handle_request(
+        {"method": "session.send", "params": {"id": "send-test-1", "message": "ping"}}
+    )
+    assert sent["ok"] is True
+    run_id = sent["result"]["run"]["run_id"]
+
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        got = server.handle_request({"method": "run.get", "params": {"run_id": run_id}})
+        if got["result"]["run"]["status"] == "completed":
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("daemon run did not complete")
+
+    got = server.handle_request({"method": "run.get", "params": {"run_id": run_id}})
+    assert got["ok"] is True
+    assert got["result"]["run"]["result"]["final_response"] == "pong"
+
+    events = server.handle_request({"method": "session.events", "params": {"run_id": run_id}})
+    names = [event["event"] for event in events["result"]["events"]]
+    assert names[:2] == ["queued", "running"]
+    assert "delta" in names
+    assert names[-1] == "completed"
+
+    db = SessionDB(db_path)
+    try:
+        messages = db.get_messages("send-test-1")
+    finally:
+        db.close()
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+
+
+def test_daemon_session_send_requires_message(tmp_path):
+    server = HermesDaemonServer(paths=_paths(tmp_path), db_factory=lambda: SessionDB(tmp_path / "state.db"))
+    resp = server.handle_request({"method": "session.send", "params": {"message": ""}})
+    assert resp["ok"] is False
+    assert resp["error"]["code"] == "bad_request"

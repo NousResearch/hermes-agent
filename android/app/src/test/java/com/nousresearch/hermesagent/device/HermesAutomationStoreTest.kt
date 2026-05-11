@@ -672,6 +672,10 @@ class HermesAutomationStoreTest {
         assertEquals("bottom", payload.getString("position"))
         assertEquals(560, payload.getInt("width_dp"))
         assertEquals(600000L, payload.getLong("hide_after_ms"))
+        val layout = HermesOverlaySceneBridge.resolvedLayoutMetrics(context, payload)
+        assertTrue(layout.toString(), layout.resolvedWidthPx <= layout.availableWidthPx)
+        assertTrue(layout.toString(), layout.edgeMarginPx > 0)
+        assertTrue(layout.toString(), layout.verticalInsetPx > 0)
 
         val created = org.json.JSONObject(
             HermesAutomationBridge.performActionJson(

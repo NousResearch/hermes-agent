@@ -237,6 +237,24 @@ def test_chat_composer_matches_round_ui_spec():
     assert 'shape = RoundedCornerShape(28.dp)' in chat
 
 
+def test_overlay_scene_uses_screen_aware_window_bounds():
+    overlay = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesOverlaySceneBridge.kt").read_text(encoding="utf-8")
+    automation_test = (
+        REPO_ROOT / "android/app/src/test/java/com/nousresearch/hermesagent/device/HermesAutomationStoreTest.kt"
+    ).read_text(encoding="utf-8")
+
+    assert "resolvedLayoutMetrics(context, payload)" in overlay
+    assert "currentWindowMetrics.bounds" in overlay
+    assert "availableWidthPx" in overlay
+    assert "resolvedWidthPx" in overlay
+    assert "OVERLAY_EDGE_MARGIN_DP" in overlay
+    assert "FLAG_LAYOUT_NO_LIMITS" not in overlay
+    assert "maxLines = 12" in overlay
+    assert "TextUtils.TruncateAt.END" in overlay
+    assert "layoutMetrics.toJson()" in overlay
+    assert "layout.resolvedWidthPx <= layout.availableWidthPx" in automation_test
+
+
 def test_device_backend_exposes_deeper_radio_control_actions_and_status():
     bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesSystemControlBridge.kt").read_text(encoding="utf-8")
     device = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceScreen.kt").read_text(encoding="utf-8")

@@ -2,7 +2,6 @@ import pytest
 
 from agent import backpack_advisor
 from agent.backpack_advisor import (
-    BACKPACK_ADVISOR_STRATEGY_VERSION,
     BACKPACK_SYSTEM_VERSION,
     build_backpack_candidate_hints,
     build_candidate_hints,
@@ -14,8 +13,15 @@ def test_backpack_system_has_formal_version():
     assert BACKPACK_SYSTEM_VERSION == "v0"
 
 
-def test_grouped_strategy_has_formal_version():
-    assert BACKPACK_ADVISOR_STRATEGY_VERSION == "grouped-hints-v1"
+def test_candidate_hint_header_exposes_only_system_version():
+    catalog = [
+        {"id": "tool.read_file", "kind": "tool", "name": "read_file", "description": "Read file contents"},
+    ]
+
+    hints = build_candidate_hints("读一下 README.md", catalog, limit=5)
+
+    assert hints.splitlines()[0] == "Backpack candidate hints (v0):"
+    assert "grouped-hints-v1" not in hints
 
 
 @pytest.mark.parametrize(

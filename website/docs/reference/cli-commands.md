@@ -194,6 +194,90 @@ If you've only configured OpenRouter, `/model` will only show OpenRouter models.
 
 Provider and base URL changes are persisted to `config.yaml` automatically. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
 
+## `hermes models` and `hermes providers`
+
+Non-interactive scriptable inventory commands for cron, CI, dashboards, or
+agents introspecting their own environment. These do **not** replace
+`hermes model` (the interactive picker) — they expose the same data the
+picker / dashboard / TUI already use, in JSON-friendly form, sharing a
+single source of truth (`hermes_cli/inventory.py`).
+
+```bash
+hermes models list   [--provider NAME] [--json] [--all] [--no-live] [--offline]
+hermes models status [--provider NAME] [--json]                     [--offline]
+hermes providers list                  [--json] [--all]             [--offline]
+```
+
+**Modes:**
+
+- **default** — same network behaviour as the picker / dashboard. Returns
+  configured providers only (live API + cached models.dev catalog).
+- **`--all`** — also include unconfigured providers (universe = ~35 canonical
+  providers). No-op when `--provider` is set.
+- **`--no-live`** (`models list` only) — skip per-provider live API discovery;
+  show curated / fallback model lists only. `models.dev` cache may still be
+  consulted.
+- **`--offline`** — fully offline: no `models.dev`, no provider HTTP, no
+  remote catalog fetches, no credential pool / external auth-store probes.
+  Auth state is derived from environment variables alone. Best for cron / CI
+  / scripts that should not block on the network.
+
+A reachability-probe flag (`--probe`) for `models status` is tracked
+separately in [#23614](https://github.com/NousResearch/hermes-agent/issues/23614).
+
+**JSON shape:**
+
+```json
+{
+  "schema_version": 1,
+  "current": {"provider": "...", "model": "..."},
+  "providers": [
+    {
+      "slug": "anthropic",
+      "name": "Anthropic",
+      "is_current": false,
+      "is_user_defined": false,
+      "auth_state": "configured",
+      "api_mode": "anthropic_messages",
+      "auth_type": "api_key",
+      "base_url": "https://api.anthropic.com",
+      "env_vars": ["ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "..."],
+      "env_vars_present": [true, false, false],
+      "models": ["claude-opus-4-7", "..."],
+      "total_models": 8,
+      "source": "canonical",
+      "model_source": "curated"
+    }
+  ]
+}
+```
+
+`env_vars` lists the variable **names** the provider accepts (including
+[`HERMES_OVERLAYS`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/providers.py)
+bridges — e.g. OpenRouter accepts `OPENAI_API_KEY`).
+`env_vars_present` is the corresponding `bool` array. **Values are never
+included in the payload.**
+
+**Examples:**
+
+```bash
+# Cron-safe inventory snapshot
+hermes providers list --offline --all --json | jq '.providers[] | select(.auth_state=="configured") | .slug'
+
+# What models can I switch to right now?
+hermes models list --json | jq '.providers[] | {slug, total_models, current: .is_current}'
+
+# Verify a provider's auth before a batch
+hermes models status --provider=openrouter --json | jq '.providers[0].auth_state'
+
+# List curated models without hitting the network
+hermes models list --provider=anthropic --offline --json | jq '.providers[0].models'
+```
+
+`hermes models list` and `hermes providers list` exit `0` when the inventory
+was built (even if zero providers are configured). Unknown provider, missing
+subcommand, or unknown subcommand exits `2` with an explanatory message.
+
 ## `hermes gateway`
 
 ```bash

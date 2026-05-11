@@ -1729,6 +1729,56 @@ def cmd_model(args):
     select_provider_and_model(args=args)
 
 
+# ─── Non-interactive inventory commands (issue #23359) ────────────────────
+
+
+def _emit(payload: dict, kind: str, as_json: bool) -> None:
+    from hermes_cli.inventory import dump_json, render_text
+
+    print(dump_json(payload) if as_json else render_text(payload, kind))
+
+
+def cmd_models_list(args):
+    """``hermes models list`` — JSON or text inventory of models."""
+    from hermes_cli.inventory import build_payload
+
+    try:
+        payload = build_payload(
+            "models", provider=args.provider,
+            include_unconfigured=args.all,
+            live=not (args.no_live or args.offline),
+            offline=args.offline,
+        )
+    except ValueError as exc:
+        args._parser.error(f"{exc}. Run `hermes providers list --all` to see slugs.")
+        return
+    _emit(payload, "models", args.json)
+
+
+def cmd_models_status(args):
+    """``hermes models status`` — auth snapshot per provider."""
+    from hermes_cli.inventory import build_payload
+
+    try:
+        payload = build_payload(
+            "status", provider=args.provider, offline=args.offline,
+        )
+    except ValueError as exc:
+        args._parser.error(f"{exc}. Run `hermes providers list --all` to see slugs.")
+        return
+    _emit(payload, "status", args.json)
+
+
+def cmd_providers_list(args):
+    """``hermes providers list`` — provider registry inventory."""
+    from hermes_cli.inventory import build_payload
+
+    payload = build_payload(
+        "providers", include_unconfigured=args.all, offline=args.offline,
+    )
+    _emit(payload, "providers", args.json)
+
+
 def _is_profile_api_key_provider(provider_id: str) -> bool:
     """Return True when provider_id maps to a profile with auth_type='api_key'.
 
@@ -8413,6 +8463,8 @@ def _coalesce_session_name_args(argv: list) -> list:
     _SUBCOMMANDS = {
         "chat",
         "model",
+        "models",
+        "providers",
         "gateway",
         "setup",
         "whatsapp",
@@ -9157,6 +9209,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "mcp", "memory", "model",
+        "models", "providers",
         "pairing", "plugins", "profile", "sessions", "setup", "skills",
         "slack", "status", "tools", "uninstall", "update", "version",
         "webhook", "whatsapp", "chat",
@@ -9315,6 +9368,42 @@ def main():
         help="Disable TLS verification for Nous login (testing only)",
     )
     model_parser.set_defaults(func=cmd_model)
+
+    # ── Non-interactive inventory subcommands (issue #23359) ──
+    models_parser = subparsers.add_parser(
+        "models",
+        help="List and inspect available models (non-interactive)",
+        description="Non-interactive model inventory for cron / CI / scripts. "
+                    "Use `hermes model` for the interactive picker.",
+    )
+    _ms = models_parser.add_subparsers(dest="models_command", required=True)
+    _ml = _ms.add_parser("list", help="List models for one or all configured providers")
+    _ml.add_argument("--provider", default=None, help="Limit to one slug (bypasses configured-only filter)")
+    _ml.add_argument("--json", action="store_true", help="Emit JSON")
+    _ml.add_argument("--no-live", action="store_true", help="Skip provider live API; show curated only")
+    _ml.add_argument("--all", action="store_true", help="Include unconfigured providers")
+    _ml.add_argument("--offline", action="store_true", help="No HTTP at all; env-only auth")
+    _ml.set_defaults(func=cmd_models_list, _parser=_ml)
+    _mst = _ms.add_parser("status", help="Show auth state per provider")
+    _mst.add_argument("--provider", default=None)
+    _mst.add_argument("--json", action="store_true")
+    _mst.add_argument("--offline", action="store_true", help="No HTTP at all; env-only auth")
+    # TODO(#23614): add --probe for live reachability checks. Tracked
+    # separately because provider_model_ids() falls back to curated lists,
+    # so a true reachability surface needs an explicit endpoint probe
+    # rather than the existing model-discovery wrapper.
+    _mst.set_defaults(func=cmd_models_status, _parser=_mst)
+
+    providers_parser = subparsers.add_parser(
+        "providers",
+        help="List provider registry (non-interactive)",
+    )
+    _ps = providers_parser.add_subparsers(dest="providers_command", required=True)
+    _pl = _ps.add_parser("list", help="List configured providers")
+    _pl.add_argument("--json", action="store_true")
+    _pl.add_argument("--all", action="store_true", help="Include unconfigured providers")
+    _pl.add_argument("--offline", action="store_true", help="No HTTP at all; env-only auth")
+    _pl.set_defaults(func=cmd_providers_list, _parser=_pl)
 
     # =========================================================================
     # fallback command — manage the fallback provider chain

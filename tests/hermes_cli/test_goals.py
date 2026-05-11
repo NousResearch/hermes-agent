@@ -1071,3 +1071,307 @@ class TestJudgeIndexConversion:
         # Other items still pending.
         assert mgr.state.checklist[1].status == ITEM_PENDING
         assert mgr.state.checklist[2].status == ITEM_PENDING
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Compression session-rotation: goal must follow the new session_id
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestGoalSurvivesCompressionRotation:
+    def test_load_goal_after_session_id_rotates(self, hermes_home):
+        """When auto-compression rotates the session_id, the goal must be
+        readable from the new session_id (forwarded by run_agent's
+        _compress_context block).
+
+        We don't run the full _compress_context method here — it has
+        ~60 dependencies. Instead we mirror exactly what that block does
+        with state_meta and assert the goal manager picks it up.
+        """
+        from hermes_cli.goals import GoalManager
+        from hermes_state import SessionDB
+
+        # Create a goal under a parent session_id.
+        parent_sid = "parent-rotate-001"
+        mgr = GoalManager(session_id=parent_sid)
+        mgr.set("survive compression")
+        assert mgr.is_active()
+
+        # Simulate the run_agent._compress_context forwarding block:
+        # read goal:<old>, write goal:<new> on the same SessionDB instance.
+        db = SessionDB()
+        new_sid = "child-rotate-001"
+        blob = db.get_meta(f"goal:{parent_sid}")
+        assert blob, "goal must be in state_meta"
+        db.set_meta(f"goal:{new_sid}", blob)
+
+        # New GoalManager for the rotated session_id should load the same goal.
+        mgr2 = GoalManager(session_id=new_sid)
+        assert mgr2.is_active()
+        assert mgr2.state.goal == "survive compression"
+        # Counters/checklist preserved verbatim.
+        assert mgr2.state.turns_used == mgr.state.turns_used
+        assert mgr2.state.checklist == mgr.state.checklist
+
+    def test_no_forward_when_no_goal(self, hermes_home):
+        """Forwarding is a no-op when the parent session has no goal."""
+        from hermes_state import SessionDB
+        from hermes_cli.goals import load_goal
+
+        db = SessionDB()
+        # Parent has no goal at all.
+        assert db.get_meta("goal:parent-no-goal") is None
+        blob = db.get_meta("goal:parent-no-goal")
+        if blob:  # parity with production guard
+            db.set_meta("goal:child-no-goal", blob)
+
+        # Child should still have no goal.
+        assert load_goal("child-no-goal") is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Forced tool-call judge: submit_checklist (Phase A) + update_checklist (Phase B)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _FakeFn:
+    def __init__(self, name, args):
+        self.name = name
+        self.arguments = args if isinstance(args, str) else json.dumps(args)
+
+
+class _FakeToolCall:
+    def __init__(self, tc_id, name, args):
+        self.id = tc_id
+        self.type = "function"
+        self.function = _FakeFn(name, args)
+
+
+class _FakeMessage:
+    def __init__(self, *, content="", tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls or []
+
+
+class _FakeChoice:
+    def __init__(self, message):
+        self.message = message
+
+
+class _FakeResponse:
+    def __init__(self, message):
+        self.choices = [_FakeChoice(message)]
+
+
+def _make_fake_client(scripted_messages):
+    """Return a fake client whose .chat.completions.create() returns the
+    next scripted message each call. Mutates the underlying list as a
+    queue so repeat calls advance.
+    """
+    class FakeClient:
+        class chat:
+            class completions:
+                _queue = list(scripted_messages)
+                _calls = []
+
+                @classmethod
+                def create(cls, **kwargs):
+                    cls._calls.append(kwargs)
+                    if not cls._queue:
+                        raise RuntimeError("scripted-message queue exhausted")
+                    return _FakeResponse(cls._queue.pop(0))
+
+    return FakeClient
+
+
+class TestPhaseAToolCall:
+    def test_decompose_via_submit_checklist_tool(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import decompose_goal
+
+        msg = _FakeMessage(
+            tool_calls=[_FakeToolCall(
+                "tc-1", "submit_checklist",
+                {"items": [{"text": "first criterion"}, {"text": "second criterion"}]},
+            )],
+        )
+        client = _make_fake_client([msg])
+
+        with patch.object(goals, "_get_judge_client", return_value=(client, "fake-model")):
+            items, err = decompose_goal("build a website")
+
+        assert err is None
+        assert [it["text"] for it in items] == ["first criterion", "second criterion"]
+        # Verify we forced the tool: tool_choice should target submit_checklist.
+        call = client.chat.completions._calls[0]
+        assert "tools" in call
+        assert call["tools"][0]["function"]["name"] == "submit_checklist"
+        # tool_choice should be either {"type":"function","function":{"name":"submit_checklist"}}
+        # or "required" / "auto" if a fallback was used; primary attempt forces it.
+        tc = call["tool_choice"]
+        assert (
+            (isinstance(tc, dict) and tc.get("function", {}).get("name") == "submit_checklist")
+            or tc == "required"
+            or tc == "auto"
+        )
+
+    def test_decompose_falls_back_to_json_content_when_no_tool_call(self, hermes_home):
+        """If a broken provider returns content instead of a tool call, the
+        backstop JSON parser still salvages a checklist."""
+        from hermes_cli import goals
+        from hermes_cli.goals import decompose_goal
+
+        msg = _FakeMessage(
+            content='{"checklist": [{"text": "salvaged"}]}',
+            tool_calls=[],
+        )
+        client = _make_fake_client([msg])
+
+        with patch.object(goals, "_get_judge_client", return_value=(client, "fake-model")):
+            items, err = decompose_goal("g")
+
+        assert err is None
+        assert items == [{"text": "salvaged"}]
+
+    def test_decompose_returns_error_when_no_tool_and_no_json(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import decompose_goal
+
+        msg = _FakeMessage(content="I think this should be done in stages.", tool_calls=[])
+        client = _make_fake_client([msg])
+
+        with patch.object(goals, "_get_judge_client", return_value=(client, "fake-model")):
+            items, err = decompose_goal("g")
+
+        assert items == []
+        assert err and "submit_checklist" in err
+
+    def test_decompose_drops_empty_text_items(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import decompose_goal
+
+        msg = _FakeMessage(
+            tool_calls=[_FakeToolCall(
+                "tc-1", "submit_checklist",
+                {"items": [{"text": "ok"}, {"text": ""}, {"text": "  "}, {"text": "two"}]},
+            )],
+        )
+        client = _make_fake_client([msg])
+
+        with patch.object(goals, "_get_judge_client", return_value=(client, "fake-model")):
+            items, err = decompose_goal("g")
+
+        assert err is None
+        assert [it["text"] for it in items] == ["ok", "two"]
+
+
+class TestPhaseBToolCall:
+    def test_evaluate_via_update_checklist_tool(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import evaluate_checklist, GoalState, ChecklistItem, ITEM_PENDING
+
+        state = GoalState(
+            goal="g",
+            decomposed=True,
+            checklist=[
+                ChecklistItem(text="a", status=ITEM_PENDING),
+                ChecklistItem(text="b", status=ITEM_PENDING),
+            ],
+        )
+
+        msg = _FakeMessage(
+            tool_calls=[_FakeToolCall(
+                "tc-1", "update_checklist",
+                {
+                    # 1-based indices; layer converts to 0-based.
+                    "updates": [{"index": 1, "status": "completed", "evidence": "did a"}],
+                    "new_items": [{"text": "discovered c"}],
+                    "reason": "ran a",
+                },
+            )],
+        )
+        client = _make_fake_client([msg])
+
+        with patch.object(goals, "_get_judge_client", return_value=(client, "fake-model")):
+            parsed, parse_failed = evaluate_checklist(
+                state, "did the first thing", history_path=None,
+            )
+
+        assert parse_failed is False
+        # Index converted 1 → 0
+        assert parsed["updates"] == [{"index": 0, "status": "completed", "evidence": "did a"}]
+        assert parsed["new_items"] == [{"text": "discovered c"}]
+        assert parsed["reason"] == "ran a"
+
+    def test_evaluate_does_read_file_then_update(self, hermes_home, tmp_path):
+        """Phase-B tool loop: judge calls read_file once, then update_checklist."""
+        from hermes_cli import goals
+        from hermes_cli.goals import evaluate_checklist, GoalState, ChecklistItem, ITEM_PENDING
+
+        # Make a real history file so the path-restriction check passes.
+        hist = tmp_path / "hist.json"
+        hist.write_text(json.dumps([{"role": "user", "content": "hi"}]))
+
+        state = GoalState(
+            goal="g",
+            decomposed=True,
+            checklist=[ChecklistItem(text="a", status=ITEM_PENDING)],
+        )
+
+        msg1 = _FakeMessage(tool_calls=[_FakeToolCall(
+            "tc-1", "read_file", {"path": str(hist), "offset": 1, "limit": 100},
+        )])
+        msg2 = _FakeMessage(tool_calls=[_FakeToolCall(
+            "tc-2", "update_checklist",
+            {
+                "updates": [{"index": 1, "status": "completed", "evidence": "saw it"}],
+                "new_items": [],
+                "reason": "verified via read_file",
+            },
+        )])
+        client = _make_fake_client([msg1, msg2])
+
+        with patch.object(goals, "_get_judge_client", return_value=(client, "fake-model")):
+            parsed, parse_failed = evaluate_checklist(
+                state, "did the thing", history_path=hist,
+            )
+
+        assert parse_failed is False
+        assert parsed["updates"][0]["status"] == "completed"
+        assert parsed["reason"] == "verified via read_file"
+        # Two API calls — one for the read, one for the verdict.
+        assert len(client.chat.completions._calls) == 2
+
+    def test_evaluate_filters_non_terminal_status_in_tool_args(self, hermes_home):
+        """update_checklist should only accept 'completed' or 'impossible' —
+        any 'pending' updates are dropped at the normalize layer."""
+        from hermes_cli import goals
+        from hermes_cli.goals import evaluate_checklist, GoalState, ChecklistItem, ITEM_PENDING
+
+        state = GoalState(
+            goal="g",
+            decomposed=True,
+            checklist=[
+                ChecklistItem(text="a", status=ITEM_PENDING),
+                ChecklistItem(text="b", status=ITEM_PENDING),
+            ],
+        )
+        msg = _FakeMessage(tool_calls=[_FakeToolCall(
+            "tc-1", "update_checklist",
+            {
+                "updates": [
+                    {"index": 1, "status": "completed", "evidence": "yes"},
+                    {"index": 2, "status": "pending", "evidence": "skip me"},
+                ],
+                "new_items": [],
+                "reason": "...",
+            },
+        )])
+        client = _make_fake_client([msg])
+
+        with patch.object(goals, "_get_judge_client", return_value=(client, "fake-model")):
+            parsed, _pf = evaluate_checklist(state, "x", history_path=None)
+
+        # Only the completed flip survives; pending update is dropped silently.
+        assert len(parsed["updates"]) == 1
+        assert parsed["updates"][0]["index"] == 0

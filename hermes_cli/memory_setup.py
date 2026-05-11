@@ -392,8 +392,28 @@ def cmd_status(args) -> None:
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
 
+    memory_enabled = mem_config.get("memory_enabled", True)
+    user_profile_enabled = mem_config.get("user_profile_enabled", True)
+
+    mem_mark = "enabled ✓" if memory_enabled else "disabled ✗"
+    user_mark = "enabled ✓" if user_profile_enabled else "disabled ✗"
+
+    # Check if the memory toolset is enabled for the CLI platform
+    # platform_toolsets.cli is either None (default = all enabled) or
+    # an explicit list of enabled toolset names.
+    platform_toolsets = config.get("platform_toolsets", {}) or {}
+    cli_toolsets = platform_toolsets.get("cli")
+    memory_tool_enabled = (
+        cli_toolsets is None
+        or (isinstance(cli_toolsets, list) and "memory" in cli_toolsets)
+    )
+    tool_mark = "enabled ✓" if memory_tool_enabled else "disabled ✗"
+
     print(f"\nMemory status\n" + "─" * 40)
-    print(f"  Built-in:  always active")
+    print(f"  Built-in (MEMORY.md / USER.md):")
+    print(f"    Memory injection:   {mem_mark}")
+    print(f"    User profile:       {user_mark}")
+    print(f"    Memory tool:        {tool_mark}")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
     if provider_name:

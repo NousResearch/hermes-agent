@@ -1356,7 +1356,15 @@ def resolve_provider_client(
 
     # ── OpenRouter ───────────────────────────────────────────────────
     if provider == "openrouter":
-        client, default = _try_openrouter()
+        if explicit_api_key:
+            client = OpenAI(
+                api_key=explicit_api_key,
+                base_url=explicit_base_url or OPENROUTER_BASE_URL,
+                default_headers=_OR_HEADERS,
+            )
+            default = _OPENROUTER_MODEL
+        else:
+            client, default = _try_openrouter()
         if client is None:
             logger.warning("resolve_provider_client: openrouter requested "
                            "but OPENROUTER_API_KEY not set")

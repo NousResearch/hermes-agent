@@ -464,6 +464,19 @@ class TestExplicitProviderRouting:
             client, model = resolve_provider_client("openrouter")
             assert client is not None
 
+    def test_explicit_openrouter_api_key_without_env(self, monkeypatch):
+        """Explicit caller credentials should work even when env auth is absent."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client(
+                "openrouter",
+                explicit_api_key="or-explicit",
+            )
+            assert client is not None
+            mock_openai.assert_called_once()
+            assert mock_openai.call_args.kwargs["api_key"] == "or-explicit"
+
     def test_explicit_kimi(self, monkeypatch):
         """provider='kimi-coding' should use KIMI_API_KEY."""
         monkeypatch.setenv("KIMI_API_KEY", "kimi-test-key")

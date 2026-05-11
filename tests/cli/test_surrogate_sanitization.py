@@ -138,7 +138,14 @@ class TestRunConversationSurrogateSanitization:
         mock_stream.return_value = mock_response
         mock_api.return_value = mock_response
 
-        agent = AIAgent(model="test/model", quiet_mode=True, skip_memory=True, skip_context_files=True)
+        agent = AIAgent(
+            model="test/model",
+            api_key="test-key",
+            provider="openrouter",
+            quiet_mode=True,
+            skip_memory=True,
+            skip_context_files=True,
+        )
         agent.client = MagicMock()
 
         # Pass a message with surrogates

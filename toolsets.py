@@ -44,6 +44,8 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    # Desktop computer use (macOS screenshot/click/type/key/app control)
+    "desktop_screenshot", "desktop_action", "desktop_status",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -130,6 +132,12 @@ TOOLSETS = {
             "browser_dialog", "web_search"
         ],
         "includes": []
+    },
+
+    "computer": {
+        "description": "Desktop computer-use tools for local screenshots, mouse/keyboard control, and app launching",
+        "tools": ["desktop_screenshot", "desktop_action", "desktop_status"],
+        "includes": ["browser", "vision"],
     },
     
     "cronjob": {

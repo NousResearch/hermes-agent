@@ -32,6 +32,16 @@ class TestGetToolset:
         assert ts is not None
         assert "web_search" in ts["tools"]
 
+    def test_computer_toolset(self):
+        ts = get_toolset("computer")
+        assert ts is not None
+        assert "desktop_screenshot" in ts["tools"]
+        assert "desktop_action" in ts["tools"]
+        assert "desktop_status" in ts["tools"]
+        resolved = resolve_toolset("computer")
+        assert "browser_navigate" in resolved
+        assert "vision_analyze" in resolved
+
     def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(

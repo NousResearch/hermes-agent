@@ -555,6 +555,12 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from gateway.afk_followup import (
+    AfkFollowupConfig,
+    build_afk_followup_prompt,
+    next_afk_followup,
+    parse_afk_followup_config,
+)
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -1096,6 +1102,8 @@ class GatewayRunner:
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
+        self._afk_followup_config = self._load_afk_followup_config()
+        self._afk_fired_thresholds: Dict[str, set[int]] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -2232,6 +2240,21 @@ class GatewayRunner:
         if mode == "steer":
             return "steer"
         return "queue"
+
+    @staticmethod
+    def _load_afk_followup_config() -> AfkFollowupConfig:
+        """Load opt-in gateway AFK follow-up settings from config.yaml."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                raw = cfg_get(cfg, "gateway", "afk_followup", default={})
+                return parse_afk_followup_config(raw)
+        except Exception as exc:
+            logger.warning("Invalid gateway.afk_followup config; AFK follow-up disabled: %s", exc)
+        return AfkFollowupConfig(enabled=False)
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -3949,6 +3972,11 @@ class GatewayRunner:
         # Start background session expiry watcher to finalize expired sessions
         asyncio.create_task(self._session_expiry_watcher())
 
+        # Start optional AFK follow-up watcher. It injects synthetic internal
+        # turns into idle sessions only when explicitly enabled in config.
+        if getattr(self, "_afk_followup_config", AfkFollowupConfig()).enabled:
+            asyncio.create_task(self._afk_followup_watcher())
+
         # Start background kanban notifier — delivers `completed`, `blocked`,
         # `spawn_auto_blocked`, and `crashed` events to gateway subscribers
         # so human-in-the-loop workflows hear back without polling.
@@ -3972,6 +4000,342 @@ class GatewayRunner:
         logger.info("Press Ctrl+C to stop")
         
         return True
+
+    async def _handoff_watcher(self, interval: float = 2.0) -> None:
+        """Background task that processes pending CLI→gateway session handoffs.
+
+        Polls ``state.db`` for sessions in ``handoff_state='pending'`` and,
+        for each one:
+
+        1. Atomically claims it (pending → running).
+        2. Resolves the destination platform's configured home channel.
+        3. Re-binds the gateway's session_key for that home channel to the
+           CLI's existing session_id via ``session_store.switch_session`` so
+           the full role-aware transcript replays on the next agent turn.
+        4. Forges a synthetic ``MessageEvent`` (``internal=True``) with a
+           handoff-notice text and dispatches through the normal gateway
+           message pipeline so the agent runs and replies on the platform.
+        5. Marks the row ``completed`` (or ``failed`` with ``handoff_error``).
+
+        The CLI process is poll-blocked on the row's terminal state and
+        prints the result to the user.
+        """
+        # Initial delay so the gateway is fully connected to its platforms
+        # before we try to dispatch handoffs through them.
+        await asyncio.sleep(5)
+        while self._running:
+            try:
+                if self._session_db is None:
+                    await asyncio.sleep(interval)
+                    continue
+                pending = self._session_db.list_pending_handoffs()
+                for row in pending:
+                    session_id = row.get("id")
+                    if not session_id:
+                        continue
+                    if not self._session_db.claim_handoff(session_id):
+                        # Another tick or another gateway already claimed it.
+                        continue
+                    try:
+                        await self._process_handoff(row)
+                        self._session_db.complete_handoff(session_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "Handoff for session %s failed: %s",
+                            session_id, exc, exc_info=True,
+                        )
+                        self._session_db.fail_handoff(session_id, str(exc))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Handoff watcher tick error: %s", exc, exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def _process_handoff(self, row: Dict[str, Any]) -> None:
+        """Execute one handoff row. Raises on failure (caller marks failed)."""
+        from gateway.config import Platform
+        from gateway.session import SessionSource, build_session_key
+        from gateway.platforms.base import MessageEvent
+
+        cli_session_id = row["id"]
+        platform_name = (row.get("handoff_platform") or "").strip().lower()
+        if not platform_name:
+            raise RuntimeError("handoff_platform is empty")
+
+        # Resolve platform enum
+        try:
+            platform = Platform(platform_name)
+        except (ValueError, KeyError):
+            raise RuntimeError(f"unknown platform '{platform_name}'")
+
+        # Adapter must be live
+        adapter = self.adapters.get(platform)
+        if not adapter:
+            raise RuntimeError(
+                f"platform '{platform_name}' is not active in this gateway"
+            )
+
+        # Home channel must be configured
+        home = self.config.get_home_channel(platform)
+        if not home or not home.chat_id:
+            raise RuntimeError(
+                f"no home channel configured for {platform_name}; "
+                f"run /sethome on the desired chat first"
+            )
+
+        cli_title = row.get("title") or cli_session_id[:8]
+
+        # Try to create a fresh thread on the destination so the handoff
+        # has its own scrollback. Adapter returns None if threading isn't
+        # supported (Matrix/WhatsApp/Signal/SMS) or if creation failed
+        # (no permission, topics-mode off, parent is a DM, etc.). When
+        # None we fall through to using the home channel directly — the
+        # synthetic turn still lands; just without thread isolation.
+        thread_name = f"Hermes — {cli_title}"
+        try:
+            new_thread_id = await adapter.create_handoff_thread(
+                str(home.chat_id), thread_name,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Handoff: create_handoff_thread raised on %s: %s",
+                platform_name, exc, exc_info=True,
+            )
+            new_thread_id = None
+
+        # Use the new thread if the adapter created one; otherwise fall
+        # back to whatever thread (if any) the home channel was configured
+        # with.
+        effective_thread_id = new_thread_id or (
+            str(home.thread_id) if home.thread_id else None
+        )
+
+        # Determine chat_type for the destination source. If we created a
+        # thread, key the session_key as a thread (build_session_key sets
+        # thread sessions to user-shared by default, which is what we
+        # want — the synthetic turn and any later real-user message both
+        # land on the same key without needing a user_id).
+        if new_thread_id:
+            dest_chat_type = "thread"
+        else:
+            # No thread — assume DM-style for the home channel. For
+            # group/channel home channels without thread support
+            # (Matrix/WhatsApp/Signal), the platform's own keying makes
+            # the synthetic turn shared anyway (single-DM platforms).
+            dest_chat_type = "dm"
+
+        dest_source = SessionSource(
+            platform=platform,
+            chat_id=str(home.chat_id),
+            chat_name=home.name,
+            chat_type=dest_chat_type,
+            user_id="system:handoff",
+            user_name="Handoff",
+            thread_id=effective_thread_id,
+        )
+
+        # Compute the gateway's session_key for that destination using the
+        # same rules its adapters use, so switch_session targets the right
+        # entry. For thread destinations build_session_key keys without
+        # user_id (thread_sessions_per_user defaults to False) — so the
+        # next real user message in the thread shares this same session.
+        platform_cfg = self.config.platforms.get(platform)
+        extra = platform_cfg.extra if platform_cfg else {}
+        session_key = build_session_key(
+            dest_source,
+            group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+        )
+
+        # Make sure there's an entry in the session_store for this key. If
+        # the home channel has never been used, get_or_create_session
+        # creates one; switch_session then re-points it.
+        self.session_store.get_or_create_session(dest_source)
+
+        # Re-bind the destination key to the CLI session_id. switch_session
+        # ends the prior session in SQLite and reopens the CLI session under
+        # the new key. The CLI's transcript becomes the active one for the
+        # gateway from this moment on.
+        switched = self.session_store.switch_session(session_key, cli_session_id)
+        if switched is None:
+            raise RuntimeError(
+                f"could not switch session key {session_key} → {cli_session_id}"
+            )
+
+        # Evict any cached AIAgent for this session_key so the next dispatch
+        # rebuilds it against the CLI session_id (mirrors /resume / /branch).
+        self._evict_cached_agent(session_key)
+
+        # Cancel any in-flight running-agent state for the destination key
+        # so the synthetic turn isn't queued behind a stale running flag.
+        self._release_running_agent_state(session_key)
+
+        synthetic_text = (
+            f"[Session was just handed off from CLI (\"{cli_title}\") to this "
+            f"channel. The full prior conversation history is loaded above. "
+            f"Briefly confirm you're working here and summarize what we were "
+            f"working on, so the user can continue from this device.]"
+        )
+
+        synthetic_event = MessageEvent(
+            text=synthetic_text,
+            source=dest_source,
+            internal=True,
+        )
+
+        logger.info(
+            "Handoff: dispatching synthetic turn for CLI session %s → %s "
+            "(home=%s, thread=%s, session_key=%s)",
+            cli_session_id, platform_name, home.chat_id, effective_thread_id,
+            session_key,
+        )
+
+        # Dispatch through the runner directly. Going through
+        # adapter.handle_message would spawn a background task and we'd
+        # lose synchronous error visibility; calling _handle_message inline
+        # keeps the success/failure path observable for the watcher.
+        response_text = await self._handle_message(synthetic_event)
+        if not response_text:
+            # Streaming may have already delivered the response inline.
+            # Either way, agent ran without raising — count as success.
+            return
+
+        # Send the agent's reply to the destination. Route to the new
+        # thread if we created one; otherwise the configured home channel
+        # (which may itself carry a thread_id).
+        send_metadata: Dict[str, Any] = {}
+        if effective_thread_id:
+            send_metadata["thread_id"] = effective_thread_id
+        try:
+            result = await adapter.send(
+                chat_id=str(home.chat_id),
+                content=response_text,
+                metadata=send_metadata or None,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"adapter.send failed: {exc}") from exc
+
+        if not getattr(result, "success", True):
+            err = getattr(result, "error", "send returned success=False")
+            raise RuntimeError(f"adapter.send failed: {err}")
+
+    async def _afk_followup_watcher(self) -> None:
+        """Inject bounded synthetic follow-up turns for idle gateway sessions."""
+        config = getattr(self, "_afk_followup_config", AfkFollowupConfig())
+        # Let adapters finish connecting and avoid surprising users with an
+        # immediate AFK burst during gateway startup/replacement.
+        await asyncio.sleep(min(max(config.interval_seconds, 1.0), 60.0))
+        while self._running:
+            try:
+                await self._afk_followup_tick()
+            except Exception as exc:
+                logger.debug("AFK follow-up watcher tick failed: %s", exc)
+            sleep_for = max(float(getattr(config, "interval_seconds", 60.0) or 60.0), 1.0)
+            elapsed = 0.0
+            while self._running and elapsed < sleep_for:
+                step = min(1.0, sleep_for - elapsed)
+                await asyncio.sleep(step)
+                elapsed += step
+
+    async def _afk_followup_tick(self) -> None:
+        """Run one AFK scheduling pass.
+
+        Exposed as a small method for tests and for future manual diagnostics.
+        """
+        config = getattr(self, "_afk_followup_config", AfkFollowupConfig())
+        if not config.enabled:
+            return
+
+        session_store = getattr(self, "session_store", None)
+        if session_store is None:
+            return
+        try:
+            session_store._ensure_loaded()
+        except Exception as exc:
+            logger.debug("AFK follow-up: session store unavailable: %s", exc)
+            return
+
+        entries = list(getattr(session_store, "_entries", {}).items())
+        running_session_keys = set(getattr(self, "_running_agents", {}) or {})
+        queued_session_keys = set(getattr(self, "_queued_events", {}) or {})
+        adapters = getattr(self, "adapters", {}) or {}
+        for adapter in adapters.values():
+            pending = getattr(adapter, "_pending_messages", None)
+            if isinstance(pending, dict):
+                queued_session_keys.update(pending.keys())
+        now = datetime.now()
+
+        for session_key, entry in entries:
+            fired_map = getattr(self, "_afk_fired_thresholds", None)
+            if fired_map is None:
+                fired_map = {}
+                self._afk_fired_thresholds = fired_map
+            fired = fired_map.setdefault(session_key, set())
+            decision = next_afk_followup(
+                entry,
+                now=now,
+                thresholds_minutes=config.thresholds_minutes,
+                fired_thresholds=fired,
+                running_session_keys=running_session_keys,
+                queued_session_keys=queued_session_keys,
+            )
+            if decision is None:
+                continue
+
+            origin = getattr(entry, "origin", None)
+            source = self._source_from_afk_origin(origin)
+            if source is None:
+                logger.debug("AFK follow-up: no routable source for %s", session_key)
+                continue
+            adapter = adapters.get(source.platform)
+            if adapter is None:
+                logger.debug("AFK follow-up: no adapter for %s (%s)", session_key, source.platform)
+                continue
+
+            cycle_index = sorted(config.thresholds_minutes).index(decision.threshold_minutes) + 1
+            prompt = build_afk_followup_prompt(decision.idle_label, cycle_index=cycle_index)
+            event = MessageEvent(
+                text=prompt,
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=f"afk:{decision.threshold_minutes}:{int(time.time())}",
+                internal=True,
+            )
+            logger.info(
+                "AFK follow-up: injecting %s virtual turn for %s",
+                decision.idle_label,
+                session_key,
+            )
+            await adapter.handle_message(event)
+            fired.add(decision.threshold_minutes)
+
+    @staticmethod
+    def _source_from_afk_origin(origin) -> Optional[SessionSource]:
+        if isinstance(origin, SessionSource):
+            return origin
+        if origin is None:
+            return None
+        platform = getattr(origin, "platform", None)
+        if platform is None:
+            return None
+        if not isinstance(platform, Platform):
+            try:
+                platform = Platform(str(platform))
+            except ValueError:
+                return None
+        chat_id = getattr(origin, "chat_id", None)
+        if not chat_id:
+            return None
+        return SessionSource(
+            platform=platform,
+            chat_id=str(chat_id),
+            chat_name=getattr(origin, "chat_name", None),
+            chat_type=getattr(origin, "chat_type", "dm") or "dm",
+            user_id=getattr(origin, "user_id", None),
+            user_name=getattr(origin, "user_name", None),
+            thread_id=getattr(origin, "thread_id", None),
+            chat_topic=getattr(origin, "chat_topic", None),
+        )
 
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that finalizes expired sessions.

@@ -5831,6 +5831,27 @@ class GatewayRunner:
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
+        # Clarify text intercept: if the agent is blocked waiting for a
+        # clarify response and the user types a text reply (not a slash
+        # command), route it as the answer.  This handles open-ended
+        # questions and the "Other" free-form option on Feishu cards.
+        # Tool approval takes precedence over clarify (same as slash-confirm).
+        _clarify_live = False
+        if not _tool_approval_live:
+            try:
+                from tools.clarify_state import has_blocking_clarify
+                _clarify_live = has_blocking_clarify(_quick_key)
+            except Exception:
+                _clarify_live = False
+        if _clarify_live and not event.get_command():
+            _clarify_text = (event.text or "").strip()
+            if _clarify_text:
+                from tools.clarify_state import resolve_gateway_clarify
+                count = resolve_gateway_clarify(_quick_key, _clarify_text)
+                if count > 0:
+                    logger.info("User text resolved clarify for session %s", _quick_key)
+                    return ""  # Consumed — don't create a new agent turn
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -14881,6 +14902,7 @@ class GatewayRunner:
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                from tools.clarify_state import gateway_clarify_callback as _gw_clarify_cb  # noqa: E402
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -14911,6 +14933,7 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    clarify_callback=_gw_clarify_cb,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
@@ -15058,6 +15081,12 @@ class GatewayRunner:
                 set_current_session_key,
                 unregister_gateway_notify,
             )
+            from tools.clarify_state import (
+                register_clarify_notify,
+                reset_clarify_session_key,
+                set_clarify_session_key,
+                unregister_clarify_notify,
+            )
 
             def _approval_notify_sync(approval_data: dict) -> None:
                 """Send the approval request to the user from the agent thread.
@@ -15125,6 +15154,64 @@ class GatewayRunner:
                     ).result(timeout=15)
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
+
+            def _clarify_notify_sync(clarify_data: dict) -> None:
+                """Send the clarify prompt to the user from the agent thread.
+
+                If the adapter supports interactive card-based clarify
+                (e.g. Feishu's ``send_clarify_prompt``), use that for a
+                richer UX.  Otherwise fall back to a plain text message.
+                """
+                _status_adapter.pause_typing_for_chat(_status_chat_id)
+
+                question = clarify_data.get("question", "")
+                choices = clarify_data.get("choices")
+
+                # Prefer card-based clarify when the adapter supports it.
+                if getattr(type(_status_adapter), "send_clarify_prompt", None) is not None:
+                    try:
+                        _clarify_result = asyncio.run_coroutine_threadsafe(
+                            _status_adapter.send_clarify_prompt(
+                                chat_id=_status_chat_id,
+                                question=question,
+                                choices=choices,
+                                clarify_id=clarify_data.get("clarify_id", ""),
+                                session_key=_clarify_session_key,
+                                metadata=_status_thread_metadata,
+                            ),
+                            _loop_for_step,
+                        ).result(timeout=15)
+                        if _clarify_result.success:
+                            return
+                        logger.warning(
+                            "Card-based clarify failed (send returned error), falling back to text: %s",
+                            _clarify_result.error,
+                        )
+                    except Exception as _e:
+                        logger.warning(
+                            "Card-based clarify failed, falling back to text: %s", _e
+                        )
+
+                # Fallback: plain text clarify prompt
+                msg = f"❓ **{question}**"
+                if choices:
+                    for i, c in enumerate(choices, 1):
+                        msg += f"\n{i}. {c}"
+                    msg += "\n\nReply with your choice number or type your answer."
+                else:
+                    msg += "\n\nReply with your answer."
+
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter.send(
+                            _status_chat_id,
+                            msg,
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                    ).result(timeout=15)
+                except Exception as _e:
+                    logger.error("Failed to send clarify prompt: %s", _e)
 
             # Prepend pending model switch note so the model knows about the switch
             _pending_notes = getattr(self, '_pending_model_notes', {})
@@ -15218,6 +15305,10 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+
+            _clarify_session_key = session_key or ""
+            _clarify_session_token = set_clarify_session_key(_clarify_session_key)
+            register_clarify_notify(_clarify_session_key, _clarify_notify_sync)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -15254,6 +15345,8 @@ class GatewayRunner:
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
+                unregister_clarify_notify(_clarify_session_key)
+                reset_clarify_session_key(_clarify_session_token)
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done

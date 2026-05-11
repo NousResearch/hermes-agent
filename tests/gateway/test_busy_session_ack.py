@@ -552,3 +552,57 @@ class TestBusySessionOnboardingHint:
         assert "/busy interrupt" in content
         # Must NOT tell the user to /busy queue when they're already on queue.
         assert "/busy queue" not in content
+
+
+class TestBusyGatewayCommand:
+    @pytest.mark.asyncio
+    async def test_busy_command_updates_gateway_mode_and_config(self, tmp_path, monkeypatch):
+        from gateway.run import GatewayRunner
+        import gateway.run as run_mod
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        event = _make_event(text="/busy queue")
+
+        monkeypatch.setattr(run_mod, "_hermes_home", tmp_path)
+        (tmp_path / "config.yaml").write_text("display:\n  busy_input_mode: interrupt\n", encoding="utf-8")
+
+        reply = await GatewayRunner._handle_busy_command(runner, event)
+
+        assert runner._busy_input_mode == "queue"
+        assert "queue" in reply.lower()
+        saved = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+        assert "busy_input_mode: queue" in saved
+
+    @pytest.mark.asyncio
+    async def test_busy_command_runs_mid_turn_without_interrupting_agent(self, tmp_path, monkeypatch):
+        from gateway.run import GatewayRunner
+        import gateway.run as run_mod
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="/busy steer")
+        sk = build_session_key(event.source)
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 1,
+            "max_iterations": 10,
+            "current_tool": "terminal",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "terminal",
+            "seconds_since_activity": 1.0,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[event.source.platform] = adapter
+
+        monkeypatch.setattr(run_mod, "_hermes_home", tmp_path)
+        (tmp_path / "config.yaml").write_text("display:\n  busy_input_mode: interrupt\n", encoding="utf-8")
+
+        reply = await GatewayRunner._handle_message(runner, event)
+
+        assert "steer" in str(reply).lower()
+        assert runner._busy_input_mode == "steer"
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages

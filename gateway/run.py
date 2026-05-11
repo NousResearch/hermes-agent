@@ -6097,13 +6097,13 @@ class GatewayRunner:
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in ("yolo", "verbose"):
+            if _cmd_def_inner and _cmd_def_inner.name in ("yolo", "verbose", "busy"):
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
                     return await self._handle_verbose_command(event)
-                if _cmd_def_inner.name == "footer":
-                    return await self._handle_footer_command(event)
+                if _cmd_def_inner.name == "busy":
+                    return await self._handle_busy_command(event)
 
             # Gateway-handled info/control commands with dedicated
             # running-agent handlers.
@@ -6374,6 +6374,9 @@ class GatewayRunner:
 
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
+
+        if canonical == "busy":
+            return await self._handle_busy_command(event)
 
         if canonical == "footer":
             return await self._handle_footer_command(event)
@@ -10731,6 +10734,58 @@ class GatewayRunner:
             if preview:
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=state, example=example)
+
+    async def _handle_busy_command(self, event: MessageEvent) -> str:
+        """Handle /busy — control how follow-up input behaves while Hermes is running."""
+        config_path = _hermes_home / "config.yaml"
+        raw_arg = (event.get_command_args() or "").strip().lower()
+
+        try:
+            user_config: dict = _load_gateway_config()
+        except Exception as e:
+            return t("gateway.config_read_failed", error=e)
+
+        current_mode = getattr(self, "_busy_input_mode", "interrupt")
+        if current_mode not in {"queue", "steer", "interrupt"}:
+            current_mode = "interrupt"
+
+        if not raw_arg or raw_arg in ("status", "?"):
+            if current_mode == "queue":
+                behavior = "queues your next message for the following turn"
+            elif current_mode == "steer":
+                behavior = "steers your next message into the current run after the next tool call"
+            else:
+                behavior = "interrupts the current run immediately"
+            return (
+                f"Busy input mode: `{current_mode}`\n"
+                f"While Hermes is busy, Enter {behavior}.\n"
+                f"Usage: `/busy [queue|steer|interrupt|status]`"
+            )
+
+        if raw_arg not in {"queue", "interrupt", "steer"}:
+            return f"Usage: `/busy [queue|steer|interrupt|status]`"
+
+        try:
+            if not isinstance(user_config.get("display"), dict):
+                user_config["display"] = {}
+            user_config["display"]["busy_input_mode"] = raw_arg
+            atomic_yaml_write(config_path, user_config)
+        except Exception as e:
+            logger.warning("Failed to save busy_input_mode: %s", e)
+            self._busy_input_mode = raw_arg
+            return (
+                f"Busy input mode set to `{raw_arg}` for this gateway session only.\n"
+                f"(Could not save to config: {e})"
+            )
+
+        self._busy_input_mode = raw_arg
+        if raw_arg == "queue":
+            behavior = "Follow-up messages will queue for the next turn."
+        elif raw_arg == "steer":
+            behavior = "Follow-up messages will steer into the current run after the next tool call."
+        else:
+            behavior = "Follow-up messages will interrupt the current run."
+        return f"Busy input mode set to `{raw_arg}`.\n{behavior}"
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.

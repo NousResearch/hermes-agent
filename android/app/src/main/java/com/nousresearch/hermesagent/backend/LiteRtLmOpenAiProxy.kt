@@ -172,6 +172,9 @@ object LiteRtLmOpenAiProxy {
             val backend: String,
             val visionBackend: String,
             val audioBackend: String,
+            val supportsImageInput: Boolean,
+            val supportsAudioInput: Boolean,
+            val modalityPolicy: String,
             val speculativeDecoding: Boolean,
             val speculativeDecodingSupported: Boolean,
             val speculativeDecodingPolicy: String,
@@ -199,7 +202,7 @@ object LiteRtLmOpenAiProxy {
         private val runtimeBackendLabel = engineInitResult.backend
         private val visionBackendLabel = engineInitResult.visionBackend
         private val audioBackendLabel = engineInitResult.audioBackend
-        private val supportsImageInput = inferenceConfig.supportImage
+        private val supportsImageInput = engineInitResult.supportsImageInput
 
         val modelName: String = requestedModelName.ifBlank { File(modelPath).name }
         private val samplerConfig = SamplerConfig(
@@ -218,6 +221,10 @@ object LiteRtLmOpenAiProxy {
                             put("accelerator", runtimeBackendLabel)
                             put("vision_accelerator", visionBackendLabel)
                             put("audio_accelerator", audioBackendLabel)
+                            put("image_input_supported", engineInitResult.supportsImageInput)
+                            put("audio_input_supported", engineInitResult.supportsAudioInput)
+                            put("modality_policy", engineInitResult.modalityPolicy)
+                            put("multimodal_fallback", engineInitResult.modalityPolicy.startsWith("text-only fallback"))
                             put("speculative_decoding", engineInitResult.speculativeDecoding)
                             put("speculative_decoding_supported", engineInitResult.speculativeDecodingSupported)
                             put("mtp_policy", engineInitResult.speculativeDecodingPolicy)
@@ -275,62 +282,112 @@ object LiteRtLmOpenAiProxy {
             } else {
                 listOf(Backend.CPU() to "cpu")
             }
-            for ((backend, label) in backends) {
-                val visionBackend = when {
-                    !supportImage -> null
-                    label == "gpu" -> Backend.GPU()
-                    else -> Backend.CPU()
-                }
-                val visionBackendLabel = when {
-                    !supportImage -> "none"
-                    label == "gpu" -> "gpu"
-                    else -> "cpu"
-                }
-                val attempts = if (speculativeDecoding.enabled) {
-                    listOf(
-                        true to speculativeDecoding.policy,
-                        false to "disabled: Gemma 4 MTP failed during $label engine initialization; retried without MTP",
-                    )
-                } else {
-                    listOf(false to speculativeDecoding.policy)
-                }
-                for ((enableMtp, mtpPolicy) in attempts) {
-                    var candidate: Engine? = null
-                    try {
-                        ExperimentalFlags.enableSpeculativeDecoding = enableMtp
-                        candidate = Engine(
-                            EngineConfig(
-                                modelPath = modelPath,
-                                backend = backend,
-                                visionBackend = visionBackend,
-                                audioBackend = if (supportAudio) Backend.CPU() else null,
-                                maxNumImages = if (supportImage) 1 else null,
-                                maxNumTokens = maxNumTokens,
-                                cacheDir = context.cacheDir.absolutePath,
+
+            fun tryInitialize(
+                requestedSupportImage: Boolean,
+                requestedSupportAudio: Boolean,
+                modalityPolicy: String,
+            ): EngineInitResult? {
+                for ((backend, label) in backends) {
+                    val visionBackend = when {
+                        !requestedSupportImage -> null
+                        label == "gpu" -> Backend.GPU()
+                        else -> Backend.CPU()
+                    }
+                    val visionBackendLabel = when {
+                        !requestedSupportImage -> "none"
+                        label == "gpu" -> "gpu"
+                        else -> "cpu"
+                    }
+                    val attempts = if (speculativeDecoding.enabled) {
+                        listOf(
+                            true to speculativeDecoding.policy,
+                            false to "disabled: Gemma 4 MTP failed during $label engine initialization; retried without MTP",
+                        )
+                    } else {
+                        listOf(false to speculativeDecoding.policy)
+                    }
+                    for ((enableMtp, mtpPolicy) in attempts) {
+                        var candidate: Engine? = null
+                        try {
+                            ExperimentalFlags.enableSpeculativeDecoding = enableMtp
+                            candidate = Engine(
+                                EngineConfig(
+                                    modelPath = modelPath,
+                                    backend = backend,
+                                    visionBackend = visionBackend,
+                                    audioBackend = if (requestedSupportAudio) Backend.CPU() else null,
+                                    maxNumImages = if (requestedSupportImage) 1 else null,
+                                    maxNumTokens = maxNumTokens,
+                                    cacheDir = context.cacheDir.absolutePath,
+                                )
                             )
-                        )
-                        candidate.initialize()
-                        ExperimentalFlags.enableSpeculativeDecoding = false
-                        return EngineInitResult(
-                            engine = candidate,
-                            backend = label,
-                            visionBackend = visionBackendLabel,
-                            audioBackend = if (supportAudio) "cpu" else "none",
-                            speculativeDecoding = enableMtp,
-                            speculativeDecodingSupported = speculativeDecoding.supported,
-                            speculativeDecodingPolicy = mtpPolicy,
-                            gpuPolicy = gpuPolicy.description,
-                            maxNumTokens = maxNumTokens,
-                            contextWindowPolicy = contextWindowPolicy,
-                        )
-                    } catch (error: Throwable) {
-                        lastError = error
-                        ExperimentalFlags.enableSpeculativeDecoding = false
-                        kotlin.runCatching { candidate?.close() }
+                            candidate.initialize()
+                            ExperimentalFlags.enableSpeculativeDecoding = false
+                            return EngineInitResult(
+                                engine = candidate,
+                                backend = label,
+                                visionBackend = visionBackendLabel,
+                                audioBackend = if (requestedSupportAudio) "cpu" else "none",
+                                supportsImageInput = requestedSupportImage,
+                                supportsAudioInput = requestedSupportAudio,
+                                modalityPolicy = modalityPolicy,
+                                speculativeDecoding = enableMtp,
+                                speculativeDecodingSupported = speculativeDecoding.supported,
+                                speculativeDecodingPolicy = mtpPolicy,
+                                gpuPolicy = gpuPolicy.description,
+                                maxNumTokens = maxNumTokens,
+                                contextWindowPolicy = contextWindowPolicy,
+                            )
+                        } catch (error: Throwable) {
+                            lastError = error
+                            ExperimentalFlags.enableSpeculativeDecoding = false
+                            kotlin.runCatching { candidate?.close() }
+                        }
                     }
                 }
+                return null
+            }
+
+            val requestedModalityPolicy = if (supportImage || supportAudio) {
+                buildString {
+                    append("requested")
+                    if (supportImage) append(" image")
+                    if (supportImage && supportAudio) append(" and")
+                    if (supportAudio) append(" audio")
+                    append(" adapter support")
+                }
+            } else {
+                "text-only"
+            }
+            tryInitialize(supportImage, supportAudio, requestedModalityPolicy)?.let { return it }
+
+            val multimodalError = lastError
+            if (supportImage || supportAudio) {
+                val fallbackPolicy =
+                    "text-only fallback: multimodal adapter initialization failed on this device (${shortError(multimodalError)})"
+                tryInitialize(
+                    requestedSupportImage = false,
+                    requestedSupportAudio = false,
+                    modalityPolicy = fallbackPolicy,
+                )?.let { return it }
+                throw IllegalStateException(
+                    "LiteRT-LM text-only fallback also failed after multimodal adapter initialization failed. " +
+                        "Multimodal: ${shortError(multimodalError)}; text-only: ${shortError(lastError)}",
+                    lastError ?: multimodalError,
+                )
             }
             throw lastError ?: IllegalStateException("LiteRT-LM engine initialization failed")
+        }
+
+        private fun shortError(error: Throwable?): String {
+            return error?.message
+                ?.lineSequence()
+                ?.firstOrNull { it.isNotBlank() }
+                ?.trim()
+                ?.take(180)
+                ?: error?.javaClass?.simpleName
+                ?: "unknown error"
         }
 
         private data class EngineTokenBudget(
@@ -522,11 +579,13 @@ object LiteRtLmOpenAiProxy {
                 )
             }
             if (requestContainsImage(requestMessages) && !supportsImageInput) {
+                val errorMessage = if (engineInitResult.modalityPolicy.startsWith("text-only fallback")) {
+                    "image input is unavailable because LiteRT-LM fell back to text-only after multimodal adapter initialization failed on this device. Check /health modality_policy for details."
+                } else {
+                    "image input requires a LiteRT-LM model started with image support, such as Gemma 4, Gemma 3n, or Gemma 3 vision models"
+                }
                 return jsonResponse(
-                    JSONObject().put(
-                        "error",
-                        "image input requires a LiteRT-LM model started with image support, such as Gemma 3n or Gemma 3 vision models",
-                    ),
+                    JSONObject().put("error", errorMessage),
                     status = Response.Status.BAD_REQUEST,
                 )
             }

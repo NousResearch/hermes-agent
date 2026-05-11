@@ -75,7 +75,7 @@ def test_litert_lm_proxy_accepts_image_content_for_vision_models_and_rejects_tex
     assert 'Content.ImageBytes(Base64.decode' in proxy
     assert 'Content.ImageFile' in proxy
     assert 'requestContainsImage(requestMessages) && !supportsImageInput' in proxy
-    assert 'maxNumImages = if (supportImage) 1 else null' in proxy
+    assert 'maxNumImages = if (requestedSupportImage) 1 else null' in proxy
     assert 'visionBackend = visionBackend' in proxy
     assert 'label == "gpu" -> Backend.GPU()' in proxy
     assert 'gpuBackendPolicy(context, openClAvailable)' in proxy

@@ -63,6 +63,14 @@ class Gemma4LocalInferenceInstrumentedTest {
         val health = executeJson(Request.Builder().url(healthUrl).get().build())
         assertEquals(health.toString(), "ok", health.optString("status"))
         assertEquals(health.toString(), "litert-lm", health.optString("backend"))
+        assertTrue(health.toString(), health.has("image_input_supported"))
+        assertTrue(health.toString(), health.has("audio_input_supported"))
+        assertTrue(health.toString(), health.has("modality_policy"))
+        if (health.optBoolean("multimodal_fallback", false)) {
+            assertFalse(health.toString(), health.optBoolean("image_input_supported", true))
+            assertFalse(health.toString(), health.optBoolean("audio_input_supported", true))
+            assertTrue(health.toString(), health.optString("modality_policy").contains("text-only fallback"))
+        }
 
         val completion = executeJson(
             Request.Builder()

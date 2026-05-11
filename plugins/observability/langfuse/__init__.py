@@ -58,6 +58,17 @@ _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
 
+# Langfuse-issued keys always carry these prefixes (cloud or self-hosted —
+# the prefix is baked into the server-side issuance flow, not a UI hint).
+# Anything else (`placeholder`, `test-key`, `your-langfuse-key`, etc.) is a
+# leftover template value and would cause the SDK to silently accept the
+# credentials at construction time but drop every trace at flush time.
+# See #23823 — the silent-failure bug this guard fixes.
+_LANGFUSE_KEY_PREFIXES: Dict[str, str] = {
+    "HERMES_LANGFUSE_PUBLIC_KEY": "pk-lf-",
+    "HERMES_LANGFUSE_SECRET_KEY": "sk-lf-",
+}
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
@@ -84,6 +95,42 @@ def _debug(message: str) -> None:
 # every subsequent hook call without re-checking env vars or re-attempting
 # SDK init. Cleared by reset_cache_for_tests().
 _INIT_FAILED = object()
+
+
+def _redact_key_preview(value: str) -> str:
+    """Return a brief, log-safe preview of a credential value.
+
+    Keeps enough characters to disambiguate common placeholders
+    (``placeholder``, ``test-key``, ``your-key``) without echoing a
+    real secret in full if an operator pasted one into the wrong env
+    var.  Used only for the once-per-process placeholder-detection
+    warning in :func:`_get_langfuse`.
+    """
+    if not value:
+        return "<empty>"
+    if len(value) <= 12:
+        return repr(value)
+    return repr(value[:6] + "...")
+
+
+def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
+    """Return an error message if ``value`` is not a real Langfuse key.
+
+    Returns ``None`` when the value matches the documented Langfuse
+    prefix for ``env_name``, or when no prefix is registered for the
+    name (in which case we trust the operator).  When validation
+    fails the returned string is suitable for direct inclusion in a
+    single log line — it names the env var and shows a safe preview.
+    """
+    expected = _LANGFUSE_KEY_PREFIXES.get(env_name, "")
+    if not expected:
+        return None
+    if value.startswith(expected):
+        return None
+    return (
+        f"{env_name}={_redact_key_preview(value)} "
+        f"(expected {expected!r} prefix)"
+    )
 
 
 def _get_langfuse() -> Optional[Langfuse]:

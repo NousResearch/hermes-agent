@@ -239,27 +239,34 @@ def _build_skill_message(
 
 
 def _get_profile_skills_dir():
-    import os
+    """
+    Returns the path to the skills directory for the active profile.
+    Reads the active profile name from ~/.hermes/config.yaml.
+    """
+    import yaml
     from pathlib import Path
-    # Check HERMES_HOME first (if it points to a profile dir directly)
-    home_env = os.environ.get("HERMES_HOME")
-    if home_env:
-        p = Path(home_env) / "skills"
-        if p.exists():
-            return p
-    # Check active_profile file
-    active_path = Path.home() / ".hermes" / "active_profile"
-    if active_path.exists():
+    
+    # 1. Read active_profile from config.yaml
+    config_path = Path.home() / ".hermes" / "config.yaml"
+    if config_path.exists():
         try:
-            profile_name = active_path.read_text().strip()
-            if profile_name:
-                p = Path.home() / ".hermes" / "profiles" / profile_name / "skills"
-                if p.exists():
-                    return p
+            parsed = yaml.safe_load(config_path.read_text())
+            if isinstance(parsed, dict):
+                # Support top-level 'active_profile'
+                profile_name = parsed.get("active_profile")
+                # Fallback to 'profile.active_profile' if nested
+                if not profile_name and "profile" in parsed:
+                    profile = parsed.get("profile")
+                    if isinstance(profile, dict):
+                        profile_name = profile.get("active_profile")
+                
+                if profile_name:
+                    p = Path.home() / ".hermes" / "profiles" / str(profile_name) / "skills"
+                    if p.exists():
+                        return p
         except Exception:
             pass
     return None
-
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.

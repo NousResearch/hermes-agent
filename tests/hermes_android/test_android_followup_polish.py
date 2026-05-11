@@ -455,6 +455,30 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     assert 'hermes_opengui_working_memory' in chat_client
     assert 'executeParsedOpenGuiWorkingMemoryUpdate' in chat_client
     assert 'MAX_OPEN_GUI_WORKING_MEMORY_CHARS' in chat_client
+    assert 'OpenGuiExecutionReview.review' in chat_client
+    assert 'requires_replan' in chat_client
+    assert 'repeated-action review guard' in chat_client
+
+
+def test_android_ui_tool_reviews_repeated_opengui_actions_before_execution():
+    review = (
+        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/OpenGuiExecutionReview.kt"
+    ).read_text(encoding="utf-8")
+    review_test = (
+        REPO_ROOT / "android/app/src/test/java/com/nousresearch/hermesagent/ui/chat/OpenGuiExecutionReviewTest.kt"
+    ).read_text(encoding="utf-8")
+
+    assert 'ACTION_REPETITION_THRESHOLD = 5' in review
+    assert 'CYCLE_MIN_REPETITIONS = 3' in review
+    assert 'CONSECUTIVE_SCROLL_EXIT_THRESHOLD = 8' in review
+    assert 'action_repetition' in review
+    assert 'action_cycle' in review
+    assert 'scroll_loop' in review
+    assert 'blockedActionJson' in review
+    assert 'requires_replan' in review
+    assert 'detectsRepeatedCoordinateActionsBeforeExecutingFifthAction' in review_test
+    assert 'detectsTwoStepActionCycles' in review_test
+    assert 'detectsLongScrollRunsWithoutCoordinates' in review_test
 
     automation_bridge = (
         REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAutomationBridge.kt"

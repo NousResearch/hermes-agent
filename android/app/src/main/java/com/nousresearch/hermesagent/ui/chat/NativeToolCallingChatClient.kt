@@ -33,6 +33,7 @@ class NativeToolCallingChatClient(
     private val appContext = context.applicationContext
     private val openGuiWorkingMemoryPrefs = appContext.getSharedPreferences("hermes_opengui_working_memory", Context.MODE_PRIVATE)
     private var activeOpenGuiMemorySessionId: String = ""
+    private val recentOpenGuiActions = ArrayDeque<ParsedOpenGuiAction>()
 
     data class Result(
         val content: String,
@@ -455,9 +456,14 @@ class NativeToolCallingChatClient(
                 .put("opengui_action_compat", true)
                 .put("parse_only", true)
                 .put("parsed_action", parsed.toJson())
+                .put("execution_review_supported", true)
                 .toString()
         }
 
+        val review = OpenGuiExecutionReview.review(recentOpenGuiActions.toList(), parsed)
+        if (review.detected) {
+            return OpenGuiExecutionReview.blockedActionJson(parsed, review).toString()
+        }
         val result = when (parsed.actionType) {
             "click" -> executeParsedOpenGuiTap(parsed, "tap")
             "long_press" -> executeParsedOpenGuiTap(parsed, "long_press")
@@ -506,7 +512,15 @@ class NativeToolCallingChatClient(
                 .put("available_ui_actions", JSONArray(ANDROID_UI_ACTIONS))
                 .toString()
         }
-        return attachOpenGuiParsedAction(result, parsed)
+        recordOpenGuiAction(parsed)
+        return attachOpenGuiParsedAction(result, parsed, review)
+    }
+
+    private fun recordOpenGuiAction(parsed: ParsedOpenGuiAction) {
+        recentOpenGuiActions.addLast(parsed)
+        while (recentOpenGuiActions.size > OpenGuiExecutionReview.ACTION_WINDOW_SIZE) {
+            recentOpenGuiActions.removeFirst()
+        }
     }
 
     private fun executeParsedOpenGuiTap(parsed: ParsedOpenGuiAction, action: String): String {
@@ -577,7 +591,11 @@ class NativeToolCallingChatClient(
             .toString()
     }
 
-    private fun attachOpenGuiParsedAction(result: String, parsed: ParsedOpenGuiAction): String {
+    private fun attachOpenGuiParsedAction(
+        result: String,
+        parsed: ParsedOpenGuiAction,
+        review: OpenGuiExecutionReviewResult? = null,
+    ): String {
         val json = runCatching { JSONObject(result) }.getOrElse {
             JSONObject()
                 .put("success", false)
@@ -586,6 +604,9 @@ class NativeToolCallingChatClient(
         return json
             .put("opengui_action_compat", true)
             .put("parsed_action", parsed.toJson())
+            .also { output ->
+                review?.let { output.put("execution_review", it.toJson()) }
+            }
             .toString()
     }
 
@@ -802,7 +823,7 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_ui_tool",
-                    description = "Inspect or control the visible Android UI through Hermes accessibility.",
+                    description = "Inspect or control the visible Android UI through Hermes accessibility. OpenGUI-compatible execution includes a local repeated-action review guard that can return requires_replan before a likely loop continues.",
                     properties = JSONObject()
                         .put("action", stringProp("status, snapshot, parse_opengui_action, opengui_action, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, open_app, launch_app, back, home, press_back, press_home, recents, notifications, quick_settings, open_accessibility_settings."))
                         .put("raw_action", stringProp("OpenGUI-style VLM action text for parse_opengui_action or opengui_action, such as Action: click(start_box='<point>500 250</point>')."))
@@ -1885,7 +1906,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_ui_tool")
                             .put(
                                 "description",
-                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots, selector-based click/type/scroll/focus, OpenGUI-style raw VLM action parsing/execution, scroll/type/press/open-app aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
+                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots, selector-based click/type/scroll/focus, OpenGUI-style raw VLM action parsing/execution with repeated-action review guard, scroll/type/press/open-app aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
                             )
                             .put(
                                 "parameters",

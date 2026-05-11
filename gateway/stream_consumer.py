@@ -1153,7 +1153,29 @@ class GatewayStreamConsumer:
                     )
                     if result.success:
                         self._already_sent = True
-                        self._last_sent_text = text
+                        # Adapter may have split-and-delivered an oversized
+                        # edit across the original message + N continuations.
+                        # When that happens, ``message_id`` is the LAST visible
+                        # continuation and ``_last_sent_text`` no longer reflects
+                        # the on-screen content (the new message only holds the
+                        # final chunk's text), so subsequent edits must target
+                        # the new id and skip-if-same comparisons must reset.
+                        # Fire on_new_message so tool-progress bubbles linearize
+                        # below the new continuation, not the original.
+                        # ``getattr`` with default keeps backwards compat with
+                        # SimpleNamespace mocks in tests that pre-date the field.
+                        _continuation_ids = getattr(result, "continuation_message_ids", ()) or ()
+                        if (
+                            _continuation_ids
+                            and result.message_id
+                            and result.message_id != self._message_id
+                        ):
+                            self._message_id = str(result.message_id)
+                            self._message_created_ts = time.monotonic()
+                            self._last_sent_text = ""
+                            self._notify_new_message()
+                        else:
+                            self._last_sent_text = text
                         # Successful edit — reset flood strike counter
                         self._flood_strikes = 0
                         return True

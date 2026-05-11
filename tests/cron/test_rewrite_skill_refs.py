@@ -44,7 +44,13 @@ class TestRewriteSkillRefsNoop:
         from cron.jobs import rewrite_skill_refs
 
         report = rewrite_skill_refs(consolidated={}, pruned=[])
-        assert report == {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
+        assert report == {
+            "rewrites": [],
+            "jobs_updated": 0,
+            "prompt_rewrite_jobs": 0,
+            "prompt_warning_jobs": 0,
+            "jobs_scanned": 0,
+        }
 
     def test_jobs_exist_but_map_empty(self, cron_env):
         from cron.jobs import create_job, rewrite_skill_refs
@@ -255,6 +261,195 @@ class TestRewriteSkillRefsMultipleJobs:
         loaded = get_job(job["id"])
         assert loaded["skills"] == ["umbrella"]
         assert loaded["skill"] == "umbrella"
+
+
+class TestRewriteSkillRefsPromptText:
+    """Token-level mentions in a job's freeform ``prompt`` are handled
+    two ways: consolidated mentions (target known) are auto-rewritten
+    in place; pruned mentions (no target) become warnings. See #23398.
+    """
+
+    def test_consolidated_skill_in_prompt_is_auto_rewritten(self, cron_env):
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        job = create_job(
+            prompt="Follow `legacy-skill` as the canonical spec.",
+            schedule="every 1h",
+            skills=["legacy-skill"],
+        )
+        report = rewrite_skill_refs(
+            consolidated={"legacy-skill": "umbrella-skill"},
+            pruned=[],
+        )
+
+        assert report["jobs_updated"] == 1
+        assert report["prompt_rewrite_jobs"] == 1
+        assert report["prompt_warning_jobs"] == 0
+        entry = report["rewrites"][0]
+        assert entry["after"] == ["umbrella-skill"]
+        # Prompt IS auto-rewritten — the token-level mention becomes the
+        # forwarding target, surrounding punctuation untouched.
+        loaded = get_job(job["id"])
+        assert "legacy-skill" not in loaded["prompt"]
+        assert loaded["prompt"] == "Follow `umbrella-skill` as the canonical spec."
+        # Auto-rewrite is reported (not a warning).
+        assert entry["prompt_rewrites"] == [
+            {"name": "legacy-skill", "target": "umbrella-skill", "count": 1},
+        ]
+        assert entry["prompt_warnings"] == []
+
+    def test_pruned_skill_in_prompt_emits_warning_with_no_target(self, cron_env):
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        job = create_job(
+            prompt="The `stale` skill explains the canonical flow.",
+            schedule="every 1h",
+            skills=["stale"],
+        )
+        report = rewrite_skill_refs(consolidated={}, pruned=["stale"])
+
+        assert report["prompt_warning_jobs"] == 1
+        assert report["prompt_rewrite_jobs"] == 0
+        entry = report["rewrites"][0]
+        # No target to rewrite to — prompt left as-is, warning recorded.
+        loaded = get_job(job["id"])
+        assert "stale" in loaded["prompt"]
+        assert entry["prompt_warnings"] == [
+            {"name": "stale", "target": None, "count": 1},
+        ]
+        assert entry["prompt_rewrites"] == []
+
+    def test_auto_rewrite_when_structured_field_already_clean(self, cron_env):
+        """Job has no structural reference to the old skill, but its
+        prompt does. The prompt mention is still auto-rewritten — the
+        job's record gets saved purely for the prompt change.
+        """
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        job = create_job(
+            prompt="Use `legacy-skill` for parsing — the old behavior.",
+            schedule="every 1h",
+            skills=["umbrella-skill"],
+        )
+        report = rewrite_skill_refs(
+            consolidated={"legacy-skill": "umbrella-skill"},
+            pruned=[],
+        )
+
+        assert report["jobs_updated"] == 1
+        assert report["prompt_rewrite_jobs"] == 1
+        assert report["prompt_warning_jobs"] == 0
+        assert len(report["rewrites"]) == 1
+        entry = report["rewrites"][0]
+        # No structural change — skills field already pointed at umbrella.
+        assert entry["mapped"] == {}
+        assert entry["dropped"] == []
+        assert entry["before"] == ["umbrella-skill"]
+        assert entry["after"] == ["umbrella-skill"]
+        # But the prompt was rewritten and the job's record persisted.
+        loaded = get_job(job["id"])
+        assert loaded["prompt"] == "Use `umbrella-skill` for parsing — the old behavior."
+        assert entry["prompt_rewrites"] == [
+            {"name": "legacy-skill", "target": "umbrella-skill", "count": 1},
+        ]
+
+    def test_word_boundary_does_not_false_match_substring(self, cron_env):
+        """``legacy`` should NOT match inside ``my-legacy-skill`` or
+        ``legacy_v2`` — those are different tokens that just share a
+        prefix/embedded substring."""
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        job = create_job(
+            prompt="See my-legacy-skill and legacy_v2 for details.",
+            schedule="every 1h",
+            skills=["unrelated"],
+        )
+        report = rewrite_skill_refs(consolidated={"legacy": "umbrella"}, pruned=[])
+
+        assert report["prompt_rewrite_jobs"] == 0
+        assert report["prompt_warning_jobs"] == 0
+        assert report["rewrites"] == []
+        # Prompt untouched.
+        loaded = get_job(job["id"])
+        assert loaded["prompt"] == "See my-legacy-skill and legacy_v2 for details."
+
+    def test_word_boundary_matches_tokenized_forms(self, cron_env):
+        """Bare, backtick-wrapped, quoted, and trailing-punctuation forms
+        should all count as a real mention and be rewritten."""
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        prompt = (
+            "legacy is the old way. "
+            "Follow `legacy` as the canonical spec. "
+            "Quote 'legacy' for backwards compat. "
+            "End with legacy."
+        )
+        job = create_job(prompt=prompt, schedule="every 1h", skills=[])
+        report = rewrite_skill_refs(consolidated={"legacy": "umbrella"}, pruned=[])
+
+        assert report["prompt_rewrite_jobs"] == 1
+        entry = report["rewrites"][0]
+        assert entry["prompt_rewrites"] == [
+            {"name": "legacy", "target": "umbrella", "count": 4},
+        ]
+        loaded = get_job(job["id"])
+        assert loaded["prompt"] == (
+            "umbrella is the old way. "
+            "Follow `umbrella` as the canonical spec. "
+            "Quote 'umbrella' for backwards compat. "
+            "End with umbrella."
+        )
+
+    def test_mixed_consolidated_and_pruned_in_same_prompt(self, cron_env):
+        """Consolidated mentions get rewritten; pruned mentions stay and
+        become warnings — both reported in the same entry."""
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        job = create_job(
+            prompt="Use `old-a` first, then fall back to `old-b`. Avoid `gone`.",
+            schedule="every 1h",
+            skills=["old-a", "old-b"],
+        )
+        report = rewrite_skill_refs(
+            consolidated={"old-a": "umbrella", "old-b": "umbrella"},
+            pruned=["gone"],
+        )
+
+        entry = report["rewrites"][0]
+        # Two consolidated names → both auto-rewritten, sorted by name.
+        assert entry["prompt_rewrites"] == [
+            {"name": "old-a", "target": "umbrella", "count": 1},
+            {"name": "old-b", "target": "umbrella", "count": 1},
+        ]
+        # ``gone`` stays in the prompt and is warned about.
+        assert entry["prompt_warnings"] == [
+            {"name": "gone", "target": None, "count": 1},
+        ]
+        loaded = get_job(job["id"])
+        assert loaded["prompt"] == (
+            "Use `umbrella` first, then fall back to `umbrella`. Avoid `gone`."
+        )
+
+    def test_rewrite_is_single_pass_no_chain_through_targets(self, cron_env):
+        """If a target is itself a key in ``consolidated``, the rewritten
+        text is NOT re-rewritten — matches the single-pass behaviour of
+        the structural skill-list rewrite (``a`` → ``b`` stays ``b``,
+        even when ``b`` → ``c`` is also in the map)."""
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        job = create_job(
+            prompt="Use `a` as the canonical name.",
+            schedule="every 1h",
+            skills=[],
+        )
+        rewrite_skill_refs(
+            consolidated={"a": "b", "b": "c"},
+            pruned=[],
+        )
+
+        loaded = get_job(job["id"])
+        # ``a`` → ``b``, but ``b`` (now in prompt) is not re-rewritten to ``c``.
+        assert loaded["prompt"] == "Use `b` as the canonical name."
 
 
 class TestRewriteSkillRefsPersistence:

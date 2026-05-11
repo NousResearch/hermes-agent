@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Optional, Dict, List, Any, Union
+from typing import Optional, Dict, List, Any, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -1046,6 +1046,80 @@ def save_job_output(job_id: str, output: str):
 # Skill reference rewriting (curator integration)
 # =============================================================================
 
+# Characters treated as part of a "skill name token" when detecting stale
+# prompt references. A match is only flagged if the skill name is NOT
+# bordered by one of these characters on either side, so 'legacy' won't
+# trip on 'my-legacy-skill' or 'legacy_v2'.
+_SKILL_NAME_BOUNDARY_CHARS = r"A-Za-z0-9_\-"
+
+
+def _find_prompt_skill_refs(prompt: str, names: set) -> Dict[str, int]:
+    """Return {name: occurrence_count} for skill names that appear as
+    standalone tokens inside ``prompt``.
+
+    Uses a custom word boundary that treats letters, digits, hyphen, and
+    underscore as continuation. Skill names like ``legacy-skill`` match
+    in ``Follow `legacy-skill` as the canonical spec.`` but not inside
+    ``my-legacy-skill-v2`` — keeping the match conservative enough that
+    common prose words are unlikely to false-trigger.
+    """
+    if not prompt or not names:
+        return {}
+    found: Dict[str, int] = {}
+    for name in names:
+        if not name:
+            continue
+        pattern = (
+            rf"(?<![{_SKILL_NAME_BOUNDARY_CHARS}])"
+            + re.escape(name)
+            + rf"(?![{_SKILL_NAME_BOUNDARY_CHARS}])"
+        )
+        count = len(re.findall(pattern, prompt))
+        if count:
+            found[name] = count
+    return found
+
+
+def _rewrite_prompt_skill_refs(
+    prompt: str, consolidated: Dict[str, str]
+) -> Tuple[str, Dict[str, int]]:
+    """Rewrite token-level mentions of consolidated skill names in
+    ``prompt`` to their forwarding target.
+
+    Single-pass: each character in the input is matched at most once, so
+    if a forwarding target is itself a key in ``consolidated`` the
+    rewritten reference is NOT re-rewritten — matching the single-pass
+    behaviour of the structural ``skills`` field rewrite.
+
+    Returns ``(new_prompt, counts)`` where ``counts`` maps original
+    skill name → number of rewritten occurrences (only names with at
+    least one match appear).
+    """
+    if not prompt or not consolidated:
+        return prompt, {}
+    keys = [k for k in consolidated.keys() if k]
+    if not keys:
+        return prompt, {}
+    # Longest first so e.g. ``old-skill-v2`` is preferred over ``old-skill``
+    # when both happen to be in the map.
+    keys.sort(key=len, reverse=True)
+    alternation = "|".join(re.escape(k) for k in keys)
+    pattern = (
+        rf"(?<![{_SKILL_NAME_BOUNDARY_CHARS}])"
+        + r"(?:" + alternation + r")"
+        + rf"(?![{_SKILL_NAME_BOUNDARY_CHARS}])"
+    )
+    counts: Dict[str, int] = {}
+
+    def _sub(m: "re.Match[str]") -> str:
+        matched = m.group(0)
+        counts[matched] = counts.get(matched, 0) + 1
+        return consolidated[matched]
+
+    new_prompt = re.sub(pattern, _sub, prompt)
+    return new_prompt, counts
+
+
 def rewrite_skill_refs(
     consolidated: Optional[Dict[str, str]] = None,
     pruned: Optional[List[str]] = None,
@@ -1069,6 +1143,18 @@ def rewrite_skill_refs(
     - Ordering and other skills in the list are preserved.
     - The legacy ``skill`` field is realigned via ``_apply_skill_fields``.
 
+    Beyond the structured ``skills``/``skill`` fields the function also
+    scans each job's freeform ``prompt`` text for token-level mentions
+    of any consolidated or pruned skill name:
+
+    - **Consolidated** mentions (we know the forwarding target) are
+      auto-rewritten in place to the new name. The token-level
+      boundary check keeps the rewrite conservative — only standalone
+      occurrences are touched, so ``my-legacy-skill-v2`` stays alone
+      when ``legacy-skill`` is consolidated.
+    - **Pruned** mentions (no forwarding target) are reported as
+      ``prompt_warnings`` so a human can update the prose by hand.
+
     Args:
         consolidated: mapping of ``old_skill_name -> umbrella_skill_name``.
         pruned: list of skill names that were archived with no forwarding
@@ -1085,10 +1171,21 @@ def rewrite_skill_refs(
                     "after": [...],
                     "mapped": {"old": "new", ...},
                     "dropped": ["old", ...],
+                    "prompt_rewrites": [
+                        {"name": "old", "target": "umbrella", "count": 2},
+                        ...
+                    ],
+                    "prompt_warnings": [
+                        {"name": "stale", "target": None, "count": 1},
+                        ...
+                    ],
                 },
                 ...
             ],
-            "jobs_updated": N,
+            "jobs_updated": N,           # jobs whose record was modified
+            "prompt_rewrite_jobs": R,    # jobs whose prompt was auto-rewritten
+            "prompt_warning_jobs": K,    # jobs with stale prompt mentions
+                                         # we could not fix automatically
             "jobs_scanned": M,
         }
 
@@ -1103,17 +1200,24 @@ def rewrite_skill_refs(
     pruned_set -= set(consolidated.keys())
 
     if not consolidated and not pruned_set:
-        return {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
+        return {
+            "rewrites": [],
+            "jobs_updated": 0,
+            "prompt_rewrite_jobs": 0,
+            "prompt_warning_jobs": 0,
+            "jobs_scanned": 0,
+        }
 
     with _jobs_file_lock:
         jobs = load_jobs()
         rewrites: List[Dict[str, Any]] = []
         changed = False
+        jobs_updated = 0
+        prompt_rewrite_jobs = 0
+        prompt_warning_jobs = 0
 
         for job in jobs:
             skills_before = _normalize_skill_list(job.get("skill"), job.get("skills"))
-            if not skills_before:
-                continue
 
             mapped: Dict[str, str] = {}
             dropped: List[str] = []
@@ -1130,30 +1234,86 @@ def rewrite_skill_refs(
                 elif name not in new_skills:
                     new_skills.append(name)
 
-            if not mapped and not dropped:
+            structural_change = bool(mapped or dropped)
+
+            prompt_text = job.get("prompt")
+            if not isinstance(prompt_text, str):
+                prompt_text = ""
+
+            # Auto-rewrite consolidated mentions in the prompt — we know
+            # the forwarding target, so the rewrite is deterministic.
+            new_prompt, rewrite_counts = _rewrite_prompt_skill_refs(
+                prompt_text, consolidated
+            )
+            prompt_rewrites: List[Dict[str, Any]] = []
+            for ref_name in sorted(rewrite_counts.keys()):
+                prompt_rewrites.append({
+                    "name": ref_name,
+                    "target": consolidated[ref_name],
+                    "count": rewrite_counts[ref_name],
+                })
+
+            # Pruned mentions have no forwarding target — fall back to a
+            # warning so a human can update the prose.
+            pruned_refs = _find_prompt_skill_refs(new_prompt, pruned_set)
+            prompt_warnings: List[Dict[str, Any]] = []
+            for ref_name in sorted(pruned_refs.keys()):
+                prompt_warnings.append({
+                    "name": ref_name,
+                    "target": None,
+                    "count": pruned_refs[ref_name],
+                })
+
+            prompt_changed = new_prompt != prompt_text
+
+            if not structural_change and not prompt_changed and not prompt_warnings:
                 continue
 
-            job["skills"] = new_skills
-            job["skill"] = new_skills[0] if new_skills else None
-            changed = True
+            if structural_change:
+                job["skills"] = new_skills
+                job["skill"] = new_skills[0] if new_skills else None
+                after_list = list(new_skills)
+            else:
+                after_list = list(skills_before)
+
+            if prompt_changed:
+                job["prompt"] = new_prompt
+                prompt_rewrite_jobs += 1
+
+            if prompt_warnings:
+                prompt_warning_jobs += 1
+
+            if structural_change or prompt_changed:
+                changed = True
+                jobs_updated += 1
 
             rewrites.append({
                 "job_id": job.get("id"),
                 "job_name": job.get("name") or job.get("id"),
                 "before": list(skills_before),
-                "after": list(new_skills),
+                "after": after_list,
                 "mapped": mapped,
                 "dropped": dropped,
+                "prompt_rewrites": prompt_rewrites,
+                "prompt_warnings": prompt_warnings,
             })
 
         if changed:
             save_jobs(jobs)
             logger.info(
-                "Curator rewrote skill references in %d cron job(s)", len(rewrites)
+                "Curator rewrote skill references in %d cron job(s)", jobs_updated
+            )
+        if prompt_warning_jobs:
+            logger.warning(
+                "Curator detected stale (pruned) skill references in the prompt "
+                "text of %d cron job(s); see cron rewrite report",
+                prompt_warning_jobs,
             )
 
         return {
             "rewrites": rewrites,
-            "jobs_updated": len(rewrites),
+            "jobs_updated": jobs_updated,
+            "prompt_rewrite_jobs": prompt_rewrite_jobs,
+            "prompt_warning_jobs": prompt_warning_jobs,
             "jobs_scanned": len(jobs),
         }

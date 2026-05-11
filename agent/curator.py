@@ -1071,7 +1071,13 @@ def _write_run_report(
     # references in-place keeps scheduled jobs working across
     # consolidation passes. Best-effort: never let a cron-module issue
     # break the curator.
-    cron_rewrites: Dict[str, Any] = {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
+    cron_rewrites: Dict[str, Any] = {
+        "rewrites": [],
+        "jobs_updated": 0,
+        "prompt_rewrite_jobs": 0,
+        "prompt_warning_jobs": 0,
+        "jobs_scanned": 0,
+    }
     try:
         consolidated_map = {
             e["name"]: e["into"]
@@ -1093,6 +1099,8 @@ def _write_run_report(
         cron_rewrites = {
             "rewrites": [],
             "jobs_updated": 0,
+            "prompt_rewrite_jobs": 0,
+            "prompt_warning_jobs": 0,
             "jobs_scanned": 0,
             "error": str(e),
         }
@@ -1113,6 +1121,8 @@ def _write_run_report(
             "pruned_this_run": len(pruned),
             "state_transitions": len(transitions),
             "cron_jobs_rewritten": int(cron_rewrites.get("jobs_updated", 0)),
+            "cron_prompt_rewrite_jobs": int(cron_rewrites.get("prompt_rewrite_jobs", 0)),
+            "cron_prompt_warning_jobs": int(cron_rewrites.get("prompt_warning_jobs", 0)),
             "tool_calls_total": sum(tc_counts.values()),
         },
         "tool_call_counts": tc_counts,
@@ -1145,10 +1155,15 @@ def _write_run_report(
     except Exception as e:
         logger.debug("Curator REPORT.md write failed: %s", e)
 
-    # cron_rewrites.json — only when at least one job was touched, to
-    # keep run dirs uncluttered for the common no-op case.
+    # cron_rewrites.json — only when at least one job was touched or
+    # carries a stale-prompt warning, to keep run dirs uncluttered for
+    # the common no-op case.
     try:
-        if int(cron_rewrites.get("jobs_updated", 0)) > 0:
+        if (
+            int(cron_rewrites.get("jobs_updated", 0)) > 0
+            or int(cron_rewrites.get("prompt_rewrite_jobs", 0)) > 0
+            or int(cron_rewrites.get("prompt_warning_jobs", 0)) > 0
+        ):
             (run_dir / "cron_rewrites.json").write_text(
                 json.dumps(cron_rewrites, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8",
@@ -1292,11 +1307,26 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     cron_rw = p.get("cron_rewrites") or {}
     cron_rewrites_list = cron_rw.get("rewrites") or []
     if cron_rewrites_list:
-        lines.append(f"### Cron job skill references rewritten ({len(cron_rewrites_list)})\n")
+        struct_count = int(cron_rw.get("jobs_updated", 0))
+        prompt_rw_count = int(cron_rw.get("prompt_rewrite_jobs", 0))
+        prompt_warn_count = int(cron_rw.get("prompt_warning_jobs", 0))
+        header_bits = [f"{struct_count} rewritten"]
+        if prompt_rw_count:
+            header_bits.append(f"{prompt_rw_count} prompts auto-rewritten")
+        if prompt_warn_count:
+            header_bits.append(f"{prompt_warn_count} flagged")
+        lines.append(
+            f"### Cron job skill references rewritten "
+            f"({', '.join(header_bits)})\n"
+        )
         lines.append(
             "_Cron jobs that referenced a consolidated or pruned skill were "
             "updated in-place so they keep loading the right instructions "
-            "on their next run. See `cron_rewrites.json` for the full record._\n"
+            "on their next run. Token-level mentions of consolidated skills "
+            "inside a job's freeform prompt are auto-rewritten to the new "
+            "name; pruned-skill mentions have no forwarding target and are "
+            "flagged so they can be fixed by hand. See `cron_rewrites.json` "
+            "for the full record._\n"
         )
         SHOW = 25
         for entry in cron_rewrites_list[:SHOW]:
@@ -1305,6 +1335,8 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
             after = entry.get("after") or []
             mapped = entry.get("mapped") or {}
             dropped = entry.get("dropped") or []
+            prompt_rewrites = entry.get("prompt_rewrites") or []
+            prompt_warnings = entry.get("prompt_warnings") or []
             lines.append(
                 f"- `{job_name}`: `{', '.join(before)}` → `{', '.join(after) or '(none)'}`"
             )
@@ -1312,6 +1344,21 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
                 lines.append(f"    - `{old}` → `{new}` (consolidated)")
             for name in dropped:
                 lines.append(f"    - `{name}` dropped (pruned)")
+            for rw in prompt_rewrites:
+                rwname = rw.get("name", "?")
+                rwtarget = rw.get("target", "?")
+                rwcount = rw.get("count", 0)
+                lines.append(
+                    f"    - prompt: `{rwname}` → `{rwtarget}` ×{rwcount} "
+                    "(auto-rewritten)"
+                )
+            for warn in prompt_warnings:
+                wname = warn.get("name", "?")
+                wcount = warn.get("count", 0)
+                lines.append(
+                    f"    - ⚠ prompt still mentions pruned skill "
+                    f"`{wname}` ×{wcount} — please update by hand"
+                )
         if len(cron_rewrites_list) > SHOW:
             lines.append(
                 f"- … and {len(cron_rewrites_list) - SHOW} more "

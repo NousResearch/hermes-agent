@@ -28,6 +28,48 @@ from typing import Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Track which (config_path, mtime_ns, size) tuples we've already warned about
+# so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
+# every time. Cleared automatically when the file changes (different mtime).
+_CONFIG_PARSE_WARNED: set = set()
+
+
+def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
+    """Surface a config.yaml parse failure to user, log, and stderr.
+
+    A YAML parse error in ``~/.hermes/config.yaml`` causes ``load_config()``
+    to silently fall back to ``DEFAULT_CONFIG``, which means every user
+    override (auxiliary providers, fallback chain, model overrides, etc.)
+    is dropped. Before this helper that was a one-line ``print(...)`` that
+    scrolled off-screen on the first invocation and was never seen again.
+
+    Now: warn once per (path, mtime_ns, size) on stderr **and** in
+    ``agent.log`` / ``errors.log`` at WARNING level so ``hermes logs``
+    surfaces it. Re-warns automatically if the file changes (different
+    mtime/size), so users editing the config see the next failure.
+    """
+    try:
+        st = config_path.stat()
+        key = (str(config_path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (str(config_path), 0, 0)
+    if key in _CONFIG_PARSE_WARNED:
+        return
+    _CONFIG_PARSE_WARNED.add(key)
+
+    msg = (
+        f"Failed to parse {config_path}: {exc}. "
+        f"Falling back to default config — every user override "
+        f"(auxiliary providers, fallback chain, model settings) is being IGNORED. "
+        f"Fix the YAML and restart."
+    )
+    logger.warning(msg)
+    try:
+        sys.stderr.write(f"⚠️  hermes config: {msg}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
@@ -4004,7 +4046,8 @@ def read_raw_config() -> Dict[str, Any]:
         try:
             with open(config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
-        except Exception:
+        except Exception as e:
+            _warn_config_parse_failure(config_path, e)
             return {}
 
         if not isinstance(data, dict):
@@ -4054,7 +4097,7 @@ def load_config() -> Dict[str, Any]:
 
                 config = _deep_merge(config, user_config)
             except Exception as e:
-                print(f"Warning: Failed to load config: {e}")
+                _warn_config_parse_failure(config_path, e)
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)

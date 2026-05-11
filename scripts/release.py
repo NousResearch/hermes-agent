@@ -88,6 +88,7 @@ AUTHOR_MAP = {
     "maksesipov@gmail.com": "Qwinty",
     "denisamania@gmail.com": "CalmProton",
     "308068+mbac@users.noreply.github.com": "mbac",
+    "nicoechaniz@altermundi.net": "nicoechaniz",
     "ninso112@proton.me": "Ninso112",
     "wesleysimplicio@live.com": "wesleysimplicio",
     "matthew.dean.cater@gmail.com": "SiliconID",

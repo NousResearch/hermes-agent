@@ -176,6 +176,7 @@ class HermesAutomationStore(context: Context) {
         saveAll(emptyList())
         saveVariables(JSONObject())
         saveRunEvents(emptyList())
+        saveStandbyHeartbeat(JSONObject())
     }
 
     fun addRunEvent(event: HermesAutomationRunEvent) {
@@ -200,6 +201,15 @@ class HermesAutomationStore(context: Context) {
             }
         }
         return events.sortedByDescending { it.finishedAtEpochMs }.take(safeLimit)
+    }
+
+    fun saveStandbyHeartbeat(heartbeat: JSONObject) {
+        preferences.edit().putString(KEY_STANDBY_HEARTBEAT, heartbeat.toString()).apply()
+    }
+
+    fun lastStandbyHeartbeat(): JSONObject {
+        val raw = preferences.getString(KEY_STANDBY_HEARTBEAT, "{}").orEmpty()
+        return runCatching { JSONObject(raw) }.getOrDefault(JSONObject())
     }
 
     fun listVariables(): JSONObject {
@@ -272,6 +282,7 @@ class HermesAutomationStore(context: Context) {
         private const val KEY_RECORDS = "records_json"
         private const val KEY_VARIABLES = "variables_json"
         private const val KEY_RUN_EVENTS = "run_events_json"
+        private const val KEY_STANDBY_HEARTBEAT = "standby_heartbeat_json"
         private const val MAX_VARIABLE_VALUE_CHARS = 4_000
         private const val MAX_RUN_EVENTS = 50
 

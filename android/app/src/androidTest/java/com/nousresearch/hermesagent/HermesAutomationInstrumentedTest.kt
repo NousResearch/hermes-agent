@@ -262,6 +262,19 @@ class HermesAutomationInstrumentedTest {
         assertEquals("OpenGUI dispatch smoke", execution.getString("task_name"))
         assertEquals("opengui_standby", execution.getString("source"))
 
+        val heartbeat = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "operator_heartbeat",
+                JSONObject()
+                    .put("deviceId", "instrumented-device")
+                    .put("deviceName", "Hermes instrumentation")
+                    .put("source", "discord"),
+            )
+        )
+        assertTrue(heartbeat.toString(), heartbeat.getBoolean("success"))
+        assertEquals("standby:heartbeat", heartbeat.getString("event"))
+
         val standby = JSONObject(HermesAutomationBridge.performActionJson(app, "operator_standby_status"))
             .getJSONObject("standby_dispatch")
         assertEquals(1, standby.getInt("remote_dispatch_count"))
@@ -269,6 +282,8 @@ class HermesAutomationInstrumentedTest {
         assertTrue(standby.getJSONArray("compatible_dispatch_payloads").toString().contains("OpenGUI standby:dispatch"))
         assertEquals("/standby", standby.getString("standby_namespace"))
         assertEquals("standby:heartbeat", standby.getString("standby_heartbeat_event"))
+        assertTrue(standby.getBoolean("standby_heartbeat_supported"))
+        assertEquals("discord", standby.getString("last_heartbeat_source"))
         assertTrue(standby.getJSONArray("compatible_dispatch_payloads").toString().contains("status"))
 
         val devices = JSONObject(HermesAutomationBridge.performActionJson(app, "operator_devices"))
@@ -369,8 +384,32 @@ class HermesAutomationInstrumentedTest {
             )
         )
         assertTrue(commandPause.toString(), commandPause.getBoolean("success"))
-        assertFalse(commandPause.getBoolean("handled"))
+        assertTrue(commandPause.getBoolean("handled"))
+        assertEquals("already_terminal", commandPause.getString("status"))
         assertEquals("pause", commandPause.getJSONObject("parsed_command").getString("type"))
+
+        val commandResume = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "operator_command",
+                JSONObject().put("command", "!opengui resume 42 user finished login"),
+            )
+        )
+        assertTrue(commandResume.toString(), commandResume.getBoolean("success"))
+        assertTrue(commandResume.getBoolean("handled"))
+        assertEquals("already_terminal", commandResume.getString("status"))
+        assertEquals("user finished login", commandResume.getString("feedback"))
+
+        val commandCancelMissing = JSONObject(
+            HermesAutomationBridge.performActionJson(
+                app,
+                "operator_command",
+                JSONObject().put("command", "!opengui cancel 404404"),
+            )
+        )
+        assertFalse(commandCancelMissing.toString(), commandCancelMissing.getBoolean("success"))
+        assertFalse(commandCancelMissing.getBoolean("handled"))
+        assertEquals("not_found", commandCancelMissing.getString("status"))
 
         val commandHelp = JSONObject(
             HermesAutomationBridge.performActionJson(

@@ -27,7 +27,11 @@ object HermesAutomationBridge {
             "run_history", "automation_run_history", "recent_runs", "operator_run_history" -> runHistoryJson(context, arguments)
             "operator_devices", "devices", "standby_devices", "remote_devices", "opengui_devices" -> operatorDevicesJson(context)
             "operator_standby_status", "standby_status", "remote_dispatch_status", "dispatch_status" -> operatorStandbyStatusJson(context)
+            "operator_heartbeat", "standby_heartbeat", "remote_heartbeat", "opengui_heartbeat" -> operatorStandbyHeartbeatJson(context, arguments)
             "operator_execution_status", "execution_status", "remote_execution_status", "opengui_execution_status" -> operatorExecutionStatusJson(context, arguments)
+            "operator_cancel_execution", "cancel_execution", "remote_cancel_execution", "opengui_cancel_execution" -> operatorExecutionLifecycleJson(context, arguments, OperatorCommandType.CANCEL)
+            "operator_pause_execution", "pause_execution", "remote_pause_execution", "opengui_pause_execution" -> operatorExecutionLifecycleJson(context, arguments, OperatorCommandType.PAUSE)
+            "operator_resume_execution", "resume_execution", "remote_resume_execution", "opengui_resume_execution" -> operatorExecutionLifecycleJson(context, arguments, OperatorCommandType.RESUME)
             "operator_command", "opengui_command", "remote_command", "im_command", "discord_command", "telegram_command", "feishu_command" -> operatorCommandJson(context, arguments)
             "create_shell_task", "create_shell", "create" -> createShellTaskJson(context, arguments)
             "create_file_write_task", "create_file_write", "write_file_task" -> createFileWriteTaskJson(context, arguments)
@@ -167,6 +171,114 @@ object HermesAutomationBridge {
         return JSONObject()
             .put("success", true)
             .put("standby_dispatch", standbySummaryJson(context, store.list(), store))
+            .toString()
+    }
+
+    fun operatorStandbyHeartbeatJson(context: Context, arguments: JSONObject): String {
+        val store = HermesAutomationStore(context)
+        val now = System.currentTimeMillis()
+        val currentSummary = standbySummaryJson(context, store.list(), store)
+        val heartbeat = JSONObject()
+            .put("success", true)
+            .put("accepted", true)
+            .put("event", "standby:heartbeat")
+            .put(
+                "device_id",
+                stringArgument(arguments, "device_id", "deviceId", "id", allowEmpty = true)
+                    .orEmpty()
+                    .ifBlank { currentSummary.optString("device_id") },
+            )
+            .put(
+                "device_name",
+                stringArgument(arguments, "device_name", "deviceName", "name", allowEmpty = true)
+                    .orEmpty()
+                    .ifBlank { currentSummary.optString("device_name") },
+            )
+            .put(
+                "source",
+                stringArgument(arguments, "source", "dispatch_source", "platform", allowEmpty = true)
+                    .orEmpty()
+                    .ifBlank { "hermes_android" },
+            )
+            .put("received_at_epoch_ms", now)
+            .put("heartbeat_interval_seconds", currentSummary.optInt("heartbeat_interval_seconds", 30))
+            .put("standby_namespace", "/standby")
+            .put("standby_heartbeat_event", "standby:heartbeat")
+        store.saveStandbyHeartbeat(heartbeat)
+        return heartbeat
+            .put("standby_dispatch", standbySummaryJson(context, store.list(), store))
+            .toString()
+    }
+
+    private fun operatorExecutionLifecycleJson(
+        context: Context,
+        arguments: JSONObject,
+        actionType: OperatorCommandType,
+    ): String {
+        val action = actionType.wireName
+        val executionId = stringArgument(
+            arguments,
+            "execution_id",
+            "executionId",
+            "remote_execution_id",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val feedback = stringArgument(arguments, "feedback", "comment", "note", allowEmpty = true)
+            .orEmpty()
+            .trim()
+        if (executionId.isBlank()) {
+            return JSONObject()
+                .put("success", true)
+                .put("handled", false)
+                .put("status", "no_active_execution")
+                .put("action", action)
+                .put("message", "No active Hermes remote execution is available for $action. Local Android automations run synchronously; pass execution_id to inspect a completed run.")
+                .put("compatible_lifecycle_actions", JSONArray(listOf("cancel", "pause", "resume")))
+                .toString()
+        }
+
+        val statusJson = JSONObject(
+            operatorExecutionStatusJson(context, JSONObject().put("executionId", executionId)),
+        )
+        val execution = statusJson.optJSONObject("execution") ?: JSONObject()
+        val found = statusJson.optBoolean("success", false) && statusJson.optString("status") != "not_found"
+        if (!found) {
+            return JSONObject()
+                .put("success", false)
+                .put("handled", false)
+                .put("status", "not_found")
+                .put("action", action)
+                .put("execution_id", executionId)
+                .put("message", "No Hermes remote execution matched execution_id=$executionId.")
+                .put("compatible_lifecycle_actions", JSONArray(listOf("cancel", "pause", "resume")))
+                .toString()
+        }
+
+        val terminal = execution.optBoolean("terminal", true)
+        val currentStatus = execution.optString("status").ifBlank { statusJson.optString("status") }
+        val lifecycleStatus = if (terminal) "already_terminal" else when (actionType) {
+            OperatorCommandType.CANCEL -> "cancel_requested"
+            OperatorCommandType.PAUSE -> "pause_requested"
+            OperatorCommandType.RESUME -> "resume_requested"
+            else -> "unsupported"
+        }
+        val message = if (terminal) {
+            "Hermes found execution_id=$executionId, but the local Android run is already $currentStatus. Synchronous completed runs cannot be $action."
+        } else {
+            "Hermes recorded an OpenGUI-compatible $action request for execution_id=$executionId."
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("handled", true)
+            .put("status", lifecycleStatus)
+            .put("action", action)
+            .put("execution_id", executionId)
+            .put("terminal", terminal)
+            .put("current_execution_status", currentStatus)
+            .put("execution", execution)
+            .put("feedback", feedback)
+            .put("message", message)
+            .put("compatible_lifecycle_actions", JSONArray(listOf("cancel", "pause", "resume")))
             .toString()
     }
 
@@ -336,7 +448,12 @@ object HermesAutomationBridge {
             }
             OperatorCommandType.CANCEL,
             OperatorCommandType.PAUSE,
-            OperatorCommandType.RESUME -> operatorCommandRecognizedButNotActiveJson(parsed)
+            OperatorCommandType.RESUME -> {
+                val lifecycleArgs = JSONObject()
+                parsed.executionId?.let { lifecycleArgs.put("executionId", it) }
+                parsed.feedback?.let { lifecycleArgs.put("feedback", it) }
+                withParsedOperatorCommand(operatorExecutionLifecycleJson(context, lifecycleArgs, parsed.type), parsed)
+            }
             OperatorCommandType.FREE_TEXT -> operatorCommandFreeTextJson(parsed)
         }
     }
@@ -3891,6 +4008,8 @@ object HermesAutomationBridge {
         val latestDispatch = recentRuns.firstOrNull { event ->
             event.trigger == TRIGGER_REMOTE_DISPATCH || event.dispatchSource.isNotBlank()
         }
+        val latestHeartbeat = store.lastStandbyHeartbeat()
+        val latestHeartbeatEpochMs = latestHeartbeat.optLong("received_at_epoch_ms", 0L)
         val deviceId = runCatching {
             Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
         }.getOrNull().orEmpty().ifBlank { "unknown" }
@@ -3908,6 +4027,10 @@ object HermesAutomationBridge {
             .put("standby_heartbeat_event", "standby:heartbeat")
             .put("standby_dispatch_event", "standby:dispatch")
             .put("heartbeat_interval_seconds", 30)
+            .put("last_heartbeat_epoch_ms", if (latestHeartbeatEpochMs > 0L) latestHeartbeatEpochMs else JSONObject.NULL)
+            .put("last_heartbeat_source", latestHeartbeat.optString("source"))
+            .put("last_heartbeat_device_id", latestHeartbeat.optString("device_id"))
+            .put("standby_heartbeat_supported", true)
             .put("automation_count", records.size)
             .put("enabled_automation_count", enabledRecords.size)
             .put("external_trigger_count", externalRecords.size)
@@ -3947,7 +4070,9 @@ object HermesAutomationBridge {
                 JSONArray(
                     listOf(
                         "OpenGUI standby:dispatch {executionId, taskId, taskName}",
+                        "OpenGUI standby:heartbeat {deviceId}",
                         "OpenGUI /status [executionId]",
+                        "Hermes android_automation_tool operator_heartbeat",
                         "Hermes android_automation_tool run_remote_dispatch",
                         "Hermes android_automation_tool operator_execution_status",
                         "token-protected Hermes external broadcast",
@@ -5069,10 +5194,12 @@ object HermesAutomationBridge {
     }
 
     private fun withParsedOperatorCommand(resultJson: String, parsed: ParsedOperatorCommand): String {
-        return JSONObject(resultJson)
+        val result = JSONObject(resultJson)
             .put("parsed_command", parsed.toJson())
-            .put("handled", true)
-            .toString()
+        if (!result.has("handled")) {
+            result.put("handled", true)
+        }
+        return result.toString()
     }
 
     private fun booleanArgument(arguments: JSONObject, vararg keys: String): Boolean? {
@@ -5114,7 +5241,7 @@ object HermesAutomationBridge {
         "/do <description> - dispatch to an enabled automation with the same label",
         "/status [executionId] - inspect recent execution status",
         "/devices - list this standby Hermes device",
-        "/pause, /resume, and /cancel are recognized for compatibility; current local runs are synchronous",
+        "/pause [executionId], /resume [executionId] [feedback], and /cancel [executionId] return OpenGUI-compatible lifecycle state for recent runs",
     )
 
     private val OPENGUI_SLASH_COMMANDS = listOf(
@@ -5124,16 +5251,20 @@ object HermesAutomationBridge {
         "run" to "Run an existing remote-dispatch automation by id or label",
         "do" to "Dispatch a natural-language task to a matching enabled automation",
         "status" to "Show recent execution status",
-        "cancel" to "Recognized for OpenGUI compatibility",
-        "pause" to "Recognized for OpenGUI compatibility",
-        "resume" to "Recognized for OpenGUI compatibility",
+        "cancel" to "Return OpenGUI-compatible cancel state for a recent execution",
+        "pause" to "Return OpenGUI-compatible pause state for a recent execution",
+        "resume" to "Return OpenGUI-compatible resume state for a recent execution",
     )
 
     private val AUTOMATION_ACTIONS = listOf(
         "list",
         "operator_devices",
         "operator_standby_status",
+        "operator_heartbeat",
         "operator_execution_status",
+        "operator_cancel_execution",
+        "operator_pause_execution",
+        "operator_resume_execution",
         "operator_command",
         "run_history",
         "create_shell_task",

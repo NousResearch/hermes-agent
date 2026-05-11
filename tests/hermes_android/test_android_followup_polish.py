@@ -268,6 +268,11 @@ def test_android_automation_exposes_operator_standby_history_for_remote_dispatch
     assert 'operator_execution_status' in bridge
     assert 'operator_command' in bridge
     assert 'parseOperatorCommand' in bridge
+    assert 'operatorCommandTextFromArguments' in bridge
+    assert 'openguiSlashCommandTextFromArguments' in bridge
+    assert 'slash_subcommand' in bridge
+    assert '/opengui <subcommand>' in bridge
+    assert '"/opengui"' in bridge
     assert 'OPENGUI_COMPATIBLE_COMMAND_HELP' in bridge
     assert 'OPENGUI_SLASH_COMMANDS' in bridge
     assert 'operatorCommandAccess' in bridge
@@ -310,6 +315,8 @@ def test_android_automation_exposes_operator_standby_history_for_remote_dispatch
     assert 'operator_devices' in chat_client
     assert 'operator_command' in chat_client
     assert 'IM command strings such as !opengui devices' in chat_client
+    assert '/opengui devices' in chat_client
+    assert 'raw slash payloads' in chat_client
     assert 'standby device listing' in chat_client
     assert 'automationStandbyStatus' in view_model
     assert 'operatorStandbyReady' in view_model

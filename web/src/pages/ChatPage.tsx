@@ -825,8 +825,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <Button
             ghost
             onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+            title={t.app.copyLastResponseTitle}
+            aria-label={t.app.copyLastResponseAria}
             className={cn(
               "absolute z-10",
               "rounded border border-current/30",
@@ -841,7 +841,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
               <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+                {copyState === "copied" ? t.app.copied : t.app.copyLastResponse}
               </span>
             </span>
           </Button>

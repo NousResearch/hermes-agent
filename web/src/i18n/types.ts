@@ -106,6 +106,10 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
+    copyLastResponse: string;
+    copyLastResponseTitle: string;
+    copyLastResponseAria: string;
+    copied: string;
   };
 
   // ── Status page ──

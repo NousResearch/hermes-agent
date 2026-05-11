@@ -196,7 +196,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",)),
-    CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
+    CommandDef("copy", "复制最后一条助手回复到剪贴板", "Info",
                cli_only=True, args_hint="[number]"),
     CommandDef("paste", "Attach clipboard image from your clipboard", "Info",
                cli_only=True),

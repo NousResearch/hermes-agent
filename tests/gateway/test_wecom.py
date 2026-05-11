@@ -4,7 +4,7 @@ import base64
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -36,6 +36,11 @@ class TestWeComRequirements:
 
 
 class TestWeComAdapterInit:
+    def test_declares_non_editable_message_capability(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
+
     def test_reads_config_from_extra(self):
         from gateway.platforms.wecom import WeComAdapter
 
@@ -115,6 +120,48 @@ class TestWeComConnect:
         assert adapter.has_fatal_error is True
         assert adapter.fatal_error_code == "wecom_connect_error"
         assert "invalid secret" in (adapter.fatal_error_message or "")
+
+
+class TestWeComQrScan:
+    @patch("gateway.platforms.wecom.time")
+    @patch("gateway.platforms.wecom.json.loads")
+    @patch("gateway.platforms.wecom.logger")
+    @patch("urllib.request.urlopen")
+    @patch("urllib.request.Request")
+    def test_qr_scan_timeout_uses_monotonic_clock(
+        self,
+        mock_request,
+        mock_urlopen,
+        _mock_logger,
+        mock_json_loads,
+        mock_time,
+    ):
+        from gateway.platforms.wecom import qr_scan_for_bot_info
+
+        generate_resp = MagicMock()
+        generate_resp.read.return_value = b'{"data":{"scode":"abc","auth_url":"https://example.com/qr"}}'
+        generate_resp.__enter__.return_value = generate_resp
+        generate_resp.__exit__.return_value = False
+
+        poll_resp = MagicMock()
+        poll_resp.read.return_value = b'{"data":{"status":"pending"}}'
+        poll_resp.__enter__.return_value = poll_resp
+        poll_resp.__exit__.return_value = False
+
+        mock_urlopen.side_effect = [generate_resp, poll_resp]
+        mock_json_loads.side_effect = [
+            {"data": {"scode": "abc", "auth_url": "https://example.com/qr"}},
+            {"data": {"status": "pending"}},
+        ]
+        mock_time.monotonic.side_effect = [1000, 1000.2, 1001.1]
+        mock_time.time.side_effect = [1000, 900, 901, 902]
+        mock_time.sleep = MagicMock()
+
+        with patch("builtins.print"), patch.dict("sys.modules", {"qrcode": None}):
+            result = qr_scan_for_bot_info(timeout_seconds=1)
+
+        assert result is None
+        assert mock_urlopen.call_count == 2
 
 
 class TestWeComReplyMode:

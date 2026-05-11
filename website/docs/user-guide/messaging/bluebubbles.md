@@ -90,7 +90,8 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 | `BLUEBUBBLES_HOME_CHANNEL` | No | — | Phone/email for cron delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | No | — | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | No | `false` | Allow all users |
-| `BLUEBUBBLES_SEND_READ_RECEIPTS` | No | `true` | Auto-mark messages as read |
+
+Auto-marking messages as read is controlled by the `send_read_receipts` key under `platforms.bluebubbles.extra` in `~/.hermes/config.yaml` (default: `true`). There is no corresponding environment variable.
 
 ## Features
 

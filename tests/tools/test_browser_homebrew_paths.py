@@ -209,6 +209,13 @@ class TestFindAgentBrowser:
 
 
 class TestBrowserRequirements:
+    def test_cdp_override_does_not_require_agent_browser_cli(self, monkeypatch):
+        monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9222/devtools/browser/test")
+        monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
+        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: (_ for _ in ()).throw(FileNotFoundError("not found")))
+
+        assert check_browser_requirements() is True
+
     def test_termux_requires_real_agent_browser_install_not_npx_fallback(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
@@ -333,7 +340,15 @@ class TestRunBrowserCommandPathConstruction:
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 
         assert captured_cmd is not None
-        assert captured_cmd[:2] == ["npx", "agent-browser"]
+        # The prefix must split "npx agent-browser" into two argv items.
+        # On POSIX shutil.which("npx") returns the absolute path if npx is on
+        # PATH (which the test's patched PATH always contains when the system
+        # has it installed).  The important invariant is that the second
+        # argv item is the package name "agent-browser", not a merged
+        # "npx agent-browser" string — that's what Popen needs.
+        assert len(captured_cmd) >= 2
+        assert captured_cmd[0].endswith("npx") or captured_cmd[0] == "npx"
+        assert captured_cmd[1] == "agent-browser"
         assert captured_cmd[2:6] == [
             "--session",
             "test-session",

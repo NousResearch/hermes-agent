@@ -296,7 +296,34 @@ def test_list_authenticated_providers_groups_same_endpoint(monkeypatch):
 def test_list_authenticated_providers_current_endpoint_uses_current_slug(monkeypatch):
     """When current_base_url matches the grouped endpoint, the slug must
     equal current_provider so picker selection routes through the live
-    credential pipeline."""
+    credential pipeline — provided current_provider is a real slug, not
+    the corrupt bare "custom" (see #17478)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom:ollama",
+        current_base_url="http://localhost:11434/v1",
+        user_providers={},
+        custom_providers=[
+            {"name": "Ollama — GLM 5.1", "base_url": "http://localhost:11434/v1",
+             "api_key": "ollama", "model": "glm-5.1"},
+        ],
+        max_models=50,
+    )
+
+    matches = [p for p in providers if p.get("is_user_defined")]
+    assert len(matches) == 1
+    group = matches[0]
+    assert group["slug"] == "custom:ollama"
+    assert group["is_current"] is True
+
+
+def test_list_authenticated_providers_bare_custom_slug_recovers(monkeypatch):
+    """Regression for #17478: when a prior failed switch left the bare
+    literal "custom" in model.provider, the picker must NOT propagate
+    that broken slug. It must fall back to the canonical
+    ``custom:<name>`` form so the picker stays usable."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
 
@@ -314,8 +341,8 @@ def test_list_authenticated_providers_current_endpoint_uses_current_slug(monkeyp
     matches = [p for p in providers if p.get("is_user_defined")]
     assert len(matches) == 1
     group = matches[0]
-    assert group["slug"] == "custom"
-    assert group["is_current"] is True
+    # Canonical slug, NOT the bare "custom" that caused #17478
+    assert group["slug"] == "custom:ollama"
 
 
 def test_list_authenticated_providers_distinct_endpoints_stay_separate(monkeypatch):
@@ -479,3 +506,64 @@ def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
     )
 
     assert "base_url" not in captured
+
+
+def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch):
+    """Custom providers with api_key + base_url should prefer live /models.
+
+    Custom providers (section 4 of list_authenticated_providers) point at
+    gateways like Bifrost that expose hundreds of models.  Reading only the
+    static ``models:`` dict from config.yaml leaves the /model picker with
+    a stale subset.  Live discovery fills the picker with all available
+    models from the endpoint.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    custom_providers = [
+        {
+            "name": "my-gateway",
+            "api_key": "sk-gateway-key",
+            "base_url": "https://gateway.example.com/v1",
+            "model": "gateway-model-a",
+            "models": {
+                "gateway-model-a": {"context_length": 128000},
+                "gateway-model-b": {"context_length": 128000},
+            },
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    gateway_prov = next(
+        (
+            p
+            for p in providers
+            if p.get("api_url") == "https://gateway.example.com/v1"
+        ),
+        None,
+    )
+
+    assert gateway_prov is not None, "Custom provider group not found in results"
+    assert calls == [("sk-gateway-key", "https://gateway.example.com/v1")], (
+        "fetch_api_models must be called with the custom provider's credentials"
+    )
+    assert gateway_prov["models"] == [
+        "gateway-model-a",
+        "gateway-model-b",
+        "gateway-model-c",
+    ], "Live models must replace the static subset"
+    assert gateway_prov["total_models"] == 3

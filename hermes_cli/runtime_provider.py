@@ -319,9 +319,10 @@ def _try_resolve_from_custom_pool(
     base_url: str,
     provider_label: str,
     api_mode_override: Optional[str] = None,
+    provider_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
-    pool_key = get_custom_provider_pool_key(base_url)
+    pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
     if not pool_key:
         return None
     try:
@@ -358,11 +359,20 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return None
     if not requested_norm.startswith("custom:"):
         try:
-            auth_mod.resolve_provider(requested_norm)
+            canonical = auth_mod.resolve_provider(requested_norm)
         except AuthError:
             pass
         else:
-            return None
+            # A user-declared ``custom_providers`` entry whose name matches
+            # only an *alias* (``kimi`` → built-in ``kimi-coding``) is the
+            # user's intended target — alias rewriting would otherwise hijack
+            # the request.  We only defer to the built-in when the raw name is
+            # the canonical provider itself (``nous``, ``openrouter``, …) so
+            # accidentally shadowing a canonical provider still resolves to
+            # the built-in. See tests/hermes_cli/test_runtime_provider_resolution.py
+            # ``test_named_custom_provider_does_not_shadow_builtin_provider``.
+            if (canonical or "").strip().lower() == requested_norm:
+                return None
 
     config = load_config()
     
@@ -391,7 +401,14 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
-                    api_mode = _parse_api_mode(entry.get("api_mode"))
+                    # The v11→v12 migration writes the API mode under the new
+                    # ``transport`` field, but hand-edited configs may still
+                    # use the legacy ``api_mode`` spelling.  Accept both —
+                    # the runtime normaliser ``_normalize_custom_provider_entry``
+                    # already does, so without this lift every migrated config
+                    # silently downgrades codex_responses / anthropic_messages
+                    # providers to chat_completions in the resolved runtime.
+                    api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
                     return result
@@ -409,7 +426,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
-                        api_mode = _parse_api_mode(entry.get("api_mode"))
+                        api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
                         return result
@@ -475,6 +492,13 @@ def _resolve_named_custom_runtime(
     requested_norm = (requested_provider or "").strip().lower()
     if requested_norm == "custom" and explicit_base_url:
         base_url = explicit_base_url.strip().rstrip("/")
+        # Check credential pool first — mirrors the named-custom-provider path
+        # so bare `provider: custom` with a configured custom_providers entry
+        # also gets its api_key from the pool instead of env var fallbacks.
+        pool_result = _try_resolve_from_custom_pool(base_url, "custom", None)
+        if pool_result:
+            pool_result["source"] = "direct-alias"
+            return pool_result
         api_key_candidates = [
             (explicit_api_key or "").strip(),
             os.getenv("OPENAI_API_KEY", "").strip(),
@@ -505,7 +529,7 @@ def _resolve_named_custom_runtime(
         return None
 
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"))
+    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -624,8 +648,11 @@ def _resolve_openrouter_runtime(
 
     # For custom endpoints, check if a credential pool exists
     if effective_provider == "custom" and base_url:
+        # Pass requested_provider so pool lookup prefers name match over base_url,
+        # fixing credential mix-ups when multiple custom providers share a base_url.
         pool_result = _try_resolve_from_custom_pool(
             base_url, effective_provider, _parse_api_mode(model_cfg.get("api_mode")),
+            provider_name=requested_provider if requested_norm != "custom" else None,
         )
         if pool_result:
             return pool_result

@@ -1,14 +1,14 @@
 ---
-title: "Github Auth — Set up GitHub authentication for the agent using git (universally available) or the gh CLI"
+title: "Github Auth — GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login"
 sidebar_label: "Github Auth"
-description: "Set up GitHub authentication for the agent using git (universally available) or the gh CLI"
+description: "GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Github Auth
 
-Set up GitHub authentication for the agent using git (universally available) or the gh CLI. Covers HTTPS tokens, SSH keys, credential helpers, and gh auth — with a detection flow to pick the right method automatically.
+GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login.
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Set up GitHub authentication for the agent using git (universally available) or 
 | Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `GitHub`, `Authentication`, `Git`, `gh-cli`, `SSH`, `Setup` |
 | Related skills | [`github-pr-workflow`](/docs/user-guide/skills/bundled/github/github-github-pr-workflow), [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review), [`github-issues`](/docs/user-guide/skills/bundled/github/github-github-issues), [`github-repo-management`](/docs/user-guide/skills/bundled/github/github-github-repo-management) |
 

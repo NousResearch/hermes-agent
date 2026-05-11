@@ -1,14 +1,14 @@
 ---
-title: "Github Repo Management — Clone, create, fork, configure, and manage GitHub repositories"
+title: "Github Repo Management — Clone/create/fork repos; manage remotes, releases"
 sidebar_label: "Github Repo Management"
-description: "Clone, create, fork, configure, and manage GitHub repositories"
+description: "Clone/create/fork repos; manage remotes, releases"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Github Repo Management
 
-Clone, create, fork, configure, and manage GitHub repositories. Manage remotes, secrets, releases, and workflows. Works with gh CLI or falls back to git + GitHub REST API via curl.
+Clone/create/fork repos; manage remotes, releases.
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Clone, create, fork, configure, and manage GitHub repositories. Manage remotes, 
 | Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `GitHub`, `Repositories`, `Git`, `Releases`, `Secrets`, `Configuration` |
 | Related skills | [`github-auth`](/docs/user-guide/skills/bundled/github/github-github-auth), [`github-pr-workflow`](/docs/user-guide/skills/bundled/github/github-github-pr-workflow), [`github-issues`](/docs/user-guide/skills/bundled/github/github-github-issues) |
 

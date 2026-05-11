@@ -1,14 +1,14 @@
 ---
-title: "Findmy — Track Apple devices and AirTags via FindMy"
+title: "Findmy — Track Apple devices/AirTags via FindMy"
 sidebar_label: "Findmy"
-description: "Track Apple devices and AirTags via FindMy"
+description: "Track Apple devices/AirTags via FindMy"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Findmy
 
-Track Apple devices and AirTags via FindMy.app on macOS using AppleScript and screen capture.
+Track Apple devices/AirTags via FindMy.app on macOS.
 
 ## Skill metadata
 

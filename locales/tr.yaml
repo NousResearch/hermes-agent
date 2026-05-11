@@ -1,0 +1,350 @@
+# Hermes statik mesaj katalogu -- Turkce
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  TEHLİKELİ KOMUT: {description}"
+  choose_long:     "      [b]ir kez  |  [o]turum  |  [h]er zaman  |  [r]eddet"
+  choose_short:    "      [b]ir kez  |  [o]turum  |  [r]eddet"
+  prompt_long:     "      Seçim [b/o/h/R]: "
+  prompt_short:    "      Seçim [b/o/R]: "
+  timeout:         "      ⏱ Zaman aşımı — komut reddedildi"
+  allowed_once:    "      ✓ Bir kez izin verildi"
+  allowed_session: "      ✓ Bu oturum için izin verildi"
+  allowed_always:  "      ✓ Kalıcı izin listesine eklendi"
+  denied:          "      ✗ Reddedildi"
+  cancelled:       "      ✗ İptal edildi"
+  blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
+
+gateway:
+  approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
+  draining:         "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
+  goal_cleared:     "✓ Hedef temizlendi."
+  no_active_goal:   "Aktif hedef yok."
+  config_read_failed: "⚠️ config.yaml okunamadı: {error}"
+  config_save_failed: "⚠️ Yapılandırma kaydedilemedi: {error}"
+
+  model:
+    error_prefix:           "Hata: {error}"
+    switched:               "Model `{model}` olarak değiştirildi"
+    provider_label:         "Sağlayıcı: {provider}"
+    context_label:          "Bağlam: {tokens} token"
+    max_output_label:       "Maks. çıktı: {tokens} token"
+    cost_label:             "Maliyet: {cost}"
+    capabilities_label:     "Yetenekler: {capabilities}"
+    prompt_caching_enabled: "Prompt önbelleği: etkin"
+    warning_prefix:         "Uyarı: {warning}"
+    saved_global:           "config.yaml'a kaydedildi (`--global`)"
+    session_only_hint:      "_(yalnızca bu oturum — kalıcı yapmak için `--global` ekleyin)_"
+    current_label:          "Geçerli: `{model}` ({provider})"
+    current_tag:            " (geçerli)"
+    more_models_suffix:     " (+{count} tane daha)"
+    usage_switch_model:     "`/model <name>` — modeli değiştir"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — sağlayıcıyı değiştir"
+    usage_persist:          "`/model <name> --global` — kalıcı kaydet"
+
+  agents:
+    header:                "🤖 **Aktif Ajanlar ve Görevler**"
+    active_agents:         "**Aktif ajanlar:** {count}"
+    this_chat:             " · bu sohbet"
+    more:                  "... ve {count} tane daha"
+    running_processes:     "**Çalışan arka plan süreçleri:** {count}"
+    async_jobs:            "**Gateway asenkron işleri:** {count}"
+    none:                  "Aktif ajan veya çalışan görev yok."
+    state_starting:        "başlatılıyor"
+    state_running:         "çalışıyor"
+
+  approve:
+    no_pending:            "Onaylanacak bekleyen komut yok."
+    once_singular:         "✅ Komut onaylandı. Ajan devam ediyor..."
+    once_plural:           "✅ Komutlar onaylandı ({count} komut). Ajan devam ediyor..."
+    session_singular:      "✅ Komut onaylandı (desen bu oturum için onaylandı). Ajan devam ediyor..."
+    session_plural:        "✅ Komutlar onaylandı (desen bu oturum için onaylandı) ({count} komut). Ajan devam ediyor..."
+    always_singular:       "✅ Komut onaylandı (desen kalıcı olarak onaylandı). Ajan devam ediyor..."
+    always_plural:         "✅ Komutlar onaylandı (desen kalıcı olarak onaylandı) ({count} komut). Ajan devam ediyor..."
+
+  background:
+    usage:                 "Kullanım: /background <prompt>\nÖrnek: /background Bugünün öne çıkan HN haberlerini özetle\n\nİstemi ayrı bir oturumda çalıştırır. Sohbete devam edebilirsin — sonuç tamamlandığında burada görünecek."
+    started:               "🔄 Arka plan görevi başlatıldı: \"{preview}\"\nGörev kimliği: {task_id}\nSohbete devam edebilirsin — sonuçlar tamamlandığında burada görünecek."
+
+  branch:
+    db_unavailable:        "Oturum veritabanı kullanılamıyor."
+    no_conversation:       "Dallandırılacak konuşma yok — önce bir mesaj gönderin."
+    create_failed:         "Dal oluşturulamadı: {error}"
+    switch_failed:         "Dal oluşturuldu ancak ona geçilemedi."
+    branched_one:          "⑂ **{title}** dalına geçildi ({count} mesaj kopyalandı)\nOrijinal: `{parent}`\nDal: `{new}`\nOrijinale geri dönmek için `/resume` kullanın."
+    branched_many:         "⑂ **{title}** dalına geçildi ({count} mesaj kopyalandı)\nOrijinal: `{parent}`\nDal: `{new}`\nOrijinale geri dönmek için `/resume` kullanın."
+
+  commands:
+    usage:                 "Kullanım: `/commands [page]`"
+    skill_header:          "⚡ **Skill Komutları**:"
+    default_desc:          "Skill komutu"
+    none:                  "Kullanılabilir komut yok."
+    header:                "📚 **Komutlar** (toplam {total}, sayfa {page}/{total_pages})"
+    nav_prev:              "`/commands {page}` ← önceki"
+    nav_next:              "sonraki → `/commands {page}`"
+    out_of_range:          "_(İstenen sayfa {requested} aralık dışındaydı, sayfa {page} gösteriliyor.)_"
+
+  compress:
+    not_enough:            "Sıkıştırmak için yeterli konuşma yok (en az 4 mesaj gerekli)."
+    no_provider:           "Yapılandırılmış sağlayıcı yok — sıkıştırılamıyor."
+    nothing_to_do:         "Henüz sıkıştırılacak bir şey yok (transkript hâlâ tamamen korunan bağlam)."
+    focus_line:            "Odak: \"{topic}\""
+    summary_failed:        "⚠️ Özet oluşturma başarısız ({error}). {count} geçmiş mesaj kaldırılıp yer tutucuyla değiştirildi; önceki bağlam artık kurtarılamaz. auxiliary.compression model yapılandırmanızı kontrol edin."
+    aux_failed:            "ℹ️ Yapılandırılmış sıkıştırma modeli `{model}` başarısız oldu ({error}). Ana modelinizle kurtarıldı — bağlam sağlam — ancak config.yaml içindeki `auxiliary.compression.model` öğesini kontrol etmek isteyebilirsiniz."
+    failed:                "Sıkıştırma başarısız: {error}"
+
+  debug:
+    upload_failed:         "✗ Hata ayıklama raporu yüklenemedi: {error}"
+    header:                "**Hata ayıklama raporu yüklendi:**"
+    auto_delete:           "⏱ Paste'ler 6 saat içinde otomatik olarak silinecek."
+    full_logs_hint:        "Tam günlük yüklemeleri için CLI'dan `hermes debug share` kullanın."
+    share_hint:            "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
+
+  deny:
+    stale:                 "❌ Komut reddedildi (onay geçersizdi)."
+    no_pending:            "Reddedilecek bekleyen komut yok."
+    denied_singular:       "❌ Komut reddedildi."
+    denied_plural:         "❌ Komutlar reddedildi ({count} komut)."
+
+  fast:
+    not_supported:         "⚡ /fast yalnızca Priority Processing destekleyen OpenAI modellerinde kullanılabilir."
+    status:                "⚡ Priority Processing\n\nMevcut mod: `{mode}`\n\n_Kullanım:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seçenekler:** normal, fast, status"
+    saved:                 "⚡ ✓ Priority Processing: **{label}** (yapılandırmaya kaydedildi)\n_(sonraki mesajda geçerli olur)_"
+    session_only:          "⚡ ✓ Priority Processing: **{label}** (yalnızca bu oturum)"
+    label_fast:            "FAST"
+    label_normal:          "NORMAL"
+    status_fast:           "fast"
+    status_normal:         "normal"
+
+  footer:
+    status:                "📎 Çalışma zamanı altbilgisi: **{state}**\nAlanlar: `{fields}`\nPlatform: `{platform}`"
+    usage:                 "Kullanım: `/footer [on|off|status]`"
+    saved:                 "📎 Çalışma zamanı altbilgisi: **{state}**{example}\n_(genel olarak kaydedildi — sonraki mesajda geçerli olur)_"
+    example_line:          "\nÖrnek: `{preview}`"
+    state_on:              "ON"
+    state_off:             "OFF"
+
+  goal:
+    unavailable:           "Bu oturumda hedefler kullanılamıyor."
+    no_goal_set:           "Hedef ayarlanmadı."
+    paused:                "⏸ Hedef duraklatıldı: {goal}"
+    no_resume:             "Devam ettirilecek hedef yok."
+    resumed:               "▶ Hedef devam ettirildi: {goal}\nDevam etmek için herhangi bir mesaj gönderin veya bekleyin — bir sonraki turda adımı atacağım."
+    invalid:               "Geçersiz hedef: {error}"
+    set:                   "⊙ Hedef ayarlandı ({budget} turluk bütçe): {goal}\nHedef tamamlanana, siz duraklatana/temizleyene veya bütçe tükenene kadar çalışmaya devam edeceğim.\nKontroller: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Hermes Komutları**\n"
+    skill_header:          "\n⚡ **Skill Komutları** ({count} aktif):"
+    more_use_commands:     "\n... ve {count} tane daha. Tam sayfalı liste için `/commands` kullanın."
+
+  insights:
+    invalid_days:          "Geçersiz --days değeri: {value}"
+    error:                 "Analiz oluşturulurken hata: {error}"
+
+  kanban:
+    error_prefix:          "⚠ kanban hatası: {error}"
+    subscribed_suffix:     "(abone olundu — {task_id} tamamlandığında veya engellendiğinde bildirim alacaksınız)"
+    truncated_suffix:      "… (kısaltıldı; tam çıktı için terminalinizde `hermes kanban …` komutunu kullanın)"
+    no_output:             "(çıktı yok)"
+
+  personality:
+    none_configured:       "`{path}/config.yaml` içinde yapılandırılmış kişilik yok"
+    header:                "🎭 **Mevcut Kişilikler**\n"
+    none_option:           "• `none` — (kişilik kaplaması yok)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nKullanım: `/personality <name>`"
+    save_failed:           "⚠️ Kişilik değişikliği kaydedilemedi: {error}"
+    cleared:               "🎭 Kişilik temizlendi — temel ajan davranışı kullanılıyor.\n_(bir sonraki mesajda etkili olur)_"
+    set_to:                "🎭 Kişilik **{name}** olarak ayarlandı\n_(bir sonraki mesajda etkili olur)_"
+    unknown:               "Bilinmeyen kişilik: `{name}`\n\nMevcut: {available}"
+
+  profile:
+    header:                "👤 **Profil:** `{profile}`"
+    home:                  "📂 **Ana dizin:** `{home}`"
+
+  reasoning:
+    level_default:             "medium (varsayılan)"
+    level_disabled:            "none (devre dışı)"
+    scope_session:             "oturum geçersiz kılma"
+    scope_global:              "genel yapılandırma"
+    status:                    "🧠 **Akıl Yürütme Ayarları**\n\n**Güç:** `{level}`\n**Kapsam:** {scope}\n**Görüntüleme:** {display}\n\n_Kullanım:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    display_on:                "açık ✓"
+    display_off:               "kapalı"
+    display_set_on:            "🧠 ✓ Akıl yürütme görüntüleme: **AÇIK**\n**{platform}** üzerinde her yanıttan önce modelin düşüncesi gösterilecek."
+    display_set_off:           "🧠 ✓ **{platform}** için akıl yürütme görüntüleme: **KAPALI**"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` desteklenmiyor. Genel varsayılanı değiştirmek için `/reasoning <level> --global` kullanın."
+    reset_done:                "🧠 ✓ Oturumun akıl yürütme geçersiz kılması temizlendi; genel yapılandırmaya geri dönülüyor."
+    unknown_arg:               "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seviyeler:** none, minimal, low, medium, high, xhigh\n**Görüntüleme:** show, hide\n**Kalıcı:** bu oturumun ötesinde kaydetmek için `--global` ekleyin"
+    set_global:                "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yapılandırmaya kaydedildi)\n_(sonraki mesajda etkili)_"
+    set_global_save_failed:    "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — yapılandırma kaydedilemedi)\n_(sonraki mesajda etkili)_"
+    set_session:               "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — kalıcı yapmak için `--global` ekleyin)\n_(sonraki mesajda etkili)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp iptal edildi. MCP araçları değiştirilmedi."
+    always_followup:       "ℹ️ Bundan sonraki `/reload-mcp` çağrıları onaysız çalışacak. `config.yaml` içinde `approvals.mcp_reload_confirm: true` ile yeniden etkinleştirebilirsiniz."
+    confirm_prompt:        "⚠️ **/reload-mcp Onayı**\n\nMCP sunucularını yeniden yüklemek bu oturumdaki araç kümesini yeniden oluşturur ve **sağlayıcı prompt önbelleğini geçersiz kılar** — bir sonraki mesaj tüm giriş token'larını yeniden gönderir. Uzun bağlam veya yüksek akıl yürütmeli modellerde bu maliyetli olabilir.\n\nSeçim yapın:\n• **Bir Kez Onayla** — şimdi yeniden yükle\n• **Her Zaman Onayla** — şimdi yeniden yükle ve bu onayı kalıcı olarak sustur\n• **İptal** — MCP araçlarını değiştirme\n\n_Metin alternatifi: `/approve`, `/always` veya `/cancel` ile yanıtlayın._"
+    header:                "🔄 **MCP Sunucuları Yeniden Yüklendi**\n"
+    reconnected:           "♻️ Yeniden bağlanan: {names}"
+    added:                 "➕ Eklenen: {names}"
+    removed:               "➖ Kaldırılan: {names}"
+    none_connected:        "Bağlı MCP sunucusu yok."
+    tools_available:       "\n🔧 {servers} sunucudan {tools} araç kullanılabilir"
+    failed:                "❌ MCP yeniden yükleme başarısız: {error}"
+
+  reload_skills:
+    header:                "🔄 **Beceriler Yeniden Yüklendi**\n"
+    no_new:                "Yeni beceri tespit edilmedi."
+    total:                 "\n📚 {count} beceri kullanılabilir"
+    added_header:          "➕ **Eklenen Beceriler:**"
+    removed_header:        "➖ **Kaldırılan Beceriler:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ Beceri yeniden yükleme başarısız: {error}"
+
+  reset:
+    header_default:        "✨ Oturum sıfırlandı! Yeniden başlıyoruz."
+    header_new:            "✨ Yeni oturum başlatıldı!"
+    header_titled:         "✨ Yeni oturum başlatıldı: {title}"
+    title_rejected:        "\n⚠️ Başlık reddedildi: {error}"
+    title_error_untitled:  "\n⚠️ {error} — oturum başlıksız başlatıldı."
+    title_empty_untitled:  "\n⚠️ Temizlik sonrası başlık boş — oturum başlıksız başlatıldı."
+    tip:                   "\n✦ İpucu: {tip}"
+
+  restart:
+    in_progress:           "⏳ Gateway yeniden başlatma zaten sürüyor..."
+    restarting:            "♻ Gateway yeniden başlatılıyor. 60 saniye içinde bildirim almazsanız konsoldan `hermes gateway restart` ile yeniden başlatın."
+
+  resume:
+    db_unavailable:        "Oturum veritabanı kullanılamıyor."
+    no_named_sessions:     "Adlandırılmış oturum bulunamadı.\nMevcut oturumu adlandırmak için `/title Oturumum`, daha sonra geri dönmek için `/resume Oturumum` kullanın."
+    list_header:           "📋 **Adlandırılmış Oturumlar**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nKullanım: `/resume <oturum adı>`"
+    list_failed:           "Oturumlar listelenemedi: {error}"
+    not_found:             "'**{name}**' ile eşleşen oturum bulunamadı.\nKullanılabilir oturumları görmek için argümansız `/resume` kullanın."
+    already_on:            "📌 Zaten **{name}** oturumundasınız."
+    switch_failed:         "Oturum değiştirilemedi."
+    resumed_one:           "↻ **{title}** oturumu sürdürüldü ({count} mesaj). Konuşma geri yüklendi."
+    resumed_many:          "↻ **{title}** oturumu sürdürüldü ({count} mesaj). Konuşma geri yüklendi."
+    resumed_no_count:      "↻ **{title}** oturumu sürdürüldü. Konuşma geri yüklendi."
+
+  retry:
+    no_previous:           "Yeniden denenecek önceki mesaj yok."
+
+  rollback:
+    not_enabled:           "Kontrol noktaları etkin değil.\nconfig.yaml içinde etkinleştirin:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "{cwd} için kontrol noktası bulunamadı"
+    invalid_number:        "Geçersiz kontrol noktası numarası. 1-{max} aralığını kullanın."
+    restored:              "✅ {hash} kontrol noktasına geri yüklendi: {reason}\nGeri alma öncesi anlık görüntü otomatik olarak kaydedildi."
+    restore_failed:        "❌ {error}"
+
+  set_home:
+    save_failed:           "Ana kanal kaydedilemedi: {error}"
+    success:               "✅ Ana kanal **{name}** (ID: {chat_id}) olarak ayarlandı.\nCron işleri ve platformlar arası mesajlar buraya iletilecek."
+
+  status:
+    header:                "📊 **Hermes Gateway Durumu**"
+    session_id:            "**Oturum kimliği:** `{session_id}`"
+    title:                 "**Başlık:** {title}"
+    created:               "**Oluşturuldu:** {timestamp}"
+    last_activity:         "**Son etkinlik:** {timestamp}"
+    tokens:                "**Token:** {tokens}"
+    agent_running:         "**Aracı çalışıyor:** {state}"
+    state_yes:             "Evet ⚡"
+    state_no:              "Hayır"
+    queued:                "**Sıradaki devam:** {count}"
+    platforms:             "**Bağlı platformlar:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ Durduruldu. Ajan henüz başlamamıştı — bu oturuma devam edebilirsin."
+    stopped:               "⚡ Durduruldu. Bu oturuma devam edebilirsin."
+    no_active:             "Durdurulacak aktif görev yok."
+
+  title:
+    db_unavailable:        "Oturum veritabanı kullanılamıyor."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ Temizlemeden sonra başlık boş. Lütfen yazdırılabilir karakterler kullanın."
+    set_to:                "✏️ Oturum başlığı ayarlandı: **{title}**"
+    not_found:             "Oturum veritabanında bulunamadı."
+    current_with_title:    "📌 Oturum: `{session_id}`\nBaşlık: **{title}**"
+    current_no_title:      "📌 Oturum: `{session_id}`\nBaşlık ayarlanmamış. Kullanım: `/title Oturum Adım`"
+
+  topic:
+    not_telegram_dm:         "/topic komutu yalnızca Telegram özel sohbetlerinde kullanılabilir."
+    no_session_db:           "Oturum veritabanı kullanılamıyor."
+    unauthorized:            "Bu bot üzerinde /topic kullanma yetkiniz yok."
+    restore_needs_topic:     "Bir oturumu geri yüklemek için önce bir Telegram topic oluşturun veya açın, ardından o topic içinde /topic <session-id> gönderin. Yeni bir topic oluşturmak için All Messages'ı açıp orada herhangi bir mesaj gönderin."
+    topics_disabled:         "Bu bot için Telegram topic'leri henüz etkin değil.\n\nNasıl etkinleştirilir:\n1. @BotFather'ı açın.\n2. Botunuzu seçin.\n3. Bot Settings → Threads Settings'ı açın.\n4. Threaded Mode'u açın ve kullanıcıların yeni thread oluşturmasına izin verildiğinden emin olun.\n\nArdından /topic'i tekrar gönderin."
+    topics_user_disallowed:  "Telegram topic'leri etkin, ancak kullanıcıların topic oluşturmasına izin verilmiyor.\n\n@BotFather → botunuz → Bot Settings → Threads Settings yolunu açın ve 'Disallow users to create new threads' seçeneğini kapatın.\n\nArdından /topic'i tekrar gönderin."
+    enable_failed:           "Telegram topic modu etkinleştirilemedi: {error}"
+    bound_status:            "Bu topic şuna bağlı:\nOturum: {label}\nID: {session_id}\n\nBu topic'i yeni bir oturumla değiştirmek için /new kullanın.\nParalel çalışma için All Messages'ı açıp orada bir mesaj göndererek başka bir topic oluşturun."
+    thread_ready:            "Telegram çok oturumlu topic'leri etkin.\n\nBu topic bağımsız bir Hermes oturumu olarak kullanılacak. Bu topic'in mevcut oturumunu değiştirmek için /new kullanın. Paralel çalışma için All Messages'ı açıp orada bir mesaj göndererek başka bir topic oluşturun."
+    untitled_session:        "Adsız oturum"
+
+  undo:
+    nothing:               "Geri alınacak bir şey yok."
+    removed:               "↩️ {count} mesaj geri alındı.\nKaldırıldı: \"{preview}\""
+
+  update:
+    platform_not_messaging:  "✗ /update yalnızca mesajlaşma platformlarında kullanılabilir. Terminalden `hermes update` komutunu çalıştırın."
+    not_git_repo:            "✗ Git deposu değil — güncellenemiyor."
+    hermes_cmd_not_found:    "✗ `hermes` komutu bulunamadı. Hermes çalışıyor, ancak güncelleme komutu yürütülebilir dosyayı PATH'te veya mevcut Python yorumlayıcısı aracılığıyla bulamadı. Terminalde `hermes update` komutunu manuel olarak çalıştırmayı deneyin."
+    start_failed:            "✗ Güncelleme başlatılamadı: {error}"
+    starting:                "⚕ Hermes güncellemesi başlatılıyor… İlerlemeyi buraya akıtacağım."
+
+  usage:
+    rate_limits:              "⏱️ **Hız Sınırları:** {state}"
+    header_session:           "📊 **Oturum Token Kullanımı**"
+    label_model:              "Model: `{model}`"
+    label_input_tokens:       "Girdi token'ları: {count}"
+    label_cache_read:         "Önbellek okuma token'ları: {count}"
+    label_cache_write:        "Önbellek yazma token'ları: {count}"
+    label_output_tokens:      "Çıktı token'ları: {count}"
+    label_total:              "Toplam: {count}"
+    label_api_calls:          "API çağrıları: {count}"
+    label_cost:               "Maliyet: {prefix}${amount}"
+    label_cost_included:      "Maliyet: dahil"
+    label_context:            "Bağlam: {used} / {total} ({pct}%)"
+    label_compressions:       "Sıkıştırmalar: {count}"
+    header_session_info:      "📊 **Oturum Bilgisi**"
+    label_messages:           "Mesajlar: {count}"
+    label_estimated_context:  "Tahmini bağlam: ~{count} token"
+    detailed_after_first:     "_(Ayrıntılı kullanım, ilk ajan yanıtından sonra kullanılabilir)_"
+    no_data:                  "Bu oturum için kullanım verisi yok."
+
+  verbose:
+    not_enabled:           "`/verbose` komutu mesajlaşma platformlarında etkin değil.\n\n`config.yaml` içinde etkinleştirin:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ Araç ilerlemesi: **OFF** — araç etkinliği gösterilmez."
+    mode_new:              "⚙️ Araç ilerlemesi: **NEW** — araç değiştiğinde gösterilir (önizleme uzunluğu: `display.tool_preview_length`, varsayılan 40)."
+    mode_all:              "⚙️ Araç ilerlemesi: **ALL** — her araç çağrısı gösterilir (önizleme uzunluğu: `display.tool_preview_length`, varsayılan 40)."
+    mode_verbose:          "⚙️ Araç ilerlemesi: **VERBOSE** — her araç çağrısı tüm argümanlarıyla gösterilir."
+    saved_suffix:          "_(**{platform}** için kaydedildi — sonraki mesajda geçerli olur)_"
+    save_failed:           "_(yapılandırmaya kaydedilemedi: {error})_"
+
+  voice:
+    enabled_voice_only:    "Sesli mod etkinleştirildi.\nSesli mesaj gönderdiğinizde sesli yanıt vereceğim.\nTüm mesajlara sesli yanıt almak için /voice tts kullanın."
+    disabled_text:         "Sesli mod devre dışı. Yalnızca metin yanıtları."
+    tts_enabled:           "Otomatik TTS etkinleştirildi.\nTüm yanıtlar bir sesli mesaj içerecek."
+    status_mode:           "Sesli mod: {label}"
+    status_channel:        "Ses kanalı: #{channel}"
+    status_participants:   "Katılımcılar: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (konuşuyor)"
+    enabled_short:         "Sesli mod etkinleştirildi."
+    disabled_short:        "Sesli mod devre dışı."
+    label_off:             "Kapalı (yalnızca metin)"
+    label_voice_only:      "Açık (sesli mesajlara sesli yanıt)"
+    label_all:             "TTS (tüm mesajlara sesli yanıt)"
+
+  yolo:
+    disabled:                   "⚠️ Bu oturumda YOLO modu **KAPALI** — tehlikeli komutlar onay gerektirecek."
+    enabled:                    "⚡ Bu oturumda YOLO modu **AÇIK** — tüm komutlar otomatik onaylanır. Dikkatli kullanın."
+
+  shared:
+    session_db_unavailable:      "Oturum veritabanı kullanılamıyor."
+    session_db_unavailable_prefix: "Oturum veritabanı kullanılamıyor"
+    session_not_found:           "Oturum veritabanında bulunamadı."
+    warn_passthrough:            "⚠️ {error}"

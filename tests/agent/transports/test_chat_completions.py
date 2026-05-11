@@ -73,17 +73,84 @@ class TestChatCompletionsBuildKwargs:
         assert kw["tools"] == tools
 
     def test_openrouter_provider_prefs(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gpt-4o", messages=msgs,
-            is_openrouter=True,
+            provider_profile=profile,
             provider_preferences={"only": ["openai"]},
         )
         assert kw["extra_body"]["provider"] == {"only": ["openai"]}
 
-    def test_nous_tags(self, transport):
+    def test_openrouter_pareto_min_coding_score(self, transport):
+        """Profile path: model=openrouter/pareto-code + score → plugins block."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
         msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, is_nous=True)
+        kw = transport.build_kwargs(
+            model="openrouter/pareto-code", messages=msgs,
+            provider_profile=profile,
+            openrouter_min_coding_score=0.65,
+        )
+        assert kw["extra_body"]["plugins"] == [
+            {"id": "pareto-router", "min_coding_score": 0.65}
+        ]
+
+    def test_openrouter_pareto_score_ignored_for_other_models(self, transport):
+        """Score must not be emitted for any model other than openrouter/pareto-code."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="anthropic/claude-sonnet-4.6", messages=msgs,
+            provider_profile=profile,
+            openrouter_min_coding_score=0.65,
+        )
+        assert "plugins" not in (kw.get("extra_body") or {})
+
+    def test_openrouter_pareto_score_omitted_when_unset(self, transport):
+        """No score → no plugins block (router uses its omission default = strongest coder)."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="openrouter/pareto-code", messages=msgs,
+            provider_profile=profile,
+            openrouter_min_coding_score=None,
+        )
+        assert "plugins" not in (kw.get("extra_body") or {})
+
+    def test_openrouter_pareto_score_out_of_range_dropped(self, transport):
+        """Out-of-range scores must be silently dropped, not forwarded."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        for bad in (1.5, -0.1, "not-a-number"):
+            kw = transport.build_kwargs(
+                model="openrouter/pareto-code", messages=msgs,
+                provider_profile=profile,
+                openrouter_min_coding_score=bad,
+            )
+            assert "plugins" not in (kw.get("extra_body") or {}), f"bad={bad!r}"
+
+    def test_openrouter_pareto_legacy_path(self, transport):
+        """Legacy flag path (no profile loaded) must also emit the plugins block."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="openrouter/pareto-code", messages=msgs,
+            is_openrouter=True,
+            openrouter_min_coding_score=0.8,
+        )
+        assert kw["extra_body"]["plugins"] == [
+            {"id": "pareto-router", "min_coding_score": 0.8}
+        ]
+
+    def test_nous_tags(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("nous")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, provider_profile=profile)
         assert kw["extra_body"]["tags"] == ["product=hermes-agent"]
 
     def test_reasoning_default(self, transport):
@@ -95,29 +162,36 @@ class TestChatCompletionsBuildKwargs:
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
 
     def test_nous_omits_disabled_reasoning(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("nous")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gpt-4o", messages=msgs,
+            provider_profile=profile,
             supports_reasoning=True,
-            is_nous=True,
             reasoning_config={"enabled": False},
         )
         # Nous rejects enabled=false; reasoning omitted entirely
         assert "reasoning" not in kw.get("extra_body", {})
 
     def test_ollama_num_ctx(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="llama3", messages=msgs,
+            provider_profile=profile,
             ollama_num_ctx=32768,
         )
         assert kw["extra_body"]["options"]["num_ctx"] == 32768
 
     def test_custom_think_false(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="qwen3", messages=msgs,
-            is_custom_provider=True,
+            provider_profile=profile,
             reasoning_config={"effort": "none"},
         )
         assert kw["extra_body"]["think"] is False
@@ -244,6 +318,46 @@ class TestChatCompletionsBuildKwargs:
             "thinking_level": "low",
         }
 
+    def test_gemma_does_not_receive_thinking_config(self, transport):
+        # The `gemini` provider also serves Gemma (e.g. `gemma-4-31b-it`),
+        # but Gemma rejects `thinking_config` with HTTP 400 (#17426). Even
+        # when Hermes has reasoning enabled, the field must be omitted for
+        # non-Gemini models on this provider.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemma-4-31b-it",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert "thinking_config" not in kw.get("extra_body", {})
+
+    def test_gemma_disabled_reasoning_still_omits_thinking_config(self, transport):
+        # The `Unknown name 'thinking_config': Cannot find field` rejection
+        # fires even on `{"includeThoughts": False}` — the entire field must
+        # be absent, not just disabled. (#17426)
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemma-4-31b-it",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": False},
+        )
+        assert "thinking_config" not in kw.get("extra_body", {})
+
+    def test_google_prefixed_gemma_also_omits_thinking_config(self, transport):
+        # OpenRouter-style `google/gemma-...` IDs hit the same provider path
+        # and must also omit `thinking_config`. The existing `google/`
+        # prefix-stripping must not accidentally classify Gemma as Gemini.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="google/gemma-4-31b-it",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert "thinking_config" not in kw.get("extra_body", {})
+
     def test_max_tokens_with_fn(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -264,23 +378,29 @@ class TestChatCompletionsBuildKwargs:
         assert kw["max_tokens"] == 2048
 
     def test_nvidia_default_max_tokens(self, transport):
+        """NVIDIA max_tokens=16384 is now set via ProviderProfile, not legacy flag."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("nvidia")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="glm-4.7", messages=msgs,
-            is_nvidia_nim=True,
+            model="nvidia/llama-3.1-405b-instruct",
+            messages=msgs,
             max_tokens_param_fn=lambda n: {"max_tokens": n},
+            provider_profile=profile,
         )
-        # NVIDIA default: 16384
         assert kw["max_tokens"] == 16384
 
     def test_qwen_default_max_tokens(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("qwen-oauth")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="qwen3-coder-plus", messages=msgs,
-            is_qwen_portal=True,
+            provider_profile=profile,
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
-        # Qwen default: 65536
+        # Qwen default: 65536 from profile.default_max_tokens
         assert kw["max_tokens"] == 65536
 
     def test_anthropic_max_output_for_claude_on_aggregator(self, transport):
@@ -303,14 +423,23 @@ class TestChatCompletionsBuildKwargs:
         assert kw["service_tier"] == "priority"
 
     def test_fixed_temperature(self, transport):
+        """Fixed temperature is now set via ProviderProfile.fixed_temperature."""
+        from providers.base import ProviderProfile
         msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, fixed_temperature=0.6)
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            provider_profile=ProviderProfile(name="_t", fixed_temperature=0.6),
+        )
         assert kw["temperature"] == 0.6
 
     def test_omit_temperature(self, transport):
+        """Omit temperature is set via ProviderProfile with OMIT_TEMPERATURE sentinel."""
+        from providers.base import ProviderProfile, OMIT_TEMPERATURE
         msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, omit_temperature=True, fixed_temperature=0.5)
-        # omit wins
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            provider_profile=ProviderProfile(name="_t", fixed_temperature=OMIT_TEMPERATURE),
+        )
         assert "temperature" not in kw
 
 
@@ -318,18 +447,22 @@ class TestChatCompletionsKimi:
     """Regression tests for the Kimi/Moonshot quirks migrated into the transport."""
 
     def test_kimi_max_tokens_default(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("kimi-coding")
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
-            is_kimi=True,
+            provider_profile=profile,
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
-        # Kimi CLI default: 32000
+        # Kimi CLI default: 32000 from KimiProfile.default_max_tokens
         assert kw["max_tokens"] == 32000
 
     def test_kimi_reasoning_effort_top_level(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("kimi-coding")
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
-            is_kimi=True,
+            provider_profile=profile,
             reasoning_config={"effort": "high"},
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
@@ -347,17 +480,21 @@ class TestChatCompletionsKimi:
         assert "reasoning_effort" not in kw
 
     def test_kimi_thinking_enabled_extra_body(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("kimi-coding")
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
-            is_kimi=True,
+            provider_profile=profile,
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
         assert kw["extra_body"]["thinking"] == {"type": "enabled"}
 
     def test_kimi_thinking_disabled_extra_body(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("kimi-coding")
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
-            is_kimi=True,
+            provider_profile=profile,
             reasoning_config={"enabled": False},
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
@@ -579,6 +716,41 @@ class TestChatCompletionsNormalize:
         nr = transport.normalize_response(r)
         assert nr.reasoning == "summary text"
         assert nr.provider_data == {"reasoning_content": "detailed scratchpad"}
+
+    def test_empty_reasoning_content_preserved(self, transport):
+        """DeepSeek can require an explicit empty reasoning_content replay field."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=None,
+                    reasoning=None,
+                    reasoning_content="",
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.provider_data == {"reasoning_content": ""}
+        assert nr.reasoning_content == ""
+
+    def test_reasoning_content_preserved_from_model_extra(self, transport):
+        """OpenAI SDK can expose provider-specific DeepSeek fields via model_extra."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=None,
+                    reasoning=None,
+                    model_extra={"reasoning_content": "model-extra scratchpad"},
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.provider_data == {"reasoning_content": "model-extra scratchpad"}
 
 
 class TestChatCompletionsCacheStats:

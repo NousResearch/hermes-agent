@@ -91,12 +91,12 @@ def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
     deep = getattr(args, 'deep', False)
-    
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 ⚕ Hermes Agent Status                  │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
-    
+
     # =========================================================================
     # Environment
     # =========================================================================
@@ -104,7 +104,7 @@ def show_status(args):
     print(color("◆ Environment", Colors.CYAN, Colors.BOLD))
     print(f"  Project:      {PROJECT_ROOT}")
     print(f"  Python:       {sys.version.split()[0]}")
-    
+
     env_path = get_env_path()
     print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
 
@@ -115,17 +115,23 @@ def show_status(args):
 
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
-    
+
     # =========================================================================
     # API Keys
     # =========================================================================
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
-    
-    keys = {
+
+    # Values may be a single env var name (str) or a tuple of alternates (first found wins).
+    keys: dict[str, str | tuple[str, ...]] = {
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
-        "Z.AI/GLM": "GLM_API_KEY",
+        "Anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
+        "Google / Gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+        "DeepSeek": "DEEPSEEK_API_KEY",
+        "xAI / Grok": "XAI_API_KEY",
+        "NVIDIA NIM": "NVIDIA_API_KEY",
+        "Z.AI / GLM": "GLM_API_KEY",
         "Kimi": "KIMI_API_KEY",
         "StepFun Step Plan": "STEPFUN_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
@@ -140,9 +146,24 @@ def show_status(args):
         "ElevenLabs": "ELEVENLABS_API_KEY",
         "GitHub": "GITHUB_TOKEN",
     }
-    
-    for name, env_var in keys.items():
-        value = get_env_value(env_var) or ""
+
+    def _resolve_env(env_ref) -> str:
+        """Return first non-empty env var value from a str or tuple of names."""
+        if isinstance(env_ref, tuple):
+            for candidate in env_ref:
+                v = get_env_value(candidate) or ""
+                if v:
+                    return v
+            return ""
+        return get_env_value(env_ref) or ""
+
+    for name, env_ref in keys.items():
+        # Anthropic already has a dedicated lookup below; keep that as the
+        # single source of truth (it also resolves OAuth tokens), skip here
+        # so we don't print two "Anthropic" rows.
+        if name == "Anthropic":
+            continue
+        value = _resolve_env(env_ref)
         has_key = bool(value)
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
@@ -322,13 +343,13 @@ def show_status(args):
     # =========================================================================
     print()
     print(color("◆ Terminal Backend", Colors.CYAN, Colors.BOLD))
-    
+
     terminal_cfg = config.get("terminal", {}) if isinstance(config.get("terminal"), dict) else {}
     terminal_env = os.getenv("TERMINAL_ENV", "")
     if not terminal_env:
         terminal_env = terminal_cfg.get("backend", "local")
     print(f"  Backend:      {terminal_env}")
-    
+
     if terminal_env == "ssh":
         ssh_host = os.getenv("TERMINAL_SSH_HOST", "")
         ssh_user = os.getenv("TERMINAL_SSH_USER", "")
@@ -357,16 +378,16 @@ def show_status(args):
             print(f"  Auth detail:  {line}")
         print(f"  Persistence:  {'snapshot filesystem' if persist_enabled else 'ephemeral filesystem'}")
         print("  Processes:    live processes do not survive cleanup, snapshots, or sandbox recreation")
-    
+
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
-    
+
     # =========================================================================
     # Messaging Platforms
     # =========================================================================
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
-    
+
     platforms = {
         "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
         "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
@@ -384,7 +405,7 @@ def show_status(args):
         "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
         "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
     }
-    
+
     for name, (token_var, home_var) in platforms.items():
         token = os.getenv(token_var, "")
         has_token = bool(token)
@@ -401,7 +422,18 @@ def show_status(args):
             status += f" (home: {home_channel})"
         
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
-    
+
+    # Plugin-registered platforms
+    try:
+        from gateway.platform_registry import platform_registry
+        for entry in platform_registry.plugin_entries():
+            configured = entry.check_fn()
+            status_str = "configured" if configured else "not configured"
+            label = entry.label
+            print(f"  {label:<12}  {check_mark(configured)} {status_str} (plugin)")
+    except Exception:
+        pass
+
     # =========================================================================
     # Gateway Status
     # =========================================================================
@@ -437,13 +469,13 @@ def show_status(args):
         else:
             print(f"  Status:       {color('N/A', Colors.DIM)}")
             print("  Manager:      (not supported on this platform)")
-    
+
     # =========================================================================
     # Cron Jobs
     # =========================================================================
     print()
     print(color("◆ Scheduled Jobs", Colors.CYAN, Colors.BOLD))
-    
+
     jobs_file = get_hermes_home() / "cron" / "jobs.json"
     if jobs_file.exists():
         import json
@@ -457,13 +489,13 @@ def show_status(args):
             print("  Jobs:         (error reading jobs file)")
     else:
         print("  Jobs:         0")
-    
+
     # =========================================================================
     # Sessions
     # =========================================================================
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
-    
+
     sessions_file = get_hermes_home() / "sessions" / "sessions.json"
     if sessions_file.exists():
         import json
@@ -475,7 +507,7 @@ def show_status(args):
             print("  Active:       (error reading sessions file)")
     else:
         print("  Active:       0")
-    
+
     # =========================================================================
     # Deep checks
     # =========================================================================
@@ -511,7 +543,7 @@ def show_status(args):
             print(f"  Port 18789:   {'in use' if port_in_use else 'available'}")
         except OSError:
             pass
-    
+
     print()
     print(color("─" * 60, Colors.DIM))
     print(color("  Run 'hermes doctor' for detailed diagnostics", Colors.DIM))

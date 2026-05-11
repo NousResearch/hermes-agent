@@ -21,7 +21,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
 
 import httpx
@@ -39,6 +39,17 @@ from gateway.platforms.base import (
     cache_image_from_url,
 )
 from gateway.platforms.helpers import redact_phone
+from gateway.platforms.signal_rate_limit import (
+    SIGNAL_BATCH_PACING_NOTICE_THRESHOLD,
+    SIGNAL_MAX_ATTACHMENTS_PER_MSG,
+    SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+    SignalRateLimitError,
+    _extract_retry_after_seconds,
+    _format_wait,
+    _is_signal_rate_limit_error,
+    _signal_send_timeout,
+    get_scheduler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +63,7 @@ SSE_RETRY_DELAY_INITIAL = 2.0
 SSE_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
 HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -180,6 +192,15 @@ class SignalAdapter(BasePlatformAdapter):
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
 
+        # DM allowlist — mirrors SIGNAL_ALLOWED_USERS checked by run.py.
+        # Stored here so the reaction hooks can skip unauthorized senders
+        # (reactions fire before run.py's auth gate, so without this check
+        # every inbound DM from any contact gets a 👀 reaction).
+        # "*" means all users allowed (open mode); empty means no restriction
+        # recorded at adapter level (run.py still enforces auth separately).
+        dm_allowed_str = os.getenv("SIGNAL_ALLOWED_USERS", "*")
+        self.dm_allow_from = set(_parse_comma_list(dm_allowed_str))
+
         # HTTP client
         self.client: Optional[httpx.AsyncClient] = None
 
@@ -236,7 +257,9 @@ class SignalAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
-        self.client = httpx.AsyncClient(timeout=30.0)
+        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
             # Health check — verify signal-cli daemon is reachable
             try:
@@ -522,6 +545,18 @@ class SignalAdapter(BasePlatformAdapter):
                 except Exception:
                     logger.exception("Signal: failed to fetch attachment %s", att_id)
 
+        # Skip envelopes with no meaningful content (no text, no attachments).
+        # Catches profile key updates, empty messages, and other metadata-only
+        # envelopes that still carry a dataMessage wrapper but have nothing
+        # worth processing. See issue: signal-cli logs "Profile key update" +
+        # Hermes receives msg='' triggering a full agent turn for nothing.
+        if (not text or not text.strip()) and not media_urls:
+            logger.debug(
+                "Signal: skipping contentless envelope from %s (%d attachments)",
+                redact_phone(sender), len(media_urls) if media_urls else 0,
+            )
+            return
+
         # Build session source
         source = self.build_source(
             chat_id=chat_id,
@@ -674,6 +709,8 @@ class SignalAdapter(BasePlatformAdapter):
         rpc_id: str = None,
         *,
         log_failures: bool = True,
+        raise_on_rate_limit: bool = False,
+        timeout: float = 30.0,
     ) -> Any:
         """Send a JSON-RPC 2.0 request to signal-cli daemon.
 
@@ -682,6 +719,11 @@ class SignalAdapter(BasePlatformAdapter):
         repeated NETWORK_FAILURE spam for unreachable recipients while
         still preserving visibility for the first occurrence and for
         unrelated RPCs.
+
+        When ``raise_on_rate_limit=True``, a Signal ``[429]`` /
+        ``RateLimitException`` response raises ``SignalRateLimitError``
+        instead of being swallowed — lets callers (multi-attachment send)
+        opt into backoff-retry without changing default behaviour.
         """
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
@@ -701,20 +743,28 @@ class SignalAdapter(BasePlatformAdapter):
             resp = await self.client.post(
                 f"{self.http_url}/api/v1/rpc",
                 json=payload,
-                timeout=30.0,
+                timeout=timeout,
             )
             resp.raise_for_status()
             data = resp.json()
 
             if "error" in data:
+                err = data["error"]
+                if raise_on_rate_limit:
+                    if _is_signal_rate_limit_error(err):
+                        err_msg = str(err.get("message", "")) if isinstance(err, dict) else str(err)
+                        retry_after = _extract_retry_after_seconds(err)
+                        raise SignalRateLimitError(err_msg, retry_after=retry_after)
                 if log_failures:
-                    logger.warning("Signal RPC error (%s): %s", method, data["error"])
+                    logger.warning("Signal RPC error (%s): %s", method, err)
                 else:
-                    logger.debug("Signal RPC error (%s): %s", method, data["error"])
+                    logger.debug("Signal RPC error (%s): %s", method, err)
                 return None
 
             return data.get("result")
 
+        except SignalRateLimitError:
+            raise
         except Exception as e:
             if log_failures:
                 logger.warning("Signal RPC %s failed: %s", method, e)
@@ -978,6 +1028,178 @@ class SignalAdapter(BasePlatformAdapter):
             self._typing_failures.pop(chat_id, None)
             self._typing_skip_until.pop(chat_id, None)
 
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images via chunked Signal RPC calls.
+
+        Per-image alt texts are dropped — Signal's send RPC only carries
+        one shared message body. Bad images (download failure, missing
+        file, oversize) are skipped with a warning so one bad URL
+        doesn't lose the rest of the batch. ``human_delay`` is ignored:
+        the rate-limit scheduler handles inter-batch pacing.
+        """
+        if not images:
+            return
+
+        scheduler = get_scheduler()
+        logger.info(
+            "Signal send_multiple_images: received %d image(s) for %s — "
+            "scheduler state: %s",
+            len(images), chat_id[:30], scheduler.state(),
+        )
+
+        await self._stop_typing_indicator(chat_id)
+
+        attachments: List[str] = []
+        skipped_download = 0
+        skipped_missing = 0
+        skipped_oversize = 0
+        for image_url, _alt_text in images:
+            if image_url.startswith("file://"):
+                file_path = unquote(image_url[7:])
+            else:
+                try:
+                    file_path = await cache_image_from_url(image_url)
+                except Exception as e:
+                    logger.warning("Signal: failed to download image %s: %s", image_url, e)
+                    skipped_download += 1
+                    continue
+
+            if not file_path or not Path(file_path).exists():
+                logger.warning("Signal: image file not found for %s", image_url)
+                skipped_missing += 1
+                continue
+
+            file_size = Path(file_path).stat().st_size
+            if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
+                logger.warning(
+                    "Signal: image too large (%d bytes), skipping %s", file_size, image_url
+                )
+                skipped_oversize += 1
+                continue
+
+            attachments.append(file_path)
+
+        if not attachments:
+            logger.error(
+                "Signal: no valid images in batch of %d "
+                "(download=%d missing=%d oversize=%d)",
+                len(images), skipped_download, skipped_missing, skipped_oversize,
+            )
+            return
+
+        logger.info(
+            "Signal send_multiple_images: %d/%d images valid, sending in chunks",
+            len(attachments), len(images),
+        )
+
+        base_params: Dict[str, Any] = {
+            "account": self.account,
+            "message": "",
+        }
+        if chat_id.startswith("group:"):
+            base_params["groupId"] = chat_id[6:]
+        else:
+            base_params["recipient"] = [await self._resolve_recipient(chat_id)]
+
+        att_batches = [
+            attachments[i:i + SIGNAL_MAX_ATTACHMENTS_PER_MSG]
+            for i in range(0, len(attachments), SIGNAL_MAX_ATTACHMENTS_PER_MSG)
+        ]
+
+        for idx, att_batch in enumerate(att_batches):
+            n = len(att_batch)
+            estimated = scheduler.estimate_wait(n)
+            logger.debug(
+                "Signal batch %d/%d: %d attachments, estimated wait=%.1fs",
+                idx + 1, len(att_batches), n, estimated,
+            )
+            if estimated >= SIGNAL_BATCH_PACING_NOTICE_THRESHOLD:
+                await self._notify_batch_pacing(
+                    chat_id, idx + 1, len(att_batches), estimated
+                )
+
+            params = dict(base_params, attachments=att_batch)
+            send_timeout = _signal_send_timeout(n)
+
+            for attempt in range(1, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS + 1):
+                await scheduler.acquire(n)
+                try:
+                    _rpc_t0 = time.monotonic()
+                    result = await self._rpc(
+                        "send", params, raise_on_rate_limit=True, timeout=send_timeout,
+                    )
+                    _rpc_duration = time.monotonic() - _rpc_t0
+                    if result is not None:
+                        self._track_sent_timestamp(result)
+                        await scheduler.report_rpc_duration(_rpc_duration, n)
+                        logger.info(
+                            "Signal batch %d/%d: %d attachments sent in %.1fs "
+                            "(attempt %d/%d)",
+                            idx + 1, len(att_batches), n, _rpc_duration,
+                            attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                        )
+                    else:
+                        # Assume the server didn't accept the batch, don't deduce tokens
+                        logger.error(
+                            "Signal: RPC send failed for batch %d/%d (%d attachments, "
+                            "attempt %d/%d, rpc_duration=%.1fs)",
+                            idx + 1, len(att_batches), n,
+                            attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                            _rpc_duration,
+                        )
+                        # Retry transient (non-rate-limit) failures once
+                        if attempt < SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
+                            backoff = 2.0 ** attempt
+                            logger.info(
+                                "Signal: retrying batch %d/%d after %.1fs backoff",
+                                idx + 1, len(att_batches), backoff,
+                            )
+                            await asyncio.sleep(backoff)
+                            continue
+                    break
+                except SignalRateLimitError as e:
+                    scheduler.feedback(e.retry_after, n)
+                    if attempt >= SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
+                        logger.error(
+                            "Signal: rate-limit retries exhausted on batch %d/%d "
+                            "(%d attachments lost, server retry_after=%s)",
+                            idx + 1, len(att_batches), n,
+                            f"{e.retry_after:.0f}s" if e.retry_after else "unknown",
+                        )
+                        break
+                    logger.warning(
+                        "Signal: rate-limited on batch %d/%d "
+                        "(attempt %d/%d, server retry_after=%s); "
+                        "scheduler will pace the retry",
+                        idx + 1, len(att_batches),
+                        attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                        f"{e.retry_after:.0f}s" if e.retry_after else "unknown",
+                    )
+
+    async def _notify_batch_pacing(
+        self,
+        chat_id: str,
+        next_batch_idx: int,
+        total_batches: int,
+        wait_s: float,
+    ) -> None:
+        """Inform the user when an inter-batch pacing wait crosses the
+        notice threshold. Best-effort; logs and continues on failure."""
+        try:
+            await self.send(
+                chat_id,
+                f"(More images coming — pausing ~{_format_wait(wait_s)} "
+                f"for Signal rate limit, batch {next_batch_idx}/{total_batches}.)",
+            )
+        except Exception as e:
+            logger.warning("Signal: failed to send pacing notice: %s", e)
+
     async def send_image(
         self,
         chat_id: str,
@@ -1217,8 +1439,28 @@ class SignalAdapter(BasePlatformAdapter):
             return None
         return (author, ts)
 
+    def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
+        """Check if message reactions are enabled for this event.
+
+        Two gates:
+        1. SIGNAL_REACTIONS env var — set to false/0/no to disable globally.
+        2. DM allowlist — if SIGNAL_ALLOWED_USERS is set, only react to
+           messages from senders in that list.  This prevents unauthorized
+           contacts from seeing the 👀 reaction (which fires before run.py's
+           auth gate and would otherwise reveal that a bot is listening).
+        """
+        if os.getenv("SIGNAL_REACTIONS", "true").lower() in ("false", "0", "no"):
+            return False
+        if event is not None:
+            sender = getattr(getattr(event, "source", None), "user_id", None)
+            if sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from:
+                return False
+        return True
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """React with 👀 when processing begins."""
+        if not self._reactions_enabled(event):
+            return
         target = self._extract_reaction_target(event)
         if target:
             await self.send_reaction(event.source.chat_id, "👀", *target)
@@ -1229,6 +1471,8 @@ class SignalAdapter(BasePlatformAdapter):
         On CANCELLED we leave the 👀 in place — no terminal outcome means
         the reaction should keep reflecting "in progress" (matches Telegram).
         """
+        if not self._reactions_enabled(event):
+            return
         if outcome == ProcessingOutcome.CANCELLED:
             return
         target = self._extract_reaction_target(event)

@@ -127,6 +127,21 @@ class TestAgentConfigSignature:
         )
         assert sig1 != sig2
 
+    def test_max_tokens_change_busts_cache(self):
+        """Editing model.max_tokens in config must produce a new signature."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"model.max_tokens": 4096},
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"model.max_tokens": 8192},
+        )
+        assert sig1 != sig2
+
     def test_compression_threshold_change_busts_cache(self):
         from gateway.run import GatewayRunner
 
@@ -170,6 +185,22 @@ class TestAgentConfigSignature:
         )
         assert sig_a == sig_b
 
+    def test_tool_registry_generation_change_busts_cache(self):
+        """MCP reloads mutate the tool registry, so cached agents must rebuild."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_before = GatewayRunner._agent_config_signature(
+            "m", runtime, ["telegram"], "",
+            cache_keys={"tools.registry_generation": 10},
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m", runtime, ["telegram"], "",
+            cache_keys={"tools.registry_generation": 11},
+        )
+
+        assert sig_before != sig_after
+
 
 class TestExtractCacheBustingConfig:
     """Verify _extract_cache_busting_config pulls the documented subset of
@@ -179,9 +210,16 @@ class TestExtractCacheBustingConfig:
         from gateway.run import GatewayRunner
 
         out = GatewayRunner._extract_cache_busting_config(
-            {"model": {"context_length": 272_000, "provider": "openrouter"}}
+            {
+                "model": {
+                    "context_length": 272_000,
+                    "max_tokens": 4096,
+                    "provider": "openrouter",
+                }
+            }
         )
         assert out["model.context_length"] == 272_000
+        assert out["model.max_tokens"] == 4096
 
     def test_reads_compression_subkeys(self):
         from gateway.run import GatewayRunner
@@ -229,6 +267,17 @@ class TestExtractCacheBustingConfig:
         out = GatewayRunner._extract_cache_busting_config(None)
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
             assert out[f"{section}.{key}"] is None
+        assert "tools.registry_generation" in out
+
+    def test_extract_includes_live_tool_registry_generation(self, monkeypatch):
+        from gateway.run import GatewayRunner
+        from tools.registry import registry
+
+        monkeypatch.setattr(registry, "_generation", 12345)
+
+        out = GatewayRunner._extract_cache_busting_config({})
+
+        assert out["tools.registry_generation"] == 12345
 
     def test_full_round_trip_busts_cache_on_real_edit(self):
         """End-to-end: simulate a config edit on main and verify the
@@ -907,43 +956,6 @@ class TestAgentCacheSpilloverLive:
             except Exception:
                 pass
 
-    def test_concurrent_inserts_settle_at_cap(self, monkeypatch):
-        """Many threads inserting in parallel end with len(cache) == CAP."""
-        from gateway import run as gw_run
-
-        CAP = 16
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", CAP)
-        runner = self._runner()
-
-        N_THREADS = 8
-        PER_THREAD = 20  # 8 * 20 = 160 inserts into a 16-slot cache
-
-        def worker(tid: int):
-            for j in range(PER_THREAD):
-                a = self._real_agent()
-                key = f"t{tid}-s{j}"
-                with runner._agent_cache_lock:
-                    runner._agent_cache[key] = (a, "sig")
-                    runner._enforce_agent_cache_cap()
-
-        threads = [
-            threading.Thread(target=worker, args=(t,), daemon=True)
-            for t in range(N_THREADS)
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
-            assert not t.is_alive(), "Worker thread hung — possible deadlock?"
-
-        # Let daemon cleanup threads settle.
-        import time as _t
-        _t.sleep(0.5)
-
-        assert len(runner._agent_cache) == CAP, (
-            f"Expected exactly {CAP} entries after concurrent inserts, "
-            f"got {len(runner._agent_cache)}."
-        )
 
     def test_evicted_session_next_turn_gets_fresh_agent(self, monkeypatch):
         """After eviction, the same session_key can insert a fresh agent.

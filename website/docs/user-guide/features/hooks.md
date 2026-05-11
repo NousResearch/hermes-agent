@@ -18,7 +18,7 @@ All three systems are non-blocking — errors in any hook are caught and logged,
 
 ## Gateway Event Hooks
 
-Gateway hooks fire automatically during gateway operation (Telegram, Discord, Slack, WhatsApp) without blocking the main agent pipeline.
+Gateway hooks fire automatically during gateway operation (Telegram, Discord, Slack, WhatsApp, Teams) without blocking the main agent pipeline.
 
 ### Creating a Hook
 
@@ -346,7 +346,7 @@ An earlier version of Hermes shipped this as a built-in hook and silently spawne
 5. Errors in any handler are caught and logged — a broken hook never crashes the agent
 
 :::info
-Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp). The CLI does not load gateway hooks. For hooks that work everywhere, use [plugin hooks](#plugin-hooks).
+Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp, Teams). The CLI does not load gateway hooks. For hooks that work everywhere, use [plugin hooks](#plugin-hooks).
 :::
 
 ## Plugin Hooks
@@ -385,6 +385,9 @@ def register(ctx):
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 | [`pre_approval_request`](#pre_approval_request) | Dangerous command needs user approval, before the prompt/notification is sent | ignored |
 | [`post_approval_response`](#post_approval_response) | User responded to an approval prompt (or it timed out) | ignored |
+| [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
+| [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
+| [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
 
 ---
 
@@ -1000,6 +1003,137 @@ def log_decision(command, choice, session_key, **kwargs):
 def register(ctx):
     ctx.register_hook("post_approval_response", log_decision)
 ```
+
+---
+
+### `transform_tool_result`
+
+Fires **after** a tool returns and **before** the result is appended to the conversation. Lets a plugin rewrite ANY tool's result string — not just terminal output — before the model sees it.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    tool_name: str,
+    arguments: dict,
+    result: str,
+    task_id: str | None,
+    **kwargs,
+) -> str | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tool_name` | `str` | Tool that produced the result (`read_file`, `web_extract`, `delegate_task`, …). |
+| `arguments` | `dict` | Arguments the model called the tool with. |
+| `result` | `str` | The tool's raw result string, post-truncation and post-ANSI-strip. |
+| `task_id` | `str \| None` | Task/session ID when running inside RL/benchmark environments. |
+
+**Return value:** `str` to replace the result (the returned string is what the model sees), `None` to leave it unchanged.
+
+**Use cases:** Redact organization-specific PII from `web_extract` output, wrap long JSON tool responses in a summary header, inject retrieval-augmented hints into `read_file` results, rewrite `delegate_task` subagent reports into a project-specific schema.
+
+```python
+import re
+SECRET = re.compile(r"sk-[A-Za-z0-9]{32,}")
+
+def redact_secrets(tool_name, result, **kwargs):
+    if SECRET.search(result):
+        return SECRET.sub("[REDACTED]", result)
+    return None
+
+def register(ctx):
+    ctx.register_hook("transform_tool_result", redact_secrets)
+```
+
+Applies to every tool. For terminal-only rewriting see `transform_terminal_output` below — it's narrower and runs earlier in the pipeline (pre-truncation, pre-redaction).
+
+---
+
+### `transform_terminal_output`
+
+Fires inside the `terminal` tool's foreground-output pipeline, **before** the default 50 KB truncation, ANSI strip, and secret redaction. Lets plugins rewrite the raw stdout/stderr of a shell command before any downstream processing touches it.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    command: str,
+    output: str,
+    exit_code: int,
+    cwd: str,
+    task_id: str | None,
+    **kwargs,
+) -> str | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `command` | `str` | The shell command that produced the output. |
+| `output` | `str` | Raw combined stdout/stderr (may be very large — truncation happens after the hook). |
+| `exit_code` | `int` | Process exit code. |
+| `cwd` | `str` | Working directory the command ran in. |
+
+**Return value:** `str` to replace the output, `None` to leave it unchanged.
+
+**Use cases:** Inject summaries for commands that produce massive output (`du -ah`, `find`, `tree`), tag output with a project-specific marker so downstream hooks know how to handle it, strip timing noise that flaps between runs and defeats prompt caching.
+
+```python
+def summarize_find(command, output, **kwargs):
+    if command.startswith("find ") and len(output) > 50_000:
+        lines = output.count("\n")
+        head = "\n".join(output.splitlines()[:40])
+        return f"{head}\n\n[summary: {lines} paths total, showing first 40]"
+    return None
+
+def register(ctx):
+    ctx.register_hook("transform_terminal_output", summarize_find)
+```
+
+Pairs well with `transform_tool_result` (which covers every other tool).
+
+---
+
+### `transform_llm_output`
+
+Fires **once per turn** after the tool-calling loop completes and the model has produced a final response, **before** that response is delivered to the user (CLI, gateway, or programmatic caller). Lets a plugin rewrite the assistant's final text using classical-programming methods — no extra inference tokens burned on SOUL flavor text or a skill-driven transform.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    response_text: str,
+    session_id: str,
+    model: str,
+    platform: str,
+    **kwargs,
+) -> str | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `response_text` | `str` | The assistant's final response text for this turn. |
+| `session_id` | `str` | Session ID for this conversation (may be empty for one-shot runs). |
+| `model` | `str` | Model name that produced the response (e.g. `anthropic/claude-sonnet-4.6`). |
+| `platform` | `str` | Delivery platform (`cli`, `telegram`, `discord`, …; empty when unset). |
+
+**Return value:** Non-empty `str` to replace the response text, `None` or empty string to leave it unchanged. **First non-empty string wins** when multiple plugins register — mirroring `transform_tool_result`.
+
+**Use cases:** Apply a personality/vocabulary transform (pirate-speak, Spongebob), redact user-specific identifiers from the final text, append a project-specific signature footer, enforce a house style guide without burning tokens on SOUL instructions.
+
+```python
+import os, re
+
+def spongebob(response_text, **kwargs):
+    if os.environ.get("SPONGEBOB_MODE") != "on":
+        return None  # pass through unchanged
+    return re.sub(r"!", "!! Tartar sauce!", response_text)
+
+def register(ctx):
+    ctx.register_hook("transform_llm_output", spongebob)
+```
+
+The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
 
 ---
 

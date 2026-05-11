@@ -1,10 +1,19 @@
 """Tests for tools/skill_usage.py — sidecar telemetry + provenance filtering."""
 
 import json
+import multiprocessing as mp
 import os
 from pathlib import Path
 
 import pytest
+
+
+def _bump_view_many(hermes_home: str, skill_name: str, iterations: int) -> None:
+    os.environ["HERMES_HOME"] = hermes_home
+    from tools.skill_usage import bump_view
+
+    for _ in range(iterations):
+        bump_view(skill_name)
 
 
 @pytest.fixture
@@ -139,6 +148,30 @@ def test_bumps_do_not_corrupt_other_skills(skills_home):
     assert get_record("skill-b")["use_count"] == 1
 
 
+def test_concurrent_bump_view_preserves_all_updates(skills_home):
+    from tools.skill_usage import get_record
+
+    process_count = 6
+    iterations = 25
+    ctx = mp.get_context("spawn")
+    processes = [
+        ctx.Process(
+            target=_bump_view_many,
+            args=(str(skills_home), "shared-skill", iterations),
+        )
+        for _ in range(process_count)
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=20)
+
+    for process in processes:
+        assert process.exitcode == 0
+    assert get_record("shared-skill")["view_count"] == process_count * iterations
+
+
 # ---------------------------------------------------------------------------
 # State transitions
 # ---------------------------------------------------------------------------
@@ -194,10 +227,11 @@ def test_forget_removes_record(skills_home):
 # ---------------------------------------------------------------------------
 
 def test_agent_created_excludes_bundled(skills_home):
-    from tools.skill_usage import list_agent_created_skill_names
+    from tools.skill_usage import list_agent_created_skill_names, mark_agent_created
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "bundled-skill", category="github")
     _write_skill(skills_dir, "my-skill")
+    mark_agent_created("my-skill")
     # Seed a bundled manifest marking bundled-skill as upstream
     (skills_dir / ".bundled_manifest").write_text(
         "bundled-skill:abc123\n", encoding="utf-8",
@@ -208,10 +242,11 @@ def test_agent_created_excludes_bundled(skills_home):
 
 
 def test_agent_created_excludes_hub_installed(skills_home):
-    from tools.skill_usage import list_agent_created_skill_names
+    from tools.skill_usage import list_agent_created_skill_names, mark_agent_created
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "hub-skill")
     _write_skill(skills_dir, "my-skill")
+    mark_agent_created("my-skill")
     hub_dir = skills_dir / ".hub"
     hub_dir.mkdir()
     (hub_dir / "lock.json").write_text(
@@ -221,6 +256,52 @@ def test_agent_created_excludes_hub_installed(skills_home):
     names = list_agent_created_skill_names()
     assert "my-skill" in names
     assert "hub-skill" not in names
+
+
+def test_agent_created_excludes_hub_installed_frontmatter_name(skills_home):
+    from tools.skill_usage import (
+        is_agent_created,
+        list_agent_created_skill_names,
+        mark_agent_created,
+    )
+
+    skills_dir = skills_home / "skills"
+    hub_skill = skills_dir / "productivity" / "getnote"
+    hub_skill.mkdir(parents=True)
+    (hub_skill / "SKILL.md").write_text(
+        """---
+name: Get笔记
+description: test skill
+---
+
+# body
+""",
+        encoding="utf-8",
+    )
+    _write_skill(skills_dir, "my-skill")
+    mark_agent_created("my-skill")
+    hub_dir = skills_dir / ".hub"
+    hub_dir.mkdir()
+    (hub_dir / "lock.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "installed": {
+                    "getnote": {
+                        "source": "taps/main",
+                        "install_path": "productivity/getnote",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    names = list_agent_created_skill_names()
+    assert "my-skill" in names
+    assert "Get笔记" not in names
+    assert is_agent_created("Get笔记") is False
+    assert is_agent_created("getnote") is False
 
 
 def test_is_agent_created(skills_home):
@@ -238,9 +319,10 @@ def test_is_agent_created(skills_home):
 
 
 def test_agent_created_skips_archive_and_hub_dirs(skills_home):
-    from tools.skill_usage import list_agent_created_skill_names
+    from tools.skill_usage import list_agent_created_skill_names, mark_agent_created
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "real-skill")
+    mark_agent_created("real-skill")
     # Dot-prefixed dirs must be ignored even if they contain SKILL.md
     archive = skills_dir / ".archive" / "old-skill"
     archive.mkdir(parents=True)
@@ -315,6 +397,41 @@ def test_restore_skill_moves_back(skills_home):
     assert get_record("temp-skill")["state"] == "active"
 
 
+def test_restore_skill_finds_nested_archive_subdir(skills_home):
+    """Skills archived under nested category subdirs (e.g.
+    .archive/<category>/<skill>/) — left behind by older archive layouts or
+    external imports — must still be restorable by name."""
+    from tools.skill_usage import restore_skill, get_record
+    skills_dir = skills_home / "skills"
+    nested = skills_dir / ".archive" / "openclaw-imports" / "nested-skill"
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text(
+        "---\nname: nested-skill\ndescription: x\n---\n", encoding="utf-8",
+    )
+
+    ok, msg = restore_skill("nested-skill")
+    assert ok, msg
+    assert (skills_dir / "nested-skill" / "SKILL.md").exists()
+    assert not nested.exists()
+    assert get_record("nested-skill")["state"] == "active"
+
+
+def test_restore_skill_finds_nested_timestamped_prefix(skills_home):
+    """Prefix-match path (timestamped dupes) must also descend into nested
+    archive subdirs, not just .archive/ top-level."""
+    from tools.skill_usage import restore_skill
+    skills_dir = skills_home / "skills"
+    nested = skills_dir / ".archive" / "imports" / "dup-skill-20260101000000"
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text(
+        "---\nname: dup-skill\ndescription: x\n---\n", encoding="utf-8",
+    )
+
+    ok, msg = restore_skill("dup-skill")
+    assert ok, msg
+    assert (skills_dir / "dup-skill" / "SKILL.md").exists()
+
+
 def test_archive_collision_gets_suffix(skills_home):
     from tools.skill_usage import archive_skill
     skills_dir = skills_home / "skills"
@@ -333,27 +450,41 @@ def test_archive_collision_gets_suffix(skills_home):
 # Reporting
 # ---------------------------------------------------------------------------
 
-def test_agent_created_report_includes_defaults(skills_home):
-    from tools.skill_usage import agent_created_report, bump_view
+def test_agent_created_report_includes_marked_skills_with_defaults(skills_home):
+    from tools.skill_usage import agent_created_report, bump_view, mark_agent_created
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "a")
     _write_skill(skills_dir, "b")
+    mark_agent_created("a")
+    mark_agent_created("b")
     bump_view("a")
     rows = agent_created_report()
     by_name = {r["name"]: r for r in rows}
     assert "a" in by_name and "b" in by_name
     assert by_name["a"]["view_count"] == 1
-    # b has no usage record yet — must still appear with defaults
+    # b has only the provenance marker — activity fields still default.
     assert by_name["b"]["view_count"] == 0
     assert by_name["b"]["state"] == "active"
 
 
+def test_manual_skill_with_usage_is_not_curator_managed(skills_home):
+    from tools.skill_usage import agent_created_report, bump_view, list_agent_created_skill_names
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "manual-skill")
+
+    bump_view("manual-skill")
+
+    assert "manual-skill" not in list_agent_created_skill_names()
+    assert "manual-skill" not in {r["name"] for r in agent_created_report()}
+
+
 def test_agent_created_report_excludes_bundled_and_hub(skills_home):
-    from tools.skill_usage import agent_created_report
+    from tools.skill_usage import agent_created_report, mark_agent_created
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "mine")
     _write_skill(skills_dir, "bundled")
     _write_skill(skills_dir, "hubbed")
+    mark_agent_created("mine")
     (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
     hub = skills_dir / ".hub"
     hub.mkdir()
@@ -365,6 +496,27 @@ def test_agent_created_report_excludes_bundled_and_hub(skills_home):
     assert "bundled" not in names
     assert "hubbed" not in names
 
+
+def test_agent_created_report_derives_activity_from_view_and_patch(skills_home, monkeypatch):
+    import tools.skill_usage as skill_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "mine")
+    timestamps = iter([
+        "2026-04-30T10:00:00+00:00",
+        "2026-04-30T11:00:00+00:00",
+        "2026-04-30T12:00:00+00:00",
+        "2026-04-30T13:00:00+00:00",
+    ])
+    monkeypatch.setattr(skill_usage, "_now_iso", lambda: next(timestamps))
+
+    skill_usage.mark_agent_created("mine")
+    skill_usage.bump_view("mine")
+    skill_usage.bump_patch("mine")
+
+    row = next(r for r in skill_usage.agent_created_report() if r["name"] == "mine")
+    assert row["activity_count"] == 2
+    assert row["last_activity_at"] == "2026-04-30T12:00:00+00:00"
 
 
 # ---------------------------------------------------------------------------

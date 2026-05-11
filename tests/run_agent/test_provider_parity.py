@@ -966,17 +966,25 @@ class TestAuxiliaryClientProviderPriority:
             client, model = get_text_auxiliary_client()
         assert mock.call_args.kwargs["base_url"] == "http://localhost:1234/v1"
 
-    def test_codex_fallback_last_resort(self, monkeypatch):
+    def test_codex_not_in_auto_fallback(self, monkeypatch):
+        """Codex is deliberately NOT part of the auto fallback chain.
+
+        ChatGPT-account Codex gates which models it accepts via an
+        undocumented, shifting allow-list, so falling through to Codex with
+        a hardcoded default model breaks silently whenever OpenAI rotates
+        the list.  When nothing else is available, ``get_text_auxiliary_client``
+        now returns (None, None) rather than guessing a Codex model.
+        """
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        from agent.auxiliary_client import get_text_auxiliary_client, CodexAuxiliaryClient
+        from agent.auxiliary_client import get_text_auxiliary_client
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-tok"), \
              patch("agent.auxiliary_client.OpenAI"):
             client, model = get_text_auxiliary_client()
-        assert model == "gpt-5.2-codex"
-        assert isinstance(client, CodexAuxiliaryClient)
+        assert client is None
+        assert model is None
 
 
 # ── Provider routing tests ───────────────────────────────────────────────────

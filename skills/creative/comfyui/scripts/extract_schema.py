@@ -1,100 +1,51 @@
 #!/usr/bin/env python3
 """
-extract_schema.py — Analyze a ComfyUI API-format workflow and extract controllable parameters.
+extract_schema.py — Analyze a ComfyUI API-format workflow and extract
+controllable parameters.
 
-Reads a workflow JSON, identifies user-facing parameters (prompts, seed, dimensions, etc.)
-by scanning node types and field names, and outputs a schema mapping.
+Improvements over v1:
+  - Catalogs live in `_common.py`, shared with `check_deps.py`
+  - Coverage expanded for Flux / SD3 / Wan / Hunyuan / LTX / IPAdapter / rgthree
+  - Symmetric duplicate-name resolution: ALL duplicates get a node-id suffix
+    (instead of "first wins, second renamed"), so callers see consistent names
+  - Negative prompt detected by tracing `KSampler.negative` connections back to
+    the source CLIPTextEncode (more reliable than meta-title heuristic)
+  - Embedding references in prompt text are extracted as model dependencies
+  - Detects Primitive nodes that drive other nodes' inputs (and surfaces them
+    as the user-facing parameter)
+  - Reroutes are followed when tracing connections
 
 Usage:
     python3 extract_schema.py workflow_api.json
     python3 extract_schema.py workflow_api.json --output schema.json
 
-Output format:
-    {
-      "parameters": {
-        "prompt": {"node_id": "6", "field": "text", "type": "string", "value": "..."},
-        "seed": {"node_id": "3", "field": "seed", "type": "int", "value": 42},
-        ...
-      },
-      "output_nodes": ["9"],
-      "model_dependencies": [
-        {"node_id": "4", "class_type": "CheckpointLoaderSimple", "field": "ckpt_name", "value": "..."}
-      ]
-    }
-
-Requires: Python 3.10+ (stdlib only)
+Stdlib-only. Python 3.10+.
 """
 
+from __future__ import annotations
+
+import argparse
 import json
 import sys
-import argparse
 from pathlib import Path
+from typing import Any
 
-# Known parameter patterns: (class_type, field_name) → friendly_name
-PARAM_PATTERNS = [
-    # Prompts
-    ("CLIPTextEncode", "text", "prompt"),
-    ("CLIPTextEncodeSDXL", "text_g", "prompt"),
-    ("CLIPTextEncodeSDXL", "text_l", "prompt_l"),
-    # Sampling
-    ("KSampler", "seed", "seed"),
-    ("KSampler", "steps", "steps"),
-    ("KSampler", "cfg", "cfg"),
-    ("KSampler", "sampler_name", "sampler_name"),
-    ("KSampler", "scheduler", "scheduler"),
-    ("KSampler", "denoise", "denoise"),
-    ("KSamplerAdvanced", "noise_seed", "seed"),
-    ("KSamplerAdvanced", "steps", "steps"),
-    ("KSamplerAdvanced", "cfg", "cfg"),
-    ("KSamplerAdvanced", "sampler_name", "sampler_name"),
-    ("KSamplerAdvanced", "scheduler", "scheduler"),
-    # Dimensions
-    ("EmptyLatentImage", "width", "width"),
-    ("EmptyLatentImage", "height", "height"),
-    ("EmptyLatentImage", "batch_size", "batch_size"),
-    # Image input
-    ("LoadImage", "image", "image"),
-    ("LoadImageMask", "image", "mask_image"),
-    # LoRA
-    ("LoraLoader", "lora_name", "lora_name"),
-    ("LoraLoader", "strength_model", "lora_strength"),
-    # Output
-    ("SaveImage", "filename_prefix", "filename_prefix"),
-]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import (  # noqa: E402
+    OUTPUT_NODES, PARAM_PATTERNS, PROMPT_FIELDS,
+    is_link, iter_embedding_refs, iter_model_deps, iter_nodes, unwrap_workflow,
+)
 
-# Node types that produce output files
-OUTPUT_NODES = {"SaveImage", "PreviewImage", "VHS_VideoCombine", "SaveAudio", "SaveAnimatedWEBP", "SaveAnimatedPNG"}
 
-# Node types that load models (for dependency checking)
-MODEL_LOADERS = {
-    "CheckpointLoaderSimple": ("ckpt_name", "checkpoints"),
-    "CheckpointLoader": ("ckpt_name", "checkpoints"),
-    "LoraLoader": ("lora_name", "loras"),
-    "LoraLoaderModelOnly": ("lora_name", "loras"),
-    "VAELoader": ("vae_name", "vae"),
-    "ControlNetLoader": ("control_net_name", "controlnet"),
-    "CLIPLoader": ("clip_name", "clip"),
-    "DualCLIPLoader": ("clip_name1", "clip"),
-    "UNETLoader": ("unet_name", "unet"),
-    "DiffusionModelLoader": ("model_name", "diffusion_models"),
-    "UpscaleModelLoader": ("model_name", "upscale_models"),
-    "CLIPVisionLoader": ("clip_name", "clip_vision"),
+# Sampler nodes whose `positive` / `negative` connections we trace
+SAMPLER_NODE_FAMILY = {
+    "KSampler", "KSamplerAdvanced",
+    "SamplerCustom", "SamplerCustomAdvanced",
+    "BasicGuider", "CFGGuider", "DualCFGGuider",
 }
 
 
-def validate_api_format(workflow: dict) -> bool:
-    """Check if workflow is in API format (not editor format)."""
-    if "nodes" in workflow and "links" in workflow:
-        return False
-    # API format: top-level keys are node IDs, each has class_type
-    for node_id, node in workflow.items():
-        if isinstance(node, dict) and "class_type" in node:
-            return True
-    return False
-
-
-def infer_type(value) -> str:
-    """Infer JSON schema type from a Python value."""
+def infer_type(value: Any) -> str:
     if isinstance(value, bool):
         return "bool"
     if isinstance(value, int):
@@ -104,109 +55,261 @@ def infer_type(value) -> str:
     if isinstance(value, str):
         return "string"
     if isinstance(value, list):
-        return "link"  # connections to other nodes
+        return "link"
+    if isinstance(value, dict):
+        return "object"
     return "unknown"
 
 
-def extract_schema(workflow: dict) -> dict:
-    """Extract controllable parameters from a workflow."""
-    parameters = {}
-    output_nodes = []
-    model_deps = []
-    name_counts = {}  # track duplicate friendly names
+def trace_to_node(workflow: dict, link: list, *, max_hops: int = 8) -> str | None:
+    """Follow a [node_id, slot] link, hopping through Reroute / Primitive nodes
+    if needed, to find the *upstream* node id that holds the actual value/input.
 
-    for node_id, node in workflow.items():
-        if not isinstance(node, dict) or "class_type" not in node:
+    Bounded by both `max_hops` AND a visited-set to prevent infinite loops on
+    pathological graphs.
+    """
+    if not is_link(link):
+        return None
+    nid: str | None = link[0]
+    visited: set[str] = set()
+    for _ in range(max_hops):
+        if nid is None or nid in visited:
+            return nid
+        visited.add(nid)
+        node = workflow.get(nid)
+        if not isinstance(node, dict):
+            return None
+        cls = node.get("class_type", "")
+        # Reroute / Primitive / passthrough wrappers
+        if cls in ("Reroute", "PrimitiveNode", "Note", "easy showAnything"):
+            inputs = node.get("inputs", {}) or {}
+            # Find first link-shaped input and follow it
+            next_link = next((v for v in inputs.values() if is_link(v)), None)
+            if next_link is None:
+                return nid
+            nid = next_link[0]
             continue
+        return nid
+    return nid
 
-        class_type = node["class_type"]
-        inputs = node.get("inputs", {})
-        meta_title = node.get("_meta", {}).get("title", "")
 
-        # Check if this is an output node
-        if class_type in OUTPUT_NODES:
+def find_negative_prompt_node(workflow: dict) -> str | None:
+    """Trace `negative` input of a sampler back to the source text encoder."""
+    for nid, node in iter_nodes(workflow):
+        if node["class_type"] not in SAMPLER_NODE_FAMILY:
+            continue
+        inputs = node.get("inputs", {}) or {}
+        neg = inputs.get("negative")
+        if not is_link(neg):
+            continue
+        src = trace_to_node(workflow, neg)
+        if src and isinstance(workflow.get(src), dict):
+            cls = workflow[src].get("class_type", "")
+            if cls.startswith("CLIPTextEncode") or cls in ("smZ CLIPTextEncode", "BNK_CLIPTextEncodeAdvanced"):
+                return src
+    return None
+
+
+def find_positive_prompt_node(workflow: dict) -> str | None:
+    for nid, node in iter_nodes(workflow):
+        if node["class_type"] not in SAMPLER_NODE_FAMILY:
+            continue
+        inputs = node.get("inputs", {}) or {}
+        pos = inputs.get("positive")
+        if not is_link(pos):
+            continue
+        src = trace_to_node(workflow, pos)
+        if src and isinstance(workflow.get(src), dict):
+            cls = workflow[src].get("class_type", "")
+            if cls.startswith("CLIPTextEncode") or cls in ("smZ CLIPTextEncode", "BNK_CLIPTextEncodeAdvanced"):
+                return src
+    return None
+
+
+def extract_schema(workflow: dict) -> dict:
+    """Extract controllable parameters from a workflow.
+
+    Returns:
+        {
+          "parameters": { friendly_name: {node_id, field, type, value, ...} },
+          "output_nodes": [node_id, ...],
+          "model_dependencies": [{node_id, class_type, field, value, folder}],
+          "embedding_dependencies": [{node_id, embedding_name, found_in_field, value_excerpt}],
+          "summary": {...}
+        }
+    """
+    output_nodes: list[str] = []
+
+    # First pass: identify positive / negative prompt nodes via connection tracing
+    pos_node = find_positive_prompt_node(workflow)
+    neg_node = find_negative_prompt_node(workflow)
+
+    # ----- collect raw parameter candidates -----
+    # Each candidate = (friendly_name, node_id, field, value)
+    # We resolve duplicate friendly_names AFTER the loop so dedup is symmetric.
+    raw_params: list[dict] = []
+
+    for node_id, node in iter_nodes(workflow):
+        cls = node["class_type"]
+        inputs = node.get("inputs", {}) or {}
+
+        if cls in OUTPUT_NODES:
             output_nodes.append(node_id)
 
-        # Check if this is a model loader
-        if class_type in MODEL_LOADERS:
-            field, folder = MODEL_LOADERS[class_type]
-            if field in inputs and isinstance(inputs[field], str):
-                model_deps.append({
-                    "node_id": node_id,
-                    "class_type": class_type,
-                    "field": field,
-                    "value": inputs[field],
-                    "folder": folder,
-                })
-
-        # Extract controllable parameters
-        for pattern_class, pattern_field, friendly_name in PARAM_PATTERNS:
-            if class_type != pattern_class:
+        # Match this node against PARAM_PATTERNS
+        for p_class, p_field, friendly in PARAM_PATTERNS:
+            if cls != p_class:
                 continue
-            if pattern_field not in inputs:
+            if p_field not in inputs:
                 continue
-            value = inputs[pattern_field]
-            val_type = infer_type(value)
-            if val_type == "link":
-                continue  # skip linked inputs — not directly controllable
+            value = inputs[p_field]
+            t = infer_type(value)
+            if t == "link":
+                continue  # connections aren't directly controllable
 
-            # Disambiguate duplicate friendly names
-            # Use title hint for prompt fields
-            actual_name = friendly_name
-            if friendly_name == "prompt" and meta_title:
-                title_lower = meta_title.lower()
-                if "negative" in title_lower or "neg" in title_lower:
+            actual_name = friendly
+
+            # Disambiguate prompt vs negative_prompt by connection tracing
+            if friendly == "prompt":
+                if node_id == neg_node and pos_node != neg_node:
                     actual_name = "negative_prompt"
+                elif node_id == pos_node:
+                    actual_name = "prompt"
+                else:
+                    # Fallback: use _meta.title hints if present
+                    meta_title = (node.get("_meta") or {}).get("title", "").lower()
+                    if any(t_ in meta_title for t_ in ("negative", "neg", "-prompt", "anti")):
+                        actual_name = "negative_prompt"
 
-            # Handle remaining duplicates by appending node_id
-            if actual_name in name_counts:
-                name_counts[actual_name] += 1
-                actual_name = f"{actual_name}_{node_id}"
-            else:
-                name_counts[actual_name] = 1
-
-            parameters[actual_name] = {
+            raw_params.append({
+                "name_hint": actual_name,
                 "node_id": node_id,
-                "field": pattern_field,
-                "type": val_type,
+                "field": p_field,
+                "type": t,
                 "value": value,
+                "class_type": cls,
+            })
+
+    # ----- symmetric duplicate-name resolution -----
+    # Group by name_hint. If a hint appears once, keep it. If multiple, suffix
+    # ALL with their node_id. Always-stable, always-uniquely-addressable.
+    by_name: dict[str, list[dict]] = {}
+    for r in raw_params:
+        by_name.setdefault(r["name_hint"], []).append(r)
+
+    parameters: dict[str, dict] = {}
+    for name, entries in by_name.items():
+        if len(entries) == 1:
+            r = entries[0]
+            parameters[name] = {
+                "node_id": r["node_id"], "field": r["field"],
+                "type": r["type"], "value": r["value"],
+                "class_type": r["class_type"],
             }
+        else:
+            # Sort by node_id (string-natural) for stability
+            entries.sort(key=lambda x: (str(x["node_id"]).zfill(8), x["field"]))
+            for r in entries:
+                full_name = f"{name}_{r['node_id']}"
+                parameters[full_name] = {
+                    "node_id": r["node_id"], "field": r["field"],
+                    "type": r["type"], "value": r["value"],
+                    "class_type": r["class_type"],
+                    "alias_of": name,
+                }
+
+    # ----- model dependencies -----
+    model_deps = list(iter_model_deps(workflow))
+
+    # ----- embedding dependencies (in prompt text) -----
+    embedding_deps: list[dict] = []
+    seen_emb: set[tuple[str, str]] = set()
+    for nid, emb_name in iter_embedding_refs(workflow):
+        key = (nid, emb_name)
+        if key in seen_emb:
+            continue
+        seen_emb.add(key)
+        # Find which field had the reference, for context
+        node = workflow.get(nid, {})
+        inputs = node.get("inputs", {}) or {}
+        found_field = None
+        excerpt = None
+        for fname, fval in inputs.items():
+            if isinstance(fval, str) and fname in PROMPT_FIELDS and emb_name in fval:
+                found_field = fname
+                excerpt = fval[:120]
+                break
+        embedding_deps.append({
+            "node_id": nid,
+            "embedding_name": emb_name,
+            "field": found_field,
+            "value_excerpt": excerpt,
+            "folder": "embeddings",
+        })
+
+    # ----- summary -----
+    summary = {
+        "parameter_count": len(parameters),
+        "output_node_count": len(output_nodes),
+        "model_dep_count": len(model_deps),
+        "embedding_dep_count": len(embedding_deps),
+        "has_negative_prompt": "negative_prompt" in parameters,
+        "has_seed": "seed" in parameters or any(p.startswith("seed_") for p in parameters),
+        "is_video_workflow": any(
+            workflow.get(n, {}).get("class_type", "") in {
+                "VHS_VideoCombine", "SaveVideo", "SaveAnimatedWEBP", "SaveAnimatedPNG",
+            } for n in output_nodes
+        ),
+    }
 
     return {
         "parameters": parameters,
         "output_nodes": output_nodes,
         "model_dependencies": model_deps,
+        "embedding_dependencies": embedding_deps,
+        "summary": summary,
     }
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Extract controllable parameters from a ComfyUI workflow")
-    parser.add_argument("workflow", help="Path to workflow API JSON file")
-    parser.add_argument("--output", "-o", help="Output file (default: stdout)")
-    args = parser.parse_args()
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="Extract controllable parameters from a ComfyUI workflow")
+    p.add_argument("workflow", help="Path to workflow API JSON file")
+    p.add_argument("--output", "-o", help="Output file (default: stdout)")
+    p.add_argument("--summary-only", action="store_true",
+                   help="Only print the summary block")
+    args = p.parse_args(argv)
 
-    workflow_path = Path(args.workflow)
-    if not workflow_path.exists():
-        print(f"Error: {workflow_path} not found", file=sys.stderr)
-        sys.exit(1)
+    wf_path = Path(args.workflow).expanduser()
+    if not wf_path.exists():
+        print(f"Error: {wf_path} not found", file=sys.stderr)
+        return 1
 
-    with open(workflow_path) as f:
-        workflow = json.load(f)
-
-    if not validate_api_format(workflow):
-        print("Error: Workflow is in editor format, not API format.", file=sys.stderr)
-        print("Re-export from ComfyUI using 'Save (API Format)' button.", file=sys.stderr)
-        sys.exit(1)
+    try:
+        with wf_path.open() as f:
+            payload = json.load(f)
+        workflow = unwrap_workflow(payload)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except json.JSONDecodeError as e:
+        print(f"Error: invalid JSON — {e}", file=sys.stderr)
+        return 1
 
     schema = extract_schema(workflow)
 
-    output_json = json.dumps(schema, indent=2)
+    if args.summary_only:
+        out = json.dumps(schema["summary"], indent=2)
+    else:
+        out = json.dumps(schema, indent=2, default=str)
+
     if args.output:
-        Path(args.output).write_text(output_json)
+        Path(args.output).write_text(out)
         print(f"Schema written to {args.output}", file=sys.stderr)
     else:
-        print(output_json)
+        print(out)
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

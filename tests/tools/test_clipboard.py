@@ -205,36 +205,53 @@ class TestMacosOsascript:
 
 class TestIsWsl:
     def setup_method(self):
-        # _is_wsl is now hermes_constants.is_wsl — reset its cache
+        # _is_wsl is hermes_constants.is_wsl; reset the function's own module
+        # globals so this stays stable even if hermes_constants was imported
+        # through a different module object earlier in a large xdist run.
         import hermes_constants
         hermes_constants._wsl_detected = None
+        _is_wsl.__globals__["_wsl_detected"] = None
+
+    def teardown_method(self):
+        # Reset again after the test so we don't leak a cached value
+        # (True/False) into whichever test the xdist worker runs next.
+        import hermes_constants
+        hermes_constants._wsl_detected = None
+        _is_wsl.__globals__["_wsl_detected"] = None
 
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
             assert _is_wsl() is True
 
     def test_wsl1_detected(self):
         content = "Linux version 4.4.0-microsoft-standard"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
             assert _is_wsl() is True
 
     def test_regular_linux(self):
+        # GHA hosted runners are Azure VMs whose real /proc/version often
+        # contains "microsoft". Patching builtins.open with mock_open is
+        # supposed to intercept hermes_constants.is_wsl's `open` call,
+        # but if another test on the same xdist worker already cached
+        # _wsl_detected=True, the mock never runs because the function
+        # short-circuits on the cache. setup_method resets, so we just
+        # need to be sure the patched `open` is actually reached.
         content = "Linux version 6.14.0-37-generic (buildd@lcy02-amd64-049)"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
             assert _is_wsl() is False
 
     def test_proc_version_missing(self):
-        with patch("builtins.open", side_effect=FileNotFoundError):
+        with patch.dict(_is_wsl.__globals__, {"open": MagicMock(side_effect=FileNotFoundError)}):
             assert _is_wsl() is False
 
     def test_result_is_cached(self):
-        import hermes_constants
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch("builtins.open", mock_open(read_data=content)) as m:
+        opener = mock_open(read_data=content)
+        with patch.dict(_is_wsl.__globals__, {"open": opener}):
             assert _is_wsl() is True
             assert _is_wsl() is True
-            m.assert_called_once()  # only read once
+            opener.assert_called_once()  # only read once
 
 
 # ── WSL (powershell.exe) ────────────────────────────────────────────────

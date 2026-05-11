@@ -235,6 +235,9 @@ def _scan_workspace_state(source_dir: Path) -> list[tuple[Path, str]]:
     """
     findings: list[tuple[Path, str]] = []
 
+    if not source_dir.exists():
+        return findings
+
     # Direct state files in the root
     for name in ("todo.json", "sessions", "logs"):
         candidate = source_dir / name
@@ -243,7 +246,12 @@ def _scan_workspace_state(source_dir: Path) -> list[tuple[Path, str]]:
             findings.append((candidate, f"Root {kind}: {name}"))
 
     # State files inside workspace directories
-    for child in sorted(source_dir.iterdir()):
+    try:
+        children = sorted(source_dir.iterdir())
+    except OSError:
+        return findings
+
+    for child in children:
         if not child.is_dir() or child.name.startswith("."):
             continue
         # Check for workspace-like subdirectories
@@ -677,10 +685,17 @@ def _cmd_cleanup(args):
     # Summary
     print()
     if dry_run:
-        print_info(f"Dry run complete. {len(dirs_to_check)} directory(ies) would be archived.")
+        _n_dirs = len(dirs_to_check)
+        print_info(
+            f"Dry run complete. {_n_dirs} "
+            f"{'directory' if _n_dirs == 1 else 'directories'} would be archived."
+        )
         print_info("Run without --dry-run to archive them.")
     elif total_archived:
-        print_success(f"Cleaned up {total_archived} OpenClaw directory(ies).")
+        print_success(
+            f"Cleaned up {total_archived} OpenClaw "
+            f"{'directory' if total_archived == 1 else 'directories'}."
+        )
         print_info("Directories were renamed, not deleted. You can undo by renaming them back.")
     else:
         print_info("No directories were archived.")

@@ -1,14 +1,14 @@
 ---
-title: "Audiocraft Audio Generation"
+title: "Audiocraft Audio Generation — AudioCraft: MusicGen text-to-music, AudioGen text-to-sound"
 sidebar_label: "Audiocraft Audio Generation"
-description: "PyTorch library for audio generation including text-to-music (MusicGen) and text-to-sound (AudioGen)"
+description: "AudioCraft: MusicGen text-to-music, AudioGen text-to-sound"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Audiocraft Audio Generation
 
-PyTorch library for audio generation including text-to-music (MusicGen) and text-to-sound (AudioGen). Use when you need to generate music from text descriptions, create sound effects, or perform melody-conditioned music generation.
+AudioCraft: MusicGen text-to-music, AudioGen text-to-sound.
 
 ## Skill metadata
 
@@ -20,6 +20,7 @@ PyTorch library for audio generation including text-to-music (MusicGen) and text
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `audiocraft`, `torch>=2.0.0`, `transformers>=4.30.0` |
+| Platforms | linux, macos |
 | Tags | `Multimodal`, `Audio Generation`, `Text-to-Music`, `Text-to-Audio`, `MusicGen` |
 
 ## Reference: full SKILL.md
@@ -146,6 +147,7 @@ torchaudio.save("sound.wav", wav[0].cpu(), sample_rate=16000)
 
 ### Architecture overview
 
+<!-- ascii-guard-ignore -->
 ```
 AudioCraft Architecture:
 ┌──────────────────────────────────────────────────────────────┐
@@ -165,6 +167,7 @@ AudioCraft Architecture:
 │        Converts tokens back to audio waveform                 │
 └──────────────────────────────────────────────────────────────┘
 ```
+<!-- ascii-guard-ignore-end -->
 
 ### Model variants
 

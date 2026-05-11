@@ -1,14 +1,14 @@
 ---
-title: "Subagent Driven Development — Use when executing implementation plans with independent tasks"
+title: "Subagent Driven Development — Execute plans via delegate_task subagents (2-stage review)"
 sidebar_label: "Subagent Driven Development"
-description: "Use when executing implementation plans with independent tasks"
+description: "Execute plans via delegate_task subagents (2-stage review)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Subagent Driven Development
 
-Use when executing implementation plans with independent tasks. Dispatches fresh delegate_task per task with two-stage review (spec compliance then code quality).
+Execute plans via delegate_task subagents (2-stage review).
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Use when executing implementation plans with independent tasks. Dispatches fresh
 | Version | `1.1.0` |
 | Author | Hermes Agent (adapted from obra/superpowers) |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `delegation`, `subagent`, `implementation`, `workflow`, `parallel` |
 | Related skills | [`writing-plans`](/docs/user-guide/skills/bundled/software-development/software-development-writing-plans), [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) |
 
@@ -358,3 +359,12 @@ Catch issues early
 ```
 
 **Quality is not an accident. It's the result of systematic process.**
+
+## Further reading (load when relevant)
+
+When the orchestration involves significant context usage, long review loops, or complex validation checkpoints, load these references for the specific discipline:
+
+- **`references/context-budget-discipline.md`** — Four-tier context degradation model (PEAK / GOOD / DEGRADING / POOR), read-depth rules that scale with context window size, and early warning signs of silent degradation. Load when a run will clearly consume significant context (multi-phase plans, many subagents, large artifacts).
+- **`references/gates-taxonomy.md`** — The four canonical gate types (Pre-flight, Revision, Escalation, Abort) with behavior, recovery, and examples. Load when designing or reviewing any workflow that has validation checkpoints — use the vocabulary explicitly so each gate has defined entry, failure behavior, and resumption rules.
+
+Both references adapted from gsd-build/get-shit-done (MIT © 2025 Lex Christopherson).

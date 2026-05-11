@@ -1,14 +1,14 @@
 ---
-title: "Test Driven Development — Use when implementing any feature or bugfix, before writing implementation code"
+title: "Test Driven Development — TDD: enforce RED-GREEN-REFACTOR, tests before code"
 sidebar_label: "Test Driven Development"
-description: "Use when implementing any feature or bugfix, before writing implementation code"
+description: "TDD: enforce RED-GREEN-REFACTOR, tests before code"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Test Driven Development
 
-Use when implementing any feature or bugfix, before writing implementation code. Enforces RED-GREEN-REFACTOR cycle with test-first approach.
+TDD: enforce RED-GREEN-REFACTOR, tests before code.
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Use when implementing any feature or bugfix, before writing implementation code.
 | Version | `1.1.0` |
 | Author | Hermes Agent (adapted from obra/superpowers) |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `testing`, `tdd`, `development`, `quality`, `red-green-refactor` |
 | Related skills | [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging), [`writing-plans`](/docs/user-guide/skills/bundled/software-development/software-development-writing-plans), [`subagent-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-subagent-driven-development) |
 

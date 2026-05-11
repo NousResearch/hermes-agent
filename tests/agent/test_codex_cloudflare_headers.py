@@ -10,7 +10,7 @@ of auth correctness.
 ``_codex_cloudflare_headers`` in ``agent.auxiliary_client`` centralizes the
 header set so the primary chat client (``run_agent.AIAgent.__init__`` +
 ``_apply_client_headers_for_base_url``) and the auxiliary client paths
-(``_try_codex`` and the ``raw_codex`` branch of ``resolve_provider_client``)
+(``_build_codex_client`` and the ``raw_codex`` branch of ``resolve_provider_client``)
 all emit the same headers.
 
 These tests pin:
@@ -207,9 +207,10 @@ class TestPrimaryClientWiring:
 # ---------------------------------------------------------------------------
 
 class TestAuxiliaryClientWiring:
-    def test_try_codex_passes_codex_headers(self, monkeypatch):
-        """_try_codex builds the OpenAI client used for compression / vision /
-        title generation when routed through Codex. Must emit codex headers."""
+    def test_build_codex_client_passes_codex_headers(self, monkeypatch):
+        """_build_codex_client builds the OpenAI client used for compression /
+        vision / title generation when routed through Codex. Must emit codex
+        headers."""
         from agent import auxiliary_client
         token = _make_codex_jwt("acct-aux-try-codex")
 
@@ -225,7 +226,7 @@ class TestAuxiliaryClientWiring:
         )
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            client, model = auxiliary_client._try_codex()
+            client, model = auxiliary_client._build_codex_client("gpt-5.4")
             assert client is not None
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") == "codex_cli_rs"
@@ -244,7 +245,7 @@ class TestAuxiliaryClientWiring:
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             client, model = auxiliary_client.resolve_provider_client(
-                "openai-codex", raw_codex=True,
+                "openai-codex", model="gpt-5.4", raw_codex=True,
             )
             assert client is not None
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}

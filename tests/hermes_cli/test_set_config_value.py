@@ -172,3 +172,88 @@ class TestFalsyValues:
         config_command(args)
         config = _read_config(_isolated_hermes_home)
         assert "model" in config
+
+
+# ---------------------------------------------------------------------------
+# List navigation — regression tests for #17876
+# ---------------------------------------------------------------------------
+
+class TestListNavigation:
+    """hermes config set must preserve YAML list fields when using numeric
+    indices.  Before #17876, _set_nested would silently replace the entire
+    list with a dict, destroying every sibling entry.
+    """
+
+    def _write_config(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_indexed_set_preserves_sibling_list_entries(self, _isolated_hermes_home):
+        """Setting custom_providers.0.api_key must not destroy entry 1."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: provider-a\n"
+            "  api_key: old-a\n"
+            "  base_url: https://a.example.com\n"
+            "- name: provider-b\n"
+            "  api_key: old-b\n"
+            "  base_url: https://b.example.com\n"
+        ))
+
+        set_config_value("custom_providers.0.api_key", "new-a")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        # The list must still be a list
+        assert isinstance(reloaded["custom_providers"], list)
+        assert len(reloaded["custom_providers"]) == 2
+        # Entry 0 was updated
+        assert reloaded["custom_providers"][0]["api_key"] == "new-a"
+        assert reloaded["custom_providers"][0]["name"] == "provider-a"
+        assert reloaded["custom_providers"][0]["base_url"] == "https://a.example.com"
+        # Entry 1 is untouched
+        assert reloaded["custom_providers"][1]["name"] == "provider-b"
+        assert reloaded["custom_providers"][1]["api_key"] == "old-b"
+        assert reloaded["custom_providers"][1]["base_url"] == "https://b.example.com"
+
+    def test_indexed_set_preserves_non_targeted_fields(self, _isolated_hermes_home):
+        """Setting one field in a list entry must not drop other fields."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: provider-a\n"
+            "  api_key: old\n"
+            "  base_url: https://a.example.com\n"
+            "  models:\n"
+            "    foo: {}\n"
+            "    bar: {}\n"
+        ))
+
+        set_config_value("custom_providers.0.api_key", "rotated")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        entry = reloaded["custom_providers"][0]
+        assert entry["api_key"] == "rotated"
+        assert entry["name"] == "provider-a"
+        assert entry["base_url"] == "https://a.example.com"
+        assert set(entry["models"].keys()) == {"foo", "bar"}
+
+    def test_deeper_nesting_through_list(self, _isolated_hermes_home):
+        """Navigation path mixing dict → list → dict → scalar."""
+        self._write_config(_isolated_hermes_home, (
+            "platforms:\n"
+            "  telegram:\n"
+            "    allowlist:\n"
+            "    - name: alice\n"
+            "      role: admin\n"
+            "    - name: bob\n"
+            "      role: user\n"
+        ))
+
+        set_config_value("platforms.telegram.allowlist.1.role", "admin")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        allowlist = reloaded["platforms"]["telegram"]["allowlist"]
+        assert isinstance(allowlist, list)
+        assert allowlist[0] == {"name": "alice", "role": "admin"}
+        assert allowlist[1] == {"name": "bob", "role": "admin"}

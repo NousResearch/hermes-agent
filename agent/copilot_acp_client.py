@@ -69,7 +69,7 @@ def _resolve_home_dir() -> str:
     try:
         import pwd
 
-        resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()
+        resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
         if resolved:
             return resolved
     except Exception:
@@ -477,8 +477,8 @@ class CopilotACPClient:
             proc.stdin.write(json.dumps(payload) + "\n")
             proc.stdin.flush()
 
-            deadline = time.time() + timeout_seconds
-            while time.time() < deadline:
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
                 if proc.poll() is not None:
                     break
                 try:
@@ -608,7 +608,7 @@ class CopilotACPClient:
                     end = start + limit if isinstance(limit, int) and limit > 0 else None
                     content = "".join(lines[start:end])
                 if content:
-                    content = redact_sensitive_text(content)
+                    content = redact_sensitive_text(content, force=True)
                 response = {
                     "jsonrpc": "2.0",
                     "id": message_id,

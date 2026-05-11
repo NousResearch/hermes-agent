@@ -1276,9 +1276,10 @@ class TestMatrixUploadAndSend:
         mock_client.send_message_event = AsyncMock(return_value="$event")
         adapter._client = mock_client
 
-        result = await adapter._upload_and_send(
-            "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
-        )
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            result = await adapter._upload_and_send(
+                "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
+            )
 
         assert result.success is True
         # Should have uploaded ciphertext, not plaintext
@@ -1737,6 +1738,7 @@ class TestMatrixReactions:
         from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
+        self.adapter._reaction_redaction_delay_seconds = 0.01
         self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_reaction_123"}
         self.adapter._redact_reaction = AsyncMock(return_value=True)
         self.adapter._send_reaction = AsyncMock(return_value="$check_reaction_456")
@@ -1751,14 +1753,21 @@ class TestMatrixReactions:
             message_id="$msg1",
         )
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-        self.adapter._redact_reaction.assert_called_once_with("!room:ex", "$eyes_reaction_123")
+        self.adapter._redact_reaction.assert_not_awaited()
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\u2705")
+        await asyncio.sleep(0.03)
+        self.adapter._redact_reaction.assert_awaited_once_with(
+            "!room:ex",
+            "$eyes_reaction_123",
+            "processing complete",
+        )
 
     @pytest.mark.asyncio
     async def test_on_processing_complete_sends_cross_on_failure(self):
         from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
+        self.adapter._reaction_redaction_delay_seconds = 0.01
         self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_reaction_123"}
         self.adapter._redact_reaction = AsyncMock(return_value=True)
         self.adapter._send_reaction = AsyncMock(return_value="$cross_reaction_456")
@@ -1773,8 +1782,14 @@ class TestMatrixReactions:
             message_id="$msg1",
         )
         await self.adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
-        self.adapter._redact_reaction.assert_called_once_with("!room:ex", "$eyes_reaction_123")
+        self.adapter._redact_reaction.assert_not_awaited()
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\u274c")
+        await asyncio.sleep(0.03)
+        self.adapter._redact_reaction.assert_awaited_once_with(
+            "!room:ex",
+            "$eyes_reaction_123",
+            "processing complete",
+        )
 
     @pytest.mark.asyncio
     async def test_on_processing_complete_cancelled_sends_no_terminal_reaction(self):
@@ -1817,6 +1832,33 @@ class TestMatrixReactions:
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
         self.adapter._redact_reaction.assert_not_called()
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\u2705")
+
+    @pytest.mark.asyncio
+    async def test_approval_reaction_cleanup_is_delayed(self):
+        """Bot approval reaction redactions should not run inline."""
+
+        self.adapter._reaction_redaction_delay_seconds = 0.01
+        self.adapter._redact_reaction = AsyncMock(return_value=True)
+        prompt = MagicMock()
+        prompt.bot_reaction_events = {
+            "\u2705": "$allow_reaction",
+            "\u274e": "$deny_reaction",
+        }
+
+        await self.adapter._redact_bot_approval_reactions("!room:ex", prompt)
+
+        self.adapter._redact_reaction.assert_not_awaited()
+        await asyncio.sleep(0.03)
+        self.adapter._redact_reaction.assert_any_await(
+            "!room:ex",
+            "$allow_reaction",
+            "approval resolved",
+        )
+        self.adapter._redact_reaction.assert_any_await(
+            "!room:ex",
+            "$deny_reaction",
+            "approval resolved",
+        )
 
     @pytest.mark.asyncio
     async def test_reactions_disabled(self):

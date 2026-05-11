@@ -1354,16 +1354,48 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
     return _WINDOWS_PATH_WITH_DOT_SEGMENT_RE.sub(_protect, text)
 
 
+def _terminal_width_for_streaming() -> int:
+    """Display cells available inside the streamed response box.
+
+    The streaming path indents every line by ``_STREAM_PAD`` (4 cells)
+    inside an open response panel.  The realigner uses this number as
+    its budget when deciding whether to keep a horizontal table or
+    fall back to vertical key-value rendering.  We subtract a small
+    safety margin so terminal-resize races don't push a borderline
+    table into mid-cell soft-wrap.
+    """
+
+    try:
+        cols = shutil.get_terminal_size((80, 24)).columns
+    except Exception:
+        cols = 80
+    return max(20, cols - len(_STREAM_PAD) - 2)
+
+
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
+
+    # Estimate the cells available to the rendered table.  The Panel
+    # used by the background-task / final-response path has 4 cells of
+    # left+right padding plus 1 cell of border on each side, plus the
+    # _STREAM_PAD indent that streamed content uses.  Subtract a small
+    # safety margin so resize races don't push a borderline table into
+    # soft-wrap.
+    try:
+        cols = shutil.get_terminal_size((80, 24)).columns
+    except Exception:
+        cols = 80
+    panel_width = max(20, cols - 12)
 
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
         # Strip first — inline markdown inside cells (`code`, **bold**, ~~strike~~)
         # changes cell display width — then re-align so the column padding
         # reflects the final visible text, not the marker-decorated source.
-        return _RichText(realign_markdown_tables(_strip_markdown_syntax(text)))
+        return _RichText(
+            realign_markdown_tables(_strip_markdown_syntax(text), panel_width)
+        )
     if normalized_mode == "raw":
         return _rich_text_from_ansi(text or "")
 
@@ -1374,7 +1406,7 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     # (narrow panels, etc.) at least see consistent input.
     plain = _rich_text_from_ansi(text or "").plain
     plain = _preserve_windows_dot_segments_for_markdown(plain)
-    plain = realign_markdown_tables(plain)
+    plain = realign_markdown_tables(plain, panel_width)
     return Markdown(plain)
 
 
@@ -3662,7 +3694,7 @@ class HermesCLI:
             joined = "\n".join(buf)
             if self.final_response_markdown == "strip":
                 joined = _strip_markdown_syntax(joined)
-            block = realign_markdown_tables(joined)
+            block = realign_markdown_tables(joined, _terminal_width_for_streaming())
             for ln in block.split("\n"):
                 _emit_one(ln)
 
@@ -3726,7 +3758,7 @@ class HermesCLI:
             self._in_stream_table = False
             if self.final_response_markdown == "strip":
                 joined = _strip_markdown_syntax(joined)
-            block = realign_markdown_tables(joined)
+            block = realign_markdown_tables(joined, _terminal_width_for_streaming())
             for ln in block.split("\n"):
                 _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}")
 

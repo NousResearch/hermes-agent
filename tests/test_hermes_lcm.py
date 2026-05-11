@@ -67,7 +67,7 @@ def _seed_state_db(home: Path) -> Path:
     )
     conn.execute(
         "INSERT INTO sessions (id, source, title, started_at, message_count) VALUES (?, ?, ?, ?, ?)",
-        ("s1", "cli", "LCM test session", 1000.0, 4),
+        ("s1", "cli", "LCM test session api_key=sk-testSECRET1234567890", 1000.0, 4),
     )
     rows = [
         ("s1", "user", "Please inspect PER-2929 and remember command alpha", None, 1001.0),
@@ -106,6 +106,7 @@ def test_status_reports_readable_counts_and_fts(lcm_home):
     assert data["messages_count"] == 4
     assert data["has_messages_fts"] is True
     assert data["has_messages_fts_trigram"] is True
+    assert "[REDACTED]" in data["latest_session"]["title"]
 
 
 def test_grep_finds_seeded_message_and_bounds_output(lcm_home):
@@ -128,6 +129,7 @@ def test_grep_finds_seeded_message_and_bounds_output(lcm_home):
     assert data["matches"][0]["session_id"] == "s1"
     assert "PER-2929" in data["matches"][0]["snippet"]
     assert len(data["matches"][0]["snippet"]) <= 120
+    assert "sk-testSECRET" not in data["matches"][0]["title"]
 
 
 def test_describe_returns_window_around_message(lcm_home):
@@ -178,8 +180,38 @@ def test_redacts_secret_like_content_in_search_results(lcm_home):
     data = hermes_lcm.grep(args)
     snippet = data["matches"][0]["snippet"]
 
-    assert "sk-testSECRET" not in snippet
+    assert "***" not in snippet
     assert "[REDACTED]" in snippet
+
+
+def test_direct_calls_clamp_untrusted_bounds(lcm_home):
+    args = type("Args", (), {
+        "query": "secret",
+        "session": None,
+        "session_id": None,
+        "role": "tool",
+        "tool_name": None,
+        "since": None,
+        "before": None,
+        "sort": "time",
+        "limit": 9999,
+        "max_chars": 0,
+    })()
+
+    data = hermes_lcm.grep(args)
+    snippet = data["matches"][0]["snippet"]
+
+    assert data["count"] <= 50
+    assert len(snippet) < 900
+    assert "[truncated by hermes_lcm]" in snippet
+
+
+def test_lcm_toolset_is_opt_in_not_default(lcm_home):
+    from hermes_cli.tools_config import _get_platform_tools
+
+    assert "lcm" not in _get_platform_tools({}, "cli")
+    assert "lcm" not in _get_platform_tools({}, "telegram")
+    assert "lcm" in _get_platform_tools({"platform_toolsets": {"cli": ["hermes-cli", "lcm"]}}, "cli")
 
 
 def test_sqlite_connection_is_read_only(lcm_home):

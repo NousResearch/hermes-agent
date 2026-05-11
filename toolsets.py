@@ -50,8 +50,6 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
-    # Read-only Lossless Context Management recall over state.db
-    "lcm_status", "lcm_grep", "lcm_describe", "lcm_expand_query", "lcm_recall",
     # Clarifying questions
     "clarify",
     # Code execution + delegation

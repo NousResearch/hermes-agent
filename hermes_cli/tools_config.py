@@ -81,9 +81,10 @@ CONFIGURABLE_TOOLSETS = [
 ]
 
 # Toolsets that are OFF by default for new installs.
-# They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
+# Most are still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
+# Sensitive opt-in toolsets like lcm may be excluded from core defaults entirely.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video", "lcm"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset

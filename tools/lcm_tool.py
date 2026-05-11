@@ -173,6 +173,7 @@ registry.register(
     check_fn=check_lcm_requirements,
     description=LCM_STATUS_SCHEMA["description"],
     emoji="🧠",
+    max_result_size_chars=50_000,
 )
 registry.register(
     name="lcm_grep",
@@ -182,6 +183,7 @@ registry.register(
     check_fn=check_lcm_requirements,
     description=LCM_GREP_SCHEMA["description"],
     emoji="🔎",
+    max_result_size_chars=50_000,
 )
 registry.register(
     name="lcm_describe",
@@ -191,6 +193,7 @@ registry.register(
     check_fn=check_lcm_requirements,
     description=LCM_DESCRIBE_SCHEMA["description"],
     emoji="📜",
+    max_result_size_chars=50_000,
 )
 registry.register(
     name="lcm_recall",
@@ -200,6 +203,7 @@ registry.register(
     check_fn=check_lcm_requirements,
     description=LCM_RECALL_SCHEMA["description"],
     emoji="🧠",
+    max_result_size_chars=50_000,
 )
 registry.register(
     name="lcm_expand_query",
@@ -209,4 +213,5 @@ registry.register(
     check_fn=check_lcm_requirements,
     description=LCM_EXPAND_SCHEMA["description"],
     emoji="🧠",
+    max_result_size_chars=50_000,
 )

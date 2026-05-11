@@ -23,6 +23,13 @@ _SECRET_PATTERNS = [
     re.compile(r"xox[baprs]-[A-Za-z0-9\-]{20,}"),
 ]
 
+_MAX_SEARCH_LIMIT = 50
+_MAX_DESCRIBE_TAIL = 100
+_MAX_DESCRIBE_WINDOW = 20
+_MAX_RECALL_PER_SESSION = 10
+_MAX_SEARCH_CHARS = 6000
+_MAX_DESCRIBE_CHARS = 8000
+
 
 def _home() -> Path:
     return Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
@@ -51,10 +58,41 @@ def _redact(text: Any) -> str:
 
 def _clip(text: Any, max_chars: int) -> str:
     s = _redact(text)
-    if max_chars <= 0 or len(s) <= max_chars:
+    if max_chars <= 0:
+        max_chars = 800
+    if len(s) <= max_chars:
         return s
     half = max(1, (max_chars - 35) // 2)
     return s[:half] + "\n...[truncated by hermes_lcm]...\n" + s[-half:]
+
+
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        n = int(value)
+    except Exception:
+        n = default
+    return max(minimum, min(maximum, n))
+
+
+def _normalize_search_args(args: argparse.Namespace) -> argparse.Namespace:
+    args.limit = _bounded_int(getattr(args, "limit", None), default=5, minimum=1, maximum=_MAX_SEARCH_LIMIT)
+    args.max_chars = _bounded_int(getattr(args, "max_chars", None), default=800, minimum=100, maximum=_MAX_SEARCH_CHARS)
+    return args
+
+
+def _normalize_describe_args(args: argparse.Namespace) -> argparse.Namespace:
+    args.tail = None if getattr(args, "tail", None) is None else _bounded_int(args.tail, default=20, minimum=1, maximum=_MAX_DESCRIBE_TAIL)
+    args.window = _bounded_int(getattr(args, "window", None), default=3, minimum=0, maximum=_MAX_DESCRIBE_WINDOW)
+    args.max_chars = _bounded_int(getattr(args, "max_chars", None), default=1200, minimum=100, maximum=_MAX_DESCRIBE_CHARS)
+    return args
+
+
+def _normalize_recall_args(args: argparse.Namespace) -> argparse.Namespace:
+    args.limit = _bounded_int(getattr(args, "limit", None), default=10, minimum=1, maximum=_MAX_SEARCH_LIMIT)
+    args.per_session = _bounded_int(getattr(args, "per_session", None), default=3, minimum=1, maximum=_MAX_RECALL_PER_SESSION)
+    args.window = _bounded_int(getattr(args, "window", None), default=1, minimum=0, maximum=5)
+    args.max_chars = _bounded_int(getattr(args, "max_chars", None), default=800, minimum=100, maximum=_MAX_SEARCH_CHARS)
+    return args
 
 
 def _iso(ts: Any) -> str | None:
@@ -101,7 +139,7 @@ def _schema_counts(conn: sqlite3.Connection) -> dict[str, Any]:
     latest = conn.execute("SELECT id, source, title, started_at FROM sessions ORDER BY started_at DESC LIMIT 1").fetchone()
     if latest:
         out["latest_session"] = {
-            "id": latest["id"], "source": latest["source"], "title": latest["title"], "started_at": _iso(latest["started_at"])
+            "id": latest["id"], "source": _redact(latest["source"]), "title": _redact(latest["title"]), "started_at": _iso(latest["started_at"])
         }
     return out
 
@@ -144,6 +182,7 @@ def _fts_query(q: str) -> str:
 
 
 def grep(args: argparse.Namespace) -> dict[str, Any]:
+    args = _normalize_search_args(args)
     with _connect() as conn:
         where, vals = _where_filters(args)
         base_where = (" AND " + where) if where else ""
@@ -184,8 +223,8 @@ def grep(args: argparse.Namespace) -> dict[str, Any]:
         matches.append({
             "message_id": r["id"],
             "session_id": r["session_id"],
-            "source": r["source"],
-            "title": r["title"],
+            "source": _redact(r["source"]),
+            "title": _redact(r["title"]),
             "role": r["role"],
             "tool_name": r["tool_name"],
             "timestamp": _iso(r["timestamp"]),
@@ -207,6 +246,7 @@ def _message_dict(r: sqlite3.Row, max_chars: int) -> dict[str, Any]:
 
 
 def describe(args: argparse.Namespace) -> dict[str, Any]:
+    args = _normalize_describe_args(args)
     with _connect() as conn:
         if args.message_id is not None:
             center = conn.execute("SELECT id, session_id FROM messages WHERE id = ?", [args.message_id]).fetchone()
@@ -240,8 +280,14 @@ def describe(args: argparse.Namespace) -> dict[str, Any]:
         else:
             return {"error": "provide --message-id, or --session-id with --tail/--around"}
         session = conn.execute("SELECT id, source, title, started_at, ended_at FROM sessions WHERE id=?", [rows[0]["session_id"] if rows else args.session_id]).fetchone() if rows else None
+    session_obj = None
+    if session:
+        session_obj = dict(session)
+        session_obj["source"] = _redact(session_obj.get("source"))
+        session_obj["title"] = _redact(session_obj.get("title"))
+        session_obj |= {"started_at_iso": _iso(session["started_at"]), "ended_at_iso": _iso(session["ended_at"])}
     return {
-        "session": dict(session) | {"started_at_iso": _iso(session["started_at"]), "ended_at_iso": _iso(session["ended_at"])} if session else None,
+        "session": session_obj,
         "count": len(rows),
         "messages": [_message_dict(r, args.max_chars) for r in rows],
     }
@@ -249,6 +295,7 @@ def describe(args: argparse.Namespace) -> dict[str, Any]:
 
 def recall(args: argparse.Namespace) -> dict[str, Any]:
     # Deterministic extractive recall: grouped search evidence, no LLM call.
+    args = _normalize_recall_args(args)
     gargs = argparse.Namespace(query=args.query, session=None if args.all_sessions else args.session, session_id=None, role=args.role, tool_name=args.tool_name, since=args.since, before=args.before, sort=args.sort, limit=args.limit, max_chars=args.max_chars)
     results = grep(gargs)["matches"]
     grouped: dict[str, list[dict[str, Any]]] = {}

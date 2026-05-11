@@ -823,11 +823,11 @@ data class HermesStrings(
                 AppLanguage.ENGLISH -> fallback
             }
             "qwen-oauth" -> when (language) {
-                AppLanguage.CHINESE -> "复用 Qwen OAuth / Qwen Chat 令牌，匹配 Python CLI 的 qwen-oauth 提供商。"
-                AppLanguage.SPANISH -> "Reutiliza un token de Qwen OAuth / Qwen Chat, igual que el proveedor qwen-oauth de la CLI Python."
-                AppLanguage.GERMAN -> "Verwende einen Qwen-OAuth-/Qwen-Chat-Token wie beim qwen-oauth-Anbieter der Python-CLI."
-                AppLanguage.PORTUGUESE -> "Reutilize um token Qwen OAuth / Qwen Chat, igual ao provedor qwen-oauth da CLI Python."
-                AppLanguage.FRENCH -> "Réutilisez un jeton Qwen OAuth / Qwen Chat, comme le fournisseur qwen-oauth de la CLI Python."
+                AppLanguage.CHINESE -> "复用已有的 Qwen OAuth / Qwen Chat 令牌；新的 Qwen OAuth 登录已于 2026-04-15 停用，新设置请使用 Qwen Cloud。"
+                AppLanguage.SPANISH -> "Reutiliza un token existente de Qwen OAuth / Qwen Chat; los inicios de sesión nuevos con Qwen OAuth se discontinuaron el 2026-04-15, así que usa Qwen Cloud para una configuración nueva."
+                AppLanguage.GERMAN -> "Verwende einen vorhandenen Qwen-OAuth-/Qwen-Chat-Token; neue Qwen-OAuth-Anmeldungen wurden am 2026-04-15 eingestellt, nutze für neue Einrichtung Qwen Cloud."
+                AppLanguage.PORTUGUESE -> "Reutilize um token Qwen OAuth / Qwen Chat existente; novos logins Qwen OAuth foram descontinuados em 2026-04-15, então use Qwen Cloud para nova configuração."
+                AppLanguage.FRENCH -> "Réutilisez un jeton Qwen OAuth / Qwen Chat existant ; les nouvelles connexions Qwen OAuth ont été arrêtées le 2026-04-15, utilisez Qwen Cloud pour une nouvelle configuration."
                 AppLanguage.ENGLISH -> fallback
             }
             "zai" -> when (language) {

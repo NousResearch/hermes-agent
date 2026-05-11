@@ -114,8 +114,8 @@ object AuthCatalog {
         ),
         AuthOption(
             id = "qwen-oauth",
-            label = "Qwen OAuth",
-            description = "Reuse a Qwen OAuth / Qwen Chat token in Hermes Android, matching the Python CLI qwen-oauth provider.",
+            label = "Qwen OAuth (legacy)",
+            description = "Reuse an existing Qwen OAuth / Qwen Chat token in Hermes Android; new Qwen OAuth sign-ins were discontinued on 2026-04-15, so use Qwen Cloud for new setup.",
             scope = AuthScope.RuntimeProvider,
             runtimeProvider = "qwen-oauth",
             defaultBaseUrl = "https://portal.qwen.ai/v1",

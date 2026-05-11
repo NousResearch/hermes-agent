@@ -15,6 +15,7 @@ import com.nousresearch.hermesagent.backend.OnDeviceBackendManager
 import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.ProviderPresets
+import com.nousresearch.hermesagent.data.ProviderSetupTarget
 import com.nousresearch.hermesagent.data.SecureSecretsStore
 import com.nousresearch.hermesagent.device.HermesExternalBrowserLauncher
 import com.nousresearch.hermesagent.ui.i18n.AppLanguage
@@ -42,6 +43,7 @@ data class SettingsUiState(
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
     private val settingsStore = AppSettingsStore(application)
     private val secretsStore = SecureSecretsStore(application)
+    private val providerSetupOpenIndexes = mutableMapOf<String, Int>()
 
     private val _uiState = MutableStateFlow(loadInitialState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
@@ -101,16 +103,18 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openProviderKeyPage(url: String) {
-        val target = url.trim()
-        if (target.isBlank()) {
+        val requestedUrl = url.trim()
+        if (requestedUrl.isBlank()) {
             return
         }
-        val uri = Uri.parse(target)
+        val providerId = ProviderPresets.providerIdForSetupUrl(requestedUrl)
+        val setupTarget = providerId?.let { nextProviderSetupTarget(it) }
+        val targetUrl = setupTarget?.url ?: requestedUrl
+        val uri = Uri.parse(targetUrl)
         if (uri.scheme !in setOf("http", "https")) {
             _uiState.update { it.copy(status = "Provider setup URL must start with https:// or http://") }
             return
         }
-        val providerId = ProviderPresets.providerIdForSetupUrl(target)
         val providerLabel = providerId?.let { ProviderPresets.find(it)?.label }.orEmpty().ifBlank { "provider" }
         val launch = HermesExternalBrowserLauncher.open(
             context = getApplication(),
@@ -118,13 +122,41 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             title = "Open $providerLabel setup page",
         )
         if (launch.success) {
-            _uiState.update { it.copy(status = "Opened provider setup page. If your browser stalls, copy the setup URL and paste it into another browser.") }
-        } else {
-            copyProviderKeyPage(target, updateSuccessStatus = false)
+            copyProviderKeyPage(targetUrl, updateSuccessStatus = false)
             _uiState.update {
-                it.copy(status = "Unable to open browser (${launch.errorName.ifBlank { "browser_error" }}); copied the provider setup URL.")
+                it.copy(status = providerSetupOpenedStatus(providerLabel, providerId.orEmpty(), setupTarget))
+            }
+        } else {
+            copyProviderKeyPage(targetUrl, updateSuccessStatus = false)
+            _uiState.update {
+                it.copy(status = "Unable to open browser (${launch.errorName.ifBlank { "browser_error" }}); copied the provider setup URLs.")
             }
         }
+    }
+
+    private fun nextProviderSetupTarget(providerId: String): ProviderSetupTarget? {
+        val nextIndex = providerSetupOpenIndexes[providerId] ?: 0
+        val target = ProviderPresets.setupTarget(providerId, nextIndex) ?: return null
+        providerSetupOpenIndexes[providerId] = target.nextIndex
+        return target
+    }
+
+    private fun providerSetupOpenedStatus(
+        providerLabel: String,
+        providerId: String,
+        target: ProviderSetupTarget?,
+    ): String {
+        val cycleHint = if (target != null && target.total > 1) {
+            " ${target.displayIndex}/${target.total}; copied all official setup URLs. Tap Open again for the next fallback if this page stalls."
+        } else {
+            ". If your browser stalls, copy the setup URL and paste it into another browser."
+        }
+        val qwenLegacyHint = if (providerId == "qwen-oauth") {
+            " Qwen OAuth is legacy; choose Qwen Cloud for new API-key setup."
+        } else {
+            ""
+        }
+        return "Opened $providerLabel setup page$cycleHint$qwenLegacyHint"
     }
 
     fun copyProviderKeyPage(url: String) {

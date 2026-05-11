@@ -47,7 +47,7 @@ class ChatCommandRouterTest {
         assertEquals("qwen-oauth", host.startedAuthMethods.single())
         assertEquals(AppSection.Settings, host.sections.single())
         assertEquals(
-            "Prepared qwen-oauth API-key/token setup in Settings and opened the provider setup page. Paste the provider credential there to power Hermes.",
+            "Prepared legacy qwen-oauth token setup in Settings and opened the provider setup page. Qwen OAuth sign-ins were discontinued on 2026-04-15; use /signin qwen for new Qwen Cloud API-key setup.",
             result.feedback,
         )
     }

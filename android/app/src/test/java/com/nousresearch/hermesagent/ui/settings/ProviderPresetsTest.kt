@@ -32,4 +32,17 @@ class ProviderPresetsTest {
 
         assertEquals("https://openrouter.ai/api/v1", configBaseUrl)
     }
+
+    @Test
+    fun setupTargetsCycleThroughOfficialFallbacks() {
+        val first = requireNotNull(ProviderPresets.setupTarget("qwen-oauth", 0))
+        val second = requireNotNull(ProviderPresets.setupTarget("qwen-oauth", 1))
+        val wrapped = requireNotNull(ProviderPresets.setupTarget("qwen-oauth", 6))
+
+        assertEquals("https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/", first.url)
+        assertEquals("https://home.qwencloud.com/api-keys", second.url)
+        assertEquals(first.url, wrapped.url)
+        assertEquals(6, first.total)
+        assertEquals(1, first.nextIndex)
+    }
 }

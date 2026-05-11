@@ -9,6 +9,19 @@ data class ProviderPreset(
     val fallbackSetupUrls: List<String> = emptyList(),
 )
 
+data class ProviderSetupTarget(
+    val providerId: String,
+    val url: String,
+    val index: Int,
+    val total: Int,
+) {
+    val displayIndex: Int
+        get() = index + 1
+
+    val nextIndex: Int
+        get() = if (total <= 0) 0 else (index + 1) % total
+}
+
 data class ModelSelectionPreset(
     val id: String,
     val label: String,
@@ -103,11 +116,17 @@ object ProviderPresets {
         ),
         ProviderPreset(
             id = "qwen-oauth",
-            label = "Qwen OAuth / Qwen Chat token",
+            label = "Qwen OAuth / Qwen Chat token (legacy)",
             baseUrl = "https://portal.qwen.ai/v1",
             modelHint = "qwen3-coder-plus",
-            apiKeyUrl = "https://chat.qwen.ai/",
-            fallbackSetupUrls = listOf("https://docs.qwencloud.com/developer-guides/getting-started/first-api-call"),
+            apiKeyUrl = "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/",
+            fallbackSetupUrls = listOf(
+                "https://home.qwencloud.com/api-keys",
+                "https://docs.qwencloud.com/api-reference/preparation/api-key",
+                "https://docs.qwencloud.com/developer-guides/getting-started/first-api-call",
+                "https://qwen.ai/apiplatform",
+                "https://chat.qwen.ai/",
+            ),
         ),
         ProviderPreset(
             id = "zai",
@@ -143,6 +162,20 @@ object ProviderPresets {
             .distinct()
     }
 
+    fun setupTarget(providerId: String, requestedIndex: Int): ProviderSetupTarget? {
+        val urls = setupUrls(providerId)
+        if (urls.isEmpty()) {
+            return null
+        }
+        val index = requestedIndex.floorMod(urls.size)
+        return ProviderSetupTarget(
+            providerId = providerId,
+            url = urls[index],
+            index = index,
+            total = urls.size,
+        )
+    }
+
     fun setupClipboardText(providerId: String): String {
         return setupUrls(providerId).joinToString(separator = "\n")
     }
@@ -172,5 +205,9 @@ object ProviderPresets {
             )
         }
         return listOfNotNull(providerHint) + firstClassLocalModels
+    }
+
+    private fun Int.floorMod(divisor: Int): Int {
+        return ((this % divisor) + divisor) % divisor
     }
 }

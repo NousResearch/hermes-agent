@@ -18,6 +18,7 @@ import com.nousresearch.hermesagent.data.AuthSession
 import com.nousresearch.hermesagent.data.AuthSessionStore
 import com.nousresearch.hermesagent.data.PendingAuthRequest
 import com.nousresearch.hermesagent.data.ProviderPresets
+import com.nousresearch.hermesagent.data.ProviderSetupTarget
 import com.nousresearch.hermesagent.device.HermesExternalBrowserLauncher
 import com.nousresearch.hermesagent.ui.i18n.AppLanguage
 import com.nousresearch.hermesagent.ui.i18n.HermesStrings
@@ -61,6 +62,7 @@ data class AuthUiState(
 class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val appSettingsStore = AppSettingsStore(application)
     private val authSessionStore = AuthSessionStore(application)
+    private val providerSetupOpenIndexes = mutableMapOf<String, Int>()
     private val signedOutStatuses by lazy {
         buildSet {
             add("Not signed in")
@@ -288,11 +290,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openProviderSetupPage(methodId: String) {
         val option = AuthCatalog.find(methodId) ?: return
-        val setupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty().trim()
-        if (setupUrl.isBlank()) {
-            return
-        }
-        val uri = Uri.parse(setupUrl)
+        val target = nextProviderSetupTarget(option.runtimeProvider) ?: return
+        val uri = Uri.parse(target.url)
         if (uri.scheme !in setOf("http", "https")) {
             _uiState.update { it.copy(globalStatus = "Provider setup URL must start with https:// or http://") }
             return
@@ -303,15 +302,41 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             title = "Open ${option.label} setup page",
         )
         if (launch.success) {
+            copyProviderSetupUrl(methodId, updateStatus = false)
             _uiState.update {
-                it.copy(globalStatus = "Opened ${option.label} setup page. If your browser stalls, copy the setup URL and paste it into another browser.")
+                it.copy(globalStatus = providerSetupOpenedStatus(option.label, option.runtimeProvider, target))
             }
         } else {
             copyProviderSetupUrl(methodId, updateStatus = false)
             _uiState.update {
-                it.copy(globalStatus = "Unable to open browser (${launch.errorName.ifBlank { "browser_error" }}); copied the ${option.label} setup URL.")
+                it.copy(globalStatus = "Unable to open browser (${launch.errorName.ifBlank { "browser_error" }}); copied the ${option.label} setup URLs.")
             }
         }
+    }
+
+    private fun nextProviderSetupTarget(providerId: String): ProviderSetupTarget? {
+        val nextIndex = providerSetupOpenIndexes[providerId] ?: 0
+        val target = ProviderPresets.setupTarget(providerId, nextIndex) ?: return null
+        providerSetupOpenIndexes[providerId] = target.nextIndex
+        return target
+    }
+
+    private fun providerSetupOpenedStatus(
+        optionLabel: String,
+        providerId: String,
+        target: ProviderSetupTarget,
+    ): String {
+        val cycleHint = if (target.total > 1) {
+            " ${target.displayIndex}/${target.total}; copied all official setup URLs. Tap Open again for the next fallback if this page stalls."
+        } else {
+            ". If your browser stalls, copy the setup URL and paste it into another browser."
+        }
+        val qwenLegacyHint = if (providerId == "qwen-oauth") {
+            " Qwen OAuth is legacy; choose Qwen Cloud for new API-key setup."
+        } else {
+            ""
+        }
+        return "Opened $optionLabel setup page$cycleHint$qwenLegacyHint"
     }
 
     fun copyProviderSetupUrl(methodId: String) {

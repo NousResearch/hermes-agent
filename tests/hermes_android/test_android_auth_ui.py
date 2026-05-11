@@ -77,10 +77,15 @@ def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
     assert 'apiKeyUrl = "https://openrouter.ai/keys"' in presets
     assert 'apiKeyUrl = "https://platform.openai.com/settings/organization/api-keys"' in presets
     assert 'apiKeyUrl = "https://home.qwencloud.com/api-keys"' in presets
+    assert 'apiKeyUrl = "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/"' in presets
     assert 'apiKeyUrl = "https://z.ai/manage-apikey/apikey-list"' in presets
     assert 'fallbackSetupUrls = listOf(' in presets
     assert 'https://docs.qwencloud.com/api-reference/preparation/api-key' in presets
+    assert 'https://qwen.ai/apiplatform' in presets
     assert 'https://docs.z.ai/guides/' in presets
+    assert 'data class ProviderSetupTarget' in presets
+    assert 'fun setupTarget(providerId: String, requestedIndex: Int): ProviderSetupTarget?' in presets
+    assert 'private fun Int.floorMod(divisor: Int): Int' in presets
     assert 'fun setupClipboardText(providerId: String): String' in presets
     assert 'fun providerIdForSetupUrl(url: String): String?' in presets
     assert 'fun runtimeConfigBaseUrl(providerId: String, baseUrl: String): String' in presets
@@ -179,6 +184,11 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "browserSignInEnabled = option.scope != AuthScope.AppAccount || corr3xtConfigured" in auth_view_model
     assert "providerSetupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty()" in auth_view_model
     assert "fun openProviderSetupPage(methodId: String)" in auth_view_model
+    assert "private val providerSetupOpenIndexes = mutableMapOf<String, Int>()" in auth_view_model
+    assert "ProviderPresets.setupTarget(providerId, nextIndex)" in auth_view_model
+    assert "providerSetupOpenIndexes[providerId] = target.nextIndex" in auth_view_model
+    assert "Tap Open again for the next fallback" in auth_view_model
+    assert "Qwen OAuth is legacy" in auth_view_model
     assert "prepareApiKeySetup(methodId)\n            openProviderSetupPage(methodId)" in auth_view_model
     assert "HermesExternalBrowserLauncher.open" in auth_view_model
     assert "fun copyProviderSetupUrl(methodId: String)" in auth_view_model
@@ -203,7 +213,7 @@ def test_settings_opens_official_provider_key_pages():
     assert "viewModel::openProviderKeyPage" in settings_screen
     assert "viewModel::copyProviderKeyPage" in settings_screen
     assert "Intent.ACTION_VIEW" in browser_launcher
-    assert "Uri.parse(target)" in settings_view_model
+    assert "Uri.parse(targetUrl)" in settings_view_model
     assert "HermesExternalBrowserLauncher.open" in settings_view_model
     assert "Intent.createChooser" in browser_launcher
     assert "putExtra(Browser.EXTRA_APPLICATION_ID" in browser_launcher
@@ -211,6 +221,11 @@ def test_settings_opens_official_provider_key_pages():
     assert "ClipData.newPlainText" in settings_view_model
     assert "ProviderPresets.providerIdForSetupUrl(target)" in settings_view_model
     assert "ProviderPresets.setupClipboardText(it)" in settings_view_model
+    assert "private val providerSetupOpenIndexes = mutableMapOf<String, Int>()" in settings_view_model
+    assert "ProviderPresets.setupTarget(providerId, nextIndex)" in settings_view_model
+    assert "providerSetupOpenIndexes[providerId] = target.nextIndex" in settings_view_model
+    assert "Tap Open again for the next fallback" in settings_view_model
+    assert "Qwen OAuth is legacy" in settings_view_model
     assert 'ClipData.newPlainText("Hermes provider setup URLs", setupText)' in settings_view_model
     assert "addCategory(Intent.CATEGORY_BROWSABLE)" in browser_launcher
     assert "openProviderKeyPage(providerLabel)" in settings_screen

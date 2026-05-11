@@ -196,12 +196,12 @@ class DeepAppUiVisualInstrumentedTest {
 
         composeRule.onNodeWithTag("HermesNavAccounts").performClick()
         composeRule.onAllNodesWithText("Accounts")[0].assertIsDisplayed()
-        composeRule.onNodeWithText("Qwen OAuth").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithText("Set up Qwen OAuth API key").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Qwen OAuth (legacy)").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Set up Qwen OAuth (legacy) API key").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("AuthProviderOpenSetup-qwen-oauth").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("AuthProviderCopySetup-qwen-oauth").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("AuthProviderCopySetup-qwen-oauth").performClick()
-        composeRule.onNodeWithText("Copied Qwen OAuth setup URL and 1 alternate official page.").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Copied Qwen OAuth (legacy) setup URL and 5 alternate official pages.").performScrollTo().assertIsDisplayed()
     }
 
     @Test

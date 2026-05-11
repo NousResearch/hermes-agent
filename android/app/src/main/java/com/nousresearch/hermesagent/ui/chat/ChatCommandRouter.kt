@@ -99,7 +99,12 @@ object ChatCommandRouter {
                 } else if (host.startAuthMethod(method)) {
                     if (method in runtimeProviderAuthMethods) {
                         host.navigateToSection(AppSection.Settings)
-                        ChatCommandResult(handled = true, feedback = "Prepared $method API-key/token setup in Settings and opened the provider setup page. Paste the provider credential there to power Hermes.")
+                        val feedback = if (method == "qwen-oauth") {
+                            "Prepared legacy qwen-oauth token setup in Settings and opened the provider setup page. Qwen OAuth sign-ins were discontinued on 2026-04-15; use /signin qwen for new Qwen Cloud API-key setup."
+                        } else {
+                            "Prepared $method API-key/token setup in Settings and opened the provider setup page. Paste the provider credential there to power Hermes."
+                        }
+                        ChatCommandResult(handled = true, feedback = feedback)
                     } else {
                         host.navigateToSection(AppSection.Accounts)
                         ChatCommandResult(handled = true, feedback = "Opened Corr3xt app sign-in for $method. Complete it in your browser, then come back to Hermes.")

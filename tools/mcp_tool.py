@@ -2155,6 +2155,64 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+def _get_connected_server_for_call(server_name: str):
+    """Return a connected MCP server, lazily reconnecting if necessary.
+
+    Gateway sessions can retain MCP tool schemas while the in-process server
+    task is missing or has lost its transport session (for example after an
+    OAuth token is copied in, a config reload races with startup, or a remote
+    HTTP session is garbage-collected while idle).  A direct tool call should
+    make one best-effort reconnect before surfacing ``server is not connected``
+    to the model; otherwise the only recovery path is a manual gateway restart.
+    """
+    with _lock:
+        server = _servers.get(server_name)
+
+    if server and getattr(server, "session", None):
+        return server
+
+    # If a stale entry exists, remove it so discover_mcp_tools/register_mcp_servers
+    # treats the configured server as reconnectable rather than idempotently
+    # skipping it because the name is already present in _servers.
+    if server is not None:
+        logger.info(
+            "MCP server '%s' has no active session; attempting lazy reconnect",
+            server_name,
+        )
+        try:
+            with _lock:
+                if _servers.get(server_name) is server:
+                    _servers.pop(server_name, None)
+            with _lock:
+                loop = _mcp_loop
+            if loop is not None and loop.is_running() and hasattr(server, "shutdown"):
+                future = asyncio.run_coroutine_threadsafe(server.shutdown(), loop)
+                future.result(timeout=15)
+        except Exception as exc:
+            logger.debug(
+                "Best-effort shutdown before lazy MCP reconnect for '%s' failed: %s",
+                server_name,
+                exc,
+            )
+    else:
+        logger.info(
+            "MCP server '%s' is not registered in-process; attempting lazy reconnect",
+            server_name,
+        )
+
+    try:
+        discover_mcp_tools()
+    except Exception as exc:
+        logger.warning("Lazy MCP reconnect for '%s' failed: %s", server_name, exc)
+
+    with _lock:
+        server = _servers.get(server_name)
+    if server and getattr(server, "session", None):
+        _reset_server_error(server_name)
+        return server
+    return None
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -2189,9 +2247,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 }, ensure_ascii=False)
             # Cooldown elapsed → fall through as a half-open probe.
 
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
+        server = _get_connected_server_for_call(server_name)
+        if not server:
             _bump_server_error(server_name)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"

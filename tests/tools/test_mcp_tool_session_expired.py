@@ -226,6 +226,48 @@ def test_call_tool_handler_non_session_expired_error_falls_through(
         mcp_tool._server_error_counts.pop("srv", None)
 
 
+def test_call_tool_handler_lazy_reconnects_missing_server(monkeypatch, tmp_path):
+    """If a tool schema survives but the in-process MCP server task is
+    missing, the first tool call should run discovery once and then call the
+    freshly connected server instead of forcing a manual gateway restart."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    server, _ = _install_stub_server("lazy")
+
+    async def _call_tool(*a, **kw):
+        result = MagicMock()
+        result.isError = False
+        result.content = [MagicMock(type="text", text="lazy reconnect ok")]
+        result.structuredContent = None
+        return result
+
+    server.session.call_tool = _call_tool
+    mcp_tool._servers.pop("lazy", None)
+    mcp_tool._server_error_counts.pop("lazy", None)
+    calls = {"n": 0}
+
+    def _fake_discover():
+        calls["n"] += 1
+        mcp_tool._servers["lazy"] = server
+        return ["mcp_lazy_mytool"]
+
+    monkeypatch.setattr(mcp_tool, "discover_mcp_tools", _fake_discover)
+
+    try:
+        handler = _make_tool_handler("lazy", "mytool", 10.0)
+        out = handler({"arg": "v"})
+        parsed = json.loads(out)
+        assert parsed == {"result": "lazy reconnect ok"}
+        assert calls["n"] == 1
+        assert mcp_tool._server_error_counts.get("lazy", 0) == 0
+    finally:
+        mcp_tool._servers.pop("lazy", None)
+        mcp_tool._server_error_counts.pop("lazy", None)
+
+
 def test_session_expired_handler_returns_none_without_loop(monkeypatch):
     """Defensive: if the MCP loop isn't running (cold start / shutdown
     race), the handler must fall through cleanly instead of hanging

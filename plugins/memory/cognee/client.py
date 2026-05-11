@@ -21,6 +21,18 @@ from typing import Any, Awaitable, Callable, Dict
 from hermes_cli.config import cfg_get, load_config
 from hermes_constants import get_hermes_home
 
+# ---- Stale instructor cache scrub at module load time ----
+# instructor 1.15.x caches import chains for optional backends (mistralai,
+# google, etc.) at its first import.  If a backend was installed when
+# instructor was first loaded and later removed, the stale chain survives
+# in sys.modules and causes ImportError on any import cognee.
+# We must scrub before importing anything that triggers instructor.
+import sys as _sys
+for _k in list(_sys.modules):
+    if _k.startswith("instructor.") or _k == "instructor" or _k == "mistralai":
+        del _sys.modules[_k]
+del _k, _sys
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PROVIDER = "openai"
@@ -215,7 +227,7 @@ def ensure_wal_mode(timeout_ms: int = 5000) -> None:
         logger.debug("Cognee not importable — skipping WAL setup")
         return
 
-    dbs = _find_cognee_databases(cognee)
+    dbs = _find_cognee_databases()
     if not dbs:
         logger.debug("No Cognee SQLite databases found for WAL setup")
         return
@@ -231,15 +243,43 @@ def ensure_wal_mode(timeout_ms: int = 5000) -> None:
             logger.warning("Could not set WAL on %s: %s", path, exc)
 
 
-def _find_cognee_databases(cognee_module) -> list[str]:
-    """Yield paths to known Cognee SQLite databases on disk."""
-    if hasattr(cognee_module, "__file__") and cognee_module.__file__:
-        root = Path(cognee_module.__file__).resolve().parent
-        found: list[str] = []
-        for pattern in _COGNEE_DB_GLOBS:
-            found.extend(str(p) for p in root.glob(pattern))
-        return found
-    return []
+# ---------------------------------------------------------------------------
+# Instructor import compatibility shim
+# ---------------------------------------------------------------------------
+
+_INSTRUCTOR_PROVIDERS_INIT = "instructor.providers"
+
+
+def _scrub_stale_instructor_cache() -> None:
+    """Drop cached instructor modules from ``sys.modules``.
+
+    ``instructor`` 1.15.x probes for optional backends (mistralai, google,
+    etc.) via ``importlib.util.find_spec`` at import time.  If a backend was
+    installed when instructor was first loaded and later uninstalled, the
+    stale import chain remains cached and causes ``ImportError`` on
+    subsequent ``import cognee`` in the same process.
+
+    By evicting all instructor modules before we import cognee, we force a
+    fresh re-evaluation of backend availability.
+    """
+    import sys
+
+    keys = [k for k in sys.modules if k.startswith("instructor.") or k == "instructor"]
+    for k in keys:
+        del sys.modules[k]
+
+    # Also purge any empty namespace packages that instructor probes eagerly.
+    # These can linger as namespace packages even after the backend is removed.
+    _stale_namespaces = ("mistralai",)
+    for ns in _stale_namespaces:
+        if ns in sys.modules:
+            del sys.modules[ns]
+
+    # Also flush cached provider init modules since they cached the old
+    # find_spec result at first import time.
+    for k in list(sys.modules):
+        if k.startswith("instructor.providers."):
+            del sys.modules[k]
 
 
 def _call_accepting_kwargs(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
@@ -256,6 +296,7 @@ def _call_accepting_kwargs(func: Callable[..., Any], /, *args: Any, **kwargs: An
 
 
 async def cognee_remember(data: Any, **kwargs: Any) -> Any:
+    _scrub_stale_instructor_cache()
     import cognee
 
     result = _call_accepting_kwargs(cognee.remember, data, **kwargs)
@@ -265,6 +306,7 @@ async def cognee_remember(data: Any, **kwargs: Any) -> Any:
 
 
 async def cognee_recall(query_text: str, **kwargs: Any) -> Any:
+    _scrub_stale_instructor_cache()
     import cognee
 
     result = _call_accepting_kwargs(cognee.recall, query_text, **kwargs)
@@ -274,6 +316,7 @@ async def cognee_recall(query_text: str, **kwargs: Any) -> Any:
 
 
 async def cognee_forget(**kwargs: Any) -> Any:
+    _scrub_stale_instructor_cache()
     import cognee
 
     forget = getattr(cognee, "forget", None)

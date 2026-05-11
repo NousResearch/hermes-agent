@@ -25,6 +25,7 @@ from tools.send_message_tool import (
     _derive_forum_thread_name,
     _parse_target_ref,
     _send_discord,
+    _send_mattermost_via_adapter,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
@@ -1242,6 +1243,124 @@ class TestSendToPlatformDiscordMedia:
         send_mock.assert_awaited_once()
         call_kwargs = send_mock.await_args.kwargs
         assert call_kwargs["media_files"] == [("/fake/img.png", False)]
+
+
+class TestSendToPlatformMattermostMedia:
+    """_send_to_platform routes Mattermost media correctly."""
+
+    def test_media_files_passed_on_last_chunk_only(self):
+        call_log = []
+
+        async def mock_send_mattermost(pconfig, chat_id, message, media_files=None, thread_id=None):
+            call_log.append({"message": message, "media_files": media_files or []})
+            return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": "1"}
+
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        long_msg = "A" * 7000 + " " + "B" * 7000
+        platform_registry.register(
+            PlatformEntry(
+                name="mattermost",
+                label="Mattermost",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+                max_message_length=12000,
+            )
+        )
+
+        try:
+            with patch("tools.send_message_tool._send_mattermost_via_adapter", side_effect=mock_send_mattermost):
+                result = asyncio.run(
+                    _send_to_platform(
+                        Platform.MATTERMOST,
+                        SimpleNamespace(enabled=True, token="tok", extra={}),
+                        "mm-channel",
+                        long_msg,
+                        media_files=[("/fake/img.png", False)],
+                    )
+                )
+        finally:
+            platform_registry.unregister("mattermost")
+
+        assert result["success"] is True
+        assert len(call_log) == 2
+        assert call_log[0]["media_files"] == []
+        assert call_log[1]["media_files"] == [("/fake/img.png", False)]
+
+    def test_media_only_message_uses_native_mattermost_delivery(self):
+        helper = AsyncMock(return_value={"success": True, "platform": "mattermost", "chat_id": "mm", "message_id": "2"})
+
+        with patch("tools.send_message_tool._send_mattermost_via_adapter", helper), \
+             patch("tools.send_message_tool._send_mattermost", AsyncMock(side_effect=AssertionError("fallback sender should not be used"))):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.MATTERMOST,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "mm",
+                    "",
+                    media_files=[("/fake/doc.pdf", False)],
+                )
+            )
+
+        assert result["success"] is True
+        helper.assert_awaited_once()
+
+
+class TestSendMattermostViaAdapter:
+    def test_sends_document(self, tmp_path):
+        doc = tmp_path / "notes.txt"
+        doc.write_text("hello")
+
+        adapter = MagicMock()
+        adapter.connect = AsyncMock(return_value=True)
+        adapter.disconnect = AsyncMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="text1"))
+        adapter.send_image_file = AsyncMock()
+        adapter.send_video = AsyncMock()
+        adapter.send_voice = AsyncMock()
+        adapter.send_document = AsyncMock(return_value=SimpleNamespace(success=True, message_id="doc1"))
+
+        with patch("gateway.platforms.mattermost.MattermostAdapter", new=MagicMock(return_value=adapter)):
+            result = asyncio.run(
+                _send_mattermost_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "mm-channel",
+                    "caption",
+                    media_files=[(str(doc), False)],
+                )
+            )
+
+        assert result["success"] is True
+        adapter.connect.assert_awaited_once()
+        adapter.send.assert_awaited_once()
+        adapter.send_document.assert_awaited_once()
+        adapter.send_image_file.assert_not_awaited()
+        adapter.send_video.assert_not_awaited()
+        adapter.disconnect.assert_awaited_once()
+
+    def test_missing_media_returns_error(self):
+        adapter = MagicMock()
+        adapter.connect = AsyncMock(return_value=True)
+        adapter.disconnect = AsyncMock()
+        adapter.send = AsyncMock()
+        adapter.send_image_file = AsyncMock()
+        adapter.send_video = AsyncMock()
+        adapter.send_voice = AsyncMock()
+        adapter.send_document = AsyncMock()
+
+        with patch("gateway.platforms.mattermost.MattermostAdapter", new=MagicMock(return_value=adapter)):
+            result = asyncio.run(
+                _send_mattermost_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "mm-channel",
+                    "",
+                    media_files=[("/nonexistent/file.png", False)],
+                )
+            )
+
+        assert "error" in result
+        assert "Media file not found" in result["error"]
+        adapter.disconnect.assert_awaited_once()
 
 
 class TestSendMatrixUrlEncoding:

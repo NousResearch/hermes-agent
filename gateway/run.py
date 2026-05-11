@@ -4251,7 +4251,7 @@ class GatewayRunner:
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
-                    if _kb.has_spawnable_ready(conn):
+                    if _kb.has_spawnable_ready(conn, board=slug):
                         return True
                 except Exception:
                     continue
@@ -4270,7 +4270,21 @@ class GatewayRunner:
             try:
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
+                any_disk_pressure_hold = False
                 for slug, res in (results or []):
+                    if (
+                        res is not None
+                        and getattr(res, "disk_pressure_hold", None) is not None
+                        and getattr(res, "skipped_disk_pressure", None)
+                    ):
+                        any_disk_pressure_hold = True
+                        hold = res.disk_pressure_hold
+                        logger.warning(
+                            "kanban dispatcher [%s]: %s skipped_disk_pressure=%d",
+                            slug,
+                            hold.message(),
+                            len(getattr(res, "skipped_disk_pressure", []) or []),
+                        )
                     if res is not None and getattr(res, "spawned", None):
                         any_spawned = True
                         # Quiet by default — only log when something actually
@@ -4288,7 +4302,7 @@ class GatewayRunner:
                         )
                 # Health telemetry (aggregate across boards)
                 ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
+                if ready_pending and not any_spawned and not any_disk_pressure_hold:
                     bad_ticks += 1
                 else:
                     bad_ticks = 0

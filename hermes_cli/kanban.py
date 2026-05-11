@@ -1655,12 +1655,14 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
+    board = kb.get_current_board()
     with kb.connect() as conn:
         res = kb.dispatch_once(
             conn,
             dry_run=args.dry_run,
             max_spawn=args.max,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+            board=board,
         )
     if getattr(args, "json", False):
         print(json.dumps({
@@ -1675,6 +1677,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "skipped_disk_pressure": res.skipped_disk_pressure,
+            "disk_pressure_hold": (
+                res.disk_pressure_hold.to_dict()
+                if res.disk_pressure_hold is not None else None
+            ),
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -1699,6 +1706,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    if res.disk_pressure_hold is not None:
+        print(res.disk_pressure_hold.message())
+        if res.skipped_disk_pressure:
+            print(f"Skipped (disk pressure): {', '.join(res.skipped_disk_pressure)}")
     return 0
 
 
@@ -1771,7 +1782,16 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     health_state = {"bad_ticks": 0, "last_warn_at": 0}
 
     def _on_tick(res):
-        ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty()
+        if res.disk_pressure_hold is not None:
+            print(
+                f"[{_fmt_ts(int(time.time()))}] {res.disk_pressure_hold.message()} "
+                f"skipped={len(res.skipped_disk_pressure)}",
+                file=sys.stderr, flush=True,
+            )
+        ready_pending = (
+            res.disk_pressure_hold is None
+            and (bool(res.skipped_unassigned) or _ready_queue_nonempty())
+        )
         spawned_any = bool(res.spawned)
         if ready_pending and not spawned_any:
             health_state["bad_ticks"] += 1
@@ -1798,7 +1818,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return
         did_work = (
             res.reclaimed or res.crashed or res.timed_out or res.promoted
-            or res.spawned or res.auto_blocked
+            or res.spawned or res.auto_blocked or res.disk_pressure_hold
         )
         if did_work:
             print(
@@ -1806,7 +1826,8 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 f"reclaimed={res.reclaimed} crashed={len(res.crashed)} "
                 f"timed_out={len(res.timed_out)} "
                 f"promoted={res.promoted} spawned={len(res.spawned)} "
-                f"auto_blocked={len(res.auto_blocked)}",
+                f"auto_blocked={len(res.auto_blocked)} "
+                f"skipped_disk_pressure={len(res.skipped_disk_pressure)}",
                 flush=True,
             )
 
@@ -1822,7 +1843,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         """
         try:
             with kb.connect() as conn:
-                return kb.has_spawnable_ready(conn)
+                return kb.has_spawnable_ready(conn, board=kb.get_current_board())
         except Exception:
             return False
 

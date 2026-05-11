@@ -97,6 +97,19 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 # workloads either finish within 15m or set a longer claim explicitly.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 
+# Gridlux-specific disk pressure guard for Kanban worker fan-out.  The
+# dispatcher is allowed to continue bookkeeping (reclaim stale locks,
+# record crashed workers, promote ready tasks), but it must not start new
+# Gridlux workers while the host data volume is critically low.  Hysteresis
+# avoids flap-spawning around the threshold: once held below 10 GiB, dispatch
+# stays held until free space reaches at least 15 GiB.
+GRIDLUX_DISK_PRESSURE_BOARD = "gridlux"
+GRIDLUX_DISK_PRESSURE_PATH = "/System/Volumes/Data"
+GRIDLUX_DISK_PRESSURE_CRITICAL_KIB = 10 * 1024 * 1024
+GRIDLUX_DISK_PRESSURE_RECOVERY_KIB = 15 * 1024 * 1024
+GRIDLUX_EMERGENCY_PRIORITY = 1000
+_gridlux_disk_pressure_hold_active = False
+
 
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
@@ -2793,6 +2806,54 @@ DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 
 
 @dataclass
+class DiskPressureHold:
+    """Dispatcher hold state for Gridlux disk-pressure throttling."""
+
+    active: bool
+    board: str
+    path: str
+    free_kib: Optional[int]
+    critical_kib: int = GRIDLUX_DISK_PRESSURE_CRITICAL_KIB
+    recovery_kib: int = GRIDLUX_DISK_PRESSURE_RECOVERY_KIB
+    reason: Optional[str] = None
+
+    @property
+    def free_gib(self) -> Optional[float]:
+        if self.free_kib is None:
+            return None
+        return self.free_kib / (1024 * 1024)
+
+    def message(self) -> str:
+        if self.free_kib is None:
+            return (
+                f"Gridlux dispatch paused: unable to read free space for {self.path}; "
+                f"holding worker starts until disk check succeeds."
+            )
+        if self.free_kib < self.critical_kib:
+            threshold_detail = "below 10 GiB critical threshold"
+        else:
+            threshold_detail = "below 15 GiB recovery threshold after a critical low-disk hold"
+        return (
+            f"Gridlux dispatch paused: {self.path} free space is "
+            f"{self.free_gib:.2f} GiB; {threshold_detail}. "
+            f"Worker starts resume automatically at >=15 GiB."
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "active": self.active,
+            "board": self.board,
+            "path": self.path,
+            "free_kib": self.free_kib,
+            "free_gib": self.free_gib,
+            "critical_kib": self.critical_kib,
+            "recovery_kib": self.recovery_kib,
+            "reason": self.reason,
+            "message": self.message() if self.active else None,
+        }
+
+
+@dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass."""
 
@@ -2810,12 +2871,17 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    skipped_disk_pressure: list[str] = field(default_factory=list)
+    """Gridlux task ids left ready because disk pressure is holding
+    non-emergency worker starts."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    disk_pressure_hold: Optional[DiskPressureHold] = None
+    """Gridlux-only hold that prevented new worker starts this tick."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -3530,9 +3596,104 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
-def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+def _disk_free_kib(path: str) -> Optional[int]:
+    """Return free KiB for ``path`` using the same unit as ``df -k``.
+
+    ``None`` means the path could not be checked; callers fail open so a
+    non-macOS development checkout does not accidentally disable Gridlux.
+    The production Gridlux host has ``/System/Volumes/Data``.
+    """
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return None
+    return int((st.f_bavail * st.f_frsize) // 1024)
+
+
+def _connection_board_slug(conn: sqlite3.Connection) -> Optional[str]:
+    """Best-effort board slug for an open kanban DB connection."""
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        db_path = Path(row["file"] if isinstance(row, sqlite3.Row) else row[2]).resolve()
+    except Exception:
+        return None
+    try:
+        # Do not call kanban_db_path() here: tests and worker handoffs may set
+        # HERMES_KANBAN_DB, which intentionally aliases every board arg to the
+        # same override path. Compare canonical on-disk board locations instead.
+        root = kanban_home()
+        if db_path == (root / "kanban" / "boards" / GRIDLUX_DISK_PRESSURE_BOARD / "kanban.db").resolve():
+            return GRIDLUX_DISK_PRESSURE_BOARD
+        if db_path == (root / "kanban.db").resolve():
+            return DEFAULT_BOARD
+    except Exception:
+        return None
+    return None
+
+
+def _gridlux_disk_pressure_hold(
+    board: Optional[str],
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Optional[DiskPressureHold]:
+    """Return an active Gridlux disk-pressure hold, if worker starts must pause."""
+    global _gridlux_disk_pressure_hold_active
+
+    slug = _normalize_board_slug(board)
+    if slug is None and conn is not None:
+        slug = _connection_board_slug(conn)
+    if slug is None:
+        # If the caller did not explicitly identify Gridlux and the connection
+        # path cannot prove it is the Gridlux board, fail open. This preserves
+        # legacy dispatch_once(conn) behavior for tests and ad-hoc callers.
+        return None
+    if slug != GRIDLUX_DISK_PRESSURE_BOARD:
+        return None
+
+    path = os.environ.get(
+        "HERMES_KANBAN_GRIDLUX_DISK_PRESSURE_PATH",
+        GRIDLUX_DISK_PRESSURE_PATH,
+    )
+    free_kib = _disk_free_kib(path)
+    if free_kib is None:
+        # Fail open on hosts without the macOS data volume path.  The task
+        # specifically targets the Gridlux VM; tests and non-macOS dev boxes
+        # should not be held forever because the reference path is absent.
+        _gridlux_disk_pressure_hold_active = False
+        return None
+
+    if free_kib < GRIDLUX_DISK_PRESSURE_CRITICAL_KIB:
+        _gridlux_disk_pressure_hold_active = True
+    elif free_kib >= GRIDLUX_DISK_PRESSURE_RECOVERY_KIB:
+        _gridlux_disk_pressure_hold_active = False
+
+    if not _gridlux_disk_pressure_hold_active:
+        return None
+    return DiskPressureHold(
+        active=True,
+        board=slug,
+        path=path,
+        free_kib=free_kib,
+        reason="free_space_below_recovery_threshold",
+    )
+
+
+def _is_emergency_task(task: Task) -> bool:
+    """Best-effort operator escape hatch for starts during Gridlux holds.
+
+    Kanban has no dedicated emergency flag, so support two explicit markers:
+    a very high priority (>=1000) or an ``[emergency]`` / ``emergency: true``
+    marker in the title/body. Normal tasks stay paused.
+    """
+    if int(task.priority or 0) >= GRIDLUX_EMERGENCY_PRIORITY:
+        return True
+    text = f"{task.title or ''}\n{task.body or ''}".lower()
+    return "[emergency]" in text or "emergency: true" in text
+
+
+def has_spawnable_ready(conn: sqlite3.Connection, *, board: Optional[str] = None) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    whose assignee maps to a real Hermes profile and is not policy-held.
 
     Used by the gateway- and CLI-embedded dispatchers' health telemetry to
     decide whether ``0 spawned`` is a "stuck" condition (real spawnable
@@ -3545,20 +3706,27 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     the warning still fires in degraded environments.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT * FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
     if not rows:
         return False
+    hold = _gridlux_disk_pressure_hold(board, conn=conn)
     try:
         from hermes_cli.profiles import profile_exists  # local import: avoids cycle
     except Exception:
-        # Can't introspect — assume spawnable, preserve legacy behavior.
-        return True
-    for row in rows:
-        if profile_exists(row["assignee"]):
+        # Can't introspect — assume spawnable unless disk pressure policy holds
+        # every non-emergency Gridlux task in the ready queue.
+        if hold is None:
             return True
+        return any(_is_emergency_task(Task.from_row(row)) for row in rows)
+    for row in rows:
+        if not profile_exists(row["assignee"]):
+            continue
+        if hold is not None and not _is_emergency_task(Task.from_row(row)):
+            continue
+        return True
     return False
 
 
@@ -3625,6 +3793,7 @@ def dispatch_once(
             pass
 
     result = DispatchResult()
+    result.disk_pressure_hold = _gridlux_disk_pressure_hold(board, conn=conn)
     result.reclaimed = release_stale_claims(conn)
     result.crashed = detect_crashed_workers(conn)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
@@ -3673,6 +3842,13 @@ def dispatch_once(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        if result.disk_pressure_hold is not None:
+            task_for_policy = get_task(conn, row["id"])
+            if task_for_policy is not None and not _is_emergency_task(task_for_policy):
+                # Leave the task ready/unclaimed. This gates only new starts;
+                # already-running workers remain untouched by design.
+                result.skipped_disk_pressure.append(row["id"])
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
@@ -3935,6 +4111,7 @@ def run_daemon(
                 except (ValueError, OSError):
                     pass
 
+    board = get_current_board()
     while not stop_event.is_set():
         try:
             with contextlib.closing(connect()) as conn:
@@ -3942,6 +4119,7 @@ def run_daemon(
                     conn,
                     max_spawn=max_spawn,
                     failure_limit=failure_limit,
+                    board=board,
                 )
             if on_tick is not None:
                 try:

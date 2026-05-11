@@ -34,10 +34,28 @@ from hermes_cli.kanban import run_slash
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _isolate_kanban_test_home(home, tmp_path, monkeypatch)
     kb.init_db()
     return home
+
+
+def _isolate_kanban_test_home(home: Path, path_home: Path, monkeypatch) -> None:
+    """Pin Kanban tests to a temp home and discard inherited board pins."""
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_WORKSPACES_ROOT", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: path_home)
+
+
+def test_kanban_home_ignores_external_board_pins(kanban_home):
+    """Tests must not inherit real Kanban board pins from the developer shell."""
+    assert os.environ.get("HERMES_KANBAN_BOARD") is None
+    assert os.environ.get("HERMES_KANBAN_DB") is None
+    assert os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT") is None
+    assert kb.kanban_home() == kanban_home
+    assert kb.kanban_db_path(board="gridlux").is_relative_to(kanban_home)
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +123,166 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawna
         assert task.status == "blocked"
         assert task.consecutive_failures >= 2
         assert task.last_failure_error and "no PATH" in task.last_failure_error
+    finally:
+        conn.close()
+
+
+def test_gridlux_dispatch_pauses_non_emergency_workers_under_disk_pressure(
+    kanban_home, monkeypatch, all_assignees_spawnable
+):
+    """Gridlux ready tasks stay unclaimed below the 10 GiB data-volume floor."""
+    kb.create_board("gridlux")
+    monkeypatch.setattr(kb, "_gridlux_disk_pressure_hold_active", False)
+    monkeypatch.setattr(
+        kb,
+        "_disk_free_kib",
+        lambda _path: kb.GRIDLUX_DISK_PRESSURE_CRITICAL_KIB - 1,
+    )
+    spawned = []
+
+    conn = kb.connect(board="gridlux")
+    try:
+        tid = kb.create_task(conn, title="normal work", assignee="worker", priority=999)
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, _ws: spawned.append(task.id),
+            board="gridlux",
+        )
+
+        assert spawned == []
+        assert res.disk_pressure_hold is not None
+        assert tid in res.skipped_disk_pressure
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.claim_lock is None
+    finally:
+        conn.close()
+
+
+def test_gridlux_dispatch_resumes_only_after_recovery_threshold(
+    kanban_home, monkeypatch, all_assignees_spawnable
+):
+    """The Gridlux disk hold has hysteresis: hold at 12 GiB, resume at 15 GiB."""
+    kb.create_board("gridlux")
+    free = {"kib": kb.GRIDLUX_DISK_PRESSURE_CRITICAL_KIB - 1}
+    monkeypatch.setattr(kb, "_gridlux_disk_pressure_hold_active", False)
+    monkeypatch.setattr(kb, "_disk_free_kib", lambda _path: free["kib"])
+
+    conn = kb.connect(board="gridlux")
+    try:
+        tid = kb.create_task(conn, title="normal work", assignee="worker", priority=999)
+        first = kb.dispatch_once(conn, spawn_fn=lambda *_: 111, board="gridlux", max_spawn=1)
+        assert first.disk_pressure_hold is not None
+        assert kb.get_task(conn, tid).status == "ready"
+
+        free["kib"] = kb.GRIDLUX_DISK_PRESSURE_CRITICAL_KIB + (2 * 1024 * 1024)
+        mid = kb.dispatch_once(conn, spawn_fn=lambda *_: 222, board="gridlux", max_spawn=1)
+        assert mid.disk_pressure_hold is not None
+        assert kb.get_task(conn, tid).status == "ready"
+
+        spawned = []
+        free["kib"] = kb.GRIDLUX_DISK_PRESSURE_RECOVERY_KIB
+        resumed = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, _ws: spawned.append(task.id) or 333,
+            board="gridlux",
+            max_spawn=1,
+        )
+        assert resumed.disk_pressure_hold is None
+        assert len(spawned) == 1
+        assert kb.get_task(conn, spawned[0]).status == "running"
+    finally:
+        conn.close()
+
+
+def test_gridlux_disk_pressure_does_not_affect_other_boards(
+    kanban_home, monkeypatch, all_assignees_spawnable
+):
+    monkeypatch.setattr(kb, "_gridlux_disk_pressure_hold_active", False)
+    monkeypatch.setattr(
+        kb,
+        "_disk_free_kib",
+        lambda _path: kb.GRIDLUX_DISK_PRESSURE_CRITICAL_KIB - 1,
+    )
+    spawned = []
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="other work", assignee="worker", priority=999)
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, _ws: spawned.append(task.id) or 444,
+            board="default",
+            max_spawn=1,
+        )
+        assert res.disk_pressure_hold is None
+        assert res.skipped_disk_pressure == []
+        assert len(spawned) == 1
+    finally:
+        conn.close()
+
+
+def test_gridlux_disk_pressure_allows_explicit_emergency_work(
+    kanban_home, monkeypatch, all_assignees_spawnable
+):
+    """Critical disk pressure pauses normal Gridlux fan-out, not emergency starts."""
+    kb.create_board("gridlux")
+    monkeypatch.setattr(kb, "_gridlux_disk_pressure_hold_active", False)
+    monkeypatch.setattr(
+        kb,
+        "_disk_free_kib",
+        lambda _path: kb.GRIDLUX_DISK_PRESSURE_CRITICAL_KIB - 1,
+    )
+    spawned = []
+
+    conn = kb.connect(board="gridlux")
+    try:
+        normal = kb.create_task(conn, title="normal work", assignee="worker", priority=999)
+        emergency = kb.create_task(
+            conn,
+            title="[emergency] free disk space",
+            assignee="worker",
+            priority=kb.GRIDLUX_EMERGENCY_PRIORITY,
+        )
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, _ws: spawned.append(task.id) or 555,
+            board="gridlux",
+            max_spawn=2,
+        )
+
+        assert res.disk_pressure_hold is not None
+        assert normal in res.skipped_disk_pressure
+        assert emergency not in res.skipped_disk_pressure
+        assert spawned == [emergency]
+        assert kb.get_task(conn, normal).status == "ready"
+        assert kb.get_task(conn, emergency).status == "running"
+    finally:
+        conn.close()
+
+
+def test_gridlux_has_spawnable_ready_respects_disk_pressure_hold(
+    kanban_home, monkeypatch, all_assignees_spawnable
+):
+    kb.create_board("gridlux")
+    monkeypatch.setattr(kb, "_gridlux_disk_pressure_hold_active", False)
+    monkeypatch.setattr(
+        kb,
+        "_disk_free_kib",
+        lambda _path: kb.GRIDLUX_DISK_PRESSURE_CRITICAL_KIB - 1,
+    )
+
+    conn = kb.connect(board="gridlux")
+    try:
+        kb.create_task(conn, title="normal work", assignee="worker", priority=999)
+        assert kb.has_spawnable_ready(conn, board="gridlux") is False
+        kb.create_task(
+            conn,
+            title="[emergency] free disk space",
+            assignee="worker",
+            priority=kb.GRIDLUX_EMERGENCY_PRIORITY,
+        )
+        assert kb.has_spawnable_ready(conn, board="gridlux") is True
     finally:
         conn.close()
 
@@ -1113,8 +1291,7 @@ def test_migration_renames_legacy_event_kinds(tmp_path, monkeypatch):
     in place on init_db()."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _isolate_kanban_test_home(home, tmp_path, monkeypatch)
     # Init fresh.
     kb.init_db()
     conn = kb.connect()
@@ -1185,10 +1362,9 @@ def test_list_profiles_on_disk_custom_root(tmp_path, monkeypatch):
 def test_known_assignees_merges_disk_and_board(tmp_path, monkeypatch):
     """known_assignees unions profiles on disk with currently-assigned
     names, and reports per-status counts."""
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     profiles = tmp_path / ".hermes" / "profiles"
     profiles.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _isolate_kanban_test_home(tmp_path / ".hermes", tmp_path, monkeypatch)
 
     for name in ("researcher", "writer"):
         d = profiles / name
@@ -2075,13 +2251,13 @@ def test_cli_create_on_fresh_home_auto_inits(tmp_path, monkeypatch):
     'no such table: tasks' — init_db auto-runs now."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _isolate_kanban_test_home(home, tmp_path, monkeypatch)
     # Sanity: kanban.db does NOT exist yet.
     import subprocess as _sp
     import sys as _sys
     worktree_root = Path(__file__).resolve().parents[2]
     env = {**os.environ, "HERMES_HOME": str(home),
+           "HERMES_KANBAN_HOME": str(home),
            "PYTHONPATH": str(worktree_root)}
     r = _sp.run(
         [_sys.executable, "-m", "hermes_cli.main", "kanban",
@@ -2101,8 +2277,7 @@ def test_connect_auto_inits_fresh_db(tmp_path, monkeypatch):
     schema. Previously callers had to remember kb.init_db() first."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _isolate_kanban_test_home(home, tmp_path, monkeypatch)
     # Flush the module-level cache so this path looks fresh.
     kb._INITIALIZED_PATHS.clear()
 
@@ -2211,8 +2386,7 @@ def test_migration_backfill_idempotent_under_re_run(tmp_path, monkeypatch):
     dispatcher is simultaneously claiming."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _isolate_kanban_test_home(home, tmp_path, monkeypatch)
 
     # Fresh DB, one task left in 'running' with a claim but no run row.
     # Simulates a pre-runs-era DB.

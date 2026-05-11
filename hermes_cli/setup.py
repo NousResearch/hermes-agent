@@ -1739,6 +1739,25 @@ def setup_agent_settings(config: dict):
     else:
         print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
 
+    # ── Display Language ──
+    print_info("")
+    print_info("Display Language / 显示语言")
+    print_info("Controls the language of skill descriptions and agent messages.")
+    from agent.i18n import SUPPORTED_LANGUAGES
+    current_lang = cfg_get(config, "display", "language", default="en")
+    print_info(f"Supported: {', '.join(SUPPORTED_LANGUAGES)}")
+    lang = prompt("Language", current_lang)
+    if lang.strip():
+        if "display" not in config:
+            config["display"] = {}
+        config["display"]["language"] = lang.strip().lower()
+        save_config(config)
+        from agent.i18n import reset_language_cache
+        reset_language_cache()
+        print_success(f"Language set to: {lang.strip().lower()}")
+    else:
+        print_warning(f"Keeping '{current_lang}'")
+
     # ── Context Compression ──
     print_header("Context Compression")
     print_info("Automatically summarizes old messages when context gets too long.")

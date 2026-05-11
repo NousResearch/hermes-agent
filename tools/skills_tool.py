@@ -557,10 +557,13 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files, get_display_language, extract_skill_description
 
     skills = []
     seen_names: set = set()
+
+    # Resolve language once (env > config > default "en")
+    language = get_display_language()
 
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
@@ -591,7 +594,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if name in disabled:
                     continue
 
-                description = frontmatter.get("description", "")
+                description = extract_skill_description(frontmatter, language)
                 if not description:
                     for line in body.strip().split("\n"):
                         line = line.strip()
@@ -752,6 +755,7 @@ def _serve_plugin_skill(
 ) -> str:
     """Read a plugin-provided skill, apply guards, return JSON."""
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
+    from agent.skill_utils import extract_skill_description, get_display_language
 
     if namespace in _get_disabled_plugins():
         return json.dumps(
@@ -796,7 +800,7 @@ def _serve_plugin_skill(
             namespace, bare,
         )
 
-    description = str(parsed_frontmatter.get("description", ""))
+    description = extract_skill_description(parsed_frontmatter, get_display_language())
     if len(description) > MAX_DESCRIPTION_LENGTH:
         description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
 
@@ -1344,10 +1348,12 @@ def skill_view(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
 
+        from agent.skill_utils import get_display_language, extract_skill_description
+
         result = {
             "success": True,
             "name": skill_name,
-            "description": frontmatter.get("description", ""),
+            "description": extract_skill_description(parsed_frontmatter, get_display_language()),
             "tags": tags,
             "related_skills": related_skills,
             "content": rendered_content,

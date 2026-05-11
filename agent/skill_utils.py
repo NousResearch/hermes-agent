@@ -458,11 +458,60 @@ def resolve_skill_config_values(
     return resolved
 
 
+# ── Language resolution ──────────────────────────────────────────────────
+
+
+def get_display_language() -> str:
+    """Resolve the active display language for skill descriptions.
+
+    Resolution order: ``HERMES_LANGUAGE`` env var → ``display.language``
+    in config.yaml → ``"en"`` (default).  Uses the same lightweight
+    config-read pattern as ``get_disabled_skill_names`` to avoid
+    importing the full CLI config stack.
+    """
+    env_lang = os.environ.get("HERMES_LANGUAGE")
+    if env_lang:
+        lang = env_lang.strip().lower()
+        if lang:
+            return lang
+    config_path = get_config_path()
+    if config_path.exists():
+        try:
+            parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                lang = (parsed.get("display") or {}).get("language")
+                if lang:
+                    val = str(lang).strip().lower()
+                    if val:
+                        return val
+        except Exception:
+            pass
+    return "en"
+
+
 # ── Description extraction ────────────────────────────────────────────────
 
 
-def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
-    """Extract a truncated description from parsed frontmatter."""
+def extract_skill_description(frontmatter: Dict[str, Any], language: str = "en") -> str:
+    """Extract a truncated description from parsed frontmatter.
+
+    When *language* is set to a non-English value (e.g. ``"zh"``), the
+    function first looks for a locale-specific frontmatter key
+    ``description_<lang>`` (e.g. ``description_zh``).  If that key is
+    absent or empty it falls back to the generic ``description`` field.
+    """
+    # 1. Try locale-specific key first (description_zh, description_ja, etc.)
+    if language and language != "en":
+        locale_key = f"description_{language}"
+        raw_desc = frontmatter.get(locale_key, "")
+        if raw_desc:
+            desc = str(raw_desc).strip().strip("'\"")
+            if desc:
+                if len(desc) > 60:
+                    return desc[:57] + "..."
+                return desc
+
+    # 2. Fall back to the default description
     raw_desc = frontmatter.get("description", "")
     if not raw_desc:
         return ""

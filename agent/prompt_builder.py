@@ -864,8 +864,8 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     return manifest
 
 
-def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
-    """Load the disk snapshot if it exists and its manifest still matches."""
+def _load_skills_snapshot(skills_dir: Path, language: str = "en") -> Optional[dict]:
+    """Load the disk snapshot if it exists and its manifest + language still match."""
     snapshot_path = _skills_prompt_snapshot_path()
     if not snapshot_path.exists():
         return None
@@ -879,6 +879,8 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
         return None
     if snapshot.get("manifest") != _build_skills_manifest(skills_dir):
         return None
+    if snapshot.get("language") != language:
+        return None
     return snapshot
 
 
@@ -887,10 +889,12 @@ def _write_skills_snapshot(
     manifest: dict[str, list[int]],
     skill_entries: list[dict],
     category_descriptions: dict[str, str],
+    language: str = "en",
 ) -> None:
     """Persist skill metadata to disk for fast cold-start reuse."""
     payload = {
         "version": _SKILLS_SNAPSHOT_VERSION,
+        "language": language,
         "manifest": manifest,
         "skills": skill_entries,
         "category_descriptions": category_descriptions,
@@ -935,11 +939,34 @@ def _build_snapshot_entry(
 # Skills index
 # =========================================================================
 
-def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
+def _resolve_display_language() -> str:
+    """Resolve display language (env > config > 'en') in a lightweight way."""
+    env_lang = os.environ.get("HERMES_LANGUAGE")
+    if env_lang:
+        lang = env_lang.strip().lower()
+        if lang:
+            return lang
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        lang = (cfg.get("display") or {}).get("language")
+        if lang:
+            val = str(lang).strip().lower()
+            if val:
+                return val
+    except Exception:
+        pass
+    return "en"
+
+
+def _parse_skill_file(skill_file: Path, language: str = "en") -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
     Returns (is_compatible, frontmatter, description). On any error, returns
     (True, {}, "") to err on the side of showing the skill.
+
+    *language* controls which description to return: ``description_<lang>``
+    if available, falling back to ``description``.
     """
     try:
         raw = skill_file.read_text(encoding="utf-8")
@@ -948,7 +975,7 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         if not skill_matches_platform(frontmatter):
             return False, frontmatter, ""
 
-        return True, frontmatter, extract_skill_description(frontmatter)
+        return True, frontmatter, extract_skill_description(frontmatter, language)
     except Exception as e:
         logger.warning("Failed to parse skill file %s: %s", skill_file, e)
         return True, {}, ""
@@ -1019,6 +1046,9 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+
+    # Resolve display language (env > config > "en")
+    _language = _resolve_display_language()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1026,6 +1056,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        _language,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1034,7 +1065,7 @@ def build_skills_system_prompt(
             return cached
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
-    snapshot = _load_skills_snapshot(skills_dir)
+    snapshot = _load_skills_snapshot(skills_dir, _language)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
@@ -1069,7 +1100,7 @@ def build_skills_system_prompt(
         # Cold path: full filesystem scan + write snapshot for next time
         skill_entries: list[dict] = []
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
-            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+            is_compatible, frontmatter, desc = _parse_skill_file(skill_file, _language)
             entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
             skill_entries.append(entry)
             if not is_compatible:
@@ -1106,6 +1137,7 @@ def build_skills_system_prompt(
             _build_skills_manifest(skills_dir),
             skill_entries,
             category_descriptions,
+            _language,
         )
 
     # ── External skill directories ─────────────────────────────────────
@@ -1122,7 +1154,7 @@ def build_skills_system_prompt(
             continue
         for skill_file in iter_skill_index_files(ext_dir, "SKILL.md"):
             try:
-                is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+                is_compatible, frontmatter, desc = _parse_skill_file(skill_file, _language)
                 if not is_compatible:
                     continue
                 entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)

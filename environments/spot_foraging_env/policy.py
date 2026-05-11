@@ -45,6 +45,60 @@ def make_random_policy(scale: float = 0.05, seed: int = 0) -> PolicyFn:
     return policy
 
 
+def make_cpg_policy(freq_hz: float = 2.0, amplitude: float = 0.3) -> PolicyFn:
+    """Central Pattern Generator (CPG) heuristic walk policy.
+
+    Produces a trot gait via sinusoidal joint targets, sufficient for Spot to
+    physically move in the rapier-gym sim when no trained ONNX policy is
+    available. Not a substitute for a trained policy — gaits will be unstable
+    at high amplitudes — but generates non-zero displacement so the Atropos
+    foraging env produces meaningful reward gradients.
+
+    The obs vector contains the command in indices 45:48 (v_x, v_lat, w_z)
+    based on the rapier-gym observation layout:
+      [0:3]   ang_vel, [3:6] lin_vel, [6:9] proj_grav
+      [9:21]  joint_pos, [21:33] joint_vel, [33:45] prev_action
+      [45:48] cmd (v_x, v_lat, w_z)
+      ... rest: foot_contacts, torques, body_contact, obstacle_rays, behavior, forage, gait_phase
+
+    Joint ordering (12 dims): FL_hip, FL_upper, FL_lower, FR_hip, FR_upper, FR_lower,
+                               RL_hip, RL_upper, RL_lower, RR_hip, RR_upper, RR_lower
+    """
+    _phase = [0.0]  # mutable closure for phase accumulation
+    _dt = 1.0 / 50.0  # 50 Hz policy rate
+
+    # Trot: FL+RR swing together, FR+RL swing together (180° phase offset)
+    _leg_phase_offsets = np.array([0.0, 0.0, 0.0,   # FL hip/upper/lower
+                                    np.pi, np.pi, np.pi,  # FR
+                                    np.pi, np.pi, np.pi,  # RL
+                                    0.0, 0.0, 0.0],       # RR
+                                   dtype=np.float32)
+
+    # Hip: small lateral sway; upper-leg: main swing; lower-leg: follow
+    _joint_amp_weights = np.array([0.05, 1.0, -0.5,  # FL
+                                    0.05, 1.0, -0.5,  # FR
+                                    0.05, 1.0, -0.5,  # RL
+                                    0.05, 1.0, -0.5], # RR
+                                   dtype=np.float32)
+
+    def policy(obs: np.ndarray) -> np.ndarray:
+        # Read command from obs if available.
+        cmd_vx = float(obs[45]) if len(obs) > 47 else 1.0
+        cmd_lat = float(obs[46]) if len(obs) > 47 else 0.0
+        cmd_yaw = float(obs[47]) if len(obs) > 47 else 0.0
+
+        speed = abs(cmd_vx) + abs(cmd_lat) * 0.5 + abs(cmd_yaw) * 0.3
+        effective_amp = amplitude * max(0.1, min(1.0, speed))
+
+        phase = _phase[0] + 2 * np.pi * freq_hz * _dt
+        _phase[0] = phase % (2 * np.pi)
+
+        action = effective_amp * _joint_amp_weights * np.sin(phase + _leg_phase_offsets)
+        return np.clip(action, -0.5, 0.5).astype(np.float32)
+
+    return policy
+
+
 def make_onnx_policy(onnx_path: str | os.PathLike) -> PolicyFn:
     """Load an ONNX policy via onnxruntime. CPU is fine — the policy is tiny."""
     import onnxruntime as ort  # lazy: not all installs have it
@@ -108,9 +162,9 @@ def load_walk_policy(
                 continue
 
     logger.warning(
-        "No walk policy ONNX found (tried %s). Falling back to zero-action "
-        "policy. Train walk via train_rapier.py and export to ONNX, or set "
-        "SPOT_WALK_POLICY_ONNX.",
+        "No walk policy ONNX found (tried %s). Falling back to CPG heuristic "
+        "trot policy. Train walk via train_rapier.py and export to ONNX, or "
+        "set SPOT_WALK_POLICY_ONNX.",
         [str(c) for c in candidates],
     )
-    return make_zero_policy()
+    return make_cpg_policy(amplitude=0.04)  # very small — avoids falls while still non-zero

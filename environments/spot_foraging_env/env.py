@@ -318,6 +318,7 @@ class SpotForagingEnv(BaseEnv):
         ]
 
         tools = build_tool_spec()
+        tool_choice_value = {"type": "function", "function": {"name": "select_skill"}}
 
         # Run the episode under a single ManagedServer context — multi-turn
         # tokens accumulate correctly with proper masking across all picks.
@@ -329,11 +330,17 @@ class SpotForagingEnv(BaseEnv):
                     max_tokens=self.config.skill_pick_max_tokens,
                     temperature=self.config.skill_pick_temperature,
                     tools=tools,
-                    tool_choice="auto",
+                    tool_choice=tool_choice_value,
                 )
 
                 assistant_msg = chat.choices[0].message
                 messages.append(_assistant_message_to_dict(assistant_msg))
+                print(
+                    f"[LLM RESPONSE] content={repr(assistant_msg.content)[:80]}"
+                    f" tool_calls={bool(assistant_msg.tool_calls)}"
+                    f" n_tools={len(assistant_msg.tool_calls) if assistant_msg.tool_calls else 0}",
+                    flush=True,
+                )
 
                 skill = _parse_skill_from_message(assistant_msg)
                 if skill is None:
@@ -352,6 +359,13 @@ class SpotForagingEnv(BaseEnv):
 
                 skill_history.append(skill.name)
                 result: SkillResult = executor.execute(skill)
+                print(
+                    f"[SKILL] {skill.name} disp=({result.displacement[0]:.3f},{result.displacement[1]:.3f})"
+                    f" pre=({result.pre_xy[0]:.2f},{result.pre_xy[1]:.2f})"
+                    f" post=({result.post_xy[0]:.2f},{result.post_xy[1]:.2f})"
+                    f" collected={result.collected_during_burst} fell={result.fell}",
+                    flush=True,
+                )
 
                 # Update post-skill state.
                 trail.append(

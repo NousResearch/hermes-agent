@@ -542,12 +542,11 @@ class NativeToolCallingChatClient(
                 .put("terminal", true)
                 .put("message", "OpenGUI action marked the mobile task finished.")
                 .toString()
-            "call_user" -> JSONObject()
-                .put("success", true)
-                .put("action", "call_user")
-                .put("requires_user_intervention", true)
-                .put("message", parsed.content.ifBlank { "OpenGUI action requested user intervention." })
-                .toString()
+            "call_user" -> OpenGuiUserHandoff.execute(
+                context = appContext,
+                parsed = parsed,
+                sessionId = activeOpenGuiMemorySessionId,
+            ).toString()
             "update_working_memory" -> executeParsedOpenGuiWorkingMemoryUpdate(parsed)
             "get_working_memory" -> executeParsedOpenGuiWorkingMemoryRead()
             "request_visual",
@@ -779,6 +778,8 @@ class NativeToolCallingChatClient(
             .put("screenshot_file_output", true)
             .put("opengui_screen_review_supported", true)
             .put("opengui_history_supported", true)
+            .put("opengui_user_handoff_supported", true)
+            .put("opengui_user_handoff_surfaces", JSONArray(listOf("notification", "toast", "vibration")))
             .put("recent_opengui_action_count", openGuiActionHistory.actionsList().size)
             .put("recent_snapshot_hash_count", openGuiActionHistory.screenHashList().size)
             .put("active_package", HermesAccessibilityController.currentForegroundPackageName())
@@ -854,7 +855,7 @@ class NativeToolCallingChatClient(
             "You are Hermes running inside the native Android app. " +
                 "Use tools when work requires real files, shell commands, Android UI, Android settings, Shizuku/Sui, or saved Tasker-style automation. " +
                 "Use terminal_tool for shell commands and inspection, file_write_tool for exact text file creation, android_ui_tool for visible-screen selectors and coordinate gestures, android_system_tool for device/settings/Shizuku operations, and android_automation_tool for saved tasks, triggers, notifications, variables, widgets, and Tasker/Locale plugin actions. " +
-                "If a planner emits OpenGUI-style raw GUI actions such as click(start_box=...), pass that text to android_ui_tool action=parse_opengui_action or action=opengui_action. " +
+                "If a planner emits OpenGUI-style raw GUI actions such as click(start_box=...), pass that text to android_ui_tool action=parse_opengui_action or action=opengui_action; call_user/need_login/asset_risk/delete_confirm are surfaced as a visible phone handoff. " +
                 "When the user asks to write or replace multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
                 "Ask for or report missing Android permissions instead of pretending protected settings changed. Keep replies brief and report real tool results."
         } else {
@@ -912,7 +913,7 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_ui_tool",
-                    description = "Inspect or control the visible Android UI through Hermes accessibility. OpenGUI-compatible execution includes local repeated-action and screen-state review guards that can return requires_replan before a likely loop continues.",
+                    description = "Inspect or control the visible Android UI through Hermes accessibility. OpenGUI-compatible execution includes local repeated-action and screen-state review guards that can return requires_replan before a likely loop continues, plus user-visible call_user handoff notifications/toasts/vibration.",
                     properties = JSONObject()
                         .put("action", stringProp("status, snapshot, screenshot, visual_snapshot, parse_opengui_action, opengui_action, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, drag, open_app, launch_app, back, home, press_back, press_home, recents, notifications, quick_settings, open_accessibility_settings."))
                         .put("raw_action", stringProp("OpenGUI-style VLM action text for parse_opengui_action or opengui_action, such as Action: click(start_box='<point>500 250</point>')."))
@@ -1999,7 +2000,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_ui_tool")
                             .put(
                                 "description",
-                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots with stable ui_state_hash values, selector-based click/type/scroll/focus, OpenGUI-style raw VLM action parsing/execution, deterministic OpenGUI action history, repeated-action and screen-state review guards, scroll/type/press/open-app aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
+                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots with stable ui_state_hash values, selector-based click/type/scroll/focus, OpenGUI-style raw VLM action parsing/execution, deterministic OpenGUI action history, user-visible call_user handoffs, repeated-action and screen-state review guards, scroll/type/press/open-app aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
                             )
                             .put(
                                 "parameters",

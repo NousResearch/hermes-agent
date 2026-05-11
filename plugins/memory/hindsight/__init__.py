@@ -536,6 +536,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._chat_name = ""
         self._chat_type = ""
         self._thread_id = ""
+        self._guild_id = ""
+        self._parent_chat_id = ""
+        self._message_id = ""
         self._agent_identity = ""
         self._agent_workspace = ""
         self._turn_index = 0
@@ -1095,6 +1098,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._chat_name = str(kwargs.get("chat_name") or "").strip()
         self._chat_type = str(kwargs.get("chat_type") or "").strip()
         self._thread_id = str(kwargs.get("thread_id") or "").strip()
+        self._guild_id = str(kwargs.get("guild_id") or "").strip()
+        self._parent_chat_id = str(kwargs.get("parent_chat_id") or "").strip()
+        self._message_id = str(kwargs.get("message_id") or "").strip()
         self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
         self._turn_index = 0
@@ -1370,6 +1376,19 @@ class HindsightMemoryProvider(MemoryProvider):
             metadata["chat_type"] = self._chat_type
         if self._thread_id:
             metadata["thread_id"] = self._thread_id
+        if getattr(self, "_guild_id", ""):
+            metadata["guild_id"] = self._guild_id
+        if getattr(self, "_parent_chat_id", ""):
+            metadata["parent_chat_id"] = self._parent_chat_id
+            # Discord-specific alias: in Hermes Discord threads, chat_id is
+            # the effective conversation/thread id, while parent_chat_id is
+            # the human-facing channel id users organise messages by.
+            if self._platform == "discord":
+                metadata["discord_channel_id"] = self._parent_chat_id
+        if self._platform == "discord" and self._thread_id:
+            metadata["discord_thread_id"] = self._thread_id
+        if getattr(self, "_message_id", ""):
+            metadata["message_id"] = self._message_id
         if self._agent_identity:
             metadata["agent_identity"] = self._agent_identity
         return metadata

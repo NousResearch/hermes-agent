@@ -664,6 +664,9 @@ class TestSyncTurn:
             chat_name="fakeassistantname-forums",
             chat_type="thread",
             thread_id="1491249007475949698",
+            guild_id="111222333444555666",
+            parent_chat_id="1485316232612941897",
+            message_id="1500000000000000000",
             agent_identity="fakeassistantname",
         )
         p._client = _make_mock_client()
@@ -695,6 +698,11 @@ class TestSyncTurn:
         assert item["metadata"]["chat_name"] == "fakeassistantname-forums"
         assert item["metadata"]["chat_type"] == "thread"
         assert item["metadata"]["thread_id"] == "1491249007475949698"
+        assert item["metadata"]["guild_id"] == "111222333444555666"
+        assert item["metadata"]["parent_chat_id"] == "1485316232612941897"
+        assert item["metadata"]["discord_channel_id"] == "1485316232612941897"
+        assert item["metadata"]["discord_thread_id"] == "1491249007475949698"
+        assert item["metadata"]["message_id"] == "1500000000000000000"
         assert item["metadata"]["agent_identity"] == "fakeassistantname"
         assert item["metadata"]["turn_index"] == "1"
         assert item["metadata"]["message_count"] == "2"

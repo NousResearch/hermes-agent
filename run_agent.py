@@ -1100,6 +1100,9 @@ class AIAgent:
         chat_name: str = None,
         chat_type: str = None,
         thread_id: str = None,
+        guild_id: str = None,
+        parent_chat_id: str = None,
+        message_id: str = None,
         gateway_session_key: str = None,
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
@@ -1182,6 +1185,9 @@ class AIAgent:
         self._chat_name = chat_name
         self._chat_type = chat_type
         self._thread_id = thread_id
+        self._guild_id = guild_id
+        self._parent_chat_id = parent_chat_id
+        self._message_id = message_id
         self._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
         # Pluggable print function — CLI replaces this with _cprint so that
         # raw ANSI status lines are routed through prompt_toolkit's renderer
@@ -1949,6 +1955,12 @@ class AIAgent:
                             _init_kwargs["chat_type"] = self._chat_type
                         if self._thread_id:
                             _init_kwargs["thread_id"] = self._thread_id
+                        if self._guild_id:
+                            _init_kwargs["guild_id"] = self._guild_id
+                        if self._parent_chat_id:
+                            _init_kwargs["parent_chat_id"] = self._parent_chat_id
+                        if self._message_id:
+                            _init_kwargs["message_id"] = self._message_id
                         # Thread gateway session key for stable per-chat Honcho session isolation
                         if self._gateway_session_key:
                             _init_kwargs["gateway_session_key"] = self._gateway_session_key
@@ -11415,6 +11427,47 @@ class AIAgent:
             final_response = f"I reached the maximum iterations ({self.max_iterations}) but couldn't summarize. Error: {str(e)}"
 
         return final_response
+
+    def refresh_gateway_source_context(
+        self,
+        *,
+        user_id: str = None,
+        user_name: str = None,
+        chat_id: str = None,
+        chat_name: str = None,
+        chat_type: str = None,
+        thread_id: str = None,
+        guild_id: str = None,
+        parent_chat_id: str = None,
+        message_id: str = None,
+    ) -> None:
+        """Refresh per-turn gateway source metadata on cached agents.
+
+        Gateway sessions may reuse an AIAgent for prompt-cache efficiency, but
+        source metadata such as Discord message_id changes every turn. Keep the
+        agent and already-initialised memory providers aligned with the current
+        inbound message so retained memories remain traceable.
+        """
+        updates = {
+            "_user_id": user_id,
+            "_user_name": user_name,
+            "_chat_id": chat_id,
+            "_chat_name": chat_name,
+            "_chat_type": chat_type,
+            "_thread_id": thread_id,
+            "_guild_id": guild_id,
+            "_parent_chat_id": parent_chat_id,
+            "_message_id": message_id,
+        }
+        for attr, value in updates.items():
+            if value is not None:
+                setattr(self, attr, value)
+        manager = getattr(self, "_memory_manager", None)
+        providers = getattr(manager, "providers", []) if manager else []
+        for provider in providers:
+            for attr, value in updates.items():
+                if value is not None and hasattr(provider, attr):
+                    setattr(provider, attr, str(value).strip())
 
     def run_conversation(
         self,

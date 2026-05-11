@@ -10242,6 +10242,9 @@ class GatewayRunner:
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
+                    guild_id=source.guild_id,
+                    parent_chat_id=source.parent_chat_id,
+                    message_id=source.message_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -13618,7 +13621,7 @@ class GatewayRunner:
                 self._agent_cache.pop(session_key, None)
 
     @staticmethod
-    def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
+    def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int, source: Optional[SessionSource] = None) -> None:
         """Reset per-turn state on a cached agent before a new turn starts.
 
         Both _last_activity_ts and _last_activity_desc are only reset for
@@ -13635,6 +13638,18 @@ class GatewayRunner:
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
         agent._api_call_count = 0
+        if source is not None and hasattr(agent, "refresh_gateway_source_context"):
+            agent.refresh_gateway_source_context(
+                user_id=source.user_id,
+                user_name=source.user_name,
+                chat_id=source.chat_id,
+                chat_name=source.chat_name,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+                guild_id=source.guild_id,
+                parent_chat_id=source.parent_chat_id,
+                message_id=source.message_id,
+            )
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
@@ -14831,7 +14846,7 @@ class GatewayRunner:
                                 _cache.move_to_end(session_key)
                             except KeyError:
                                 pass
-                        self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                        self._init_cached_agent_for_turn(agent, _interrupt_depth, source)
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
@@ -14863,6 +14878,9 @@ class GatewayRunner:
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
+                    guild_id=source.guild_id,
+                    parent_chat_id=source.parent_chat_id,
+                    message_id=source.message_id,
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,

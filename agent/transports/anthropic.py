@@ -80,8 +80,9 @@ class AnthropicTransport(ProviderTransport):
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize Anthropic response to NormalizedResponse.
 
-        Parses content blocks (text, thinking, tool_use), maps stop_reason
-        to OpenAI finish_reason, and collects reasoning_details in provider_data.
+        Parses content blocks (text, thinking, redacted_thinking, tool_use),
+        maps stop_reason to OpenAI finish_reason, and collects
+        reasoning_details in provider_data.
         """
         import json
         from agent.anthropic_adapter import _to_plain_data
@@ -100,6 +101,10 @@ class AnthropicTransport(ProviderTransport):
                 text_parts.append(block.text)
             elif block.type == "thinking":
                 reasoning_parts.append(block.thinking)
+                block_dict = _to_plain_data(block)
+                if isinstance(block_dict, dict):
+                    reasoning_details.append(block_dict)
+            elif block.type == "redacted_thinking":
                 block_dict = _to_plain_data(block)
                 if isinstance(block_dict, dict):
                     reasoning_details.append(block_dict)

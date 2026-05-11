@@ -30,6 +30,7 @@ diff --git a/hermes_cli/__init__.py b/hermes_cli/__init__.py
 - 对非 `anthropic.com` 的 `anthropic_messages` endpoint 使用 `Authorization: Bearer <key>`。
 - 在 Anthropic Messages 请求中加入 `X-Hermes-Code-Session-Id`，用于 gateway 侧聚合同一个 Hermes 会话。
 - 后续 request 会保留并回传最新 assistant turn 的 signed `thinking` 和合法 `redacted_thinking`。
+- response normalize 阶段会把 `redacted_thinking.data` 保存进 `reasoning_details`，确保下一轮 request 有可回传的 redacted block。
 - 旧 assistant turn 的 thinking 仍会移除，避免历史 thinking 无限累积。
 - unsigned thinking 仍不会作为 Anthropic signed thinking 回传。
 - 官方 Anthropic endpoint 仍保持原 API key / OAuth 行为。
@@ -182,4 +183,3 @@ diff --git a/tests/run_agent/test_run_agent.py b/tests/run_agent/test_run_agent.
 
 git diff --check
 ```
-

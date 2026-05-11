@@ -1475,9 +1475,9 @@ def convert_messages_to_anthropic(
     system_prompt is a string or list of content blocks (when cache_control present).
 
     When *base_url* is provided and points to a third-party Anthropic-compatible
-    endpoint, all thinking block signatures are stripped.  Signatures are
-    Anthropic-proprietary — third-party endpoints cannot validate them and will
-    reject them with HTTP 400 "Invalid signature in thinking block".
+    endpoint, Hermes now uses the same signed-thinking replay strategy as the
+    native Anthropic provider: preserve the latest signed thinking or valid
+    redacted_thinking block, strip older turns, and downgrade unsigned blocks.
 
     When *model* is provided and matches the Kimi / Moonshot family (or
     *base_url* is a Kimi / Moonshot host), unsigned thinking blocks
@@ -1893,7 +1893,8 @@ def build_anthropic_kwargs(
     (for Alibaba/DashScope anthropic-compatible endpoints: qwen3.5-plus).
 
     When *base_url* points to a third-party Anthropic-compatible endpoint,
-    thinking block signatures are stripped (they are Anthropic-proprietary).
+    signed thinking replay follows the same latest-turn strategy as the native
+    Anthropic provider.
 
     When *fast_mode* is True, adds ``extra_body["speed"] = "fast"`` and the
     fast-mode beta header for ~2.5x faster output throughput on Opus 4.6.

@@ -1456,6 +1456,22 @@ class TestNormalizeResponse:
         assert nr.provider_data["reasoning_details"][0]["signature"] == "opaque_signature"
         assert nr.provider_data["reasoning_details"][0]["thinking"] == "Let me reason about this..."
 
+    def test_redacted_thinking_response_preserves_data(self):
+        blocks = [
+            SimpleNamespace(
+                type="redacted_thinking",
+                data="opaque_redacted_payload",
+            ),
+            SimpleNamespace(type="text", text="The answer is 42."),
+        ]
+        nr = get_transport("anthropic_messages").normalize_response(self._make_response(blocks))
+
+        assert nr.content == "The answer is 42."
+        assert nr.reasoning is None
+        assert nr.provider_data["reasoning_details"] == [
+            {"type": "redacted_thinking", "data": "opaque_redacted_payload"}
+        ]
+
     def test_stop_reason_mapping(self):
         block = SimpleNamespace(type="text", text="x")
         nr1 = get_transport("anthropic_messages").normalize_response(

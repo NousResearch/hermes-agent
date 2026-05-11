@@ -264,7 +264,34 @@ User message → AIAgent._run_agent_loop()
 
 Before writing a tool, ask: [should this be a skill instead?](#should-it-be-a-skill-or-a-tool)
 
-Tools self-register with the central registry. Each tool file co-locates its schema, handler, and registration:
+### Plugin route (default for custom or local-only tools)
+
+For most custom or local-only tools, **do not edit Hermes core.** Drop a
+plugin into `~/.hermes/plugins/<name>/` (or ship it via a pip entry
+point) and register tools from its `register(ctx)` hook:
+
+```python
+# ~/.hermes/plugins/my_plugin/__init__.py
+def register(ctx):
+    ctx.register_tool(
+        name="my_tool",
+        toolset="my_plugin",
+        schema={...},
+        handler=lambda args, **kw: ...,
+    )
+```
+
+Plugin toolsets are auto-discovered and can be enabled or disabled
+without touching `tools/` or `toolsets.py`. See `AGENTS.md` (section
+**Plugins**) for the full plugin surface (lifecycle hooks, CLI
+subcommands, model-provider plugins, memory plugins).
+
+### Built-in / core tool route (only for tools that should ship in base)
+
+Use this route only when the tool is being contributed to Hermes itself
+and should be available out of the box on every install. Built-in tools
+self-register with the central registry. Each tool file co-locates its
+schema, handler, and registration:
 
 ```python
 """my_tool — Brief description of what this tool does."""

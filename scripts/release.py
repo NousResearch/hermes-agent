@@ -50,6 +50,7 @@ AUTHOR_MAP = {
     "buraysandro9@gmail.com": "ygd58",
     "teknium@nousresearch.com": "teknium1",
     "piyushvp1@gmail.com": "thelumiereguy",
+    "421774554@qq.com": "wuli666",
     "harish.kukreja@gmail.com": "counterposition",
     "1046611633@qq.com": "zhengyn0001",
     "cleo@edaphic.xyz": "curiouscleo",

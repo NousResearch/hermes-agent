@@ -76,3 +76,19 @@ class AdaptiveContextTracker:
     @property
     def change_count(self) -> int:
         return self._change_count
+
+    def summary(self) -> dict:
+        """Snapshot of tracker state for UX surfaces (e.g. /usage).
+
+        Returns a plain dict so callers don't have to reach into
+        private attributes. ``seconds_since_last_change`` is ``None``
+        until the first transition is observed.
+        """
+        seconds_since: float | None = None
+        if self._change_count > 0 and self._last_changed_at > 0:
+            seconds_since = max(0.0, time.monotonic() - self._last_changed_at)
+        return {
+            "last_seen": self._last_seen,
+            "change_count": self._change_count,
+            "seconds_since_last_change": seconds_since,
+        }

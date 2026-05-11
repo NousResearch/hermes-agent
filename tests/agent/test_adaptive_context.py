@@ -76,3 +76,36 @@ def test_invalid_input_as_first_observation_does_not_seed():
     assert t.observe("first-real") is None
     assert t.last_seen == "first-real"
     assert t.change_count == 0
+
+
+def test_summary_fresh_tracker():
+    t = AdaptiveContextTracker()
+    s = t.summary()
+    assert s == {
+        "last_seen": None,
+        "change_count": 0,
+        "seconds_since_last_change": None,
+    }
+
+
+def test_summary_after_baseline_only():
+    t = AdaptiveContextTracker()
+    t.observe("model-a")
+    s = t.summary()
+    assert s["last_seen"] == "model-a"
+    assert s["change_count"] == 0
+    # No change yet, so no elapsed-since-change figure
+    assert s["seconds_since_last_change"] is None
+
+
+def test_summary_after_change_includes_elapsed():
+    t = AdaptiveContextTracker()
+    t.observe("model-a")
+    t.observe("model-b")
+    s = t.summary()
+    assert s["last_seen"] == "model-b"
+    assert s["change_count"] == 1
+    assert isinstance(s["seconds_since_last_change"], float)
+    assert s["seconds_since_last_change"] >= 0.0
+    # Sanity: a brand-new change should be sub-second
+    assert s["seconds_since_last_change"] < 5.0

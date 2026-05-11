@@ -2,6 +2,7 @@ import { Box, Link, stringWidth, Text } from '@hermes/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
+import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
@@ -143,13 +144,43 @@ const isTableDivider = (row: string) => {
 const autolinkUrl = (raw: string) =>
   raw.startsWith('mailto:') || raw.startsWith('http') || !raw.includes('@') ? raw : `mailto:${raw}`
 
-const renderAutolink = (k: number, t: Theme, raw: string) => (
-  <Link key={k} url={autolinkUrl(raw)}>
-    <Text color={t.color.accent} underline>
-      {raw.replace(/^mailto:/, '')}
-    </Text>
-  </Link>
-)
+const defaultLinkLabel = (url: string) =>
+  url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : /^https?:\/\//i.test(url) ? urlSlugTitleLabel(url) : url
+
+const pickFallbackLabel = (label: string | undefined, target: string): string | undefined => {
+  const trimmed = label?.trim()
+
+  if (!trimmed) {
+    return undefined
+  }
+
+  return normalizeExternalUrl(trimmed) === target ? undefined : trimmed
+}
+
+interface ResolvedLinkProps {
+  fallbackLabel?: string
+  t: Theme
+  url: string
+}
+
+function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
+  const fetched = useLinkTitle(url)
+  const display = fetched || fallbackLabel?.trim() || defaultLinkLabel(url)
+
+  return (
+    <Link url={url}>
+      <Text color={t.color.accent} underline>
+        {display}
+      </Text>
+    </Link>
+  )
+}
+
+const renderResolvedLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
+  const target = normalizeExternalUrl(rawUrl)
+
+  return <ResolvedLink fallbackLabel={pickFallbackLabel(label, target)} key={k} t={t} url={target} />
+}
 
 export const stripInlineMarkup = (v: string) =>
   v
@@ -232,15 +263,9 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[3] && m[4]) {
-      parts.push(
-        <Link key={parts.length} url={m[4]}>
-          <Text color={t.color.accent} underline>
-            {m[3]}
-          </Text>
-        </Link>
-      )
+      parts.push(renderResolvedLink(parts.length, t, m[4], m[3]))
     } else if (m[5]) {
-      parts.push(renderAutolink(parts.length, t, m[5]))
+      parts.push(renderResolvedLink(parts.length, t, autolinkUrl(m[5]), m[5].replace(/^mailto:/, '')))
     } else if (m[6]) {
       parts.push(
         <Text key={parts.length} strikethrough>
@@ -302,7 +327,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       // so `see https://x.com/, which…` keeps the comma outside the link.
       const url = m[16].replace(/[),.;:!?]+$/g, '')
 
-      parts.push(renderAutolink(parts.length, t, url))
+      parts.push(renderResolvedLink(parts.length, t, url))
 
       if (url.length < m[16].length) {
         parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)

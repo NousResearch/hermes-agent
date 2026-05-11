@@ -218,6 +218,26 @@ describe('Md wrapping', () => {
   })
 })
 
+describe('Md link labels', () => {
+  it('renders bare URLs with readable slug labels', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 120 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: 'see https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure for details'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('Puerto Rico El Yunque Rainforest Adventure')
+    expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
+  })
+})
+
 describe('renderTable CJK width alignment', () => {
   it('column starts share the same display offset across CJK rows', async () => {
     const { stringWidth } = await import('@hermes/ink')
@@ -248,6 +268,7 @@ describe('renderTable CJK width alignment', () => {
     // unique anchor for column 2's start position on each row.
     const colStarts = (line: string, anchor: string): number => {
       const idx = line.indexOf(anchor)
+
       return idx < 0 ? -1 : stringWidth(line.slice(0, idx))
     }
 

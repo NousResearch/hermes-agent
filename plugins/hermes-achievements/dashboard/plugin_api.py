@@ -38,16 +38,12 @@ _LOCALE_DIR = Path(__file__).parent / "locales"
 _LOCALE_CACHE: Dict[str, Any] = {}
 
 def _load_locale(locale_code: str) -> Dict[str, Any]:
-    """Load a locale file from the locales/ directory. Results are cached."""
-    if locale_code in _LOCALE_CACHE:
-        return _LOCALE_CACHE[locale_code]
+    """Load a locale file from the locales/ directory."""
     path = _LOCALE_DIR / f"{locale_code}.json"
     if not path.exists():
         return {}
     try:
-        data: dict = json.loads(path.read_text(encoding="utf-8"))
-        _LOCALE_CACHE[locale_code] = data
-        return data
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -83,7 +79,7 @@ def _apply_locale(achievement: Dict[str, Any], locale_code: str) -> Dict[str, An
     if not t:
         return achievement
     result = dict(achievement)
-    for field in ("name", "description", "category"):
+    for field in ("name", "description"):
         if field in t:
             result[field] = t[field]
     return result
@@ -670,11 +666,8 @@ def display_achievement(item: Dict[str, Any], locale_code: str = "en") -> Dict[s
         return {**clean, "name": "???", "description": hint, "criteria": criteria_for(clean, locale_code), "icon": "secret"}
     clean["criteria"] = criteria_for(clean, locale_code)
     clean = _apply_locale(clean, locale_code)
-    # Translate tier name
-    if clean.get("tier"):
-        clean["tier"] = _locale_tier_name(clean["tier"], locale_code)
-    if clean.get("next_tier"):
-        clean["next_tier"] = _locale_tier_name(clean["next_tier"], locale_code)
+    # Tier names stay in English — frontend uses them for CSS class names
+    # (ha-tier-copper, etc.) and color mapping (tierHex).
     return clean
 
 
@@ -1126,13 +1119,22 @@ def _localize_achievements(achievements: List[Dict[str, Any]], locale_code: str)
         localized = _apply_locale(a, locale_code)
         # Regenerate criteria in target locale (display_achievement already set it in English)
         localized["criteria"] = criteria_for(localized, locale_code)
-        if localized.get("tier"):
-            localized["tier"] = _locale_tier_name(localized["tier"], locale_code)
-        if localized.get("next_tier"):
-            localized["next_tier"] = _locale_tier_name(localized["next_tier"], locale_code)
+        # Tier names stay in English for CSS class mapping (ha-tier-copper, etc.)
         result.append(localized)
     return result
 
+
+def _load_ui_strings(locale_code: str) -> Dict[str, str]:
+    """Load UI string translations for a given locale."""
+    if locale_code == "en":
+        return {}
+    locale_data = _load_locale(locale_code)
+    if not locale_data:
+        return {}
+    ui = locale_data.get("._ui", {})
+    if isinstance(ui, dict):
+        return ui
+    return {}
 
 def _localize_payload(data: Dict[str, Any], locale_code: str) -> Dict[str, Any]:
     """Apply locale to the achievements list inside a full payload dict."""
@@ -1141,6 +1143,7 @@ def _localize_payload(data: Dict[str, Any], locale_code: str) -> Dict[str, Any]:
     result = dict(data)
     achievements = result.get("achievements", [])
     result["achievements"] = _localize_achievements(achievements, locale_code)
+    result["_ui"] = _load_ui_strings(locale_code)
     return result
 
 

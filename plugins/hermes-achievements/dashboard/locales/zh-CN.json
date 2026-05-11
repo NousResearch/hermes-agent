@@ -4,9 +4,15 @@
     "language": "简体中文",
     "description": "Hermes 成就系统中文翻译"
   },
-  "._tiers": ["青铜", "白银", "黄金", "钻石", "奥林匹亚"],
+  "._tiers": [
+    "青铜",
+    "白银",
+    "黄金",
+    "钻石",
+    "奥林匹亚"
+  ],
   "._strings": {
-    "secret_hint": "秘密成就：Hermes 检测到匹配行为后才会揭晓。在日常使用中积累调试、工具、记忆、技能、插件和模型相关的操作即可解锁。",
+    "secret_hint": "秘密成就：Hermes 检测到匹配行为后才会揭晓。",
     "requirement_prefix": "要求",
     "secret_prefix": "秘密",
     "tier_ladder": "等级阶梯",
@@ -38,342 +44,406 @@
     "css_activity_events": "CSS、样式、Tailwind 或 className 活动次数",
     "git_events": "Git 工作流命令次数",
     "tiny_patch_after_errors_events": "错误集群后的一字符级修复次数",
-    "skill_events": "Hermes 技能提及或工具使用次数",
-    "skill_manage_events": "skill_manage 创建/修改/删除操作次数",
-    "memory_events": "记忆或 Mnemosyne 工具事件次数",
-    "memory_write_events": "持久化记忆写入次数",
-    "context_events": "上下文、压缩、Token 或缓存压力提及次数",
-    "gateway_events": "网关/API/聊天平台活动次数",
-    "plugin_events": "仪表盘插件开发或使用信号次数",
-    "rollback_events": "回滚/检查点恢复提及次数",
-    "docs_activity_events": "文档/README/docs 活动次数",
-    "model_events": "模型/供应商相关活动次数",
-    "openrouter_events": "OpenRouter 提及次数",
-    "codex_events": "Codex 提及次数",
-    "cache_events": "提示缓存/缓存命中提及次数",
-    "total_web_calls": "历史 web_search/web_extract 调用次数",
-    "total_web_extract_calls": "历史 web_extract 调用次数",
-    "browser_calls": "历史浏览器自动化调用次数",
-    "total_tool_calls": "历史 Hermes 工具调用次数",
-    "total_terminal_calls": "历史终端调用次数",
-    "total_patch_calls": "历史精准补丁编辑次数",
-    "total_file_reads_searches": "历史 read_file/search_files 调用次数",
-    "image_vision_calls": "图像生成或视觉工具调用次数",
-    "tts_calls": "文字转语音或语音工具调用次数",
-    "distinct_model_count": "会话元数据中出现过的不同模型数",
-    "distinct_provider_count": "从会话元数据推断的不同供应商数",
-    "claude_events": "Claude/Anthropic 模型提及次数",
-    "gemini_events": "Gemini/Google 模型提及次数",
-    "local_model_events": "本地/开源模型提及次数",
-    "local_model_chat_sessions": "使用本地/开源模型的 Hermes 会话数",
-    "toolset_events": "工具集或工具家族提及次数",
-    "config_events": "配置/环境/清单活动次数",
-    "git_history_events": "Git 历史操作（变基、合并、拉取、推送、标签等）次数",
-    "test_events": "测试/检查/验证命令提及次数",
-    "screenshot_events": "截图、Playwright、PNG 或视觉检查活动次数",
-    "release_events": "发布、版本、推送或 Git 标签事件次数",
-    "session_count": "Hermes 会话数",
-    "weekend_sessions": "周末启动的会话数",
+    "rollback_events": "回滚或撤销操作次数",
+    "checkpoint_events": "状态检查点或保存操作次数",
+    "cache_discussion_events": "缓存失效/命中/预热讨论次数",
+    "skill_use_events": "技能加载或使用次数",
+    "total_plugin_events": "插件事件总数",
+    "concurrent_skills": "并发技能数",
+    "parallel_subagent_calls": "并行的子代理调用数",
+    "model_config_events": "模型或提供者配置变更提及次数",
+    "provider_switch_count": "提供者切换次数",
+    "model_switch_count": "模型切换次数",
+    "image_generation_count": "图像生成调用总数",
+    "image_analysis_count": "图像分析/描述调用总数",
+    "vision_usage_count": "视觉功能使用总数",
+    "video_analysis_count": "视频分析调用总数",
+    "file_read_count": "文件读取调用总数",
+    "file_write_count": "文件写入调用总数",
+    "config_file_edit_count": "配置文件编辑总数",
+    "session_count": "历史会话数",
     "night_sessions": "深夜或凌晨启动的会话数"
   },
-  "let_him_cook": {
-    "name": "放手一搏",
-    "description": "让 Hermes 在一次会话中自主执行一套完整的工具链。",
-    "category": "自主代理"
+  "._ui": {
+    "hero_kicker": "代理游戏分数",
+    "hero_title": "Hermes 成就",
+    "hero_desc": "从真实会话历史中收集的 Hermes 徽章。已知但未完成的成就显示为「已发现」；秘密成就保持隐藏，直到首次出现匹配的行为。",
+    "rescan": "重新扫描",
+    "stat_unlocked": "已解锁",
+    "stat_discovered": "已发现",
+    "stat_secrets": "秘密",
+    "stat_highest": "最高等级",
+    "stat_latest": "最新",
+    "hint_earned": "获得的徽章",
+    "hint_known": "已知，尚未获得",
+    "hint_hidden": "隐藏，直至首次触发",
+    "hint_tier_ladder": "青铜 → 白银 → 黄金 → 钻石 → 奥林匹亚",
+    "hint_none": "暂无",
+    "hint_run_more": "多使用 Hermes",
+    "scan_pending": "正在开始成就扫描…",
+    "scan_in_progress": "正在构建成就档案…",
+    "scan_detail_templ": "已扫描 {s} / {t} 个会话 · {p}%。徽章随着更多历史流入自动解锁。",
+    "scan_detail_idle": "正在读取会话、工具调用、模型元数据和解锁状态。徽章会自动出现在此处。",
+    "guide_tiers": "等级",
+    "guide_secrets": "秘密成就",
+    "guide_secrets_desc": "秘密隐藏了确切的触发条件。一旦 Hermes 检测到相关信号，卡片会变为「已发现」并显示要求。",
+    "filter_all_cat": "全部",
+    "filter_all": "全部",
+    "filter_visibility_all": "全部",
+    "filter_visibility_unlocked": "已解锁",
+    "filter_visibility_discovered": "已发现",
+    "filter_visibility_secret": "秘密",
+    "state_filter_all": "全部",
+    "state_filter_unlocked": "已解锁",
+    "state_filter_discovered": "已发现",
+    "state_filter_secret": "秘密",
+    "recent_unlocks": "最新解锁",
+    "secret_empty_title": "本次扫描未发现隐藏秘密。",
+    "secret_empty_clue": "提示：秘密通常源于异常失败或高级用户模式——端口冲突、权限阻拦、缺失环境变量、YAML 错误、Docker 冲突、回滚/检查点使用、缓存命中，或大量红字后的小修复。",
+    "state_unlocked": "已解锁",
+    "state_secret": "秘密",
+    "state_discovered": "已发现",
+    "tier_target": "目标 ",
+    "tier_hidden": "隐藏",
+    "tier_complete": "已完成",
+    "tier_objective": "目标",
+    "criteria_what_counts": "计数方式",
+    "criteria_how_to_reveal": "如何揭示",
+    "evidence_label": "证据",
+    "evidence_empty": "暂无证据",
+    "share_btn": "分享",
+    "share_label": "分享：",
+    "share_rendering": "渲染中…",
+    "share_on_x": "分享到 X",
+    "share_copy": "复制图片",
+    "share_copied": "已复制 ✓",
+    "share_download": "下载 PNG",
+    "share_title_x": "在新标签页打开 X，含预设内容",
+    "share_title_copy": "复制图片以便粘贴到帖子中",
+    "share_hint": "「分享到 X」会在新标签页打开预设好的帖子。如需在帖子中附带 1200×630 徽章图片，请先点击「复制图片」，X 允许直接在推文编辑器粘贴。「下载 PNG」可将文件保存到本地。",
+    "loading_stat_unlocked": "已解锁",
+    "loading_stat_discovered": "已发现",
+    "loading_stat_secrets": "秘密",
+    "loading_stat_highest": "最高等级",
+    "loading_stat_latest": "最新",
+    "loading_scan_status": "正在构建成就档案…",
+    "loading_scan_desc": "Hermes 正在本地记录中扫描一次，完成后卡片会自动出现。",
+    "loading_guide_title": "扫描状态",
+    "loading_guide_desc": "Hermes 正在本地记录中扫描一次，完成后卡片会自动出现。",
+    "loading_guide_what": "扫描内容",
+    "loading_guide_what_desc": "会话、工具调用、模型元数据、错误、成就和本地解锁状态。",
+    "tier_copper": "青铜",
+    "tier_silver": "白银",
+    "tier_gold": "黄金",
+    "tier_diamond": "钻石",
+    "tier_olympian": "奥林匹亚",
+    "Agent Autonomy": "自主代理",
+    "Debugging Chaos": "调试混乱",
+    "Vibe Coding": "氛围编码",
+    "Hermes Native": "Hermes 原生",
+    "Research/Web": "研究/网页",
+    "Tool Mastery": "工具掌握",
+    "Model Lore": "模型知识",
+    "Lifestyle": "生活方式"
+  },
+  "actually_read_the_logs": {
+    "name": "居然真的读了日志",
+    "description": "检查足够多的输出和日志。",
+    "category": "调试混乱"
   },
   "autonomous_avalanche": {
     "name": "自主狂潮",
     "description": "跨会话积累海量的 Hermes 工具调用。",
     "category": "自主代理"
   },
-  "toolchain_maxxer": {
-    "name": "全能工具箱",
-    "description": "在一次会话中使用种类繁多的 Hermes 工具。",
+  "background_process_enjoyer": {
+    "name": "后台达人",
+    "description": "启动或操控足够多的后台进程。",
     "category": "自主代理"
+  },
+  "browser_possession": {
+    "name": "浏览器附身",
+    "description": "通过自动化反复操控浏览器。",
+    "category": "研究/网页"
+  },
+  "cache_hit_appreciator": {
+    "name": "缓存命中鉴赏家",
+    "description": "注意到或受益于缓存行为。",
+    "category": "生活方式"
+  },
+  "citation_goblin": {
+    "name": "引文哥布林",
+    "description": "提取足够多的网页。",
+    "category": "研究/网页"
+  },
+  "claude_confidant": {
+    "name": "Claude 知己",
+    "description": "反复使用 Claude 风格推理。",
+    "category": "模型知识"
+  },
+  "codex_conjurer": {
+    "name": "Codex 召唤师",
+    "description": "频繁召唤 Codex 风格的协助。",
+    "category": "模型知识"
+  },
+  "config_surgeon": {
+    "name": "配置外科医生",
+    "description": "编辑配置文件。",
+    "category": "Hermes 原生"
+  },
+  "context_dragon": {
+    "name": "上下文巨龙",
+    "description": "触及压缩、大上下文或 Token 压力。",
+    "category": "Hermes 原生"
+  },
+  "cron_necromancer": {
+    "name": "定时任务亡灵法师",
+    "description": "创建足够多的定时任务。",
+    "category": "自主代理"
+  },
+  "css_exorcist": {
+    "name": "CSS 驱魔师",
+    "description": "反复驱除界面中的样式恶魔。",
+    "category": "氛围编码"
+  },
+  "dependency_hell_tourist": {
+    "name": "依赖地狱观光客",
+    "description": "包安装失败足够多次了。",
+    "category": "调试混乱"
+  },
+  "docker_name_collision": {
+    "name": "Docker 名称冲突",
+    "description": "容器名称已存在——当然如此。",
+    "category": "调试混乱"
+  },
+  "docs_archaeologist": {
+    "name": "文档考古学家",
+    "description": "反复挖掘文档来源。",
+    "category": "研究/网页"
+  },
+  "file_archaeologist": {
+    "name": "文件考古学家",
+    "description": "通过读取和搜索深入挖掘文件系统。",
+    "category": "工具掌握"
+  },
+  "five_model_flight": {
+    "name": "五模型试飞",
+    "description": "至少尝试五个不同的 LLM。",
+    "category": "模型知识"
+  },
+  "forgot_the_env_var": {
+    "name": "忘设环境变量了",
+    "description": "遇到环境变量或配置缺失错误。",
+    "category": "调试混乱"
   },
   "full_send": {
     "name": "全力输出",
     "description": "终端、文件和网页/浏览器在一次真实运行中全员参与。",
     "category": "自主代理"
   },
+  "gateway_dweller": {
+    "name": "网关常客",
+    "description": "在网关模式下完成会话。",
+    "category": "Hermes 原生"
+  },
+  "gemini_cartographer": {
+    "name": "Gemini 制图师",
+    "description": "在 Gemini 模型上完成会话。",
+    "category": "模型知识"
+  },
+  "image_whisperer": {
+    "name": "图像低语者",
+    "description": "通过 Hermes 生成图像。",
+    "category": "工具掌握"
+  },
+  "let_him_cook": {
+    "name": "放手一搏",
+    "description": "让 Hermes 在一次会话中自主执行一套完整的工具链。",
+    "category": "自主代理"
+  },
+  "marathon_operator": {
+    "name": "马拉松玩家",
+    "description": "积累大量 Hermes 会话。",
+    "category": "生活方式"
+  },
+  "memory_keeper": {
+    "name": "记忆守护者",
+    "description": "使用记忆或 Mnemosyne 保存持久化知识。",
+    "category": "Hermes 原生"
+  },
+  "memory_palace": {
+    "name": "记忆宫殿",
+    "description": "建立可观的持久化记忆痕迹。",
+    "category": "Hermes 原生"
+  },
+  "model_hopper": {
+    "name": "模型跳跃者",
+    "description": "足够多地切换或查看提供者/模型。",
+    "category": "模型知识"
+  },
+  "model_sommelier": {
+    "name": "模型品鉴师",
+    "description": "品味足够多的模型/提供者对话。",
+    "category": "模型知识"
+  },
+  "multi_model_mage": {
+    "name": "多模型法师",
+    "description": "使用多种不同模型名称。",
+    "category": "模型知识"
+  },
+  "night_shift_operator": {
+    "name": "夜班操作员",
+    "description": "在深夜时段反复运行会话。",
+    "category": "生活方式"
+  },
+  "one_character_fix": {
+    "name": "一字修复",
+    "description": "大量错误后的一丁点修改。痛苦，但美丽。",
+    "category": "氛围编码"
+  },
+  "one_more_small_change": {
+    "name": "再来一个小改动",
+    "description": "在一次会话中做足够多的文件编辑。",
+    "category": "氛围编码"
+  },
+  "open_weights_pilgrim": {
+    "name": "开源朝圣者",
+    "description": "通过 Hermes 与本地/开源模型对话。",
+    "category": "模型知识"
+  },
+  "openrouter_enjoyer": {
+    "name": "OpenRouter 爱好者",
+    "description": "反复通过 OpenRouter 路由模型工作。",
+    "category": "模型知识"
+  },
+  "patch_wizard": {
+    "name": "补丁巫师",
+    "description": "用定向补丁按需修改文件。",
+    "category": "工具掌握"
+  },
+  "permission_denied_any_percent": {
+    "name": "权限拒绝 Any%",
+    "description": "遭遇足够多的权限拒绝。",
+    "category": "调试混乱"
+  },
+  "pixel_goblin": {
+    "name": "像素哥布林",
+    "description": "持续的前端/CSS/SVG/视觉调优。",
+    "category": "氛围编码"
+  },
+  "plugin_goblin": {
+    "name": "插件精灵",
+    "description": "在会话中触发插件事件。",
+    "category": "Hermes 原生"
+  },
+  "port_3000_taken": {
+    "name": "3000 端口已被占用",
+    "description": "遭遇端口冲突。",
+    "category": "调试混乱"
+  },
+  "provider_polyglot": {
+    "name": "供应商多语者",
+    "description": "跨多个提供者使用模型。",
+    "category": "模型知识"
+  },
+  "rabbit_hole_certified": {
+    "name": "兔子洞认证",
+    "description": "搜索或提取足够多的网页内容。",
+    "category": "研究/网页"
+  },
+  "rebase_acrobat": {
+    "name": "变基杂技演员",
+    "description": "处理真实的 Git 历史手术：变基、冲突、合并。",
+    "category": "氛围编码"
+  },
+  "red_text_connoisseur": {
+    "name": "红字鉴赏家",
+    "description": "找到足够多的错误。",
+    "category": "调试混乱"
+  },
+  "rollback_wizard": {
+    "name": "回滚巫师",
+    "description": "施展回滚/检查点恢复魔法。",
+    "category": "Hermes 原生"
+  },
+  "screenshot_hunter": {
+    "name": "截图猎人",
+    "description": "抓取至少一次网页截图。",
+    "category": "工具掌握"
+  },
+  "ship_first_ask_later": {
+    "name": "先发后问",
+    "description": "在严肃工具链之后进行 Git 操作。",
+    "category": "氛围编码"
+  },
+  "skill_issue_skill_created": {
+    "name": "技能不行？那就造一个",
+    "description": "创建或修补持久化流程。",
+    "category": "Hermes 原生"
+  },
+  "skillsmith": {
+    "name": "技能铁匠",
+    "description": "与 Hermes 技能交互足够多次。",
+    "category": "Hermes 原生"
+  },
+  "stack_trace_sommelier": {
+    "name": "堆栈品鉴师",
+    "description": "阅读足够多的堆栈跟踪信息。",
+    "category": "调试混乱"
+  },
   "subagent_commander": {
     "name": "分身指挥官",
     "description": "协调多个代理分头工作。",
     "category": "自主代理"
   },
-  "background_process_enjoyer": {
-    "name": "后台达人",
-    "description": "启动或操控足够多的后台进程，配得上这个称号。",
-    "category": "自主代理"
-  },
-  "cron_necromancer": {
-    "name": "定时亡灵法师",
-    "description": "从坟墓中唤醒定时任务。",
-    "category": "自主代理"
-  },
-  "red_text_connoisseur": {
-    "name": "红字鉴赏家",
-    "description": "见过足够多的报错，以至于对红色文字产生了鉴赏力。",
-    "category": "调试混沌"
-  },
-  "stack_trace_sommelier": {
-    "name": "堆栈品鉴师",
-    "description": "用杯（报错）而非用口（修复）品味堆栈跟踪。",
-    "category": "调试混沌"
-  },
-  "actually_read_the_logs": {
-    "name": "认真看日志",
-    "description": "反复检查日志而不是靠猜。",
-    "category": "调试混沌"
-  },
-  "port_3000_taken": {
-    "name": "端口3000又被占了",
-    "description": "发现开发服务器端口冲突的次数多到已经麻木。",
-    "category": "调试混沌"
-  },
-  "permission_denied_any_percent": {
-    "name": "权限拒绝速通",
-    "description": "冲刺撞墙式地触发权限拒绝。",
-    "category": "调试混沌"
-  },
-  "dependency_hell_tourist": {
-    "name": "依赖地狱观光客",
-    "description": "包安装失败了，但生活还得继续。",
-    "category": "调试混沌"
-  },
-  "the_fix_was_restarting": {
-    "name": "重启大法好",
-    "description": "在错误集群后重启的次数多到可以称之为一门技术。",
-    "category": "调试混沌"
-  },
-  "forgot_the_env_var": {
-    "name": "忘设环境变量",
-    "description": "因为环境变量缺失导致认证或配置失败。",
-    "category": "调试混沌"
-  },
-  "yaml_colon_incident": {
-    "name": "YAML冒号事故",
-    "description": "配置文件语法反咬一口。",
-    "category": "调试混沌"
-  },
-  "docker_name_collision": {
-    "name": "Docker命名冲突",
-    "description": "容器名称已存在。当然会这样。",
-    "category": "调试混沌"
-  },
   "supposed_to_be_quick": {
-    "name": "说好只是一个小改动",
-    "description": "一个微小的需求变成了一整趟远征。",
-    "category": "心流编码"
-  },
-  "one_more_small_change": {
-    "name": "再来一个小改动",
-    "description": "在一次会话中做了足够多的文件修改，让「小改动」这个词失去了意义。",
-    "category": "心流编码"
-  },
-  "vibe_architect": {
-    "name": "心流架构师",
-    "description": "在一个项目会话中触及了广泛的代码面。",
-    "category": "心流编码"
-  },
-  "pixel_goblin": {
-    "name": "像素精灵",
-    "description": "持续进行前端、CSS、SVG 或视觉调优。",
-    "category": "心流编码"
-  },
-  "ship_first_ask_later": {
-    "name": "先发版，别问",
-    "description": "在认真的工具链之后进行 Git 活动。",
-    "category": "心流编码"
-  },
-  "css_exorcist": {
-    "name": "CSS驱魔人",
-    "description": "反复把样式恶魔从界面中驱逐出去。",
-    "category": "心流编码"
-  },
-  "one_character_fix": {
-    "name": "一字修复",
-    "description": "在一堆错误之后用最小的修改解决问题。痛并快乐着。",
-    "category": "心流编码"
-  },
-  "skillsmith": {
-    "name": "技能铁匠",
-    "description": "使用 Hermes 技能到留下指纹的程度。",
-    "category": "Hermes原生"
-  },
-  "skill_issue_skill_created": {
-    "name": "技巧不够？造一个。",
-    "description": "创建或修改可复用的流程，而不是重复劳动。",
-    "category": "Hermes原生"
-  },
-  "memory_keeper": {
-    "name": "记忆守护者",
-    "description": "用记忆系统持久化知识。",
-    "category": "Hermes原生"
-  },
-  "memory_palace": {
-    "name": "记忆宫殿",
-    "description": "建立起一条可观的持久记忆轨迹。",
-    "category": "Hermes原生"
-  },
-  "context_dragon": {
-    "name": "上下文巨龙",
-    "description": "反复触及压缩、大上下文或 Token 压力的边界。",
-    "category": "Hermes原生"
-  },
-  "gateway_dweller": {
-    "name": "网关常客",
-    "description": "经历跨网关的 Hermes 工作流。",
-    "category": "Hermes原生"
-  },
-  "plugin_goblin": {
-    "name": "插件精灵",
-    "description": "使用或开发插件的次数多到仪表盘都注意到了。",
-    "category": "Hermes原生"
-  },
-  "rollback_wizard": {
-    "name": "回滚巫师",
-    "description": "施展回滚/检查点恢复的魔法。",
-    "category": "Hermes原生"
-  },
-  "toolset_cartographer": {
-    "name": "工具集制图师",
-    "description": "有意识地切换 Hermes 工具集，而不是把工具当作一团模糊的概念。",
-    "category": "Hermes原生"
-  },
-  "config_surgeon": {
-    "name": "配置外科医生",
-    "description": "熟练操作配置文件、清单、环境变量和仪表盘设置，面不改色。",
-    "category": "Hermes原生"
-  },
-  "rabbit_hole_certified": {
-    "name": "兔子洞认证",
-    "description": "搜索或提取足够多的网页内容，有资格被称为研究深渊。",
-    "category": "研究/网页"
-  },
-  "citation_goblin": {
-    "name": "引用小精灵",
-    "description": "提取足够多的网页，成为一个微小的图书管理员。",
-    "category": "研究/网页"
-  },
-  "docs_archaeologist": {
-    "name": "文档考古学家",
-    "description": "反复挖掘文档资料。",
-    "category": "研究/网页"
-  },
-  "browser_possession": {
-    "name": "浏览器附身",
-    "description": "反复通过自动化操控浏览器。",
-    "category": "研究/网页"
+    "name": "说好很快的",
+    "description": "一个小需求变成了一趟远征。",
+    "category": "氛围编码"
   },
   "terminal_goblin": {
-    "name": "终端精灵",
-    "description": "在 Shell 世界里投入了大量时间。",
-    "category": "工具精通"
-  },
-  "patch_wizard": {
-    "name": "补丁巫师",
-    "description": "用精准的补丁让文件服从你的意志。",
-    "category": "工具精通"
-  },
-  "file_archaeologist": {
-    "name": "文件考古学家",
-    "description": "通过读取和搜索在文件系统中深挖。",
-    "category": "工具精通"
-  },
-  "image_whisperer": {
-    "name": "图像低语者",
-    "description": "使用图像生成或视觉工具进行视觉工作。",
-    "category": "工具精通"
-  },
-  "voice_of_the_machine": {
-    "name": "机器之声",
-    "description": "反复使用文字转语音或语音工具。",
-    "category": "工具精通"
+    "name": "终端哥布林",
+    "description": "在命令行环境中度过大量时间。",
+    "category": "工具掌握"
   },
   "test_suite_tamer": {
     "name": "测试驯兽师",
-    "description": "运行足够多的验证命令，以至于绿色文本成了仪式的一部分。",
-    "category": "工具精通"
+    "description": "运行足够多的验证命令。",
+    "category": "工具掌握"
   },
-  "screenshot_hunter": {
-    "name": "截图猎人",
-    "description": "捕获、检查和打磨视觉证据，而不是光嘴上说「它跑起来了」。",
-    "category": "工具精通"
+  "the_fix_was_restarting": {
+    "name": "重启一下就好了",
+    "description": "在大量错误后重启恢复局面。",
+    "category": "调试混乱"
   },
-  "rebase_acrobat": {
-    "name": "变基杂技演员",
-    "description": "处理真正的 Git 历史手术：变基、冲突、合并、拉取、推送。",
-    "category": "心流编码"
+  "toolchain_maxxer": {
+    "name": "全能工具箱",
+    "description": "在一次会话中使用种类繁多的 Hermes 工具。",
+    "category": "自主代理"
   },
-  "model_hopper": {
-    "name": "模型跳跳虎",
-    "description": "更换或查看模型/供应商到成为一种习惯。",
-    "category": "模型传说"
+  "toolset_cartographer": {
+    "name": "工具集制图师",
+    "description": "在会话中使用各种工具套件。",
+    "category": "Hermes 原生"
   },
-  "openrouter_enjoyer": {
-    "name": "OpenRouter爱好者",
-    "description": "反复通过 OpenRouter 调度模型工作。",
-    "category": "模型传说"
+  "vibe_architect": {
+    "name": "氛围架构师",
+    "description": "一次项目会话中触及广泛的范围。",
+    "category": "氛围编码"
   },
-  "codex_conjurer": {
-    "name": "Codex召唤师",
-    "description": "频繁召唤 Codex 风味的辅助，频率堪比仪式。",
-    "category": "模型传说"
-  },
-  "multi_model_mage": {
-    "name": "多模型法师",
-    "description": "在 Hermes 历史上使用过多种不同的模型。",
-    "category": "模型传说"
-  },
-  "five_model_flight": {
-    "name": "五模型试飞",
-    "description": "尝试过至少五种不同的 LLM，而不是跟第一个回话的模型结婚。",
-    "category": "模型传说"
-  },
-  "provider_polyglot": {
-    "name": "供应商多语者",
-    "description": "在 Hermes 历史上使用过来自多个供应商的模型。",
-    "category": "模型传说"
-  },
-  "model_sommelier": {
-    "name": "模型品鉴师",
-    "description": "品味过足够多的模型/供应商对话，发展出了个人偏好。",
-    "category": "模型传说"
-  },
-  "claude_confidant": {
-    "name": "Claude知己",
-    "description": "反复将 Claude 风味的推理引入工作流。",
-    "category": "模型传说"
-  },
-  "gemini_cartographer": {
-    "name": "Gemini制图师",
-    "description": "足够多地探索 Gemini 相关工作流，熟悉了这片领域。",
-    "category": "模型传说"
-  },
-  "open_weights_pilgrim": {
-    "name": "开源朝圣者",
-    "description": "通过 Hermes 会话真正使用过本地/开源模型。",
-    "category": "模型传说"
-  },
-  "marathon_operator": {
-    "name": "马拉松玩家",
-    "description": "积累了大量 Hermes 会话。",
-    "category": "生活方式"
+  "voice_of_the_machine": {
+    "name": "机器之声",
+    "description": "反复使用语音或 TTS 工具。",
+    "category": "工具掌握"
   },
   "weekend_warrior": {
     "name": "周末战士",
-    "description": "在周末运行 Hermes 到成为一种生活方式。",
+    "description": "在非标准时段启动足够多的会话。",
     "category": "生活方式"
   },
-  "night_shift_operator": {
-    "name": "夜班操作员",
-    "description": "反复在深夜时段运行会话。",
-    "category": "生活方式"
-  },
-  "cache_hit_appreciator": {
-    "name": "缓存命中鉴赏家",
-    "description": "注意到或受益于提示/缓存行为。",
-    "category": "生活方式"
+  "yaml_colon_incident": {
+    "name": "YAML 冒号事故",
+    "description": "配置语法回击了你。",
+    "category": "调试混乱"
   }
 }

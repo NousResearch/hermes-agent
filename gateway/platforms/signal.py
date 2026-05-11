@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 SIGNAL_MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024  # 100 MB
-MAX_MESSAGE_LENGTH = 8000  # Signal message size limit
+MAX_MESSAGE_LENGTH = 2048  # Signal max 2048 UTF-8 bytes per message
 TYPING_INTERVAL = 8.0  # seconds between typing indicator refreshes
 SSE_RETRY_DELAY_INITIAL = 2.0
 SSE_RETRY_DELAY_MAX = 60.0
@@ -120,6 +120,28 @@ def _ext_to_mime(ext: str) -> str:
     return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
 
 
+def _detect_inbound_message_type(media_types: List[str]) -> MessageType:
+    """Classify inbound Signal attachments for gateway routing.
+
+    Signal attachments already carry MIME types. Anything that's not an
+    image, audio, or video should surface as a document so the gateway
+    injects the saved file path into the agent context instead of silently
+    treating the turn as plain text.
+    """
+    normalized = [str(mtype or "").lower() for mtype in media_types if str(mtype or "").strip()]
+    if not normalized:
+        return MessageType.TEXT
+    if any(not mtype.startswith(("image/", "audio/", "video/")) for mtype in normalized):
+        return MessageType.DOCUMENT
+    if any(mtype.startswith("video/") for mtype in normalized):
+        return MessageType.VIDEO
+    if any(mtype.startswith("audio/") for mtype in normalized):
+        return MessageType.VOICE
+    if any(mtype.startswith("image/") for mtype in normalized):
+        return MessageType.PHOTO
+    return MessageType.TEXT
+
+
 def _render_mentions(text: str, mentions: list) -> str:
     """Replace Signal mention placeholders (\\uFFFC) with readable @identifiers.
 
@@ -179,6 +201,8 @@ class SignalAdapter(BasePlatformAdapter):
     # so streaming suppresses the visible cursor instead of leaving a stale tofu
     # square behind in chat clients when edit attempts fail.
     SUPPORTS_MESSAGE_EDITING = False
+    # Signal messages have a 2048 UTF-8 byte body limit.
+    MAX_MESSAGE_LENGTH = 2048
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)
@@ -532,6 +556,24 @@ class SignalAdapter(BasePlatformAdapter):
                 att_size = att.get("size", 0)
                 if not att_id:
                     continue
+
+                # Signal "long message" handling: when a message body exceeds
+                # 2048 UTF-8 bytes, Signal clients send the overflow as a
+                # text/plain attachment.  Reassemble by reading the attachment
+                # and appending it to the body text.
+                att_content_type = att.get("contentType") or ""
+                if att_content_type.startswith("text/x-signal-plain") and text:
+                    try:
+                        cached_path, ext = await self._fetch_attachment(att_id)
+                        if cached_path:
+                            overflow = Path(cached_path).read_text(encoding="utf-8", errors="replace")
+                            text = text + overflow
+                            logger.debug("Signal: appended long-message attachment (%d bytes) to body",
+                                         len(overflow.encode("utf-8")))
+                            continue
+                    except Exception:
+                        logger.exception("Signal: failed to read long-message attachment %s", att_id)
+
                 if att_size > SIGNAL_MAX_ATTACHMENT_SIZE:
                     logger.warning("Signal: attachment too large (%d bytes), skipping", att_size)
                     continue
@@ -568,13 +610,8 @@ class SignalAdapter(BasePlatformAdapter):
             chat_id_alt=group_id if is_group else None,
         )
 
-        # Determine message type from media
-        msg_type = MessageType.TEXT
-        if media_types:
-            if any(mt.startswith("audio/") for mt in media_types):
-                msg_type = MessageType.VOICE
-            elif any(mt.startswith("image/") for mt in media_types):
-                msg_type = MessageType.PHOTO
+        # Determine message type from media.
+        msg_type = _detect_inbound_message_type(media_types)
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)
@@ -936,36 +973,53 @@ class SignalAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a text message with native Signal formatting."""
+        """Send a text message with native Signal formatting.
+
+        Messages exceeding 2048 UTF-8 bytes are split into multiple chunks
+        with code-block boundary preservation and "(n/N)" indicators.
+        """
         await self._stop_typing_indicator(chat_id)
 
         plain_text, text_styles = self._markdown_to_signal(content)
 
-        params: Dict[str, Any] = {
-            "account": self.account,
-            "message": plain_text,
-        }
+        # Chunk if needed (Signal limit: 2048 UTF-8 bytes)
+        utf8_len = lambda s: len(s.encode("utf-8"))
+        chunks = self.truncate_message(
+            plain_text, self.MAX_MESSAGE_LENGTH, len_fn=utf8_len,
+        )
 
-        if text_styles:
-            if len(text_styles) == 1:
-                params["textStyle"] = text_styles[0]
+        for i, chunk in enumerate(chunks):
+            params: Dict[str, Any] = {
+                "account": self.account,
+                "message": chunk,
+            }
+
+            # Only include text styles on the first chunk
+            if i == 0 and text_styles:
+                if len(text_styles) == 1:
+                    params["textStyle"] = text_styles[0]
+                else:
+                    params["textStyles"] = text_styles
+
+            if chat_id.startswith("group:"):
+                params["groupId"] = chat_id[6:]
             else:
-                params["textStyles"] = text_styles
+                params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
-        else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
+            result = await self._rpc("send", params)
 
-        result = await self._rpc("send", params)
+            if result is None:
+                if i == 0:
+                    return SendResult(success=False, error="RPC send failed")
+                # Continuation chunk failed — best effort, deliver what we sent
+                logger.warning("Signal: chunk %d/%d send failed", i + 1, len(chunks))
+                break
 
-        if result is not None:
             self._track_sent_timestamp(result)
             # Signal has no editable message identifier. Returning None keeps the
             # stream consumer on the non-edit fallback path instead of pretending
             # future edits can remove an in-progress cursor from the chat thread.
-            return SendResult(success=True, message_id=None)
-        return SendResult(success=False, error="RPC send failed")
+        return SendResult(success=True, message_id=None)
 
     def _track_sent_timestamp(self, rpc_result) -> None:
         """Record outbound message timestamp for echo-back filtering."""

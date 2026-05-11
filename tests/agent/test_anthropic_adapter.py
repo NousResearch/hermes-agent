@@ -111,6 +111,28 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
             }
 
+    def test_third_party_anthropic_messages_uses_bearer_auth(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "gateway-key",
+                base_url="https://gateway.example.com/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://gateway.example.com/anthropic"
+            assert kwargs["auth_token"] == "gateway-key"
+            assert "api_key" not in kwargs
+
+    def test_kimi_coding_endpoint_keeps_user_agent_auth_shape(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "kimi-key",
+                base_url="https://api.kimi.com/coding",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["api_key"] == "kimi-key"
+            assert "auth_token" not in kwargs
+            assert kwargs["default_headers"]["User-Agent"] == "claude-code/0.1.0"
+
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(
@@ -1434,6 +1456,22 @@ class TestNormalizeResponse:
         assert nr.provider_data["reasoning_details"][0]["signature"] == "opaque_signature"
         assert nr.provider_data["reasoning_details"][0]["thinking"] == "Let me reason about this..."
 
+    def test_redacted_thinking_response_preserves_data(self):
+        blocks = [
+            SimpleNamespace(
+                type="redacted_thinking",
+                data="opaque_redacted_payload",
+            ),
+            SimpleNamespace(type="text", text="The answer is 42."),
+        ]
+        nr = get_transport("anthropic_messages").normalize_response(self._make_response(blocks))
+
+        assert nr.content == "The answer is 42."
+        assert nr.reasoning is None
+        assert nr.provider_data["reasoning_details"] == [
+            {"type": "redacted_thinking", "data": "opaque_redacted_payload"}
+        ]
+
     def test_stop_reason_mapping(self):
         block = SimpleNamespace(type="text", text="x")
         nr1 = get_transport("anthropic_messages").normalize_response(
@@ -1627,6 +1665,92 @@ class TestThinkingBlockSignatureManagement:
         _, result = convert_messages_to_anthropic(messages)
         blocks = result[0]["content"]
         assert not any(b.get("type") == "redacted_thinking" for b in blocks)
+
+    def test_third_party_preserves_latest_signed_thinking(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Response.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Private reasoning.", "signature": "sig_valid"},
+                    {"type": "redacted_thinking", "data": "opaque_signature_data"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://proxy.example.com/anthropic",
+        )
+        blocks = result[0]["content"]
+
+        assert any(
+            block.get("type") == "thinking" and block.get("signature") == "sig_valid"
+            for block in blocks
+        )
+        assert any(block.get("type") == "redacted_thinking" for block in blocks)
+
+    def test_remote_proxy_preserves_latest_signed_thinking(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_old", "function": {"name": "tool1", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Old reasoning.", "signature": "sig_old"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_old", "content": "old result"},
+            {
+                "role": "assistant",
+                "content": "Latest answer.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Latest reasoning.", "signature": "sig_new"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://gateway.example.com/anthropic",
+        )
+
+        assistants = [m for m in result if m["role"] == "assistant"]
+        assert not any(b.get("type") == "thinking" for b in assistants[0]["content"])
+        latest_thinking = [
+            b for b in assistants[-1]["content"] if b.get("type") == "thinking"
+        ]
+        assert len(latest_thinking) == 1
+        assert latest_thinking[0]["signature"] == "sig_new"
+
+    def test_third_party_replay_matches_native_anthropic_strategy(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Old answer.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Old reasoning.", "signature": "sig_old"},
+                    {"type": "redacted_thinking", "data": "old_redacted"},
+                ],
+            },
+            {"role": "user", "content": "Next question"},
+            {
+                "role": "assistant",
+                "content": "Latest answer.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Latest reasoning.", "signature": "sig_new"},
+                    {"type": "redacted_thinking", "data": "latest_redacted"},
+                ],
+            },
+        ]
+
+        _, native_result = convert_messages_to_anthropic(messages, base_url=None)
+        _, third_party_result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://gateway.example.com/anthropic",
+        )
+
+        assert third_party_result == native_result
 
     def test_cache_control_stripped_from_thinking_blocks(self):
         """cache_control markers are removed from thinking/redacted_thinking blocks."""

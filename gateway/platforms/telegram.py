@@ -3438,6 +3438,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        # Re-fetch reply-to media bytes (no-op for non-replies / text-only replies)
+        await self._hydrate_reply_to_media(event, update.message)
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3448,6 +3450,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         
         event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)
+        await self._hydrate_reply_to_media(event, update.message)
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3485,6 +3488,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
         event.text = "\n".join(parts)
+        await self._hydrate_reply_to_media(event, msg)
         await self.handle_message(event)
 
     # ------------------------------------------------------------------
@@ -3635,11 +3639,18 @@ class TelegramAdapter(BasePlatformAdapter):
             msg_type = MessageType.DOCUMENT
         
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
-        
+
         # Add caption as text
         if msg.caption:
             event.text = self._clean_bot_trigger_text(msg.caption)
-        
+
+        # Re-fetch reply-to media bytes BEFORE the inbound media is cached
+        # below.  The hydrator appends to ``event.media_urls`` so the order
+        # ends up: [reply-to media, *inbound media] — putting the quoted
+        # context first matches how the agent reads the message ("here's
+        # what was quoted, then here's the new media").
+        await self._hydrate_reply_to_media(event, msg)
+
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
             await self._handle_sticker(msg, event)
@@ -3664,8 +3675,11 @@ class TelegramAdapter(BasePlatformAdapter):
                             break
                 # Save to local cache (for vision tool access)
                 cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
-                event.media_urls = [cached_path]
-                event.media_types = [f"image/{ext.lstrip('.')}" ]
+                # ``.append`` (vs ``=``) preserves anything the reply-to
+                # hydrator above already appended so a user replying to a
+                # doc with a photo+caption surfaces both files.
+                event.media_urls.append(cached_path)
+                event.media_types.append(f"image/{ext.lstrip('.')}")
                 logger.info("[Telegram] Cached user photo at %s", cached_path)
                 media_group_id = getattr(msg, "media_group_id", None)
                 if media_group_id:
@@ -3684,8 +3698,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await msg.voice.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
-                event.media_urls = [cached_path]
-                event.media_types = ["audio/ogg"]
+                event.media_urls.append(cached_path)
+                event.media_types.append("audio/ogg")
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
@@ -3694,8 +3708,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
-                event.media_urls = [cached_path]
-                event.media_types = ["audio/mp3"]
+                event.media_urls.append(cached_path)
+                event.media_types.append("audio/mp3")
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
@@ -3711,8 +3725,8 @@ class TelegramAdapter(BasePlatformAdapter):
                             ext = candidate
                             break
                 cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
-                event.media_urls = [cached_path]
-                event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
+                event.media_urls.append(cached_path)
+                event.media_types.append(SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4"))
                 logger.info("[Telegram] Cached user video at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
@@ -3770,8 +3784,11 @@ class TelegramAdapter(BasePlatformAdapter):
                         return
 
                     event.message_type = MessageType.PHOTO
-                    event.media_urls = [cached_path]
-                    event.media_types = [doc_mime if doc_mime.startswith("image/") else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")]
+                    event.media_urls.append(cached_path)
+                    event.media_types.append(
+                        doc_mime if doc_mime.startswith("image/")
+                        else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")
+                    )
                     logger.info("[Telegram] Cached user image-document at %s", cached_path)
 
                     media_group_id = getattr(msg, "media_group_id", None)
@@ -3790,8 +3807,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     file_obj = await doc.get_file()
                     video_bytes = await file_obj.download_as_bytearray()
                     cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
-                    event.media_urls = [cached_path]
-                    event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
+                    event.media_urls.append(cached_path)
+                    event.media_types.append(SUPPORTED_VIDEO_TYPES[ext])
                     event.message_type = MessageType.VIDEO
                     logger.info("[Telegram] Cached user video document at %s", cached_path)
                     await self.handle_message(event)
@@ -3814,8 +3831,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 raw_bytes = bytes(doc_bytes)
                 cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
                 mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
-                event.media_urls = [cached_path]
-                event.media_types = [mime_type]
+                event.media_urls.append(cached_path)
+                event.media_types.append(mime_type)
                 logger.info("[Telegram] Cached user document at %s", cached_path)
 
                 # For text files, inject content into event.text (capped at 100 KB)
@@ -4111,27 +4128,39 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         
         # Extract reply context if this message is a reply.
-        # Prefer Telegram's native partial quote (message.quote, TextQuote)
-        # so a user replying to a single selected substring of a prior
-        # multi-section message doesn't get the whole replied-to message
-        # injected into the agent's context — which can cause the agent
-        # to act on unrelated actionable-looking text the user didn't
-        # quote (#22619). Fall back to the full replied-to message text
-        # / caption when no native quote is present.
+        #
+        # Three layers of fallback for ``reply_to_text``:
+        #
+        # 1. Native partial quote (``message.quote``, TextQuote) — the user
+        #    explicitly selected a substring of the replied-to message via
+        #    Telegram's quote feature.  Most precise signal of intent (#22619).
+        #
+        # 2. Full text/caption of the replied-to message — the legacy path.
+        #
+        # 3. A structured media descriptor — for replies to messages that have
+        #    no text *or* caption (a photo with no caption, a voice note, a
+        #    document, etc.), build a short tag like ``[file: name.pdf]`` or
+        #    ``[photo]`` / ``[voice 7s]``.  Previously this case dropped to
+        #    ``None`` and the agent-visible ``[Replying to: "..."]`` prefix
+        #    was suppressed entirely, leaving the agent guessing what was
+        #    being referenced.  See ``_describe_reply_to_message``.
+        #
+        # The actual media bytes for a media-only reply are re-fetched and
+        # cached by ``_hydrate_reply_to_media``, called from every async
+        # handler (text / command / location / media) so the agent gets the
+        # file path on ``event.media_urls`` too — Telegram only carries
+        # metadata on ``reply_to_message``, not the bytes themselves.
         reply_to_id = None
         reply_to_text = None
         if message.reply_to_message:
-            reply_to_id = str(message.reply_to_message.message_id)
+            rtm = message.reply_to_message
+            reply_to_id = str(rtm.message_id)
             quote = getattr(message, "quote", None)
             quote_text = getattr(quote, "text", None) if quote is not None else None
             if quote_text:
                 reply_to_text = quote_text
             else:
-                reply_to_text = (
-                    message.reply_to_message.text
-                    or message.reply_to_message.caption
-                    or None
-                )
+                reply_to_text = self._describe_reply_to_message(rtm)
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
@@ -4155,6 +4184,183 @@ class TelegramAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             timestamp=message.date,
         )
+
+    # ── Reply-to context hydration ────────────────────────────────────────
+
+    @staticmethod
+    def _describe_reply_to_message(rtm: Any) -> Optional[str]:
+        """Build a human-readable description of a replied-to message.
+
+        Always prefers the actual text/caption when present.  For media-only
+        replies (no caption), returns a short ``[file: name.pdf]`` /
+        ``[photo]`` / ``[voice 0:07]`` style tag so downstream context
+        injection has something concrete to show the agent — better than
+        a silent ``None`` that erases the fact a reply happened at all.
+        """
+        text = getattr(rtm, "text", None) or getattr(rtm, "caption", None)
+        # Build a media-tag suffix even when text is present, so the agent
+        # knows the reply targeted a file (not just a copy-pasted caption).
+        tag: Optional[str] = None
+        if getattr(rtm, "document", None):
+            doc = rtm.document
+            name = getattr(doc, "file_name", None) or "file"
+            mime = getattr(doc, "mime_type", None)
+            tag = f"[file: {name}" + (f" ({mime})" if mime else "") + "]"
+        elif getattr(rtm, "photo", None):
+            tag = "[photo]"
+        elif getattr(rtm, "voice", None):
+            dur = getattr(rtm.voice, "duration", None)
+            tag = f"[voice {dur}s]" if dur else "[voice]"
+        elif getattr(rtm, "audio", None):
+            audio = rtm.audio
+            title = getattr(audio, "title", None) or getattr(audio, "file_name", None)
+            tag = f"[audio: {title}]" if title else "[audio]"
+        elif getattr(rtm, "video", None):
+            tag = "[video]"
+        elif getattr(rtm, "video_note", None):
+            tag = "[video note]"
+        elif getattr(rtm, "sticker", None):
+            emoji = getattr(rtm.sticker, "emoji", None) or ""
+            tag = f"[sticker {emoji}]" if emoji else "[sticker]"
+        elif getattr(rtm, "animation", None):
+            tag = "[gif]"
+        elif getattr(rtm, "location", None):
+            tag = "[location]"
+        elif getattr(rtm, "contact", None):
+            tag = "[contact]"
+
+        if text and tag:
+            return f"{tag} {text}"
+        if text:
+            return text
+        return tag  # may be None for purely-empty messages
+
+    async def _hydrate_reply_to_media(self, event: MessageEvent, message: Any) -> None:
+        """Re-fetch + cache any media on the replied-to message.
+
+        Telegram delivers reply context as ``message.reply_to_message`` with
+        the original media's metadata (file_id, file_name, mime_type, etc.)
+        but **does not** re-stream the bytes.  When a user replies to a
+        PDF the bot sent earlier with "send this to user@example.com", the
+        agent only sees a text update — it has no path to the actual file.
+
+        This helper closes that gap: for each supported media type on
+        ``reply_to_message``, it does the same ``get_file()`` →
+        ``download_as_bytearray()`` → ``cache_*_from_bytes()`` round-trip
+        that fresh inbound media uses, then appends the resulting cached
+        path to ``event.media_urls`` / ``event.media_types`` so the agent
+        can operate on the file directly.
+
+        Failures are logged and swallowed — a reply with un-fetchable
+        media still flows through with the structured ``reply_to_text``
+        descriptor, which is strictly better than the prior silent drop.
+        """
+        rtm = getattr(message, "reply_to_message", None)
+        if rtm is None:
+            return
+
+        try:
+            if getattr(rtm, "photo", None):
+                photo = rtm.photo[-1]  # largest PhotoSize
+                file_obj = await photo.get_file()
+                data = await file_obj.download_as_bytearray()
+                ext = ".jpg"
+                fp = getattr(file_obj, "file_path", None)
+                if fp:
+                    for cand in (".png", ".webp", ".gif", ".jpeg", ".jpg"):
+                        if fp.lower().endswith(cand):
+                            ext = cand
+                            break
+                cached = cache_image_from_bytes(bytes(data), ext=ext)
+                event.media_urls.append(cached)
+                event.media_types.append(f"image/{ext.lstrip('.')}")
+                logger.info("[Telegram] Cached reply-to photo at %s", cached)
+
+            elif getattr(rtm, "voice", None):
+                file_obj = await rtm.voice.get_file()
+                data = await file_obj.download_as_bytearray()
+                cached = cache_audio_from_bytes(bytes(data), ext=".ogg")
+                event.media_urls.append(cached)
+                event.media_types.append("audio/ogg")
+                logger.info("[Telegram] Cached reply-to voice at %s", cached)
+
+            elif getattr(rtm, "audio", None):
+                file_obj = await rtm.audio.get_file()
+                data = await file_obj.download_as_bytearray()
+                cached = cache_audio_from_bytes(bytes(data), ext=".mp3")
+                event.media_urls.append(cached)
+                event.media_types.append("audio/mp3")
+                logger.info("[Telegram] Cached reply-to audio at %s", cached)
+
+            elif getattr(rtm, "video", None):
+                file_obj = await rtm.video.get_file()
+                data = await file_obj.download_as_bytearray()
+                ext = ".mp4"
+                fp = getattr(file_obj, "file_path", None)
+                if fp:
+                    for cand in SUPPORTED_VIDEO_TYPES:
+                        if fp.lower().endswith(cand):
+                            ext = cand
+                            break
+                cached = cache_video_from_bytes(bytes(data), ext=ext)
+                event.media_urls.append(cached)
+                event.media_types.append(SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4"))
+                logger.info("[Telegram] Cached reply-to video at %s", cached)
+
+            elif getattr(rtm, "document", None):
+                doc = rtm.document
+                original = getattr(doc, "file_name", None) or "document"
+                _, ext = os.path.splitext(original)
+                ext = ext.lower()
+                # Reverse-lookup MIME → ext if filename had none
+                if not ext and getattr(doc, "mime_type", None):
+                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                    ext = mime_to_ext.get(doc.mime_type, "")
+                # Fetch + cache the bytes regardless of whether the type is
+                # in SUPPORTED_DOCUMENT_TYPES — the original message already
+                # passed the gate when first delivered, so re-fetching for
+                # reply context shouldn't second-guess it.
+                file_obj = await doc.get_file()
+                data = await file_obj.download_as_bytearray()
+                # Image documents (PNG/JPG sent as "file") → image cache
+                _IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif", ".bmp"}
+                mime = getattr(doc, "mime_type", None) or ""
+                if mime.startswith("image/") or ext in _IMG_EXTS:
+                    if not ext:
+                        ext = ".jpg"
+                    cached = cache_image_from_bytes(bytes(data), ext=ext)
+                    event.media_urls.append(cached)
+                    event.media_types.append(mime or f"image/{ext.lstrip('.')}")
+                elif ext in SUPPORTED_VIDEO_TYPES:
+                    cached = cache_video_from_bytes(bytes(data), ext=ext)
+                    event.media_urls.append(cached)
+                    event.media_types.append(SUPPORTED_VIDEO_TYPES[ext])
+                else:
+                    cached = cache_document_from_bytes(bytes(data), original)
+                    event.media_urls.append(cached)
+                    event.media_types.append(
+                        SUPPORTED_DOCUMENT_TYPES.get(ext, mime or "application/octet-stream")
+                    )
+                logger.info(
+                    "[Telegram] Cached reply-to document %s at %s", original, cached
+                )
+
+            elif getattr(rtm, "sticker", None):
+                # Stickers are typically WebP; reuse the image cache so the
+                # vision tool can see the pixels (matches inbound handling).
+                sticker = rtm.sticker
+                file_obj = await sticker.get_file()
+                data = await file_obj.download_as_bytearray()
+                cached = cache_image_from_bytes(bytes(data), ext=".webp")
+                event.media_urls.append(cached)
+                event.media_types.append("image/webp")
+                logger.info("[Telegram] Cached reply-to sticker at %s", cached)
+        except Exception as e:
+            # Non-fatal: ``reply_to_text`` already carries a textual
+            # descriptor, so the agent still has *some* context.
+            logger.warning(
+                "[Telegram] Failed to cache reply-to media: %s", e, exc_info=True
+            )
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 

@@ -157,3 +157,140 @@ async def test_reply_snippet_truncated_to_500_chars():
     assert result is not None
     assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
     assert "x" * 501 not in result
+
+
+# ── Reply-with-media path injection ───────────────────────────────────────
+#
+# When a user replies to a media message (PDF / text doc / etc.) with a
+# text message ("send this to alice@example.com"), the Telegram adapter's
+# reply-to hydrator re-fetches the bytes and appends the cached path to
+# ``event.media_urls``. _prepare_inbound_message_text must inject a
+# path-level context note so the agent knows the quoted file is at that
+# path — otherwise the agent only sees ``[Replying to: [file: ...]]``
+# (the filename), which is not enough to operate on.
+
+
+@pytest.mark.asyncio
+async def test_reply_to_pdf_with_text_injects_path():
+    """The agent must learn the cached path of the replied-to file."""
+    from gateway.platforms.base import MessageType
+
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="send this to alice@example.com",
+        message_type=MessageType.TEXT,  # critical: TEXT, not DOCUMENT
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="[file: quarterly_report.pdf (application/pdf)]",
+        media_urls=["/cache/doc_abc_quarterly_report.pdf"],
+        media_types=["application/pdf"],
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    # The path-injection block must fire even though message_type is TEXT
+    assert "The user is replying to a document" in result
+    assert "quarterly_report.pdf" in result
+    assert "/cache/doc_abc_quarterly_report.pdf" in result
+    # And the existing reply-to pointer still appears
+    assert "[Replying to:" in result
+    # And the user's original text survives
+    assert "send this to alice@example.com" in result
+
+
+@pytest.mark.asyncio
+async def test_reply_to_text_doc_includes_content_and_path():
+    """Reply-to .txt/.md files should still get the text-document phrasing
+    so the agent knows the content is inlined (vs needing to read the file)."""
+    from gateway.platforms.base import MessageType
+
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="what's in this?",
+        message_type=MessageType.TEXT,
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="[file: notes.md]",
+        media_urls=["/cache/doc_xyz_notes.md"],
+        media_types=["text/markdown"],
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert "The user is replying to a text document" in result
+    assert "notes.md" in result
+    assert "/cache/doc_xyz_notes.md" in result
+
+
+@pytest.mark.asyncio
+async def test_inbound_document_phrasing_unchanged():
+    """Regression: when the user UPLOADS a doc (not reply), the existing
+    'The user sent a document' phrasing must still fire — not the
+    reply-to phrasing."""
+    from gateway.platforms.base import MessageType
+
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="here's the file",
+        message_type=MessageType.DOCUMENT,
+        source=source,
+        media_urls=["/cache/doc_def_report.pdf"],
+        media_types=["application/pdf"],
+        # no reply_to fields
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert "The user sent a document" in result
+    assert "The user is replying to" not in result
+
+
+@pytest.mark.asyncio
+async def test_reply_to_image_does_not_trigger_path_injection():
+    """Images go through the vision pipeline, not file-path injection.
+    A reply to a photo with a text caption must NOT produce a
+    'The user is replying to a document' note for the image entry."""
+    from gateway.platforms.base import MessageType
+
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="translate the text in this",
+        message_type=MessageType.TEXT,
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="[photo]",
+        media_urls=["/cache/img_abc.jpg"],
+        media_types=["image/jpeg"],
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    # Image MIMEs are filtered out by the inner mtype check
+    assert "The user is replying to a document" not in result
+    assert "The user is replying to a text document" not in result
+    # But the reply-to pointer still appears
+    assert "[Replying to:" in result

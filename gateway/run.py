@@ -6747,7 +6747,33 @@ class GatewayRunner:
                         except Exception:
                             pass
 
-        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+        # Inject a context note with the cached file path so the agent can
+        # operate on document/text attachments via the filesystem (e.g.
+        # email send, summarize, hash, re-OCR).  Images / audio / video go
+        # through the native attachment / STT / vision pipelines and don't
+        # need a path injection here — the inner mtype filter skips them.
+        #
+        # Two trigger paths:
+        #
+        #   1. ``message_type == DOCUMENT`` — the user uploaded a file as
+        #      their primary message (e.g. dragged a PDF into Telegram).
+        #
+        #   2. ``reply_to_message_id`` is set AND media_urls is populated —
+        #      the user replied to a previously-sent file.  Platform
+        #      adapters that re-fetch the replied-to bytes (currently the
+        #      Telegram adapter, via ``_hydrate_reply_to_media``) append
+        #      the cached path to ``event.media_urls`` so the agent has
+        #      the same path-level access as if the user had re-uploaded
+        #      the file.  Without this branch, a reply like "send this to
+        #      alice@example.com" while quoting a PDF surfaced only the
+        #      ``[Replying to: ...]`` filename pointer and no path — the
+        #      agent had to guess.
+        is_reply_with_media = bool(
+            event.media_urls and getattr(event, "reply_to_message_id", None)
+        )
+        if event.media_urls and (
+            event.message_type == MessageType.DOCUMENT or is_reply_with_media
+        ):
             import mimetypes as _mimetypes
             from tools.credential_files import to_agent_visible_cache_path
 
@@ -6775,7 +6801,24 @@ class GatewayRunner:
                 # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
                 agent_path = to_agent_visible_cache_path(path)
 
-                if mtype.startswith("text/"):
+                # Phrase the note differently for reply-to context: the
+                # user is REFERENCING a prior file (and presumably already
+                # said what to do with it in the reply text), not
+                # uploading something new and waiting for the agent to ask.
+                if is_reply_with_media:
+                    if mtype.startswith("text/"):
+                        context_note = (
+                            f"[The user is replying to a text document: "
+                            f"'{display_name}'. Its content is included below. "
+                            f"The file is also saved at: {agent_path}]"
+                        )
+                    else:
+                        context_note = (
+                            f"[The user is replying to a document: "
+                            f"'{display_name}'. The file is saved at: {agent_path}. "
+                            f"Use this path with any tool that needs the file.]"
+                        )
+                elif mtype.startswith("text/"):
                     context_note = (
                         f"[The user sent a text document: '{display_name}'. "
                         f"Its content has been included below. "

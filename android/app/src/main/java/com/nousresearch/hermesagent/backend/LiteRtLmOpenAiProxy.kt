@@ -1,5 +1,6 @@
 package com.nousresearch.hermesagent.backend
 
+import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import android.util.Base64
@@ -175,6 +176,15 @@ object LiteRtLmOpenAiProxy {
             val speculativeDecodingSupported: Boolean,
             val speculativeDecodingPolicy: String,
             val gpuPolicy: String,
+            val maxNumTokens: Int?,
+            val contextWindowPolicy: String,
+        )
+
+        private val engineMaxNumTokens = resolveEngineMaxNumTokens(
+            context = context,
+            modelPath = modelPath,
+            requestedMaxTokens = inferenceConfig.maxTokens,
+            requestedMaxContextLength = inferenceConfig.maxContextLength,
         )
 
         private val engineInitResult = initializeEngine(
@@ -182,7 +192,8 @@ object LiteRtLmOpenAiProxy {
             modelPath = modelPath,
             supportImage = inferenceConfig.supportImage,
             supportAudio = inferenceConfig.supportAudio,
-            maxTokens = inferenceConfig.maxTokens,
+            maxNumTokens = engineMaxNumTokens.value,
+            contextWindowPolicy = engineMaxNumTokens.policy,
         )
         private val engine = engineInitResult.engine
         private val runtimeBackendLabel = engineInitResult.backend
@@ -211,6 +222,8 @@ object LiteRtLmOpenAiProxy {
                             put("speculative_decoding_supported", engineInitResult.speculativeDecodingSupported)
                             put("mtp_policy", engineInitResult.speculativeDecodingPolicy)
                             put("gpu_policy", engineInitResult.gpuPolicy)
+                            put("max_num_tokens", engineInitResult.maxNumTokens ?: JSONObject.NULL)
+                            put("context_window_policy", engineInitResult.contextWindowPolicy)
                             put("model", modelName)
                         }
                     )
@@ -247,7 +260,8 @@ object LiteRtLmOpenAiProxy {
             modelPath: String,
             supportImage: Boolean,
             supportAudio: Boolean,
-            maxTokens: Int,
+            maxNumTokens: Int?,
+            contextWindowPolicy: String,
         ): EngineInitResult {
             var lastError: Throwable? = null
             val openClAvailable = hasLoadableOpenClLibrary()
@@ -291,7 +305,7 @@ object LiteRtLmOpenAiProxy {
                                 visionBackend = visionBackend,
                                 audioBackend = if (supportAudio) Backend.CPU() else null,
                                 maxNumImages = if (supportImage) 1 else null,
-                                maxNumTokens = maxTokens.takeIf { it > 0 },
+                                maxNumTokens = maxNumTokens,
                                 cacheDir = context.cacheDir.absolutePath,
                             )
                         )
@@ -306,6 +320,8 @@ object LiteRtLmOpenAiProxy {
                             speculativeDecodingSupported = speculativeDecoding.supported,
                             speculativeDecodingPolicy = mtpPolicy,
                             gpuPolicy = gpuPolicy.description,
+                            maxNumTokens = maxNumTokens,
+                            contextWindowPolicy = contextWindowPolicy,
                         )
                     } catch (error: Throwable) {
                         lastError = error
@@ -317,6 +333,11 @@ object LiteRtLmOpenAiProxy {
             throw lastError ?: IllegalStateException("LiteRT-LM engine initialization failed")
         }
 
+        private data class EngineTokenBudget(
+            val value: Int?,
+            val policy: String,
+        )
+
         private data class SpeculativeDecodingDecision(
             val supported: Boolean,
             val enabled: Boolean,
@@ -327,6 +348,58 @@ object LiteRtLmOpenAiProxy {
             val enabled: Boolean,
             val description: String,
         )
+
+        private fun resolveEngineMaxNumTokens(
+            context: Context,
+            modelPath: String,
+            requestedMaxTokens: Int,
+            requestedMaxContextLength: Int,
+        ): EngineTokenBudget {
+            val requested = when {
+                requestedMaxContextLength > 0 -> requestedMaxContextLength
+                requestedMaxTokens > 0 -> requestedMaxTokens
+                else -> return EngineTokenBudget(null, "backend default")
+            }
+            if (requestedMaxContextLength <= 0) {
+                return EngineTokenBudget(requested, "using requested max token budget")
+            }
+
+            val safeLimit = memorySafeContextWindowLimit(context, modelPath)
+            val selected = requested.coerceAtMost(safeLimit)
+            val totalRamGb = totalDeviceRamBytes(context).let { if (it > 0L) "%.1f".format(Locale.US, it / 1_000_000_000.0) else "unknown" }
+            return EngineTokenBudget(
+                value = selected,
+                policy = if (selected == requested) {
+                    "using requested context window $requested tokens on ${totalRamGb}GB RAM device"
+                } else {
+                    "clamped requested context window $requested to $selected tokens on ${totalRamGb}GB RAM device"
+                },
+            )
+        }
+
+        private fun memorySafeContextWindowLimit(context: Context, modelPath: String): Int {
+            val totalRamBytes = totalDeviceRamBytes(context)
+            val modelBytes = runCatching { File(modelPath).length() }.getOrDefault(0L)
+            if (totalRamBytes <= 0L) {
+                return if (modelBytes >= GEMMA4_E4B_SIZE_FLOOR_BYTES) 8_192 else 16_384
+            }
+            return when {
+                modelBytes >= GEMMA4_E4B_SIZE_FLOOR_BYTES && totalRamBytes < 12_000_000_000L -> 4_096
+                modelBytes >= GEMMA4_E4B_SIZE_FLOOR_BYTES && totalRamBytes < 16_000_000_000L -> 8_192
+                totalRamBytes < 6_000_000_000L -> 4_096
+                totalRamBytes < 10_000_000_000L -> 8_192
+                totalRamBytes < 14_000_000_000L -> 16_384
+                else -> 32_000
+            }
+        }
+
+        private fun totalDeviceRamBytes(context: Context): Long {
+            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                ?: return 0L
+            val memoryInfo = ActivityManager.MemoryInfo()
+            activityManager.getMemoryInfo(memoryInfo)
+            return memoryInfo.totalMem
+        }
 
         private fun gpuBackendPolicy(context: Context, openClAvailable: Boolean): GpuBackendPolicy {
             if (isTranslatedArm64OnX86(context)) {
@@ -903,4 +976,5 @@ object LiteRtLmOpenAiProxy {
     }
 
     private const val SOCKET_READ_TIMEOUT = 0
+    private const val GEMMA4_E4B_SIZE_FLOOR_BYTES = 3_000_000_000L
 }

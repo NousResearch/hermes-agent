@@ -164,7 +164,12 @@ def test_litert_proxy_attempts_gpu_on_real_arm_devices_with_cpu_fallback():
     assert 'put("gpu_policy", engineInitResult.gpuPolicy)' in proxy
     assert 'visionBackend = visionBackend' in proxy
     assert 'else -> "cpu"' in proxy
-    assert 'maxNumTokens = maxTokens.takeIf { it > 0 }' in proxy
+    assert 'maxNumTokens = maxNumTokens' in proxy
+    assert 'resolveEngineMaxNumTokens(' in proxy
+    assert 'memorySafeContextWindowLimit(context, modelPath)' in proxy
+    assert 'put("max_num_tokens", engineInitResult.maxNumTokens ?: JSONObject.NULL)' in proxy
+    assert 'put("context_window_policy", engineInitResult.contextWindowPolicy)' in proxy
+    assert 'clamped requested context window $requested to $selected tokens' in proxy
 
 
 def test_on_device_backend_applies_edge_gallery_model_defaults_for_gemma_and_qwen():

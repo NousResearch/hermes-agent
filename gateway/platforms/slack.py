@@ -288,6 +288,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
+        self._app_ids: set = set()  # Slack API app IDs for multi-app filtering
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
@@ -548,6 +549,22 @@ class SlackAdapter(BasePlatformAdapter):
             self._app = AsyncApp(token=primary_token)
             _apply_slack_proxy(self._app.client, proxy_url)
 
+            # Resolve this app's Slack app_id for multi-app filtering.
+            # auth.test does not reliably include app_id; apps.connections.open
+            # returns it for Socket Mode app tokens.
+            primary_client = AsyncWebClient(token=primary_token)
+            _apply_slack_proxy(primary_client, proxy_url)
+            try:
+                conn_resp = await primary_client.apps_connections_open(app_token=app_token)
+                conn_app_id = conn_resp.get("app_id", "")
+                if conn_app_id:
+                    self._app_ids.add(conn_app_id)
+                    logger.info("[Slack] Resolved app_id via apps.connections.open: %s", conn_app_id)
+                else:
+                    logger.warning("[Slack] apps.connections.open did not return app_id; multi-app filtering disabled.")
+            except Exception as e:
+                logger.warning("[Slack] Failed to resolve app_id via apps_connections_open: %s; multi-app filtering disabled.", e)
+
             # Register each bot token and map team_id → client
             for token in bot_tokens:
                 client = AsyncWebClient(token=token)
@@ -556,8 +573,7 @@ class SlackAdapter(BasePlatformAdapter):
                 team_id = auth_response.get("team_id", "")
                 bot_user_id = auth_response.get("user_id", "")
                 bot_name = auth_response.get("user", "unknown")
-                team_name = auth_response.get("team", "unknown")
-
+                team_name = auth_response.get("team", "")
                 self._team_clients[team_id] = client
                 self._team_bot_user_ids[team_id] = bot_user_id
 
@@ -622,16 +638,14 @@ class SlackAdapter(BasePlatformAdapter):
             # routes the command event through the socket regardless of the
             # manifest's request URL, but it will not deliver an event for
             # a slash command the manifest doesn't declare.
-            from hermes_cli.commands import slack_native_slashes
             import re as _re
 
-            _slash_names = [name for name, _d, _h in slack_native_slashes()]
-            if _slash_names:
-                _slash_pattern = _re.compile(
-                    r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
-                )
-            else:  # pragma: no cover - registry always non-empty
-                _slash_pattern = _re.compile(r"^/hermes$")
+            # Accept any valid slash token. In Socket Mode, each app can define
+            # its own namespaced command set (e.g. /khelp, /kimberly) and route
+            # internally. Restricting this matcher to only native registry names
+            # causes Slack to time out because ack never fires for prefixed
+            # commands present in the app manifest.
+            _slash_pattern = _re.compile(r"^/[a-z0-9_-]{1,64}$")
 
             @self._app.command(_slash_pattern)
             async def handle_hermes_command(ack, command):
@@ -2727,6 +2741,13 @@ class SlackAdapter(BasePlatformAdapter):
         what's the weather`` — non-slash text is treated as a regular
         message).
         """
+        # Multi-app filtering: in Socket Mode, Slack sends ALL events to ALL
+        # connected apps. Filter by api_app_id so each gateway only processes
+        # commands intended for its own app (e.g. Kimberly vs Derp).
+        if self._app_ids:
+            cmd_app_id = command.get("api_app_id", "")
+            if cmd_app_id and cmd_app_id not in self._app_ids:
+                return
         slash_name = (command.get("command") or "").lstrip("/").strip()
         text = command.get("text", "").strip()
         user_id = command.get("user_id", "")
@@ -2737,7 +2758,7 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        if slash_name in ("hermes", ""):
+        if slash_name in ("hermes", "kimberly", ""):
             # Legacy /hermes <subcommand> [args] routing + free-form questions.
             # Empty slash_name falls into this branch for backward compat
             # with any caller that didn't populate command["command"].
@@ -2755,7 +2776,25 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             # Native slash — /<slash_name> [args].  Route directly through the
             # gateway command dispatcher by prepending the slash.
-            text = f"/{slash_name} {text}".strip()
+            from hermes_cli.commands import resolve_command
+
+            routed_name = slash_name
+            if not resolve_command(routed_name) and routed_name.startswith("k") and len(routed_name) > 1:
+                stripped = routed_name[1:]
+                if resolve_command(stripped):
+                    routed_name = stripped
+
+            text = f"/{routed_name} {text}".strip()
+
+        logger.info(
+            "[Slack] slash route: raw=/%s text=%r -> routed=%r (team=%s channel=%s user=%s)",
+            slash_name,
+            command.get("text", ""),
+            text,
+            team_id,
+            channel_id,
+            user_id,
+        )
 
         # Slack slash commands can originate from DMs or shared channels.
         # Preserve DM semantics only for DM channel IDs; shared channels must

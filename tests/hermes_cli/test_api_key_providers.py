@@ -19,7 +19,7 @@ from hermes_cli.auth import (
     STEPFUN_STEP_PLAN_CN_BASE_URL,
     _resolve_kimi_base_url,
 )
-from hermes_cli.copilot_auth import _try_gh_cli_token
+from hermes_cli.copilot_auth import _try_gh_cli_token, resolve_copilot_token
 
 
 # =============================================================================
@@ -477,6 +477,25 @@ class TestResolveApiKeyProviderCredentials:
 
         assert _try_gh_cli_token() == "gh-cli-secret"
         assert calls == [["/opt/homebrew/bin/gh", "auth", "token"]]
+
+    def test_resolve_copilot_prefers_hosts_yml_when_gh_binary_missing(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: None)
+        monkeypatch.setattr("hermes_cli.copilot_auth.shutil.which", lambda command: None)
+        monkeypatch.setattr("hermes_cli.copilot_auth.Path.home", lambda: tmp_path)
+
+        gh_dir = tmp_path / ".config" / "gh"
+        gh_dir.mkdir(parents=True)
+        (gh_dir / "hosts.yml").write_text(
+            "github.com:\n  oauth_token: gho_hosts_secret\n  user: test-user\n", encoding="utf-8"
+        )
+
+        token, source = resolve_copilot_token()
+
+        assert token == "gho_hosts_secret"
+        assert source == "gh hosts.yml"
 
     def test_resolve_copilot_acp_with_local_cli(self, monkeypatch):
         monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio")

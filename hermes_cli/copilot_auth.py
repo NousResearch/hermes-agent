@@ -14,6 +14,7 @@ Credential search order (matching Copilot CLI behaviour):
   2. GH_TOKEN env var
   3. GITHUB_TOKEN env var
   4. gh auth token  CLI fallback
+  5. ~/.config/gh/hosts.yml fallback when gh isn't installed
 """
 
 from __future__ import annotations
@@ -26,6 +27,8 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Optional
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +95,16 @@ def resolve_copilot_token() -> tuple[str, str]:
             )
         return token, "gh auth token"
 
+    # 3. Fall back to the persisted gh hosts.yml credential store
+    token = _try_gh_hosts_yml_token()
+    if token:
+        valid, msg = validate_copilot_token(token)
+        if not valid:
+            raise ValueError(
+                f"Token from gh hosts.yml is a classic PAT (ghp_*). {msg}"
+            )
+        return token, "gh hosts.yml"
+
     return "", ""
 
 
@@ -150,7 +163,64 @@ def _try_gh_cli_token() -> Optional[str]:
     return None
 
 
-# ─── OAuth Device Code Flow ────────────────────────────────────────────────
+def _gh_hosts_config_paths() -> list[Path]:
+    """Return likely gh hosts.yml locations without invoking the gh binary."""
+    candidates: list[Path] = []
+    xdg_config_home = os.getenv("XDG_CONFIG_HOME", "").strip()
+    if xdg_config_home:
+        candidates.append(Path(xdg_config_home) / "gh" / "hosts.yml")
+    candidates.append(Path.home() / ".config" / "gh" / "hosts.yml")
+    return candidates
+
+
+def _extract_gh_hosts_token(data: object, hostname: str = "") -> Optional[str]:
+    """Extract an oauth token from parsed gh hosts.yml content."""
+    if not isinstance(data, dict):
+        return None
+
+    candidate_hosts = []
+    if hostname:
+        candidate_hosts.append(hostname)
+    candidate_hosts.append("github.com")
+
+    for host in candidate_hosts:
+        host_entry = data.get(host)
+        if isinstance(host_entry, dict):
+            token = host_entry.get("oauth_token")
+            if isinstance(token, str) and token.strip():
+                return token.strip()
+
+    token = data.get("oauth_token")
+    if isinstance(token, str) and token.strip():
+        return token.strip()
+
+    # Some gh config variants nest host data deeper; search one level down.
+    for value in data.values():
+        if isinstance(value, dict):
+            token = value.get("oauth_token")
+            if isinstance(token, str) and token.strip():
+                return token.strip()
+    return None
+
+
+def _try_gh_hosts_yml_token() -> Optional[str]:
+    """Return a GitHub token from gh's hosts.yml without requiring gh to exist."""
+    hostname = os.getenv("COPILOT_GH_HOST", "").strip()
+
+    for hosts_path in _gh_hosts_config_paths():
+        try:
+            if not hosts_path.is_file():
+                continue
+            with hosts_path.open("r", encoding="utf-8") as handle:
+                parsed = yaml.safe_load(handle) or {}
+        except Exception as exc:
+            logger.debug("gh hosts.yml token lookup failed (%s): %s", hosts_path, exc)
+            continue
+
+        token = _extract_gh_hosts_token(parsed, hostname=hostname)
+        if token:
+            return token
+    return None
 
 def copilot_device_code_login(
     *,

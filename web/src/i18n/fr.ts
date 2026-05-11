@@ -121,6 +121,7 @@ export const fr: Translations = {
     startedInBackground: "Démarré en arrière-plan — consultez les journaux pour la progression",
     stopped: "Arrêté",
     updateHermes: "Mettre à jour Hermes",
+    confirmUpdateHermes: "This will install the latest version and restart the service.",
     updatingHermes: "Mise à jour de Hermes…",
     waitingForOutput: "En attente de la sortie…",
   },

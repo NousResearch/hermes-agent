@@ -75,6 +75,7 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -709,9 +710,22 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
     },
   ];
 
+  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
+
   const handleClick = (action: SystemAction) => {
     if (isBusy) return;
+    if (action === "update") {
+      setUpdateConfirmOpen(true);
+      return;
+    }
     void runAction(action);
+    navigate("/sessions");
+    onNavigate();
+  };
+
+  const handleUpdateConfirm = () => {
+    setUpdateConfirmOpen(false);
+    void runAction("update");
     navigate("/sessions");
     onNavigate();
   };
@@ -793,6 +807,14 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
           );
         })}
       </ul>
+      <ConfirmDialog
+        open={updateConfirmOpen}
+        title={t.status.updateHermes}
+        description={t.status.confirmUpdateHermes}
+        confirmLabel={t.status.updateHermes}
+        onConfirm={handleUpdateConfirm}
+        onCancel={() => setUpdateConfirmOpen(false)}
+      />
     </div>
   );
 }

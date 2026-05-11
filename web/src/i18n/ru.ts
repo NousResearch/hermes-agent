@@ -121,6 +121,7 @@ export const ru: Translations = {
     startedInBackground: "Запущено в фоне — следите за журналами",
     stopped: "Остановлено",
     updateHermes: "Обновить Hermes",
+    confirmUpdateHermes: "This will install the latest version and restart the service.",
     updatingHermes: "Обновление Hermes…",
     waitingForOutput: "Ожидание вывода…",
   },

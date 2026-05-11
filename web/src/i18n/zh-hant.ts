@@ -121,6 +121,7 @@ export const zhHant: Translations = {
     startedInBackground: "已於背景啟動 — 請查看日誌以取得進度",
     stopped: "已停止",
     updateHermes: "更新 Hermes",
+    confirmUpdateHermes: "This will install the latest version and restart the service.",
     updatingHermes: "正在更新 Hermes…",
     waitingForOutput: "等待輸出…",
   },

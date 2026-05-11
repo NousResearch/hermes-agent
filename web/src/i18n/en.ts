@@ -122,6 +122,7 @@ export const en: Translations = {
     stopped: "Stopped",
     updateHermes: "Update Hermes",
     updatingHermes: "Updating Hermes…",
+    confirmUpdateHermes: "This will install the latest version and restart the service.",
     waitingForOutput: "Waiting for output…",
   },
 

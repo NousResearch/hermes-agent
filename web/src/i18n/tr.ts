@@ -121,6 +121,7 @@ export const tr: Translations = {
     startedInBackground: "Arka planda başlatıldı — ilerleme için günlüklere bakın",
     stopped: "Durduruldu",
     updateHermes: "Hermes'i Güncelle",
+    confirmUpdateHermes: "This will install the latest version and restart the service.",
     updatingHermes: "Hermes güncelleniyor…",
     waitingForOutput: "Çıktı bekleniyor…",
   },

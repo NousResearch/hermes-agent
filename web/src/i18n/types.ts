@@ -139,6 +139,7 @@ export interface Translations {
     stopped: string;
     updateHermes: string;
     updatingHermes: string;
+    confirmUpdateHermes: string;
     waitingForOutput: string;
   };
 

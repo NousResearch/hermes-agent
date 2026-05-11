@@ -121,6 +121,7 @@ export const ga: Translations = {
     startedInBackground: "Tosaithe sa chúlra — seiceáil na logaí le haghaidh dul chun cinn",
     stopped: "Stoptha",
     updateHermes: "Nuashonraigh Hermes",
+    confirmUpdateHermes: "This will install the latest version and restart the service.",
     updatingHermes: "Ag nuashonrú Hermes…",
     waitingForOutput: "Ag fanacht le haschur…",
   },

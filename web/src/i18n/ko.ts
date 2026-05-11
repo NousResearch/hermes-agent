@@ -121,6 +121,7 @@ export const ko: Translations = {
     startedInBackground: "백그라운드에서 시작됨 — 진행 상황은 로그를 확인하세요",
     stopped: "중지됨",
     updateHermes: "Hermes 업데이트",
+    confirmUpdateHermes: "This will install the latest version and restart the service.",
     updatingHermes: "Hermes 업데이트 중…",
     waitingForOutput: "출력 대기 중…",
   },

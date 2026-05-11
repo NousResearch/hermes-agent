@@ -121,6 +121,7 @@ export const hu: Translations = {
     startedInBackground: "Háttérben elindítva — kövesse a naplókat a folyamathoz",
     stopped: "Leállítva",
     updateHermes: "Hermes frissítése",
+    confirmUpdateHermes: "This will install the latest version and restart the service.",
     updatingHermes: "Hermes frissítése…",
     waitingForOutput: "Várakozás a kimenetre…",
   },

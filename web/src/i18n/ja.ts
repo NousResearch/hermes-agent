@@ -121,6 +121,7 @@ export const ja: Translations = {
     startedInBackground: "バックグラウンドで起動しました — 進行状況はログをご確認ください",
     stopped: "停止",
     updateHermes: "Hermes を更新",
+    confirmUpdateHermes: "This will install the latest version and restart the service.",
     updatingHermes: "Hermes を更新しています…",
     waitingForOutput: "出力を待機しています…",
   },

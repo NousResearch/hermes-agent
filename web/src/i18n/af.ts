@@ -121,6 +121,7 @@ export const af: Translations = {
     startedInBackground: "Begin in agtergrond — kyk logs vir vordering",
     stopped: "Gestop",
     updateHermes: "Werk Hermes op",
+    confirmUpdateHermes: "This will install the latest version and restart the service.",
     updatingHermes: "Besig om Hermes op te werk…",
     waitingForOutput: "Wag vir uitset…",
   },

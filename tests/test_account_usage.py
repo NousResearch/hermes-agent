@@ -176,7 +176,42 @@ def test_fetch_account_usage_anthropic_utilization_is_percent_not_fraction(monke
     ]
     rendered = render_account_usage_lines(snapshot)
     assert "Current session: 99% remaining (1% used)" in rendered[2]
-    assert "Extra usage: 29.00 / 2000.00 USD" in snapshot.details
+    assert "Extra usage: $0.29 / $20.00 USD (29 / 2000 credits)" in snapshot.details
+
+
+def test_fetch_account_usage_anthropic_falls_back_to_credential_pool(monkeypatch):
+    class _Entry:
+        label = "anthropic-new"
+        id = "pool1"
+        access_token = "pool-oauth-token"
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+    monkeypatch.setattr("agent.account_usage.resolve_anthropic_token", lambda: None)
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: token == "pool-oauth-token")
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "seven_day": {"utilization": 2.0, "resets_at": "2030-01-07T00:00:00+00:00"},
+                "extra_usage": {
+                    "is_enabled": True,
+                    "used_credits": 76.0,
+                    "monthly_limit": 20000.0,
+                    "currency": "USD",
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert [(w.label, w.used_percent) for w in snapshot.windows] == [("Current week", 2.0)]
+    assert "Extra usage: $0.76 / $200.00 USD (76 / 20000 credits)" in snapshot.details
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

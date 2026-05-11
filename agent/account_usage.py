@@ -224,8 +224,40 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     )
 
 
-def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
+def _resolve_anthropic_usage_token() -> Optional[str]:
+    """Resolve an Anthropic OAuth token for account usage monitoring.
+
+    ``resolve_anthropic_token`` reads singleton/env/Claude Code auth. Joohyun/Mina
+    often uses a Hermes credential-pool OAuth entry instead, so usage checks need
+    the same pool fallback as runtime model calls.
+    """
     token = (resolve_anthropic_token() or "").strip()
+    if token:
+        return token
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("anthropic")
+        for entry in pool.entries():
+            candidate = str(getattr(entry, "access_token", "") or "").strip()
+            if candidate:
+                return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _format_anthropic_extra_usage_detail(used_credits: float, monthly_limit: float, currency: str) -> str:
+    # Anthropic currently reports extra-usage values in cent-like credits: UI
+    # $200/month appears as monthly_limit=20000 and $0.76 used as 76 credits.
+    return (
+        f"Extra usage: ${used_credits / 100:.2f} / ${monthly_limit / 100:.2f} {currency} "
+        f"({used_credits:.0f} / {monthly_limit:.0f} credits)"
+    )
+
+
+def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
+    token = _resolve_anthropic_usage_token()
     if not token:
         return None
     if not _is_oauth_token(token):
@@ -240,7 +272,7 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         "Accept": "application/json",
         "Content-Type": "application/json",
         "anthropic-beta": "oauth-2025-04-20",
-        "User-Agent": "claude-code/2.1.0",
+        "User-Agent": "claude-code/2.1.138",
     }
     with httpx.Client(timeout=15.0) as client:
         response = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
@@ -277,7 +309,9 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         currency = extra.get("currency") or "USD"
         if isinstance(used_credits, (int, float)) and isinstance(monthly_limit, (int, float)):
             details.append(
-                f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {currency}"
+                _format_anthropic_extra_usage_detail(
+                    float(used_credits), float(monthly_limit), str(currency)
+                )
             )
     return AccountUsageSnapshot(
         provider="anthropic",

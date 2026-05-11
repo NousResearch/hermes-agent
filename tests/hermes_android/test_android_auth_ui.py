@@ -38,6 +38,12 @@ def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
     assert 'option.supportsBrowserSignIn' in auth_screen
     assert 'strings.useApiKeyInSettings()' in auth_screen
     assert 'strings.setUpApiKeyFor(option.label)' in auth_screen
+    assert 'option.providerSetupUrl.isNotBlank()' in auth_screen
+    assert 'viewModel.openProviderSetupPage(option.id)' in auth_screen
+    assert 'viewModel.copyProviderSetupUrl(option.id)' in auth_screen
+    assert 'strings.openProviderKeyPage(option.label)' in auth_screen
+    assert 'strings.copyProviderSetupUrl()' in auth_screen
+    assert 'AuthProviderCopySetup-${option.id}' in auth_screen
     assert 'viewModel.prepareApiKeySetup(option.id)' in auth_screen
     assert 'onOpenSettings()' in auth_screen
     assert 'FlowRow' in auth_screen
@@ -162,6 +168,11 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "if (option.supportsBrowserSignIn)" in auth_screen
     assert "enabled = option.browserSignInEnabled" in auth_screen
     assert "browserSignInEnabled = option.scope != AuthScope.AppAccount || corr3xtConfigured" in auth_view_model
+    assert "providerSetupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty()" in auth_view_model
+    assert "fun openProviderSetupPage(methodId: String)" in auth_view_model
+    assert "Intent.createChooser(browserIntent, \"Open provider setup page\")" in auth_view_model
+    assert "fun copyProviderSetupUrl(methodId: String)" in auth_view_model
+    assert "ClipData.newPlainText(\"Hermes ${option.label} setup URL\", setupUrl)" in auth_view_model
     assert "strings.setUpApiKeyFor(option.label)" in auth_screen
     assert "prepareApiKeySetup(methodId)" in auth_view_model
     assert "providers use secure API keys or tokens in Settings" in strings

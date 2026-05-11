@@ -4024,6 +4024,33 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return web.json_response({"files": result_files})
 
+    # ------------------------------------------------------------------
+    # Memories
+    # ------------------------------------------------------------------
+
+    async def _handle_memories(self, request: "web.Request") -> "web.Response":
+        """GET /v1/memories — return soul, user, and memory content for frontend display."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        hermes_home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
+
+        def _read(rel: str) -> dict | None:
+            try:
+                path = hermes_home / rel
+                if not path.exists() or not path.is_file():
+                    return None
+                return {"path": str(path), "size": path.stat().st_size, "content": path.read_text(encoding="utf-8")}
+            except Exception:
+                return None
+
+        return web.json_response({
+            "soul": _read("SOUL.md"),
+            "user": _read("memories/USER.md"),
+            "memory": _read("memories/MEMORY.md"),
+        })
+
     async def _sweep_orphaned_runs(self) -> None:
         """Periodically clean up run streams that were never consumed."""
         while True:
@@ -4091,6 +4118,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/workspace/download", self._handle_workspace_download)
             self._app.router.add_get("/v1/workspace/view", self._handle_workspace_view)
             self._app.router.add_post("/v1/workspace/upload", self._handle_workspace_upload)
+            # Memories
+            self._app.router.add_get("/v1/memories", self._handle_memories)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

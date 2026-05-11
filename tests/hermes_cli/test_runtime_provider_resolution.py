@@ -1959,6 +1959,171 @@ class TestAzureFoundryResolution:
 # ──────────────────────────────────────────────────────────────────────────
 
 
+class TestAzureFoundryGuardrailsBlock:
+    """Verify the optional ``guardrails:`` block is parsed into the runtime
+    descriptor by ``_resolve_azure_foundry_runtime``."""
+
+    BASE_CFG = {
+        "provider": "azure-foundry",
+        "base_url": "https://r.openai.azure.com/openai/v1",
+        "api_mode": "chat_completions",
+        "default": "gpt-4.1",
+    }
+
+    def _cfg(self, guardrails):
+        cfg = dict(self.BASE_CFG)
+        if guardrails is not None:
+            cfg["guardrails"] = guardrails
+        return cfg
+
+    def test_no_guardrails_block_omits_descriptor_key(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg(None),
+        )
+        assert "guardrails" not in out
+
+    def test_full_block_parses(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        monkeypatch.setenv("AZURE_CONTENT_SAFETY_KEY", "cs-key")
+        guard = {
+            "content_safety_endpoint": "https://cs.cognitiveservices.azure.com/",
+            "content_safety_key_env": "AZURE_CONTENT_SAFETY_KEY",
+            "prompt_shield": True,
+            "block_categories": ["Hate", "Violence", "SelfHarm", "Sexual"],
+            "severity_threshold": 2,
+        }
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg(guard),
+        )
+        g = out["guardrails"]
+        assert g["content_safety_endpoint"] == "https://cs.cognitiveservices.azure.com"
+        assert g["content_safety_key_env"] == "AZURE_CONTENT_SAFETY_KEY"
+        assert g["content_safety_key"] == "cs-key"
+        assert g["prompt_shield"] is True
+        assert g["block_categories"] == ["Hate", "Violence", "SelfHarm", "Sexual"]
+        assert g["severity_threshold"] == 2
+        assert g["configured"] is True
+        assert g["key_resolved"] is True
+
+    def test_missing_endpoint_marks_unconfigured(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg({"prompt_shield": True}),
+        )
+        g = out["guardrails"]
+        assert g["content_safety_endpoint"] == ""
+        assert g["configured"] is False
+        assert g["key_resolved"] is False
+
+    def test_default_severity_threshold_is_4(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg({"content_safety_endpoint": "https://cs.x"}),
+        )
+        assert out["guardrails"]["severity_threshold"] == 4
+
+    @pytest.mark.parametrize("bad", ["high", None, "", [], {}])
+    def test_invalid_severity_threshold_falls_back(self, monkeypatch, bad):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg({
+                "content_safety_endpoint": "https://cs.x",
+                "severity_threshold": bad,
+            }),
+        )
+        assert out["guardrails"]["severity_threshold"] == 4
+
+    def test_prompt_shield_defaults_false(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg({"content_safety_endpoint": "https://cs.x"}),
+        )
+        assert out["guardrails"]["prompt_shield"] is False
+
+    def test_prompt_shield_explicit_false(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg({
+                "content_safety_endpoint": "https://cs.x",
+                "prompt_shield": False,
+            }),
+        )
+        assert out["guardrails"]["prompt_shield"] is False
+
+    def test_block_categories_non_list_coerces_empty(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg({
+                "content_safety_endpoint": "https://cs.x",
+                "block_categories": "Hate,Violence",
+            }),
+        )
+        assert out["guardrails"]["block_categories"] == []
+
+    def test_block_categories_strips_whitespace_and_blanks(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg({
+                "content_safety_endpoint": "https://cs.x",
+                "block_categories": ["  Hate  ", "", "Violence"],
+            }),
+        )
+        assert out["guardrails"]["block_categories"] == ["Hate", "Violence"]
+
+    def test_custom_key_env_var_resolves(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        monkeypatch.setenv("MY_CS_KEY", "custom-cs-key")
+        # Block ~/.hermes/.env lookup so only os.environ wins
+        import hermes_cli.config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "get_env_value", lambda k: None)
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg({
+                "content_safety_endpoint": "https://cs.x",
+                "content_safety_key_env": "MY_CS_KEY",
+            }),
+        )
+        g = out["guardrails"]
+        assert g["content_safety_key_env"] == "MY_CS_KEY"
+        assert g["content_safety_key"] == "custom-cs-key"
+        assert g["key_resolved"] is True
+
+    def test_endpoint_trailing_slash_stripped(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg({
+                "content_safety_endpoint": "https://cs.cognitiveservices.azure.com///",
+            }),
+        )
+        assert out["guardrails"]["content_safety_endpoint"] == "https://cs.cognitiveservices.azure.com"
+
+    def test_key_missing_marks_key_resolved_false_but_configured_true(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk")
+        monkeypatch.delenv("AZURE_CONTENT_SAFETY_KEY", raising=False)
+        import hermes_cli.config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "get_env_value",
+                            lambda k: "sk" if k == "AZURE_FOUNDRY_API_KEY" else None)
+        out = rp._resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=self._cfg({"content_safety_endpoint": "https://cs.x"}),
+        )
+        g = out["guardrails"]
+        assert g["configured"] is True
+        assert g["key_resolved"] is False
+        assert g["content_safety_key"] == ""
+
+
 class TestAzureAnthropicEnvVarHint:
     _AZURE_URL = "https://my-resource.services.ai.azure.com/anthropic"
 

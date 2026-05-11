@@ -712,9 +712,7 @@ def _set_status_direct(
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if parent_statuses and not all(
-                p["status"] == "done" for p in parent_statuses
-            ):
+            if not kanban_db._parents_satisfied(conn, task_id):
                 return False
 
         was_running = prev["status"] == "running"

@@ -1526,10 +1526,7 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             (parent_id, child_id),
         )
         # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        if not _parents_satisfied(conn, child_id):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -1598,6 +1595,21 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
         (task_id,),
     ).fetchall()
     return [r["child_id"] for r in rows]
+
+
+def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True when every parent is terminally satisfied.
+
+    Both ``done`` and ``archived`` parents count as satisfied dependencies.
+    Keeping the rule in one helper avoids drift between lifecycle paths.
+    """
+    parents = conn.execute(
+        "SELECT t.status FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.child_id = ?",
+        (task_id,),
+    ).fetchall()
+    return all(p["status"] in {"done", "archived"} for p in parents)
 
 
 def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Optional[str]]]:
@@ -1838,13 +1850,7 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if all(p["status"] in {"done", "archived"} for p in parents):
+            if _parents_satisfied(conn, task_id):
                 conn.execute(
                     "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
                     (task_id,),
@@ -1882,13 +1888,7 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        if undone:
+        if not _parents_satisfied(conn, task_id):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
                 "WHERE id = ? AND status = 'ready'",
@@ -2670,13 +2670,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # if parents are still in progress the task must wait in 'todo'
         # until recompute_ready picks it up. RCA: Bug 2 at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone_parents = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
+        new_status = "ready" if _parents_satisfied(conn, task_id) else "todo"
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL "
             "WHERE id = ? AND status = 'blocked'",

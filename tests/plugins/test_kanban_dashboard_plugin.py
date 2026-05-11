@@ -270,6 +270,34 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     assert child_after["status"] == "ready"
 
 
+def test_patch_drag_drop_move_todo_to_ready_with_archived_parent(client):
+    """Archived parents count as satisfied in the dashboard ready path too."""
+    parent = client.post("/api/plugins/kanban/tasks", json={"title": "p"}).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "c", "parents": [parent["id"]]},
+    ).json()["task"]
+    assert child["status"] == "todo"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "done"},
+    )
+    assert r.status_code == 200
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "archived"},
+    )
+    assert r.status_code == 200
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}",
+        json={"status": "ready"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "ready"
+
+
 def test_patch_reassign(client):
     t = client.post(
         "/api/plugins/kanban/tasks",

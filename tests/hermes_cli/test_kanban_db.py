@@ -103,6 +103,17 @@ def test_link_keeps_ready_child_when_parent_already_done(kanban_home):
         assert kb.get_task(conn, b).status == "ready"
 
 
+def test_link_keeps_ready_child_when_parent_archived(kanban_home):
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a")
+        kb.complete_task(conn, a)
+        assert kb.archive_task(conn, a)
+        b = kb.create_task(conn, title="b")
+        assert kb.get_task(conn, b).status == "ready"
+        kb.link_tasks(conn, a, b)
+        assert kb.get_task(conn, b).status == "ready"
+
+
 def test_link_rejects_self_loop(kanban_home):
     with kb.connect() as conn:
         a = kb.create_task(conn, title="a")
@@ -492,6 +503,23 @@ def test_unblock_without_parents_goes_to_ready(kanban_home):
         assert kb.block_task(conn, t, reason="need input")
         assert kb.unblock_task(conn, t)
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_unblock_with_archived_parent_goes_to_ready(kanban_home):
+    """Archived parents count as satisfied when reviving a blocked child."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        kb.complete_task(conn, parent, result="ok")
+        assert kb.archive_task(conn, parent)
+        conn.execute(
+            "UPDATE tasks SET status='blocked' WHERE id=?", (child,),
+        )
+        conn.commit()
+        assert kb.unblock_task(conn, child)
+        assert kb.get_task(conn, child).status == "ready"
 
 
 def test_assign_refuses_while_running(kanban_home):

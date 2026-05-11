@@ -231,33 +231,30 @@ def _supports_fast_mode(model: str) -> bool:
     return any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
 
 
-# Beta headers for enhanced features (sent with ALL auth types).
-# As of Opus 4.7 (2026-04-16), the first two are GA on Claude 4.6+ — the
+# Beta headers for enhanced features that are safe on ordinary/native Anthropic
+# requests. As of Opus 4.7 (2026-04-16), these are GA on Claude 4.6+ — the
 # beta headers are still accepted (harmless no-op) but not required. Kept
-# here so older Claude (4.5, 4.1) + third-party Anthropic-compat endpoints
-# that still gate on the headers continue to get the enhanced features.
+# here so older Claude (4.5, 4.1) + compatible endpoints that still gate on
+# the headers continue to get the enhanced features.
 #
-# ``context-1m-2025-08-07`` unlocks the 1M context window on Claude Opus 4.6/4.7
-# and Sonnet 4.6 when served via AWS Bedrock or Azure AI Foundry. 1M is GA on
-# native Anthropic (api.anthropic.com) for Opus 4.6+, but Bedrock/Azure still
-# gate it behind this beta header as of 2026-04 — without it Bedrock caps Opus
-# at 200K even though model_metadata.py advertises 1M. The header is a harmless
-# no-op on endpoints where 1M is GA.
+# Do NOT include ``context-1m-2025-08-07`` here. Anthropic returns HTTP 400
+# ("long context beta is not yet available for this subscription") for
+# accounts without the long-context beta, which breaks normal short auxiliary
+# calls like title generation/session summarization.
 #
-# Migration guide: remove these if you no longer support ≤4.5 models or once
-# Bedrock/Azure promote 1M to GA.
+# ``context-1m-2025-08-07`` is still required to unlock the 1M context window
+# on Claude Opus 4.6/4.7 and Sonnet 4.6 when served via AWS Bedrock or Azure
+# AI Foundry. Add it only for those endpoint-specific paths below.
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
-    "context-1m-2025-08-07",
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
 # fall back to the provider's default response path.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
-# 1M context beta — see comment on _COMMON_BETAS above. Stripped for
-# Bearer-auth (MiniMax) endpoints since they host their own models and
-# unknown Anthropic beta headers risk request rejection.
+# 1M context beta. Native Anthropic does not get this by default because some
+# subscriptions reject it, but Bedrock/Azure still need it for 1M context.
 _CONTEXT_1M_BETA = "context-1m-2025-08-07"
 
 # Fast mode beta — enables the ``speed: "fast"`` request parameter for
@@ -476,6 +473,14 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
 
 
+def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
+    """Return True for endpoints that still gate 1M context behind a beta."""
+    normalized = _normalize_base_url_text(base_url).lower()
+    if not normalized:
+        return False
+    return "azure.com" in normalized
+
+
 def _common_betas_for_base_url(
     base_url: str | None,
     *,
@@ -485,27 +490,25 @@ def _common_betas_for_base_url(
 
     MiniMax's Anthropic-compatible endpoints (Bearer-auth) reject requests
     that include Anthropic's ``fine-grained-tool-streaming`` beta — every
-    tool-use message triggers a connection error.  Strip that beta for
-    Bearer-auth endpoints while keeping all other betas intact.
+    tool-use message triggers a connection error.
 
-    The ``context-1m-2025-08-07`` beta is also stripped for Bearer-auth
-    endpoints — MiniMax hosts its own models, not Claude, so the header is
-    irrelevant at best and risks request rejection at worst.
+    The ``context-1m-2025-08-07`` beta is not sent to native Anthropic by
+    default because some subscriptions reject it. Add it only for endpoint
+    families that still require it for 1M context, currently Azure AI Foundry.
+    Bedrock uses its own client helper below and opts in explicitly.
 
-    ``drop_context_1m_beta=True`` additionally strips the 1M-context beta on
-    otherwise-unrelated endpoints. The OAuth retry path flips this flag after
-    a subscription rejects the beta with
-    "The long context beta is not yet available for this subscription" so
-    subsequent requests in the same session don't repeat the probe. See the
-    reactive recovery loop in ``run_agent.py`` and issue-comment history on
-    PR #17680 for the full rationale.
+    ``drop_context_1m_beta=True`` strips the 1M-context beta from any path that
+    would otherwise include it after a subscription/endpoint rejects the beta.
     """
+    betas = list(_COMMON_BETAS)
+    if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
+        betas.append(_CONTEXT_1M_BETA)
     if _requires_bearer_auth(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
-        return [b for b in _COMMON_BETAS if b not in _stripped]
+        return [b for b in betas if b not in _stripped]
     if drop_context_1m_beta:
-        return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
-    return _COMMON_BETAS
+        return [b for b in betas if b != _CONTEXT_1M_BETA]
+    return betas
 
 
 def build_anthropic_client(
@@ -642,7 +645,7 @@ def build_anthropic_bedrock_client(region: str):
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
-        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
+        default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
     )
 
 
@@ -1419,6 +1422,32 @@ def _convert_content_to_anthropic(content: Any) -> Any:
     return converted
 
 
+def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
+    """Convert OpenAI-style tool-message content parts → Anthropic tool_result inner blocks.
+
+    Used for multimodal tool results (e.g. computer_use screenshots). Each
+    part is normalized via `_convert_content_part_to_anthropic`, then
+    filtered to the block types Anthropic tool_result accepts (text + image).
+    """
+    if not isinstance(parts, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for part in parts:
+        block = _convert_content_part_to_anthropic(part)
+        if not block:
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text_val = block.get("text")
+            if isinstance(text_val, str) and text_val:
+                out.append({"type": "text", "text": text_val})
+        elif btype == "image":
+            src = block.get("source")
+            if isinstance(src, dict) and src:
+                out.append({"type": "image", "source": src})
+    return out
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
@@ -1521,8 +1550,41 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "tool":
-            # Sanitize tool_use_id and ensure non-empty content
-            result_content = content if isinstance(content, str) else json.dumps(content)
+            # Sanitize tool_use_id and ensure non-empty content.
+            # Computer-use (and other multimodal) tool results arrive as
+            # either a list of OpenAI-style content parts, or a dict
+            # marked `_multimodal` with an embedded `content` list. Convert
+            # both into Anthropic `tool_result` inner blocks (text + image).
+            multimodal_blocks: Optional[List[Dict[str, Any]]] = None
+            if isinstance(content, dict) and content.get("_multimodal"):
+                multimodal_blocks = _content_parts_to_anthropic_blocks(
+                    content.get("content") or []
+                )
+                # Fallback text if the conversion produced nothing usable.
+                if not multimodal_blocks and content.get("text_summary"):
+                    multimodal_blocks = [
+                        {"type": "text", "text": str(content["text_summary"])}
+                    ]
+            elif isinstance(content, list):
+                converted = _content_parts_to_anthropic_blocks(content)
+                if any(b.get("type") == "image" for b in converted):
+                    multimodal_blocks = converted
+            # Back-compat: some callers stash blocks under a private key.
+            if multimodal_blocks is None:
+                stashed = m.get("_anthropic_content_blocks")
+                if isinstance(stashed, list) and stashed:
+                    text_content = content if isinstance(content, str) and content.strip() else None
+                    multimodal_blocks = (
+                        [{"type": "text", "text": text_content}] + stashed
+                        if text_content else list(stashed)
+                    )
+
+            if multimodal_blocks:
+                result_content: Any = multimodal_blocks
+            elif isinstance(content, str):
+                result_content = content
+            else:
+                result_content = json.dumps(content) if content else "(no output)"
             if not result_content:
                 result_content = "(no output)"
             tool_result = {
@@ -1745,6 +1807,38 @@ def convert_messages_to_anthropic(
         for b in m["content"]:
             if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
                 b.pop("cache_control", None)
+
+    # ── Image eviction: keep only the most recent N screenshots ─────
+    # computer_use screenshots (base64 images) sit inside tool_result
+    # blocks: they accumulate and are sent with every API call. Each
+    # costs ~1,465 tokens; after 10+ the conversation becomes slow
+    # even for simple text queries. Walk backward, keep the most recent
+    # _MAX_KEEP_IMAGES, replace older ones with a text placeholder.
+    _MAX_KEEP_IMAGES = 3
+    _image_count = 0
+    for msg in reversed(result):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            inner = block.get("content")
+            if not isinstance(inner, list):
+                continue
+            has_image = any(
+                isinstance(b, dict) and b.get("type") == "image"
+                for b in inner
+            )
+            if not has_image:
+                continue
+            _image_count += 1
+            if _image_count > _MAX_KEEP_IMAGES:
+                block["content"] = [
+                    b if b.get("type") != "image"
+                    else {"type": "text", "text": "[screenshot removed to save context]"}
+                    for b in inner
+                ]
 
     return system, result
 

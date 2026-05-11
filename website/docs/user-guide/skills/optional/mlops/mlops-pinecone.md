@@ -20,6 +20,7 @@ Managed vector database for production AI applications. Fully managed, auto-scal
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `pinecone-client` |
+| Platforms | linux, macos, windows |
 | Tags | `RAG`, `Pinecone`, `Vector Database`, `Managed Service`, `Serverless`, `Hybrid Search`, `Production`, `Auto-Scaling`, `Low Latency`, `Recommendations` |
 
 ## Reference: full SKILL.md

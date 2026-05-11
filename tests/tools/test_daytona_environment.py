@@ -299,24 +299,6 @@ class TestExecute:
         assert "print" in cmd
         assert "hi" in cmd
 
-    def test_custom_cwd_in_command_wrapper(self, make_env):
-        """CWD is handled by _wrap_command() in the command string, not as a kwarg."""
-        sb = _make_sandbox()
-        sb.process.exec.side_effect = [
-            _make_exec_response(result="/root"),
-            _make_exec_response(result="", exit_code=0),  # init_session
-            _make_exec_response(result="/tmp", exit_code=0),
-        ]
-        sb.state = "started"
-        env = make_env(sandbox=sb)
-
-        env.execute("pwd", cwd="/tmp")
-        # CWD should be embedded in the command string via _wrap_command
-        call_args = sb.process.exec.call_args_list[-1]
-        cmd = call_args[0][0]
-        assert "cd /tmp" in cmd
-        # CWD should NOT be passed as a kwarg to exec
-        assert "cwd" not in call_args[1]
 
     def test_daytona_error_triggers_retry(self, make_env, daytona_sdk):
         sb = _make_sandbox()

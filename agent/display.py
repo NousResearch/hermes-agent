@@ -827,6 +827,10 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
                 return True, " [full]"
 
     # Generic heuristic for non-terminal tools
+    # Multimodal tool results (dicts with _multimodal=True) are not strings —
+    # treat them as successes since failures would be JSON-encoded strings.
+    if not isinstance(result, str):
+        return False, ""
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
         return True, " [error]"
@@ -852,13 +856,15 @@ def get_cute_tool_message(
         s = str(s)
         if _tool_preview_max_len == 0:
             return s  # no limit
-        return (s[:n-3] + "...") if len(s) > n else s
+        limit = _tool_preview_max_len
+        return (s[:limit-3] + "...") if len(s) > limit else s
 
     def _path(p, n=35):
         p = str(p)
         if _tool_preview_max_len == 0:
             return p  # no limit
-        return ("..." + p[-(n-3):]) if len(p) > n else p
+        limit = _tool_preview_max_len
+        return ("..." + p[-(limit-3):]) if len(p) > limit else p
 
     def _wrap(line: str) -> str:
         """Apply skin tool prefix and failure suffix."""

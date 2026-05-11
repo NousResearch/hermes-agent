@@ -17,6 +17,7 @@ Exploratory QA of web apps: find bugs, evidence, reports.
 | Source | Bundled (installed by default) |
 | Path | `skills/dogfood` |
 | Version | `1.0.0` |
+| Platforms | linux, macos, windows |
 | Tags | `qa`, `testing`, `browser`, `web`, `dogfood` |
 
 ## Reference: full SKILL.md

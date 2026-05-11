@@ -80,7 +80,7 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 
 - Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)
 - `ptyprocess` — installed by the `pty` extra (`pip install 'hermes-agent[web,pty]'`, or `[all]` covers both)
-- POSIX kernel (Linux, macOS, or WSL). Native Windows Python is not supported — use WSL.
+- POSIX kernel (Linux, macOS, or WSL2).  The `/chat` terminal pane specifically needs a POSIX PTY — native Windows Python has no equivalent, so on a native Windows install the rest of the dashboard (sessions, jobs, metrics, config editor) works but the `/chat` tab will show a banner telling you to use WSL2 for that feature.
 
 Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
 

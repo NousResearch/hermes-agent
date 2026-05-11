@@ -106,8 +106,15 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
 
 
 def test_dockerfile_installs_tui_dependencies(dockerfile_text):
+    # The TUI workspace manifests must be present so ``npm install`` can
+    # resolve dependencies. The bundled ``hermes-ink`` workspace package is
+    # now COPIED into the image as a whole tree (not just its lockfile)
+    # because it's referenced as a ``file:`` workspace dependency from
+    # ``ui-tui/package.json`` — copying the tree avoids npm stopping at a
+    # bare ``package.json`` shell.
     assert "ui-tui/package.json" in dockerfile_text
-    assert "ui-tui/packages/hermes-ink/package-lock.json" in dockerfile_text
+    assert "ui-tui/package-lock.json" in dockerfile_text
+    assert "ui-tui/packages/hermes-ink/" in dockerfile_text
     assert any(
         "ui-tui" in step and "npm" in step and (" install" in step or " ci" in step)
         for step in _run_steps(dockerfile_text)
@@ -122,16 +129,17 @@ def test_dockerfile_builds_tui_assets(dockerfile_text):
 
 
 def test_dockerfile_materializes_local_tui_ink_package(dockerfile_text):
-    assert any(
-        "ui-tui" in step
-        and "node_modules/@hermes/ink" in step
-        and "packages/hermes-ink" in step
-        and "rm -rf packages/hermes-ink/node_modules" in step
-        and "npm install --omit=dev" in step
-        and "--prefix node_modules/@hermes/ink" in step
-        and "rm -rf node_modules/@hermes/ink/node_modules/react" in step
-        and "await import('@hermes/ink')" in step
-        for step in _run_steps(dockerfile_text)
+    # ``hermes-ink`` is a bundled workspace package referenced from
+    # ``ui-tui/package.json`` via ``file:`` — not pulled from the npm
+    # registry. The contract this test pins is just that the image
+    # actually carries the package source so ``await import('@hermes/ink')``
+    # can resolve at runtime; the previous, much pickier assertion (manual
+    # ``rm -rf`` + ``npm install --omit=dev --prefix node_modules/@hermes/ink``)
+    # baked in implementation details of an older materialisation flow that
+    # was simplified once npm workspaces handled the resolution natively.
+    assert "ui-tui/packages/hermes-ink/" in dockerfile_text, (
+        "Dockerfile must COPY the bundled hermes-ink workspace package "
+        "so ``await import('@hermes/ink')`` resolves at runtime."
     )
 
 

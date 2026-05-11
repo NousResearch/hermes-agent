@@ -1703,12 +1703,11 @@ def qr_scan_for_bot_info(
     print("  Fetching configuration results...", end="", flush=True)
 
     # ── Step 3: Poll for result ──
-    import time
-    deadline = time.time() + timeout_seconds
+    deadline = time.monotonic() + timeout_seconds
     query_url = f"{_QR_QUERY_URL}?scode={urllib.parse.quote(scode)}"
     poll_count = 0
 
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         try:
             req = urllib.request.Request(query_url, headers={"User-Agent": "HermesAgent/1.0"})
             with urllib.request.urlopen(req, timeout=10) as resp:

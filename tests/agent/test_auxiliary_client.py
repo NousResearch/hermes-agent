@@ -3,7 +3,9 @@
 import json
 import logging
 import os
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -24,6 +26,7 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    _CodexCompletionsAdapter,
 )
 
 
@@ -55,6 +58,18 @@ def codex_auth_dir(tmp_path, monkeypatch):
         lambda: "codex-test-token-abc123",
     )
     return codex_dir
+
+
+class TestAuxiliaryMaxTokensParam:
+    def test_uses_max_completion_tokens_for_github_copilot_custom_base(self):
+        with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com", "key", None)), \
+             patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
+
+    def test_uses_max_completion_tokens_for_github_copilot_custom_base_path(self):
+        with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com/chat/completions", "key", None)), \
+             patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
 
 
 class TestNormalizeAuxProvider:
@@ -285,6 +300,52 @@ class TestBuildCodexClient:
         client, model = _build_codex_client("")
         assert client is None
         assert model is None
+
+    def test_cached_codex_client_rebuilds_when_pool_entry_changes(self):
+        import agent.auxiliary_client as aux
+
+        class _Entry:
+            def __init__(self, entry_id, token):
+                self.id = entry_id
+                self.runtime_api_key = token
+                self.runtime_base_url = "https://chatgpt.com/backend-api/codex"
+
+        class _Pool:
+            def __init__(self):
+                self.entry = _Entry("cred-a", "tok-a")
+
+            def has_credentials(self):
+                return True
+
+            def current(self):
+                return self.entry
+
+            def peek(self):
+                return self.entry
+
+            def select(self):
+                return self.entry
+
+        pool = _Pool()
+        client_a = MagicMock(name="codex-client-a")
+        client_b = MagicMock(name="codex-client-b")
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client.OpenAI", side_effect=[client_a, client_b]) as mock_openai,
+        ):
+            aux.shutdown_cached_clients()
+            try:
+                first_client, first_model = aux._get_cached_client("openai-codex", "gpt-5.4")
+                pool.entry = _Entry("cred-b", "tok-b")
+                second_client, second_model = aux._get_cached_client("openai-codex", "gpt-5.4")
+            finally:
+                aux.shutdown_cached_clients()
+
+        assert first_client is not second_client
+        assert first_model == "gpt-5.4"
+        assert second_model == "gpt-5.4"
+        assert mock_openai.call_count == 2
 
 
 class TestExpiredCodexFallback:
@@ -1617,6 +1678,107 @@ class TestAuxiliaryAuthRefreshRetry:
         assert fresh_client.chat.completions.create.await_count == 1
 
 
+class TestAuxiliaryPoolRotationRetry:
+    def test_call_llm_rotates_explicit_codex_pool_on_429(self):
+        rate_err = Exception("usage limit reached")
+        rate_err.status_code = 429
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create.side_effect = [rate_err, rate_err]
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("rotated-sync")
+
+        class _Pool:
+            def __init__(self):
+                self.rotate_calls = []
+
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                self.rotate_calls.append(kwargs)
+                return SimpleNamespace(id="cred-b")
+
+        pool = _Pool()
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
+        ):
+            resp = call_llm(
+                task="compression",
+                provider="openai-codex",
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "rotated-sync"
+        assert stale_client.chat.completions.create.call_count == 2
+        assert fresh_client.chat.completions.create.call_count == 1
+        assert len(pool.rotate_calls) == 1
+        assert pool.rotate_calls[0]["status_code"] == 429
+        mock_fallback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_rotates_explicit_codex_pool_on_429(self):
+        rate_err = Exception("usage limit reached")
+        rate_err.status_code = 429
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create = AsyncMock(side_effect=[rate_err, rate_err])
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create = AsyncMock(return_value=_DummyResponse("rotated-async"))
+
+        class _Pool:
+            def __init__(self):
+                self.rotate_calls = []
+
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                self.rotate_calls.append(kwargs)
+                return SimpleNamespace(id="cred-b")
+
+        pool = _Pool()
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
+        ):
+            resp = await async_call_llm(
+                task="compression",
+                provider="openai-codex",
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "rotated-async"
+        assert stale_client.chat.completions.create.await_count == 2
+        assert fresh_client.chat.completions.create.await_count == 1
+        assert len(pool.rotate_calls) == 1
+        assert pool.rotate_calls[0]["status_code"] == 429
+        mock_fallback.assert_not_called()
+
+
 class TestCodexAdapterReasoningTranslation:
     """Verify _CodexCompletionsAdapter translates extra_body.reasoning
     into the Responses API's top-level reasoning + include fields, matching
@@ -1880,6 +2042,85 @@ class TestVisionAutoSkipsKimiCoding:
             "kimi-coding",
             "kimi-coding-cn",
         })
+
+
+class TestCodexAuxiliaryAdapterTimeout:
+    def test_forwards_timeout_to_responses_stream(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="summary")],
+                    )],
+                    usage=None,
+                )
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def stream(self, **kwargs):
+                self.kwargs = kwargs
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "summarize this"}],
+            timeout=12.5,
+        )
+
+        assert fake_client.responses.kwargs["timeout"] == 12.5
+        assert response.choices[0].message.content == "summary"
+
+    def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
+        class SlowAliveStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                for _ in range(5):
+                    time.sleep(0.03)
+                    yield SimpleNamespace(type="response.in_progress")
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="late")],
+                    )],
+                    usage=None,
+                )
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return SlowAliveStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            adapter.create(
+                messages=[{"role": "user", "content": "summarize this"}],
+                timeout=0.05,
+            )
+
+        assert time.monotonic() - started < 0.14
 
 
 # ---------------------------------------------------------------------------

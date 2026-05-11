@@ -811,7 +811,7 @@ def discord_skill_commands_by_category(
     # names are marked with a sentinel so the warning distinguishes
     # "skill collided with a reserved command" from "two skills collided
     # on the 32-char clamp" — the latter is the rename-worthy case.
-    _names_used: dict[str, str] = {n: "<reserved>" for n in reserved_names}
+    _names_used: dict[str, str] = dict.fromkeys(reserved_names, "<reserved>")
     hidden = 0
 
     try:

@@ -2096,19 +2096,18 @@ def _cmd_specify(args: argparse.Namespace) -> int:
                 "reason": outcome.reason,
                 "new_title": outcome.new_title,
             }))
+        elif outcome.ok:
+            title_suffix = (
+                f" — retitled: {outcome.new_title!r}"
+                if outcome.new_title
+                else ""
+            )
+            print(f"Specified {outcome.task_id} → todo{title_suffix}")
         else:
-            if outcome.ok:
-                title_suffix = (
-                    f" — retitled: {outcome.new_title!r}"
-                    if outcome.new_title
-                    else ""
-                )
-                print(f"Specified {outcome.task_id} → todo{title_suffix}")
-            else:
-                print(
-                    f"kanban: specify {outcome.task_id}: {outcome.reason}",
-                    file=sys.stderr,
-                )
+            print(
+                f"kanban: specify {outcome.task_id}: {outcome.reason}",
+                file=sys.stderr,
+            )
     if not all_flag:
         return 0 if ok_count == 1 else 1
     # --all: succeed if at least one promotion landed; exit 1 only when

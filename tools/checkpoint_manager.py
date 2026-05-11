@@ -1312,8 +1312,7 @@ def prune_checkpoints(
                 for p in child.rglob("*"):
                     try:
                         mt = p.stat().st_mtime
-                        if mt > newest:
-                            newest = mt
+                        newest = max(newest, mt)
                     except OSError:
                         continue
             except OSError:
@@ -1455,8 +1454,7 @@ def prune_checkpoints(
 
     size_after = _dir_size_bytes(base)
     delta = size_before - size_after
-    if delta > result["bytes_freed"]:
-        result["bytes_freed"] = delta
+    result["bytes_freed"] = max(result["bytes_freed"], delta)
 
     return result
 

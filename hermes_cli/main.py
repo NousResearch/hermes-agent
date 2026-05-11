@@ -505,8 +505,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
                 # Compute visible area
                 visible_rows = max_y - 4  # header + col header + blank + footer
-                if visible_rows < 1:
-                    visible_rows = 1
+                visible_rows = max(visible_rows, 1)
 
                 # Clamp cursor and scroll
                 if not filtered:
@@ -518,8 +517,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 else:
                     if cursor >= len(filtered):
                         cursor = len(filtered) - 1
-                    if cursor < 0:
-                        cursor = 0
+                    cursor = max(cursor, 0)
                     if cursor < scroll_offset:
                         scroll_offset = cursor
                     elif cursor >= scroll_offset + visible_rows:
@@ -5963,8 +5961,8 @@ def _kill_stale_dashboard_processes(
 
     for pid in killed:
         print(f"    ✓ stopped PID {pid}")
-    for pid, reason in failed:
-        print(f"    ✗ failed to stop PID {pid}: {reason}")
+    for pid, err_msg in failed:
+        print(f"    ✗ failed to stop PID {pid}: {err_msg}")
 
     if killed:
         print("  Restart the dashboard when you're ready:")

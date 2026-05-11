@@ -1433,19 +1433,18 @@ class AIAgent:
         if self.verbose_logging:
             setup_verbose_logging()
             logger.info("Verbose logging enabled (third-party library logs suppressed)")
-        else:
-            if self.quiet_mode:
-                # In quiet mode (CLI default), keep console output clean —
-                # but DO NOT raise per-logger levels. Doing so prevents the
-                # root logger's file handlers (agent.log, errors.log) from
-                # ever seeing the records, because Python checks
-                # logger.isEnabledFor() before handler propagation. We rely
-                # on the fact that hermes_logging.setup_logging() does not
-                # install a console StreamHandler in quiet mode — so INFO
-                # records flow to the file handlers but never reach a
-                # console. Any future noise reduction belongs at the
-                # handler level inside hermes_logging.py, not here.
-                pass
+        elif self.quiet_mode:
+            # In quiet mode (CLI default), keep console output clean —
+            # but DO NOT raise per-logger levels. Doing so prevents the
+            # root logger's file handlers (agent.log, errors.log) from
+            # ever seeing the records, because Python checks
+            # logger.isEnabledFor() before handler propagation. We rely
+            # on the fact that hermes_logging.setup_logging() does not
+            # install a console StreamHandler in quiet mode — so INFO
+            # records flow to the file handlers but never reach a
+            # console. Any future noise reduction belongs at the
+            # handler level inside hermes_logging.py, not here.
+            pass
         
         # Internal stream callback (set during streaming TTS).
         # Initialized here so _vprint can reference it before run_conversation.
@@ -2011,8 +2010,7 @@ class AIAgent:
         try:
             _raw_api_retries = _agent_section.get("api_max_retries", 3)
             _api_retries = int(_raw_api_retries)
-            if _api_retries < 1:
-                _api_retries = 1  # 1 = no retry (single attempt)
+            _api_retries = max(_api_retries, 1)  # 1 = no retry (single attempt)
         except (TypeError, ValueError):
             _api_retries = 3
         self._api_max_retries = _api_retries
@@ -7728,24 +7726,23 @@ class AIAgent:
                         _fire_first_delta()
                         self._fire_stream_delta(delta.content)
                         deltas_were_sent["yes"] = True
-                    else:
-                        # Tool calls suppress regular content streaming (avoids
-                        # displaying chatty "I'll use the tool..." text alongside
-                        # tool calls).  But reasoning tags embedded in suppressed
-                        # content should still reach the display — otherwise the
-                        # reasoning box only appears as a post-response fallback,
-                        # rendering it confusingly after the already-streamed
-                        # response.  Route suppressed content through the stream
-                        # delta callback so its tag extraction can fire the
-                        # reasoning display.  Non-reasoning text is harmlessly
-                        # suppressed by the CLI's _stream_delta when the stream
-                        # box is already closed (tool boundary flush).
-                        if self.stream_delta_callback:
-                            try:
-                                self.stream_delta_callback(delta.content)
-                                self._record_streamed_assistant_text(delta.content)
-                            except Exception:
-                                pass
+                    # Tool calls suppress regular content streaming (avoids
+                    # displaying chatty "I'll use the tool..." text alongside
+                    # tool calls).  But reasoning tags embedded in suppressed
+                    # content should still reach the display — otherwise the
+                    # reasoning box only appears as a post-response fallback,
+                    # rendering it confusingly after the already-streamed
+                    # response.  Route suppressed content through the stream
+                    # delta callback so its tag extraction can fire the
+                    # reasoning display.  Non-reasoning text is harmlessly
+                    # suppressed by the CLI's _stream_delta when the stream
+                    # box is already closed (tool boundary flush).
+                    elif self.stream_delta_callback:
+                        try:
+                            self.stream_delta_callback(delta.content)
+                            self._record_streamed_assistant_text(delta.content)
+                        except Exception:
+                            pass
 
                 # Accumulate tool call deltas — notify display on first name
                 if delta and delta.tool_calls:
@@ -10820,12 +10817,11 @@ class AIAgent:
                 # Tool blocked by plugin or guardrail policy — skip counters,
                 # callbacks, checkpointing, activity mutation, and real execution.
                 pass
-            else:
-                # Reset nudge counters when the relevant tool is actually used
-                if function_name == "memory":
-                    self._turns_since_memory = 0
-                elif function_name == "skill_manage":
-                    self._iters_since_skill = 0
+            # Reset nudge counters when the relevant tool is actually used
+            elif function_name == "memory":
+                self._turns_since_memory = 0
+            elif function_name == "skill_manage":
+                self._iters_since_skill = 0
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)

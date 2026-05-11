@@ -195,8 +195,7 @@ def _latest_clean_event_ts(events: Iterable[Any]) -> int:
     for ev in events:
         if _event_kind(ev) in ("completed", "edited"):
             t = _event_ts(ev)
-            if t > latest:
-                latest = t
+            latest = max(latest, t)
     return latest
 
 
@@ -534,8 +533,7 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     for ev in events:
         if _event_kind(ev) == "blocked":
             t = _event_ts(ev)
-            if t > last_blocked_ts:
-                last_blocked_ts = t
+            last_blocked_ts = max(last_blocked_ts, t)
     if last_blocked_ts == 0:
         return []
     age_hours = (now - last_blocked_ts) / 3600.0
@@ -626,8 +624,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     for ev in events:
         if _event_kind(ev) in READY_TRANSITION_KINDS:
             t = _event_ts(ev)
-            if t > last_ready_ts:
-                last_ready_ts = t
+            last_ready_ts = max(last_ready_ts, t)
 
     # Fallback: if no qualifying event exists (very old task or events
     # truncated), fall back to ``created_at`` on the task row. Better

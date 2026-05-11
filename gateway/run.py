@@ -268,9 +268,8 @@ def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[st
                 # Preserve empty-string sentinel for thinking-mode replay.
                 if _rval is None:
                     continue
-            else:
-                if not _rval:
-                    continue
+            elif not _rval:
+                continue
             entry[_rkey] = _rval
     return entry
 
@@ -4503,8 +4502,7 @@ class GatewayRunner:
             return
 
         interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
-        if interval < 1.0:
-            interval = 1.0  # sanity floor — tighter than this is a footgun
+        interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
         # Read max_spawn config to limit concurrent kanban tasks
         max_spawn = kanban_cfg.get("max_spawn", None)
@@ -4756,34 +4754,33 @@ class GatewayRunner:
                             await build_channel_directory(self.adapters)
                         except Exception:
                             pass
+                    # Check if the failure is non-retryable
+                    elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
+                        self._update_platform_runtime_status(
+                            platform.value,
+                            platform_state="fatal",
+                            error_code=adapter.fatal_error_code,
+                            error_message=adapter.fatal_error_message,
+                        )
+                        logger.warning(
+                            "Reconnect %s: non-retryable error (%s), removing from retry queue",
+                            platform.value, adapter.fatal_error_message,
+                        )
+                        del self._failed_platforms[platform]
                     else:
-                        # Check if the failure is non-retryable
-                        if adapter.has_fatal_error and not adapter.fatal_error_retryable:
-                            self._update_platform_runtime_status(
-                                platform.value,
-                                platform_state="fatal",
-                                error_code=adapter.fatal_error_code,
-                                error_message=adapter.fatal_error_message,
-                            )
-                            logger.warning(
-                                "Reconnect %s: non-retryable error (%s), removing from retry queue",
-                                platform.value, adapter.fatal_error_message,
-                            )
-                            del self._failed_platforms[platform]
-                        else:
-                            self._update_platform_runtime_status(
-                                platform.value,
-                                platform_state="retrying",
-                                error_code=adapter.fatal_error_code,
-                                error_message=adapter.fatal_error_message or "failed to reconnect",
-                            )
-                            backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
-                            info["attempts"] = attempt
-                            info["next_retry"] = time.monotonic() + backoff
-                            logger.info(
-                                "Reconnect %s failed, next retry in %ds",
-                                platform.value, backoff,
-                            )
+                        self._update_platform_runtime_status(
+                            platform.value,
+                            platform_state="retrying",
+                            error_code=adapter.fatal_error_code,
+                            error_message=adapter.fatal_error_message or "failed to reconnect",
+                        )
+                        backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
+                        info["attempts"] = attempt
+                        info["next_retry"] = time.monotonic() + backoff
+                        logger.info(
+                            "Reconnect %s failed, next retry in %ds",
+                            platform.value, backoff,
+                        )
                 except Exception as e:
                     self._update_platform_runtime_status(
                         platform.value,
@@ -12699,11 +12696,10 @@ class GatewayRunner:
                         msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
                     else:
                         msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
+                elif exit_code == 0:
+                    msg = "✅ Hermes update finished successfully."
                 else:
-                    if exit_code == 0:
-                        msg = "✅ Hermes update finished successfully."
-                    else:
-                        msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                    msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
                 await adapter.send(chat_id, msg, metadata=metadata)
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",

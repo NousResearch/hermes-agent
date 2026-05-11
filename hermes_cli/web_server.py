@@ -1190,14 +1190,13 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     disk_model.pop("context_length", None)
                 config["model"] = disk_model
-            else:
-                # Model was previously a bare string — upgrade to dict if
-                # user is setting a context_length override
-                if ctx_override > 0:
-                    config["model"] = {
-                        "default": model_val,
-                        "context_length": ctx_override,
-                    }
+            # Model was previously a bare string — upgrade to dict if
+            # user is setting a context_length override
+            elif ctx_override > 0:
+                config["model"] = {
+                    "default": model_val,
+                    "context_length": ctx_override,
+                }
         except Exception:
             pass  # can't read disk config — just use the string form
     return config

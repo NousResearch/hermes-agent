@@ -1082,9 +1082,8 @@ def rewrite_skill_refs(
                         new_skills.append(target)
                 elif name in pruned_set:
                     dropped.append(name)
-                else:
-                    if name not in new_skills:
-                        new_skills.append(name)
+                elif name not in new_skills:
+                    new_skills.append(name)
 
             if not mapped and not dropped:
                 continue

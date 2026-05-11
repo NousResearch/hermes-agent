@@ -466,13 +466,12 @@ def _shell_quote_context(command_template: str, position: int) -> Optional[str]:
                 escaped = True
             elif char == '"':
                 quote = None
-        else:
-            if char == "'":
-                quote = "'"
-            elif char == '"':
-                quote = '"'
-            elif char == "\\":
-                i += 1
+        elif char == "'":
+            quote = "'"
+        elif char == '"':
+            quote = '"'
+        elif char == "\\":
+            i += 1
         i += 1
     return quote
 

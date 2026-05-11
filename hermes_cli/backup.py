@@ -802,8 +802,7 @@ def _prune_pre_update_backups(backup_dir: Path, keep: int) -> int:
     Operators who genuinely don't want a backup should set
     ``updates.pre_update_backup: false`` in config — that gates creation.
     """
-    if keep < 1:
-        keep = 1
+    keep = max(keep, 1)
     if not backup_dir.exists():
         return 0
 
@@ -875,8 +874,7 @@ def _prune_pre_migration_backups(backup_dir: Path, keep: int) -> int:
     Only touches files matching ``pre-migration-*.zip`` so other backups in
     the same directory are never touched.
     """
-    if keep < 0:
-        keep = 0
+    keep = max(keep, 0)
     if not backup_dir.exists():
         return 0
 

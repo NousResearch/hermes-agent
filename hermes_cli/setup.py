@@ -1355,14 +1355,13 @@ def setup_terminal_backend(config: dict):
         existing_sudo = get_env_value("SUDO_PASSWORD")
         if existing_sudo:
             print_info("Sudo password: configured")
-        else:
-            if prompt_yes_no(
-                "Enable sudo support? (stores password for apt install, etc.)", False
-            ):
-                sudo_pass = prompt("  Sudo password", password=True)
-                if sudo_pass:
-                    save_env_value("SUDO_PASSWORD", sudo_pass)
-                    print_success("Sudo password saved")
+        elif prompt_yes_no(
+            "Enable sudo support? (stores password for apt install, etc.)", False
+        ):
+            sudo_pass = prompt("  Sudo password", password=True)
+            if sudo_pass:
+                save_env_value("SUDO_PASSWORD", sudo_pass)
+                print_success("Sudo password saved")
 
     elif selected_backend == "docker":
         print_success("Terminal backend: Docker")

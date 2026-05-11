@@ -4947,15 +4947,14 @@ def gateway_setup():
                 print_info("  Run in foreground: hermes gateway run")
                 print_info("  For persistence:   tmux new -s hermes 'hermes gateway run'")
                 print_info("  To enable systemd: add systemd=true to /etc/wsl.conf, then 'wsl --shutdown'")
+            elif is_termux():
+                from hermes_constants import display_hermes_home as _dhh
+                print_info("  Termux does not use systemd/launchd services.")
+                print_info("  Run in foreground: hermes gateway run")
+                print_info(f"  Or start it manually in the background (best effort): nohup hermes gateway run >{_dhh()}/logs/gateway.log 2>&1 &")
             else:
-                if is_termux():
-                    from hermes_constants import display_hermes_home as _dhh
-                    print_info("  Termux does not use systemd/launchd services.")
-                    print_info("  Run in foreground: hermes gateway run")
-                    print_info(f"  Or start it manually in the background (best effort): nohup hermes gateway run >{_dhh()}/logs/gateway.log 2>&1 &")
-                else:
-                    print_info("  Service install not supported on this platform.")
-                    print_info("  Run in foreground: hermes gateway run")
+                print_info("  Service install not supported on this platform.")
+                print_info("  Run in foreground: hermes gateway run")
     else:
         print()
         print_info("No platforms configured. Run 'hermes gateway setup' when ready.")

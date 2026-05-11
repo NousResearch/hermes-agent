@@ -2219,7 +2219,7 @@ class TestListSessionsRich:
         assert "root" in ids
 
     def test_compression_child_still_hidden(self, db):
-        """Compression continuation sessions remain hidden (parent ended with 'compression')."""
+        """Live compression continuation sessions stay hidden behind their root entry."""
         import time as _time
         t0 = _time.time()
         db.create_session("root", "cli")
@@ -2237,7 +2237,39 @@ class TestListSessionsRich:
 
         sessions = db.list_sessions_rich(project_compression_tips=False)
         ids = [s["id"] for s in sessions]
-        assert "continuation" not in ids, "Compression continuation should stay hidden"
+        assert "continuation" not in ids, "Live compression continuation should stay hidden"
+
+    def test_repeated_compression_chain_surfaces_latest_tip(self, db):
+        """Repeated compression creates compression anchors with parents.
+
+        Those intermediate anchors must remain visible to the projection query;
+        otherwise the latest live continuation is hidden from /sessions.
+        """
+        t0 = 1709500000.0
+        db.create_session("root", "cli")
+        db.create_session("mid", "cli", parent_session_id="root")
+        db.create_session("tip", "cli", parent_session_id="mid")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, ended_at=?, end_reason='compression' WHERE id=?",
+                (t0, t0 + 10, "root"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, ended_at=?, end_reason='compression' WHERE id=?",
+                (t0 + 11, t0 + 20, "mid"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (t0 + 21, "tip"),
+            )
+            db._conn.commit()
+        db.append_message("tip", "user", "latest visible conversation")
+
+        sessions = db.list_sessions_rich(order_by_last_active=True)
+        ids = [s["id"] for s in sessions]
+        assert "tip" in ids
+        assert "mid" not in ids
+        assert "root" not in ids
 
 
 class TestCompressionChainProjection:

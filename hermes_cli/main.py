@@ -998,7 +998,13 @@ def _tui_build_needed(tui_dir: Path) -> bool:
 
 def _hermes_ink_bundle_stale(tui_dir: Path) -> bool:
     ink_root = tui_dir / "packages" / "hermes-ink"
-    bundle = ink_root / "dist" / "ink-bundle.js"
+    # The @hermes/ink package build emits dist/entry-exports.js (see
+    # ui-tui/packages/hermes-ink/package.json).  Older code checked for the
+    # pre-rename ink-bundle.js sentinel, which made every embedded dashboard
+    # chat connection run `npm run build` before accepting /api/pty.  Behind
+    # Nginx that delayed the WebSocket handshake long enough to show
+    # "[session ended]" / 502 on restored sessions.
+    bundle = ink_root / "dist" / "entry-exports.js"
     if not bundle.exists():
         return True
     bm = bundle.stat().st_mtime

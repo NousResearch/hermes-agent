@@ -26,7 +26,7 @@ def _touch_tui_entry(root: Path) -> None:
 
 
 def _touch_ink_bundle(root: Path) -> None:
-    bundle = root / "packages" / "hermes-ink" / "dist" / "ink-bundle.js"
+    bundle = root / "packages" / "hermes-ink" / "dist" / "entry-exports.js"
     bundle.parent.mkdir(parents=True, exist_ok=True)
     bundle.write_text("export {}")
 

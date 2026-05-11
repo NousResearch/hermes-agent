@@ -84,6 +84,40 @@ class TestHostHeaderValidator:
         assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
 
+class TestWebSocketClientAllowlist:
+    """WebSocket allowlist tests for loopback reverse proxy deployments."""
+
+    def test_loopback_reverse_proxy_host_header_is_allowed(self, monkeypatch):
+        from starlette.datastructures import Headers
+
+        import hermes_cli.web_server as ws
+
+        class DummyClient:
+            host = "203.0.113.10"
+
+        class DummyWebSocket:
+            client = DummyClient()
+            headers = Headers({"host": "127.0.0.1:9119"})
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        assert ws._ws_client_is_allowed(DummyWebSocket())
+
+    def test_attacker_host_header_is_rejected_for_non_loopback_client(self, monkeypatch):
+        from starlette.datastructures import Headers
+
+        import hermes_cli.web_server as ws
+
+        class DummyClient:
+            host = "203.0.113.10"
+
+        class DummyWebSocket:
+            client = DummyClient()
+            headers = Headers({"host": "evil.example"})
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        assert not ws._ws_client_is_allowed(DummyWebSocket())
+
+
 class TestHostHeaderMiddleware:
     """End-to-end test via the FastAPI app — verify the middleware
     rejects bad Host headers with 400."""

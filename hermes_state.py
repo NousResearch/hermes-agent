@@ -1200,13 +1200,21 @@ class SessionDB:
         params = []
 
         if not include_children:
-            # Show root sessions and branch sessions (whose parent ended with
-            # end_reason='branched' before the child was created), while still
-            # hiding sub-agent runs and compression continuations (which also
-            # carry a parent_session_id but were spawned while the parent was
-            # still live — i.e., started_at < parent.ended_at).
+            # Show root sessions, compression chain anchors, and branch sessions
+            # (whose parent ended with end_reason='branched' before the child
+            # was created), while still hiding sub-agent runs and live
+            # compression continuations.  A compression root can itself have a
+            # parent after repeated context compaction; include every
+            # ``end_reason='compression'`` anchor so projection below can walk
+            # to the latest live tip rather than leaving later continuations
+            # invisible.
             where_clauses.append(
                 "(s.parent_session_id IS NULL"
+                " OR (s.end_reason = 'compression'"
+                "     AND NOT EXISTS (SELECT 1 FROM sessions p"
+                "                     WHERE p.id = s.parent_session_id"
+                "                       AND p.end_reason = 'compression'"
+                "                       AND s.started_at >= p.ended_at))"
                 " OR EXISTS (SELECT 1 FROM sessions p"
                 "            WHERE p.id = s.parent_session_id"
                 "            AND p.end_reason = 'branched'"

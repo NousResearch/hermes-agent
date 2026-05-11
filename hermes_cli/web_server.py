@@ -595,7 +595,7 @@ async def get_status():
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=50)
+            sessions = db.list_sessions_rich(limit=50, order_by_last_active=True)
             now = time.time()
             active_sessions = sum(
                 1 for s in sessions
@@ -764,7 +764,7 @@ async def get_sessions(limit: int = 20, offset: int = 0):
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
+            sessions = db.list_sessions_rich(limit=limit, offset=offset, order_by_last_active=True)
             total = db.session_count()
             now = time.time()
             for s in sessions:
@@ -3008,13 +3008,24 @@ def _is_public_bind() -> bool:
 
 
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
-    """Check if the WebSocket client IP is acceptable.
+    """Check if the WebSocket client is acceptable.
 
-    Allows loopback always; allows any IP when bound to all-interfaces
-    (--insecure mode, guarded by session token auth).
+    Allows loopback clients always; allows any IP when bound to all-interfaces
+    (--insecure mode, guarded by session token auth).  For the documented
+    loopback-behind-reverse-proxy deployment, Uvicorn may replace ws.client
+    with the X-Forwarded-For address. In that case we still allow the request
+    when the upstream Host header targets the dashboard's bound host (Nginx
+    sets Host to 127.0.0.1:9119), preserving the DNS-rebinding guard for WS
+    routes.
     """
     if _is_public_bind():
         return True
+
+    bound_host = getattr(app.state, "bound_host", "")
+    host_header = ws.headers.get("host", "")
+    if bound_host and _is_accepted_host(host_header, bound_host):
+        return True
+
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
@@ -4246,6 +4257,13 @@ def start_server(
     app.state.bound_host = host
     app.state.bound_port = port
 
+    # Uvicorn's WebSocket scope uses the socket peer address for ws.client.
+    # When the loopback-only dashboard is intentionally exposed through a
+    # same-host reverse proxy, the socket peer is already 127.0.0.1, but
+    # enabling proxy headers keeps HTTP URL/client metadata consistent with
+    # the deployment docs while only trusting local proxies.
+    forwarded_allow_ips = "127.0.0.1,::1"
+
     if open_browser:
         import webbrowser
 
@@ -4256,4 +4274,11 @@ def start_server(
         threading.Thread(target=_open, daemon=True).start()
 
     print(f"  Hermes Web UI → http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="warning",
+        proxy_headers=True,
+        forwarded_allow_ips=forwarded_allow_ips,
+    )

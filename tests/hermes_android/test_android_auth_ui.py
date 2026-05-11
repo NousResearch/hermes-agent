@@ -36,6 +36,14 @@ def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
     assert 'Sign in' in auth_screen
     assert 'option.supportsApiKeySetup' in auth_screen
     assert 'option.supportsBrowserSignIn' in auth_screen
+    assert 'option.credentialInput' in auth_screen
+    assert 'option.credentialInputHelp' in auth_screen
+    assert 'viewModel.updateProviderCredentialInput(option.id, it)' in auth_screen
+    assert 'viewModel.saveProviderCredential(option.id)' in auth_screen
+    assert 'PasswordVisualTransformation()' in auth_screen
+    assert 'KeyboardType.Password' in auth_screen
+    assert 'AuthProviderCredential-${option.id}' in auth_screen
+    assert 'AuthProviderSaveCredential-${option.id}' in auth_screen
     assert 'strings.useApiKeyInSettings()' in auth_screen
     assert 'strings.setUpApiKeyFor(option.label)' in auth_screen
     assert 'option.providerSetupUrl.isNotBlank()' in auth_screen
@@ -195,6 +203,14 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "private val providerSetupOpenIndexes = mutableMapOf<String, Int>()" in auth_view_model
     assert "ProviderPresets.setupTarget(providerId, nextIndex)" in auth_view_model
     assert "providerSetupOpenIndexes[providerId] = target.nextIndex" in auth_view_model
+    assert "private val providerCredentialInputs = mutableMapOf<String, String>()" in auth_view_model
+    assert "fun updateProviderCredentialInput(methodId: String, value: String)" in auth_view_model
+    assert "fun saveProviderCredential(methodId: String)" in auth_view_model
+    assert "ProviderPresets.parseCredentialInput(option.runtimeProvider, input)" in auth_view_model
+    assert "AuthRuntimeApplier.apply(getApplication(), session)" in auth_view_model
+    assert "authSessionStore.saveSession(session)" in auth_view_model
+    assert "ProviderPresets.credentialInputHelp(option.runtimeProvider)" in auth_view_model
+    assert "Saved ${option.label} credential$sourceSuffix and restarted Hermes." in auth_view_model
     assert "Tap Open again for the next fallback" in auth_view_model
     assert "Qwen OAuth is legacy" in auth_view_model
     assert "prepareApiKeySetup(methodId)\n            openProviderSetupPage(methodId)" in auth_view_model

@@ -38,6 +38,8 @@ data class AuthOptionUiState(
     val description: String,
     val scope: AuthScope,
     val runtimeProvider: String = "",
+    val credentialInput: String = "",
+    val credentialInputHelp: String = "",
     val signedIn: Boolean = false,
     val status: String = "Not signed in",
     val accountHint: String = "",
@@ -63,6 +65,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val appSettingsStore = AppSettingsStore(application)
     private val authSessionStore = AuthSessionStore(application)
     private val providerSetupOpenIndexes = mutableMapOf<String, Int>()
+    private val providerCredentialInputs = mutableMapOf<String, String>()
     private val signedOutStatuses by lazy {
         buildSet {
             add("Not signed in")
@@ -82,6 +85,16 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refresh() {
         _uiState.value = buildState()
+    }
+
+    fun updateProviderCredentialInput(methodId: String, value: String) {
+        providerCredentialInputs[methodId] = value
+        val current = _uiState.value
+        _uiState.value = buildState().copy(
+            globalStatus = current.globalStatus,
+            apiKeyFallbackMethodId = current.apiKeyFallbackMethodId,
+            apiKeyFallbackLabel = current.apiKeyFallbackLabel,
+        )
     }
 
     fun updateCorr3xtBaseUrl(value: String) {
@@ -288,6 +301,62 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun saveProviderCredential(methodId: String) {
+        val option = AuthCatalog.find(methodId) ?: return
+        if (option.scope != AuthScope.RuntimeProvider || option.runtimeProvider.isBlank()) {
+            return
+        }
+        val input = providerCredentialInputs[methodId].orEmpty()
+        val parsedCredential = ProviderPresets.parseCredentialInput(option.runtimeProvider, input)
+        if (parsedCredential.apiKey.isBlank()) {
+            _uiState.update {
+                it.copy(globalStatus = "Paste an API key, token, or CLI env line for ${option.label} first.")
+            }
+            return
+        }
+        val preset = ProviderPresets.find(option.runtimeProvider)
+        val resolvedBaseUrl = option.defaultBaseUrl.ifBlank { preset?.baseUrl.orEmpty() }
+        val resolvedModel = option.defaultModel.ifBlank { preset?.modelHint.orEmpty() }
+        val sourceSuffix = parsedCredential.sourceLabel
+            .takeIf { it.isNotBlank() }
+            ?.let { " from $it" }
+            .orEmpty()
+        val session = AuthSession(
+            methodId = option.id,
+            label = option.label,
+            scope = option.scope,
+            runtimeProvider = option.runtimeProvider,
+            signedIn = true,
+            status = "Saved ${option.label} credential$sourceSuffix and restarted Hermes.",
+            apiKey = parsedCredential.apiKey,
+            baseUrl = resolvedBaseUrl,
+            model = resolvedModel,
+        )
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(globalStatus = "Saving ${option.label} credential and restarting Hermes...")
+            }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    authSessionStore.saveSession(session)
+                    AuthRuntimeApplier.apply(getApplication(), session)
+                }
+            }.onSuccess {
+                providerCredentialInputs.remove(methodId)
+                _uiState.value = buildState().copy(
+                    globalStatus = session.status,
+                    apiKeyFallbackMethodId = "",
+                    apiKeyFallbackLabel = "",
+                )
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(globalStatus = "Unable to save ${option.label} credential (${error::class.java.simpleName}).")
+                }
+            }
+        }
+    }
+
     fun openProviderSetupPage(methodId: String) {
         val option = AuthCatalog.find(methodId) ?: return
         val target = nextProviderSetupTarget(option.runtimeProvider) ?: return
@@ -415,6 +484,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 description = strings.authDescription(option.id, option.description),
                 scope = option.scope,
                 runtimeProvider = session.runtimeProvider,
+                credentialInput = providerCredentialInputs[option.id].orEmpty(),
+                credentialInputHelp = if (option.scope == AuthScope.RuntimeProvider && option.runtimeProvider.isNotBlank()) {
+                    ProviderPresets.credentialInputHelp(option.runtimeProvider)
+                } else {
+                    ""
+                },
                 signedIn = session.signedIn,
                 status = localizedStatus,
                 supportsApiKeySetup = option.scope == AuthScope.RuntimeProvider && option.runtimeProvider.isNotBlank(),

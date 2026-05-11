@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +26,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -199,6 +202,25 @@ fun AuthScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
+                            if (option.supportsApiKeySetup) {
+                                OutlinedTextField(
+                                    value = option.credentialInput,
+                                    onValueChange = { viewModel.updateProviderCredentialInput(option.id, it) },
+                                    label = { Text(strings.apiKeyLabel()) },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                    supportingText = {
+                                        if (option.credentialInputHelp.isNotBlank()) {
+                                            Text(option.credentialInputHelp)
+                                        }
+                                    },
+                                    singleLine = false,
+                                    minLines = 1,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("AuthProviderCredential-${option.id}"),
+                                )
+                            }
                             FlowRow(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -213,6 +235,12 @@ fun AuthScreen(
                                     }
                                 }
                                 if (option.supportsApiKeySetup) {
+                                    Button(
+                                        modifier = Modifier.testTag("AuthProviderSaveCredential-${option.id}"),
+                                        onClick = { viewModel.saveProviderCredential(option.id) },
+                                    ) {
+                                        Text(strings.saveLabel())
+                                    }
                                     Button(
                                         onClick = {
                                             viewModel.prepareApiKeySetup(option.id)

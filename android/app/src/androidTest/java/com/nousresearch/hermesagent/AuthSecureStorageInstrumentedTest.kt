@@ -14,6 +14,7 @@ import com.nousresearch.hermesagent.data.AuthScope
 import com.nousresearch.hermesagent.data.AuthSession
 import com.nousresearch.hermesagent.data.AuthSessionStore
 import com.nousresearch.hermesagent.data.SecureSecretsStore
+import com.nousresearch.hermesagent.ui.auth.AuthViewModel
 import com.nousresearch.hermesagent.ui.settings.SettingsViewModel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -159,6 +160,43 @@ class AuthSecureStorageInstrumentedTest {
         assertEquals("sk-qwen-android-test", viewModel.uiState.value.apiKey)
         if (Python.isStarted()) {
             Python.getInstance().getModule("hermes_android.auth_bridge").callAttr("clear_provider_auth_bundle", "alibaba")
+        }
+    }
+
+    @Test
+    fun accountsSaveAcceptsQwenEnvStyleApiKeyIntoEncryptedAuthSession() {
+        context.deleteSharedPreferences("hermes_android_auth")
+        context.deleteSharedPreferences("hermes_android_settings")
+        context.deleteSharedPreferences("hermes_android_secrets")
+
+        lateinit var viewModel: AuthViewModel
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            viewModel = AuthViewModel(app)
+            viewModel.updateProviderCredentialInput("qwen", "export DASHSCOPE_API_KEY='sk-qwen-accounts-test'")
+            viewModel.saveProviderCredential("qwen")
+        }
+
+        try {
+            val deadline = SystemClock.elapsedRealtime() + 60_000L
+            var status = ""
+            while (SystemClock.elapsedRealtime() < deadline) {
+                status = viewModel.uiState.value.globalStatus
+                if (status.contains("Saved Qwen Cloud credential") || status.contains("Unable to save")) {
+                    break
+                }
+                Thread.sleep(250L)
+            }
+            assertTrue(status, status.contains("Saved Qwen Cloud credential from DASHSCOPE_API_KEY"))
+            assertEquals(
+                "sk-qwen-accounts-test",
+                SecureSecretsStore(app).loadAuthSessionSecrets("qwen").apiKey,
+            )
+            assertEquals("alibaba", AppSettingsStore(app).load().provider)
+            assertEquals("qwen3.6-plus", AppSettingsStore(app).load().model)
+        } finally {
+            if (Python.isStarted()) {
+                Python.getInstance().getModule("hermes_android.auth_bridge").callAttr("clear_provider_auth_bundle", "alibaba")
+            }
         }
     }
 }

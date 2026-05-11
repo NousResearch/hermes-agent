@@ -24,6 +24,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -225,6 +226,20 @@ fun AuthScreen(
                                                 strings.setUpApiKeyFor(option.label)
                                             }
                                         )
+                                    }
+                                }
+                                if (option.providerSetupUrl.isNotBlank()) {
+                                    Button(
+                                        modifier = Modifier.testTag("AuthProviderOpenSetup-${option.id}"),
+                                        onClick = { viewModel.openProviderSetupPage(option.id) },
+                                    ) {
+                                        Text(strings.openProviderKeyPage(option.label))
+                                    }
+                                    Button(
+                                        modifier = Modifier.testTag("AuthProviderCopySetup-${option.id}"),
+                                        onClick = { viewModel.copyProviderSetupUrl(option.id) },
+                                    ) {
+                                        Text(strings.copyProviderSetupUrl())
                                     }
                                 }
                                 if (option.signedIn) {

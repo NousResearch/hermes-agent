@@ -149,6 +149,40 @@ class DeepAppUiVisualInstrumentedTest {
     }
 
     @Test
+    fun accountsRuntimeProvidersExposeDirectSetupUrls() {
+        AppSettingsStore(app).save(
+            AppSettings(
+                provider = "openrouter",
+                baseUrl = "https://openrouter.ai/api/v1",
+                model = "anthropic/claude-sonnet-4",
+                onDeviceBackend = BackendKind.NONE.persistedValue,
+                languageTag = "en",
+            )
+        )
+
+        composeRule.setContent {
+            AppShellScreen(
+                bootUiState = BootUiState(
+                    status = "Hermes backend is ready",
+                    ready = true,
+                    probeResult = "accounts-provider-setup-url-test",
+                    baseUrl = "http://127.0.0.1:15436/v1",
+                ),
+                onRetryHermes = {},
+            )
+        }
+
+        composeRule.onNodeWithTag("HermesNavAccounts").performClick()
+        composeRule.onAllNodesWithText("Accounts")[0].assertIsDisplayed()
+        composeRule.onNodeWithText("Qwen OAuth").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Set up Qwen OAuth API key").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("AuthProviderOpenSetup-qwen-oauth").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("AuthProviderCopySetup-qwen-oauth").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("AuthProviderCopySetup-qwen-oauth").performClick()
+        composeRule.onNodeWithText("Copied Qwen OAuth setup URL.").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
     fun corr3xtSignInRejectsReachableHostWithoutOAuthStartRoute() {
         val server = TestHttpServer { target -> if (target == "/") 200 else 404 }
         try {

@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nousresearch.hermesagent.auth.AuthRuntimeApplier
@@ -18,6 +19,7 @@ import com.nousresearch.hermesagent.data.AuthScope
 import com.nousresearch.hermesagent.data.AuthSession
 import com.nousresearch.hermesagent.data.AuthSessionStore
 import com.nousresearch.hermesagent.data.PendingAuthRequest
+import com.nousresearch.hermesagent.data.ProviderPresets
 import com.nousresearch.hermesagent.ui.i18n.AppLanguage
 import com.nousresearch.hermesagent.ui.i18n.HermesStrings
 import com.nousresearch.hermesagent.ui.i18n.hermesStringsFor
@@ -42,6 +44,7 @@ data class AuthOptionUiState(
     val supportsApiKeySetup: Boolean = false,
     val supportsBrowserSignIn: Boolean = true,
     val browserSignInEnabled: Boolean = true,
+    val providerSetupUrl: String = "",
 )
 
 data class AuthUiState(
@@ -290,6 +293,54 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun openProviderSetupPage(methodId: String) {
+        val option = AuthCatalog.find(methodId) ?: return
+        val setupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty().trim()
+        if (setupUrl.isBlank()) {
+            return
+        }
+        val uri = Uri.parse(setupUrl)
+        if (uri.scheme !in setOf("http", "https")) {
+            _uiState.update { it.copy(globalStatus = "Provider setup URL must start with https:// or http://") }
+            return
+        }
+        val browserIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+        }
+        val chooserIntent = Intent.createChooser(browserIntent, "Open provider setup page").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching {
+            getApplication<Application>().startActivity(chooserIntent)
+        }.onSuccess {
+            _uiState.update {
+                it.copy(globalStatus = "Opened ${option.label} setup page. If your browser stalls, copy the setup URL and paste it into another browser.")
+            }
+        }.onFailure { error ->
+            copyProviderSetupUrl(methodId, updateStatus = false)
+            _uiState.update {
+                it.copy(globalStatus = "Unable to open browser (${error::class.java.simpleName}); copied the ${option.label} setup URL.")
+            }
+        }
+    }
+
+    fun copyProviderSetupUrl(methodId: String) {
+        copyProviderSetupUrl(methodId, updateStatus = true)
+    }
+
+    private fun copyProviderSetupUrl(methodId: String, updateStatus: Boolean) {
+        val option = AuthCatalog.find(methodId) ?: return
+        val setupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty().trim()
+        if (setupUrl.isBlank()) {
+            return
+        }
+        val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText("Hermes ${option.label} setup URL", setupUrl))
+        if (updateStatus) {
+            _uiState.update { it.copy(globalStatus = "Copied ${option.label} setup URL.") }
+        }
+    }
+
     fun cancelPendingRequest() {
         authSessionStore.clearPendingRequest()
         _uiState.update {
@@ -351,6 +402,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     .firstOrNull { it.isNotBlank() }
                     .orEmpty(),
                 browserSignInEnabled = option.scope != AuthScope.AppAccount || corr3xtConfigured,
+                providerSetupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty(),
             )
         }
         val signedInAccounts = options.count { it.signedIn }

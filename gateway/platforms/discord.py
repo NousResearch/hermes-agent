@@ -3724,7 +3724,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
 
         # DMs, voice channels, and existing threads can't host child threads.
-        if isinstance(parent, getattr(discord, "DMChannel", tuple())):
+        if isinstance(parent, getattr(discord, "DMChannel", ())):
             logger.info(
                 "[%s] Handoff thread: parent %s is a DM; threads not supported here",
                 self.name, parent_chat_id,

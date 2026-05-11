@@ -343,7 +343,7 @@ def key_metrics(data: dict[str, Any]) -> dict[str, float]:
         metrics["backpressure_frames"] = bp
 
     if react:
-        for pid in set(e["id"] for e in react):
+        for pid in {e["id"] for e in react}:
             ms = [e["actualMs"] for e in react if e["id"] == pid]
             metrics[f"react_{pid}_p99"] = pct(ms, 0.99)
             metrics[f"react_{pid}_max"] = max(ms)

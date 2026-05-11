@@ -100,6 +100,7 @@ from tools.managed_tool_gateway import (
 from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -2153,7 +2154,7 @@ if __name__ == "__main__":
         print(f"✅ Auxiliary model available: {default_summarizer_model}")
 
     if not web_available:
-        exit(1)
+        sys.exit(1)
 
     print("🛠️  Web tools ready for use!")
     

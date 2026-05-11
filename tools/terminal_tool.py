@@ -888,6 +888,7 @@ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+import sys
 
 
 # Tool description for LLM
@@ -2243,7 +2244,7 @@ if __name__ == "__main__":
 
     if not check_terminal_requirements():
         print("\n❌ Requirements not met. Please check the messages above.")
-        exit(1)
+        sys.exit(1)
 
     print("\n✅ All requirements met!")
     print("\nAvailable Tool:")

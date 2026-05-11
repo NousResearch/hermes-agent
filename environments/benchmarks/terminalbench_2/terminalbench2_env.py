@@ -919,7 +919,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             eval_metrics[f"eval/pass_rate_{cat_key}"] = cat_pass_rate
 
         # Store metrics for wandb_log
-        self.eval_metrics = [(k, v) for k, v in eval_metrics.items()]
+        self.eval_metrics = list(eval_metrics.items())
 
         # ---- Print summary ----
         print(f"\n{'='*60}")

@@ -928,5 +928,5 @@ def _build_summary(name: str, source: str, trust: str, verdict: str, findings: L
     if not findings:
         return f"{name}: clean scan, no threats detected"
 
-    categories = set(f.category for f in findings)
+    categories = {f.category for f in findings}
     return f"{name}: {verdict} — {len(findings)} finding(s) in {', '.join(sorted(categories))}"

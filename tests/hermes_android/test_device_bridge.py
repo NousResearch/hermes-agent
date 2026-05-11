@@ -132,6 +132,7 @@ def test_accessibility_bridge_wrappers_decode_json(monkeypatch):
         content_description_contains="",
         view_id="",
         package_name="com.example",
+        class_name="android.widget.Button",
         value="",
         index=1,
     )
@@ -142,7 +143,7 @@ def test_accessibility_bridge_wrappers_decode_json(monkeypatch):
     assert action["matched_node"]["text"] == "Submit"
     assert calls == [
         ("snapshotJson", (12,)),
-        ("performActionJson", ("click", "submit", "", "", "com.example", "", 1)),
+        ("performActionJson", ("click", "submit", "", "", "com.example", "android.widget.Button", "", 1)),
     ]
 
 

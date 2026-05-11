@@ -54,6 +54,7 @@ object HermesAccessibilityUiBridge {
         contentDescriptionContains: String,
         viewId: String,
         packageName: String,
+        className: String,
         value: String,
         index: Int,
     ): String {
@@ -64,7 +65,7 @@ object HermesAccessibilityUiBridge {
                 ?: return errorJson("No active accessibility window is available")
             val nodes = flattenNodes(root, MAX_LIMIT)
             val matches = nodes.filter { node ->
-                matchesSelector(node, textContains, contentDescriptionContains, viewId, packageName)
+                matchesSelector(node, textContains, contentDescriptionContains, viewId, packageName, className)
             }
             if (matches.isEmpty()) {
                 return errorJson("No accessibility node matched the requested selector")
@@ -246,6 +247,7 @@ object HermesAccessibilityUiBridge {
         contentDescriptionContains: String,
         viewId: String,
         packageName: String,
+        className: String,
         index: Int,
     ): String {
         return runCatching {
@@ -257,10 +259,11 @@ object HermesAccessibilityUiBridge {
             val hasSelector = textContains.isNotBlank() ||
                 contentDescriptionContains.isNotBlank() ||
                 viewId.isNotBlank() ||
-                packageName.isNotBlank()
+                packageName.isNotBlank() ||
+                className.isNotBlank()
             val target = if (hasSelector) {
                 val matches = nodes.filter { node ->
-                    matchesSelector(node, textContains, contentDescriptionContains, viewId, packageName)
+                    matchesSelector(node, textContains, contentDescriptionContains, viewId, packageName, className)
                 }
                 val resolvedIndex = index.coerceAtLeast(0)
                 if (matches.isEmpty()) {
@@ -475,6 +478,7 @@ object HermesAccessibilityUiBridge {
         contentDescriptionContains: String,
         viewId: String,
         packageName: String,
+        className: String,
     ): Boolean {
         if (textContains.isNotBlank() && !node.text?.toString().orEmpty().contains(textContains, ignoreCase = true)) {
             return false
@@ -488,10 +492,14 @@ object HermesAccessibilityUiBridge {
         if (packageName.isNotBlank() && !node.packageName?.toString().orEmpty().contains(packageName, ignoreCase = true)) {
             return false
         }
+        if (className.isNotBlank() && !node.className?.toString().orEmpty().contains(className, ignoreCase = true)) {
+            return false
+        }
         return textContains.isNotBlank() ||
             contentDescriptionContains.isNotBlank() ||
             viewId.isNotBlank() ||
-            packageName.isNotBlank()
+            packageName.isNotBlank() ||
+            className.isNotBlank()
     }
 
     private fun performResolvedAction(action: String, node: AccessibilityNodeInfo, value: String): Boolean {

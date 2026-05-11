@@ -655,13 +655,14 @@ object HermesAutomationBridge {
         )
         putOptionalExpandedPayloadString(payload, "view_id", arguments, "view_id", "viewId")
         putOptionalExpandedPayloadString(payload, "package_name", arguments, "package_name", "packageName")
+        putOptionalExpandedPayloadString(payload, "class_name", arguments, "class_name", "className", "widget_class")
         putOptionalExpandedPayloadString(payload, "value", arguments, "value", "text_value", "content", allowEmpty = true)
         if (arguments.has("index") && !arguments.isNull("index")) {
             payload.put("index", arguments.optInt("index", 0).coerceAtLeast(0))
         }
 
         if (uiAction in UI_SELECTOR_ACTIONS && !hasUiSelector(payload)) {
-            return errorJson("create_ui_action_task selector actions require text_contains, content_description_contains, view_id, or package_name")
+            return errorJson("create_ui_action_task selector actions require text_contains, content_description_contains, view_id, package_name, or class_name")
         }
         if (uiAction == "set_text" && !payload.has("value")) {
             return errorJson("create_ui_action_task set_text requires a value argument")
@@ -2124,6 +2125,7 @@ object HermesAutomationBridge {
                 contentDescriptionContains = expandVariables(payload.optString("content_description_contains"), variables),
                 viewId = expandVariables(payload.optString("view_id"), variables),
                 packageName = expandVariables(payload.optString("package_name"), variables),
+                className = expandVariables(payload.optString("class_name"), variables),
                 value = expandVariables(payload.optString("value"), variables),
                 index = payload.optInt("index", 0),
             ),
@@ -5555,7 +5557,7 @@ object HermesAutomationBridge {
     private val UI_GLOBAL_ACTIONS = setOf("back", "home", "recents", "notifications", "quick_settings")
     private val UI_SELECTOR_ACTIONS = setOf("click", "long_click", "focus", "set_text", "scroll_forward", "scroll_backward")
     private val UI_AUTOMATION_ACTIONS = UI_GLOBAL_ACTIONS + UI_SELECTOR_ACTIONS
-    private val UI_SELECTOR_KEYS = listOf("text_contains", "content_description_contains", "view_id", "package_name")
+    private val UI_SELECTOR_KEYS = listOf("text_contains", "content_description_contains", "view_id", "package_name", "class_name")
     private val UI_ACTION_SYNONYMS = mapOf(
         "global_back" to "back",
         "global_home" to "home",

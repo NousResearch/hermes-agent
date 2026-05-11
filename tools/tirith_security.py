@@ -6,7 +6,9 @@ threats (homograph URLs, pipe-to-interpreter, terminal injection, etc.).
 Exit code is the verdict source of truth:
   0 = allow, 1 = block, 2 = warn
 
-JSON stdout enriches findings/summary but never overrides the verdict.
+JSON stdout enriches findings/summary. Hermes applies a narrow local allowlist
+for known noisy Tirith findings (currently the legitimate .app TLD warning);
+otherwise the exit code remains the verdict source of truth.
 Operational failures (spawn error, timeout, unknown exit code) respect
 the fail_open config setting. Programming errors propagate.
 
@@ -39,6 +41,7 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 _REPO = "sheeki03/tirith"
+_ALLOWLISTED_FINDINGS = frozenset({("lookalike_tld", ".app")})
 
 # Cosign provenance verification — pinned to the specific release workflow
 _COSIGN_IDENTITY_REGEXP = f"^https://github.com/{_REPO}/\\.github/workflows/release\\.yml@refs/tags/v"
@@ -85,6 +88,38 @@ def _load_security_config() -> dict:
         "tirith_timeout": _env_int("TIRITH_TIMEOUT", cfg.get("tirith_timeout", defaults["tirith_timeout"])),
         "tirith_fail_open": _env_bool("TIRITH_FAIL_OPEN", cfg.get("tirith_fail_open", defaults["tirith_fail_open"])),
     }
+
+
+def _is_allowlisted_finding(finding: dict) -> bool:
+    """Return True for known noisy Tirith findings Hermes intentionally ignores."""
+    if not isinstance(finding, dict):
+        return False
+
+    rule_id = str(finding.get("rule_id", "")).lower()
+    description = str(finding.get("description", "")).lower()
+    title = str(finding.get("title", "")).lower()
+
+    for allowlisted_rule_id, marker in _ALLOWLISTED_FINDINGS:
+        marker_l = marker.lower()
+        if rule_id == allowlisted_rule_id and (
+            marker_l in description or marker_l in title or _finding_evidence_contains(finding, marker_l)
+        ):
+            return True
+    return False
+
+
+def _finding_evidence_contains(finding: dict, marker: str) -> bool:
+    evidence = finding.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+    for item in evidence:
+        if isinstance(item, dict):
+            values = item.values()
+        else:
+            values = [item]
+        if any(marker in str(value).lower() for value in values):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -678,8 +713,11 @@ def check_command_security(command: str) -> dict:
     try:
         data = json.loads(result.stdout) if result.stdout.strip() else {}
         raw_findings = data.get("findings", [])
-        findings = raw_findings[:_MAX_FINDINGS]
-        summary = (data.get("summary", "") or "")[:_MAX_SUMMARY_LEN]
+        findings = [finding for finding in raw_findings if not _is_allowlisted_finding(finding)][:_MAX_FINDINGS]
+        all_findings_allowlisted = bool(raw_findings) and not findings
+        summary = "" if all_findings_allowlisted else (data.get("summary", "") or "")[:_MAX_SUMMARY_LEN]
+        if action in {"warn", "block"} and all_findings_allowlisted:
+            action = "allow"
     except (json.JSONDecodeError, AttributeError):
         # JSON parse failure degrades findings/summary, not the verdict
         logger.debug("tirith JSON parse failed, using exit code only")

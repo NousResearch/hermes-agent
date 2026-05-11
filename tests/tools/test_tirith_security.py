@@ -84,6 +84,41 @@ class TestExitCodeMapping:
         assert len(result["findings"]) == 1
         assert result["summary"] == "shortened URL"
 
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_app_tld_lookalike_warning_is_allowlisted(self, mock_cfg, mock_run):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        findings = [{
+            "rule_id": "lookalike_tld",
+            "severity": "MEDIUM",
+            "title": "Lookalike TLD detected",
+            "description": "Domain uses '.app' TLD which can be confused with file extensions",
+            "evidence": [{"type": "url", "raw": "example.app"}],
+        }]
+        mock_run.return_value = _mock_run(2, _json_stdout(findings, "lookalike TLD"))
+        result = check_command_security("curl https://example.app")
+        assert result == {"action": "allow", "findings": [], "summary": ""}
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_app_tld_allowlist_preserves_other_findings(self, mock_cfg, mock_run):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        findings = [
+            {
+                "rule_id": "lookalike_tld",
+                "description": "Domain uses '.app' TLD which can be confused with file extensions",
+                "evidence": [{"raw": "example.app"}],
+            },
+            {"rule_id": "shortened_url", "severity": "MEDIUM"},
+        ]
+        mock_run.return_value = _mock_run(2, _json_stdout(findings, "mixed findings"))
+        result = check_command_security("curl https://example.app https://bit.ly/abc")
+        assert result["action"] == "warn"
+        assert result["findings"] == [{"rule_id": "shortened_url", "severity": "MEDIUM"}]
+        assert result["summary"] == "mixed findings"
+
 
 # ---------------------------------------------------------------------------
 # JSON parse failure (exit code still wins)

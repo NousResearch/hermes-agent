@@ -360,7 +360,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const submit = useCallback(
     (value: string) => {
-      if (composerState.completions.length) {
+      // Enter submits a slash command; Tab applies the completion.
+      // Don't consume Enter when the input is a slash command — /reset
+      // and /new should execute, not select autocomplete text. (#23919)
+      if (composerState.completions.length && !looksLikeSlashCommand(value)) {
         const row = composerState.completions[composerState.compIdx]
 
         if (row?.text) {

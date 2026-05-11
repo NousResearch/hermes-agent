@@ -50,6 +50,8 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
+    # Read-only Lossless Context Management recall over state.db
+    "lcm_status", "lcm_grep", "lcm_describe", "lcm_expand_query", "lcm_recall",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -198,6 +200,12 @@ TOOLSETS = {
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],
+        "includes": []
+    },
+
+    "lcm": {
+        "description": "Read-only exact recall over Hermes state.db: status, grep, describe, extractive recall",
+        "tools": ["lcm_status", "lcm_grep", "lcm_describe", "lcm_expand_query", "lcm_recall"],
         "includes": []
     },
     

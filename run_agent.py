@@ -161,6 +161,11 @@ from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.stable_context import (
+    ContextSegment,
+    ContextSegmentKind,
+    StableContextBuilder,
+)
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -2005,6 +2010,15 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+        _stable_context_cfg = _agent_section.get("stable_context_prefix", {})
+        if not isinstance(_stable_context_cfg, dict):
+            _stable_context_cfg = {}
+        self._stable_context_prefix_enabled = bool(_stable_context_cfg.get("enabled", False))
+        self._stable_context_include_hashes = bool(_stable_context_cfg.get("include_segment_hashes", True))
+        self._stable_context_render_segments = bool(_stable_context_cfg.get("render_segments", False))
+        self._stable_context_builder = StableContextBuilder(
+            include_hashes=self._stable_context_include_hashes,
+        )
 
         # App-level API retry count (wraps each model API call).  Default 3,
         # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -5610,41 +5624,47 @@ class AIAgent:
 
 
 
+
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
         Assemble the full system prompt from all layers.
-        
+
         Called once per session (cached on self._cached_system_prompt) and only
         rebuilt after context compression events. This ensures the system prompt
         is stable across all turns in a session, maximizing prefix cache hits.
         """
-        # Layers (in order):
-        #   1. Agent identity — SOUL.md when available, else DEFAULT_AGENT_IDENTITY
-        #   2. User / gateway system prompt (if provided)
-        #   3. Persistent memory (frozen snapshot)
-        #   4. Skills guidance (if skills tools are loaded)
-        #   5. Context files (AGENTS.md, .cursorrules — SOUL.md excluded here when used as identity)
-        #   6. Current date & time (frozen at build time)
-        #   7. Platform-specific formatting hint
+        segments = []
 
-        # Try SOUL.md as primary identity unless the caller explicitly skipped it.
-        # Some execution modes (cron) still want HERMES_HOME persona while keeping
-        # cwd project instructions disabled.
         _soul_loaded = False
         if self.load_soul_identity or not self.skip_context_files:
             _soul_content = load_soul_md()
             if _soul_content:
-                prompt_parts = [_soul_content]
+                segments.append(
+                    ContextSegment(
+                        name="agent_identity",
+                        kind=ContextSegmentKind.AGENT_IDENTITY,
+                        content=_soul_content,
+                    )
+                )
                 _soul_loaded = True
 
         if not _soul_loaded:
-            # Fallback to hardcoded identity
-            prompt_parts = [DEFAULT_AGENT_IDENTITY]
+            segments.append(
+                ContextSegment(
+                    name="agent_identity",
+                    kind=ContextSegmentKind.AGENT_IDENTITY,
+                    content=DEFAULT_AGENT_IDENTITY,
+                )
+            )
 
-        # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-        prompt_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+        segments.append(
+            ContextSegment(
+                name="hermes_help_guidance",
+                kind=ContextSegmentKind.AGENT_INSTRUCTIONS,
+                content=HERMES_AGENT_HELP_GUIDANCE,
+            )
+        )
 
-        # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
         if "memory" in self.valid_tool_names:
             tool_guidance.append(MEMORY_GUIDANCE)
@@ -5652,31 +5672,38 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
-        # Kanban worker/orchestrator lifecycle — only present when the
-        # dispatcher spawned this process (kanban_show check_fn gates on
-        # HERMES_KANBAN_TASK env var). Normal chat sessions never see
-        # this block.
         if "kanban_show" in self.valid_tool_names:
             tool_guidance.append(KANBAN_GUIDANCE)
         if tool_guidance:
-            prompt_parts.append(" ".join(tool_guidance))
+            segments.append(
+                ContextSegment(
+                    name="tool_guidance",
+                    kind=ContextSegmentKind.AGENT_INSTRUCTIONS,
+                    content=" ".join(tool_guidance),
+                )
+            )
 
-        # Computer-use (macOS) — goes in as its own block rather than being
-        # merged into tool_guidance because the content is multi-paragraph.
         if "computer_use" in self.valid_tool_names:
             from agent.prompt_builder import COMPUTER_USE_GUIDANCE
-            prompt_parts.append(COMPUTER_USE_GUIDANCE)
+
+            segments.append(
+                ContextSegment(
+                    name="computer_use_guidance",
+                    kind=ContextSegmentKind.AGENT_INSTRUCTIONS,
+                    content=COMPUTER_USE_GUIDANCE,
+                )
+            )
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
-            prompt_parts.append(nous_subscription_prompt)
-        # Tool-use enforcement: tells the model to actually call tools instead
-        # of describing intended actions.  Controlled by config.yaml
-        # agent.tool_use_enforcement:
-        #   "auto" (default) — matches TOOL_USE_ENFORCEMENT_MODELS
-        #   true  — always inject (all models)
-        #   false — never inject
-        #   list  — custom model-name substrings to match
+            segments.append(
+                ContextSegment(
+                    name="nous_subscription_prompt",
+                    kind=ContextSegmentKind.AGENT_INSTRUCTIONS,
+                    content=nous_subscription_prompt,
+                )
+            )
+
         if self.valid_tool_names:
             _enforce = self._tool_use_enforcement
             _inject = False
@@ -5688,49 +5715,80 @@ class AIAgent:
                 model_lower = (self.model or "").lower()
                 _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
             else:
-                # "auto" or any unrecognised value — use hardcoded defaults
                 model_lower = (self.model or "").lower()
                 _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
             if _inject:
-                prompt_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+                segments.append(
+                    ContextSegment(
+                        name="tool_use_enforcement",
+                        kind=ContextSegmentKind.AGENT_INSTRUCTIONS,
+                        content=TOOL_USE_ENFORCEMENT_GUIDANCE,
+                    )
+                )
                 _model_lower = (self.model or "").lower()
-                # Google model operational guidance (conciseness, absolute
-                # paths, parallel tool calls, verify-before-edit, etc.)
                 if "gemini" in _model_lower or "gemma" in _model_lower:
-                    prompt_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-                # OpenAI GPT/Codex execution discipline (tool persistence,
-                # prerequisite checks, verification, anti-hallucination).
+                    segments.append(
+                        ContextSegment(
+                            name="google_model_operational_guidance",
+                            kind=ContextSegmentKind.AGENT_INSTRUCTIONS,
+                            content=GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+                        )
+                    )
                 if "gpt" in _model_lower or "codex" in _model_lower:
-                    prompt_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+                    segments.append(
+                        ContextSegment(
+                            name="openai_model_execution_guidance",
+                            kind=ContextSegmentKind.AGENT_INSTRUCTIONS,
+                            content=OPENAI_MODEL_EXECUTION_GUIDANCE,
+                        )
+                    )
 
-        # so it can refer the user to them rather than reinventing answers.
-
-        # Note: ephemeral_system_prompt is NOT included here. It's injected at
-        # API-call time only so it stays out of the cached/stored system prompt.
         if system_message is not None:
-            prompt_parts.append(system_message)
+            segments.append(
+                ContextSegment(
+                    name="system_message",
+                    kind=ContextSegmentKind.SYSTEM,
+                    content=system_message,
+                )
+            )
 
         if self._memory_store:
             if self._memory_enabled:
                 mem_block = self._memory_store.format_for_system_prompt("memory")
                 if mem_block:
-                    prompt_parts.append(mem_block)
-            # USER.md is always included when enabled.
+                    segments.append(
+                        ContextSegment(
+                            name="memory",
+                            kind=ContextSegmentKind.MEMORY,
+                            content=mem_block,
+                        )
+                    )
             if self._user_profile_enabled:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
-                    prompt_parts.append(user_block)
+                    segments.append(
+                        ContextSegment(
+                            name="user_profile",
+                            kind=ContextSegmentKind.MEMORY,
+                            content=user_block,
+                        )
+                    )
 
-        # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:
             try:
                 _ext_mem_block = self._memory_manager.build_system_prompt()
                 if _ext_mem_block:
-                    prompt_parts.append(_ext_mem_block)
+                    segments.append(
+                        ContextSegment(
+                            name="external_memory",
+                            kind=ContextSegmentKind.MEMORY,
+                            content=_ext_mem_block,
+                        )
+                    )
             except Exception:
                 pass
 
-        has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
+        has_skills_tools = any(name in self.valid_tool_names for name in ["skills_list", "skill_view", "skill_manage"])
         if has_skills_tools:
             avail_toolsets = {
                 toolset
@@ -5746,18 +5804,25 @@ class AIAgent:
         else:
             skills_prompt = ""
         if skills_prompt:
-            prompt_parts.append(skills_prompt)
+            segments.append(
+                ContextSegment(
+                    name="skills",
+                    kind=ContextSegmentKind.SKILLS,
+                    content=skills_prompt,
+                )
+            )
 
         if not self.skip_context_files:
-            # Use TERMINAL_CWD for context file discovery when set (gateway
-            # mode).  The gateway process runs from the hermes-agent install
-            # dir, so os.getcwd() would pick up the repo's AGENTS.md and
-            # other dev files — inflating token usage by ~10k for no benefit.
             _context_cwd = os.getenv("TERMINAL_CWD") or None
-            context_files_prompt = build_context_files_prompt(
-                cwd=_context_cwd, skip_soul=_soul_loaded)
+            context_files_prompt = build_context_files_prompt(cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
-                prompt_parts.append(context_files_prompt)
+                segments.append(
+                    ContextSegment(
+                        name="context_files",
+                        kind=ContextSegmentKind.CONTEXT_FILES,
+                        content=context_files_prompt,
+                    )
+                )
 
         from hermes_time import now as _hermes_now
         now = _hermes_now()
@@ -5768,40 +5833,66 @@ class AIAgent:
             timestamp_line += f"\nModel: {self.model}"
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
-        prompt_parts.append(timestamp_line)
+        segments.append(
+            ContextSegment(
+                name="timestamp",
+                kind=ContextSegmentKind.TIMESTAMP,
+                content=timestamp_line,
+            )
+        )
 
-        # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
-        # of the requested model. Inject explicit model identity into the system prompt
-        # so the agent can correctly report which model it is (workaround for API bug).
         if self.provider == "alibaba":
             _model_short = self.model.split("/")[-1] if "/" in self.model else self.model
-            prompt_parts.append(
-                f"You are powered by the model named {_model_short}. "
-                f"The exact model ID is {self.model}. "
-                f"When asked what model you are, always answer based on this information, "
-                f"not on any model name returned by the API."
+            segments.append(
+                ContextSegment(
+                    name="alibaba_model_identity",
+                    kind=ContextSegmentKind.AGENT_INSTRUCTIONS,
+                    content=(
+                        f"You are powered by the model named {_model_short}. "
+                        f"The exact model ID is {self.model}. "
+                        f"When asked what model you are, always answer based on this information, "
+                        f"not on any model name returned by the API."
+                    ),
+                )
             )
 
-        # Environment hints (WSL, Termux, etc.) — tell the agent about the
-        # execution environment so it can translate paths and adapt behavior.
         _env_hints = build_environment_hints()
         if _env_hints:
-            prompt_parts.append(_env_hints)
+            segments.append(
+                ContextSegment(
+                    name="environment_hints",
+                    kind=ContextSegmentKind.ENVIRONMENT,
+                    content=_env_hints,
+                )
+            )
 
         platform_key = (self.platform or "").lower().strip()
+        platform_hint = None
         if platform_key in PLATFORM_HINTS:
-            prompt_parts.append(PLATFORM_HINTS[platform_key])
+            platform_hint = PLATFORM_HINTS[platform_key]
         elif platform_key:
-            # Check plugin registry for platform-specific LLM guidance
             try:
                 from gateway.platform_registry import platform_registry
                 _entry = platform_registry.get(platform_key)
                 if _entry and _entry.platform_hint:
-                    prompt_parts.append(_entry.platform_hint)
+                    platform_hint = _entry.platform_hint
             except Exception:
                 pass
+        if platform_hint:
+            segments.append(
+                ContextSegment(
+                    name="platform_hint",
+                    kind=ContextSegmentKind.PLATFORM,
+                    content=platform_hint,
+                )
+            )
 
-        return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
+        if self._stable_context_prefix_enabled:
+            if self._stable_context_render_segments:
+                return self._stable_context_builder.build(segments)
+            return self._stable_context_builder.build_plain(segments)
+
+        return "\n\n".join(segment.content.strip() for segment in segments if segment.content.strip())
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)

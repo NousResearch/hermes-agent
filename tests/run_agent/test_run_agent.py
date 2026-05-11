@@ -3932,6 +3932,29 @@ class TestSystemPromptStability:
         # Empty string is falsy, so should fall through to fresh build
         assert "Hermes Agent" in agent._cached_system_prompt
 
+
+class TestStableContextPrefixBuilder:
+    def test_build_system_prompt_uses_plain_stable_builder_when_enabled(self, agent):
+        agent._stable_context_prefix_enabled = True
+        agent._stable_context_render_segments = False
+        agent._stable_context_include_hashes = True
+        prompt = agent._build_system_prompt()
+        assert "Hermes Agent" in prompt
+        assert "<context_segment" not in prompt
+
+    def test_build_system_prompt_renders_segments_when_requested(self, agent):
+        agent._stable_context_prefix_enabled = True
+        agent._stable_context_render_segments = True
+        prompt = agent._build_system_prompt()
+        assert '<context_segment name="agent_identity"' in prompt
+        assert 'stable="true"' in prompt
+
+    def test_build_system_prompt_keeps_system_message_before_timestamp(self, agent):
+        agent._stable_context_prefix_enabled = True
+        agent._stable_context_render_segments = True
+        prompt = agent._build_system_prompt("Follow repository conventions.")
+        assert prompt.index('name="system_message"') < prompt.index('name="timestamp"')
+
 class TestBudgetPressure:
     """Budget exhaustion grace call system."""
 

@@ -431,6 +431,14 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Stable context prefix builder: structures prompt assembly into
+        # deterministic stable and dynamic segments. V1 is provider-agnostic
+        # and only affects assembly/debug shape, not provider protocols.
+        "stable_context_prefix": {
+            "enabled": False,
+            "include_segment_hashes": True,
+            "render_segments": False,
+        },
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

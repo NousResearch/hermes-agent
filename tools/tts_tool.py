@@ -848,13 +848,13 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
     try:
-        create_kwargs = dict(
-            model=model,
-            voice=voice,
-            input=text,
-            response_format=response_format,
-            extra_headers={"x-idempotency-key": str(uuid.uuid4())},
-        )
+        create_kwargs = {
+            "model": model,
+            "voice": voice,
+            "input": text,
+            "response_format": response_format,
+            "extra_headers": {"x-idempotency-key": str(uuid.uuid4())},
+        }
         if speed != 1.0:
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
         response = client.audio.speech.create(**create_kwargs)

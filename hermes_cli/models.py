@@ -32,40 +32,38 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
-    ("moonshotai/kimi-k2.6",            "recommended"),
-    ("anthropic/claude-opus-4.7",       ""),
-    ("anthropic/claude-opus-4.6",       ""),
-    ("anthropic/claude-sonnet-4.6",     ""),
-    ("qwen/qwen3.6-plus",               ""),
-    ("anthropic/claude-sonnet-4.5",     ""),
-    ("anthropic/claude-haiku-4.5",      ""),
-    ("openrouter/elephant-alpha",       "free"),
-    ("openai/gpt-5.5",                  ""),
-    ("openai/gpt-5.4-mini",             ""),
-    ("xiaomi/mimo-v2.5-pro",             ""),
-    ("xiaomi/mimo-v2.5",                 ""),
-    ("tencent/hy3-preview:free",         "free"),
-    ("openai/gpt-5.3-codex",            ""),
-    ("google/gemini-3-pro-image-preview", ""),
-    ("google/gemini-3-flash-preview",   ""),
-    ("google/gemini-3.1-pro-preview",     ""),
+    ("anthropic/claude-opus-4.7",              ""),
+    ("anthropic/claude-opus-4.6",              ""),
+    ("anthropic/claude-sonnet-4.6",            ""),
+    ("moonshotai/kimi-k2.6",                   "recommended"),
+    ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
+    ("qwen/qwen3.6-plus",                      ""),
+    ("anthropic/claude-haiku-4.5",             ""),
+    ("openai/gpt-5.5",                         ""),
+    ("openai/gpt-5.5-pro",                     ""),
+    ("openai/gpt-5.4-mini",                    ""),
+    ("openai/gpt-5.4-nano",                    ""),
+    ("openai/gpt-5.3-codex",                   ""),
+    ("xiaomi/mimo-v2.5-pro",                   ""),
+    ("tencent/hy3-preview",                    ""),
+    ("google/gemini-3-pro-image-preview",      ""),
+    ("google/gemini-3-flash-preview",          ""),
+    ("google/gemini-3.1-pro-preview",          ""),
     ("google/gemini-3.1-flash-lite-preview",   ""),
-    ("qwen/qwen3.5-plus-02-15",         ""),
-    ("qwen/qwen3.5-35b-a3b",            ""),
-    ("stepfun/step-3.5-flash",          ""),
-    ("minimax/minimax-m2.7",            ""),
-    ("minimax/minimax-m2.5",            ""),
-    ("minimax/minimax-m2.5:free",       "free"),
-    ("z-ai/glm-5.1",                    ""),
-    ("z-ai/glm-5v-turbo",               ""),
-    ("z-ai/glm-5-turbo",                ""),
-    ("x-ai/grok-4.20",                  ""),
+    ("qwen/qwen3.6-35b-a3b",                   ""),
+    ("stepfun/step-3.5-flash",                 ""),
+    ("minimax/minimax-m2.7",                   ""),
+    ("z-ai/glm-5.1",                           ""),
+    ("x-ai/grok-4.20",                         ""),
+    ("x-ai/grok-4.3",                          ""),
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    ("deepseek/deepseek-v4-pro",               ""),
+    # Free tier
+    ("openrouter/elephant-alpha",              "free"),
+    ("openrouter/owl-alpha",                   "free"),
+    ("tencent/hy3-preview:free",               "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
-    ("arcee-ai/trinity-large-preview:free", "free"),
-    ("arcee-ai/trinity-large-thinking",  ""),
-    ("openai/gpt-5.5-pro",              ""),
-    ("openai/gpt-5.4-nano",             ""),
+    ("inclusionai/ring-2.6-1t:free",           "free"),
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
@@ -112,16 +110,16 @@ def _codex_curated_models() -> list[str]:
 # $HERMES_HOME/models_dev_cache.json as of 2026-04-28. Whenever xAI renames
 # or retires a model, the disk cache picks it up on the next refresh and the
 # fallback here only matters until that refresh lands.
+#
+# Models retired by xAI on May 15, 2026 are excluded — see
+# https://docs.x.ai/developers/migration/may-15-retirement
+# (grok-4, grok-4-0709, grok-4-fast{,-reasoning,-non-reasoning},
+#  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
 _XAI_STATIC_FALLBACK: list[str] = [
     "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning",
     "grok-4.20-multi-agent-0309",
-    "grok-4-1-fast",
-    "grok-4-1-fast-non-reasoning",
-    "grok-4-fast",
-    "grok-4-fast-non-reasoning",
-    "grok-4",
-    "grok-code-fast-1",
+    "grok-4.3",
 ]
 
 
@@ -154,36 +152,30 @@ def _xai_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
-        "moonshotai/kimi-k2.6",
-        "xiaomi/mimo-v2.5-pro",
-        "xiaomi/mimo-v2.5",
-        "tencent/hy3-preview",
         "anthropic/claude-opus-4.7",
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
-        "anthropic/claude-sonnet-4.5",
+        "moonshotai/kimi-k2.6",
+        "qwen/qwen3.6-plus",
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5.5",
+        "openai/gpt-5.5-pro",
         "openai/gpt-5.4-mini",
+        "openai/gpt-5.4-nano",
         "openai/gpt-5.3-codex",
+        "xiaomi/mimo-v2.5-pro",
+        "tencent/hy3-preview",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
         "google/gemini-3.1-pro-preview",
         "google/gemini-3.1-flash-lite-preview",
-        "qwen/qwen3.5-plus-02-15",
-        "qwen/qwen3.5-35b-a3b",
+        "qwen/qwen3.6-35b-a3b",
         "stepfun/step-3.5-flash",
         "minimax/minimax-m2.7",
-        "minimax/minimax-m2.5",
-        "minimax/minimax-m2.5:free",
         "z-ai/glm-5.1",
-        "z-ai/glm-5v-turbo",
-        "z-ai/glm-5-turbo",
-        "x-ai/grok-4.20-beta",
+        "x-ai/grok-4.3",
         "nvidia/nemotron-3-super-120b-a12b",
-        "arcee-ai/trinity-large-thinking",
-        "openai/gpt-5.5-pro",
-        "openai/gpt-5.4-nano",
+        "deepseek/deepseek-v4-pro",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
@@ -218,7 +210,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3-pro-preview",
         "gemini-3-flash-preview",
         "gemini-2.5-pro",
-        "grok-code-fast-1",
     ],
     "gemini": [
         "gemini-3.1-pro-preview",
@@ -407,6 +398,18 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen3-coder-plus",
         "qwen3-coder-next",
         # Third-party models available on coding-intl
+        "glm-5",
+        "glm-4.7",
+        "MiniMax-M2.5",
+    ],
+    # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
+    # separate provider ID with its own base_url_env_var.
+    "alibaba-coding-plan": [
+        "qwen3.6-plus",
+        "qwen3.5-plus",
+        "qwen3-coder-plus",
+        "qwen3-coder-next",
+        "kimi-k2.5",
         "glm-5",
         "glm-4.7",
         "MiniMax-M2.5",
@@ -773,7 +776,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (local desktop app with built-in model server)"),
-    ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, $5 free credit, no markup)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
@@ -803,7 +805,27 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
+    ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
 ]
+
+# Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
+# that is not already in the list above.  Adding plugins/model-providers/<name>/
+# is sufficient to expose a new provider in the model picker, /model, and all
+# downstream consumers — no edits to this file needed.
+_canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
+try:
+    from providers import list_providers as _list_providers_for_canonical
+    for _pp in _list_providers_for_canonical():
+        if _pp.name in _canonical_slugs:
+            continue
+        if _pp.auth_type in {"oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot"}:
+            continue  # non-api-key flows need bespoke picker UX; skip auto-inject
+        _label = _pp.display_name or _pp.name
+        _desc = _pp.description or f"{_label} (direct API)"
+        CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _desc))
+        _canonical_slugs.add(_pp.name)
+except Exception:
+    pass
 
 # Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
@@ -1739,10 +1761,20 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
-    """Return True if the model is a Claude model eligible for Anthropic Fast Mode."""
+    """Return True if the model is a Claude model eligible for Anthropic Fast Mode.
+
+    Fast mode is currently supported on Claude Opus 4.6 only. Per Anthropic's
+    docs (https://platform.claude.com/docs/en/build-with-claude/fast-mode):
+    "Fast mode is currently supported on Opus 4.6 only. Sending speed: fast
+    with an unsupported model returns an error." Opus 4.7 explicitly rejects
+    the ``speed`` parameter with HTTP 400.
+    """
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
-    return base.startswith("claude-")
+    if not base.startswith("claude-"):
+        return False
+    # Only Opus 4.6 supports fast mode at present.
+    return "opus-4-6" in base or "opus-4.6" in base
 
 
 def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
@@ -2012,6 +2044,34 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 return ids
         except Exception:
             pass
+
+    # ── Profile-based generic live fetch (all simple api-key providers) ──
+    # Handles any provider registered in providers/ with auth_type="api_key".
+    # Replaces per-provider copy-paste blocks (stepfun, gmi, zai, etc.).
+    try:
+        from providers import get_provider_profile
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+
+        _p = get_provider_profile(normalized)
+        if _p and _p.auth_type == "api_key" and _p.base_url:
+            try:
+                creds = resolve_api_key_provider_credentials(normalized)
+                api_key = str(creds.get("api_key") or "").strip()
+                base_url = str(creds.get("base_url") or "").strip()
+            except Exception:
+                api_key, base_url = "", _p.base_url
+            if not base_url:
+                base_url = _p.base_url
+            if api_key:
+                live = _p.fetch_models(api_key=api_key)
+                if live:
+                    return live
+            # Use profile's fallback_models if defined
+            if _p.fallback_models:
+                return list(_p.fallback_models)
+    except Exception:
+        pass
+
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
         return _merge_with_models_dev(normalized, curated_static)
@@ -2275,7 +2335,7 @@ def _lmstudio_fetch_raw_models(
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
+        if exc.code in {401, 403}:
             from hermes_cli.auth import AuthError
             raise AuthError(
                 f"LM Studio rejected the request with HTTP {exc.code}.",
@@ -2895,6 +2955,19 @@ def fetch_api_models(
 _OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
 
 
+def _strip_ollama_cloud_suffix(model_id: str) -> str:
+    """Strip :cloud / -cloud suffixes that models.dev appends to Ollama Cloud IDs.
+
+    The live API uses clean IDs (e.g. 'kimi-k2.6') while models.dev sometimes
+    returns them as 'kimi-k2.6:cloud'. Normalising before the dedup merge
+    prevents duplicate entries in the merged model list.
+    """
+    for suffix in (":cloud", "-cloud"):
+        if model_id.endswith(suffix):
+            return model_id[: -len(suffix)]
+    return model_id
+
+
 def _ollama_cloud_cache_path() -> Path:
     """Return the path for the Ollama Cloud model cache."""
     from hermes_constants import get_hermes_home
@@ -2990,9 +3063,10 @@ def fetch_ollama_cloud_models(
                 seen.add(m)
                 merged.append(m)
         for m in mdev_models:
-            if m and m not in seen:
-                seen.add(m)
-                merged.append(m)
+            normalized = _strip_ollama_cloud_suffix(m)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                merged.append(normalized)
         if merged:
             _save_ollama_cloud_cache(merged)
             return merged
@@ -3086,7 +3160,7 @@ def validate_requested_model(
             "message": f"Model `{requested}` was not found in LM Studio's model listing.",
         }
 
-    if normalized == "custom":
+    if normalized == "custom" or normalized.startswith("custom:"):
         # Try probing with correct auth for the api_mode.
         if api_mode == "anthropic_messages":
             probe = probe_api_models(api_key, base_url, api_mode=api_mode)
@@ -3184,18 +3258,19 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
             return {
-                "accepted": False,
-                "persist": False,
+                "accepted": True,
+                "persist": True,
                 "recognized": False,
                 "message": (
-                    f"Model `{requested}` was not found in the OpenAI Codex model listing."
+                    f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
+                    "It may still work if your ChatGPT/Codex account has access to a newer or hidden model ID."
                     f"{suggestion_text}"
                 ),
             }
 
     # MiniMax providers don't expose a /models endpoint — validate against
     # the static catalog instead, similar to openai-codex.
-    if normalized in ("minimax", "minimax-cn"):
+    if normalized in {"minimax", "minimax-cn"}:
         try:
             catalog_models = provider_model_ids(normalized)
         except Exception:

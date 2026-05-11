@@ -110,7 +110,7 @@ class TestOpenaiTtsSpeed:
 
 
 # ---------------------------------------------------------------------------
-# MiniMax TTS speed (global fallback wired)
+# MiniMax TTS (new API: raw audio, no speed/voice_setting)
 # ---------------------------------------------------------------------------
 
 class TestMinimaxTtsSpeed:
@@ -118,28 +118,29 @@ class TestMinimaxTtsSpeed:
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": {"audio": "deadbeef"},
-            "base_resp": {"status_code": 0, "status_msg": "success"},
-            "extra_info": {"audio_size": 8},
-        }
+        mock_response.headers = {"Content-Type": "audio/mpeg"}
+        mock_response.content = b"\x00\x01\x02\x03"
 
         # requests is imported locally inside _generate_minimax_tts
         with patch("requests.post", return_value=mock_response) as mock_post:
             from tools.tts_tool import _generate_minimax_tts
-            _generate_minimax_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
-        return mock_post
+            output = _generate_minimax_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
+        return mock_post, output
 
-    def test_global_speed_fallback(self, tmp_path, monkeypatch):
-        """Global tts.speed used when minimax.speed not set."""
-        mock_post = self._run({"speed": 1.5}, tmp_path, monkeypatch)
+    def test_simple_payload(self, tmp_path, monkeypatch):
+        """New API uses flat payload with model, text, voice_id."""
+        mock_post, _ = self._run({}, tmp_path, monkeypatch)
         payload = mock_post.call_args[1]["json"]
-        assert payload["voice_setting"]["speed"] == 1.5
+        assert "model" in payload
+        assert "text" in payload
+        assert "voice_id" in payload
+        assert "voice_setting" not in payload
+        assert "audio_setting" not in payload
+        assert "stream" not in payload
 
-    def test_provider_speed_overrides_global(self, tmp_path, monkeypatch):
-        """tts.minimax.speed takes precedence over tts.speed."""
-        mock_post = self._run(
-            {"speed": 1.5, "minimax": {"speed": 2.0}}, tmp_path, monkeypatch
-        )
-        payload = mock_post.call_args[1]["json"]
-        assert payload["voice_setting"]["speed"] == 2.0
+    def test_writes_raw_audio(self, tmp_path, monkeypatch):
+        """New API returns raw bytes written directly to file."""
+        _, output = self._run({}, tmp_path, monkeypatch)
+        assert output == str(tmp_path / "out.mp3")
+        with open(output, "rb") as f:
+            assert f.read() == b"\x00\x01\x02\x03"

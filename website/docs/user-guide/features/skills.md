@@ -464,6 +464,119 @@ This uses the stored source identifier plus the current upstream bundle content 
 Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.
 :::
 
+### Publishing a custom skill tap
+
+If you want to share a curated set of skills — for your team, your org, or publicly — you can publish them as a **tap**: a GitHub repository other Hermes users add with `hermes skills tap add <owner/repo>`. No server, no registry sign-up, no release pipeline. Just a directory of `SKILL.md` files.
+
+#### Repo layout
+
+A tap is any GitHub repo (public or private — private needs `GITHUB_TOKEN`) laid out like this:
+
+```
+owner/repo
+├── skills/                       # default path; configurable per-tap
+│   ├── my-workflow/
+│   │   ├── SKILL.md              # required
+│   │   ├── references/           # optional supporting files
+│   │   ├── templates/
+│   │   └── scripts/
+│   ├── another-skill/
+│   │   └── SKILL.md
+│   └── third-skill/
+│       └── SKILL.md
+└── README.md                     # optional but helpful
+```
+
+Rules:
+- Each skill lives in its own directory under the tap's root path (default `skills/`).
+- The directory name becomes the skill's install slug.
+- Each skill directory must contain a `SKILL.md` with standard [SKILL.md frontmatter](#skillmd-format) (`name`, `description`, plus optional `metadata.hermes.tags`, `version`, `author`, `platforms`, `metadata.hermes.config`).
+- Subdirectories like `references/`, `templates/`, `scripts/`, `assets/` are downloaded alongside `SKILL.md` at install time.
+- Skills whose directory name starts with `.` or `_` are ignored.
+
+Hermes discovers skills by listing every subdirectory of the tap path and probing each for `SKILL.md`.
+
+#### Minimal tap example
+
+```
+my-org/hermes-skills
+└── skills/
+    └── deploy-runbook/
+        └── SKILL.md
+```
+
+`skills/deploy-runbook/SKILL.md`:
+
+```markdown
+---
+name: deploy-runbook
+description: Our deployment runbook — services, rollback, Slack channels
+version: 1.0.0
+author: My Org Platform Team
+metadata:
+  hermes:
+    tags: [deployment, runbook, internal]
+---
+
+# Deploy Runbook
+
+Step 1: ...
+```
+
+After pushing that to GitHub, any Hermes user can subscribe and install:
+
+```bash
+hermes skills tap add my-org/hermes-skills
+hermes skills search deploy
+hermes skills install my-org/hermes-skills/deploy-runbook
+```
+
+#### Non-default paths
+
+If your skills don't live under `skills/` (common when you're adding a `skills/` subtree to an existing project), edit the tap entry in `~/.hermes/.hub/taps.json`:
+
+```json
+{
+  "taps": [
+    {"repo": "my-org/platform-docs", "path": "internal/skills/"}
+  ]
+}
+```
+
+The `hermes skills tap add` CLI defaults new taps to `path: "skills/"`; edit the file directly if you need a different path. `hermes skills tap list` shows the effective path per tap.
+
+#### Installing individual skills directly (without adding a tap)
+
+Users can also install a single skill from any public GitHub repo without adding the whole repo as a tap:
+
+```bash
+hermes skills install owner/repo/skills/my-workflow
+```
+
+Useful when you want to share one skill without asking the user to subscribe to your whole registry.
+
+#### Trust levels for taps
+
+New taps are assigned `community` trust by default. Skills installed from them run through the standard security scan and show the third-party warning panel on first install. If your org or a widely-trusted source should get higher trust, add its repo to `TRUSTED_REPOS` in `tools/skills_hub.py` (requires a Hermes core PR).
+
+#### Tap management
+
+```bash
+hermes skills tap list                                # show all configured taps
+hermes skills tap add myorg/skills-repo               # add (default path: skills/)
+hermes skills tap remove myorg/skills-repo            # remove
+```
+
+Inside a running session:
+
+```
+/skills tap list
+/skills tap add myorg/skills-repo
+/skills tap remove myorg/skills-repo
+```
+
+Taps are stored in `~/.hermes/.hub/taps.json` (created on demand).
+
 ## Bundled skill updates (`hermes skills reset`)
 
 Hermes ships with a set of bundled skills in `skills/` inside the repo. On install and on every `hermes update`, a sync pass copies those into `~/.hermes/skills/` and records a manifest at `~/.hermes/skills/.bundled_manifest` mapping each skill name to the content hash at the time it was synced (the **origin hash**).

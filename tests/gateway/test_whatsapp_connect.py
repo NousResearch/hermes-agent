@@ -285,6 +285,66 @@ class TestBridgeRuntimeFailure:
         assert adapter._bridge_log_fh is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("returncode", [0, -2, -15])
+    async def test_shutdown_suppresses_fatal_on_planned_bridge_exit(self, returncode):
+        """During graceful disconnect(), SIGTERM/SIGINT/clean-exit are NOT fatal.
+
+        Regression guard for the bug where every gateway shutdown/restart
+        logged "Fatal whatsapp adapter error (whatsapp_bridge_exited)" and
+        dispatched a fatal-error notification just before the normal
+        "✓ whatsapp disconnected" — because _check_managed_bridge_exit()
+        saw the bridge's returncode of -15 (our own SIGTERM) and classified
+        it as an unexpected crash.
+        """
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._http_session = MagicMock()
+        adapter._bridge_log_fh = MagicMock()
+        adapter._shutting_down = True  # disconnect() sets this before SIGTERM
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = returncode
+        adapter._bridge_process = mock_proc
+
+        result = await adapter._check_managed_bridge_exit()
+
+        assert result is None, (
+            f"returncode={returncode} during shutdown should be suppressed, "
+            f"got fatal message: {result!r}"
+        )
+        assert adapter.fatal_error_code is None
+        fatal_handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_still_surfaces_nonzero_crash(self):
+        """Even during shutdown, a truly crashed bridge (e.g. returncode 9) is fatal.
+
+        The suppression list is deliberately narrow (0, -2, -15) so that
+        OOM-kill (137), assertion failures, or custom error exits still
+        reach the fatal-error handler and user notification path.
+        """
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._http_session = MagicMock()
+        adapter._bridge_log_fh = MagicMock()
+        adapter._shutting_down = True
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 137  # SIGKILL / OOM-kill
+        adapter._bridge_process = mock_proc
+
+        result = await adapter._check_managed_bridge_exit()
+
+        assert result is not None
+        assert "exited unexpectedly" in result
+        assert adapter.fatal_error_code == "whatsapp_bridge_exited"
+        fatal_handler.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_closed_when_http_not_ready(self):
         """Health endpoint never returns 200 within 15 attempts."""
         adapter = _make_adapter()

@@ -38,6 +38,8 @@ class TestFlushDeduplication:
                 skip_context_files=True,
                 skip_memory=True,
             )
+        # Simulate lazy session creation (normally done by run_conversation)
+        agent._ensure_db_session()
         return agent
 
     def test_flush_writes_only_new_messages(self):

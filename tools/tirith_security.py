@@ -52,7 +52,7 @@ def _env_bool(key: str, default: bool) -> bool:
     val = os.getenv(key)
     if val is None:
         return default
-    return val.lower() in ("1", "true", "yes")
+    return val.lower() in {"1", "true", "yes"}
 
 
 def _env_int(key: str, default: int) -> int:
@@ -126,7 +126,7 @@ def _read_failure_reason() -> str | None:
         mtime = os.path.getmtime(p)
         if (time.time() - mtime) >= _MARKER_TTL:
             return None
-        with open(p, "r") as f:
+        with open(p, "r", encoding="utf-8") as f:
             return f.read().strip()
     except OSError:
         return None
@@ -160,7 +160,7 @@ def _mark_install_failed(reason: str = ""):
     try:
         p = _failure_marker_path()
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write(reason)
     except OSError:
         pass
@@ -189,14 +189,14 @@ def _detect_target() -> str | None:
     # Android (Termux) is ABI-compatible with Linux — reuse Linux binaries.
     if system == "Darwin":
         plat = "apple-darwin"
-    elif system in ("Linux", "Android"):
+    elif system in {"Linux", "Android"}:
         plat = "unknown-linux-gnu"
     else:
         return None
 
-    if machine in ("x86_64", "amd64"):
+    if machine in {"x86_64", "amd64"}:
         arch = "x86_64"
-    elif machine in ("aarch64", "arm64"):
+    elif machine in {"aarch64", "arm64"}:
         arch = "aarch64"
     else:
         return None
@@ -257,7 +257,7 @@ def _verify_cosign(checksums_path: str, sig_path: str, cert_path: str) -> bool |
 def _verify_checksum(archive_path: str, checksums_path: str, archive_name: str) -> bool:
     """Verify SHA-256 of the archive against checksums.txt."""
     expected = None
-    with open(checksums_path) as f:
+    with open(checksums_path, encoding="utf-8") as f:
         for line in f:
             # Format: "<hash>  <filename>"
             parts = line.strip().split("  ", 1)

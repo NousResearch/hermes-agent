@@ -20,6 +20,7 @@ OpenAI's general-purpose speech recognition model. Supports 99 languages, transc
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `openai-whisper`, `transformers`, `torch` |
+| Platforms | linux, macos |
 | Tags | `Whisper`, `Speech Recognition`, `ASR`, `Multimodal`, `Multilingual`, `OpenAI`, `Speech-To-Text`, `Transcription`, `Translation`, `Audio Processing` |
 
 ## Reference: full SKILL.md

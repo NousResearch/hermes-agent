@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -82,6 +83,121 @@ _UTC_NOW = lambda: datetime.now(timezone.utc)
 # Official docs snapshot entries. Models whose published pricing and cache
 # semantics are stable enough to encode exactly.
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
+    # ── Anthropic Claude 4.7 ─────────────────────────────────────────────
+    # Opus 4.5/4.6/4.7 share $5/$25 pricing (new tokenizer, up to 35% more
+    # tokens for the same text).
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    (
+        "anthropic",
+        "claude-opus-4-7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-opus-4-7-20250507",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # ── Anthropic Claude 4.6 ─────────────────────────────────────────────
+    (
+        "anthropic",
+        "claude-opus-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-opus-4-6-20250414",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-6-20250414",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # ── Anthropic Claude 4.5 ─────────────────────────────────────────────
+    (
+        "anthropic",
+        "claude-opus-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-haiku-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("5.00"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        cache_write_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # ── Anthropic Claude 4 / 4.1 ─────────────────────────────────────────
     (
         "anthropic",
         "claude-opus-4-20250514",
@@ -91,8 +207,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("1.50"),
         cache_write_cost_per_million=Decimal("18.75"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-prompt-caching-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     (
         "anthropic",
@@ -103,8 +219,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-prompt-caching-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     # OpenAI
     (
@@ -184,7 +300,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/api/pricing/",
         pricing_version="openai-pricing-2026-03-16",
     ),
-    # Anthropic older models (pre-4.6 generation)
+    # ── Anthropic older models (pre-4.5 generation) ────────────────────────
     (
         "anthropic",
         "claude-3-5-sonnet-20241022",
@@ -194,8 +310,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-pricing-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     (
         "anthropic",
@@ -206,8 +322,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.08"),
         cache_write_cost_per_million=Decimal("1.00"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-pricing-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     (
         "anthropic",
@@ -218,8 +334,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("1.50"),
         cache_write_cost_per_million=Decimal("18.75"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-pricing-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     (
         "anthropic",
@@ -230,8 +346,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.03"),
         cache_write_cost_per_million=Decimal("0.30"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-pricing-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     # DeepSeek
     (
@@ -426,8 +542,37 @@ def resolve_billing_route(
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
 
 
+def _normalize_anthropic_model_name(model: str) -> str:
+    """Normalize Anthropic model name variants to canonical form.
+
+    Handles:
+      - Dot notation: claude-opus-4.7 → claude-opus-4-7
+      - Short aliases: claude-opus-4.7 → claude-opus-4-7
+      - Strips anthropic/ prefix if present
+    """
+    name = model.lower().strip()
+    if name.startswith("anthropic/"):
+        name = name[len("anthropic/"):]
+    # Normalize dots to dashes in version numbers (e.g. 4.7 → 4-7, 4.6 → 4-6)
+    # But preserve the rest of the name structure
+    name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", name)
+    return name
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
-    return _OFFICIAL_DOCS_PRICING.get((route.provider, route.model.lower()))
+    model = route.model.lower()
+    # Direct lookup first
+    entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
+    if entry:
+        return entry
+    # Try normalized name for Anthropic (handles dot-notation like opus-4.7)
+    if route.provider == "anthropic":
+        normalized = _normalize_anthropic_model_name(model)
+        if normalized != model:
+            entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+            if entry:
+                return entry
+    return None
 
 
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:

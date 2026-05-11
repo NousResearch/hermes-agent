@@ -203,6 +203,30 @@ class TestListAuthenticatedProvidersBedrock:
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
         assert bedrock is None, "bedrock should NOT appear when AWS credentials are absent"
 
+    def test_non_bedrock_picker_does_not_probe_full_aws_chain(self, monkeypatch):
+        """Non-Bedrock provider discovery must not touch boto3's full credential chain."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        monkeypatch.delenv("AWS_WEB_IDENTITY_TOKEN_FILE", raising=False)
+        monkeypatch.delenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", raising=False)
+        monkeypatch.delenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", raising=False)
+
+        calls = {"has_aws_credentials": 0}
+
+        def _has_aws_credentials():
+            calls["has_aws_credentials"] += 1
+            return False
+
+        with patch("agent.bedrock_adapter.has_aws_credentials", side_effect=_has_aws_credentials):
+            providers = list_authenticated_providers(current_provider="openrouter", max_models=0)
+
+        assert calls["has_aws_credentials"] == 0
+        assert all(p["slug"] != "bedrock" for p in providers)
+
     def test_bedrock_falls_back_to_curated_when_discovery_fails(self, monkeypatch):
         """When discover_bedrock_models() raises, fall back to curated list without crashing."""
         from hermes_cli.model_switch import list_authenticated_providers

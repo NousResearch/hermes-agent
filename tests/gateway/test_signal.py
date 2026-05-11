@@ -1649,3 +1649,148 @@ class TestSignalSendTimeout:
         # 32 attachments × 5s = 160s; ought to comfortably outlast a
         # serial upload of an attachment-heavy batch.
         assert _signal_send_timeout(32) == 160.0
+
+
+# ---------------------------------------------------------------------------
+# Contentless Envelope Filtering (profile key updates, empty messages)
+# ---------------------------------------------------------------------------
+
+class TestSignalContentlessEnvelope:
+    """Verify that profile key updates and empty Signal messages are skipped."""
+
+    @pytest.mark.asyncio
+    async def test_skips_profile_key_update_no_message_field(self, monkeypatch):
+        """Profile key updates may carry a dataMessage without 'message' field.
+        Must be skipped to avoid triggering agent turns for metadata."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Profile key update: dataMessage exists but has no "message" field
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    # No "message" field — profile key update metadata only
+                    "profileKey": "some-profile-key-data",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Profile key update should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_skips_empty_message(self, monkeypatch):
+        """Empty text messages (message='') should be skipped."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Empty message should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_skips_whitespace_only_message(self, monkeypatch):
+        """Whitespace-only messages ('   ') should be skipped."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "   \n\t  ",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Whitespace-only message should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_allows_message_with_attachment_no_text(self, monkeypatch):
+        """Messages with attachments but no text should still be processed."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Mock attachment fetch to return a cached image
+        png_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+        b64_data = base64.b64encode(png_data).decode()
+        adapter._rpc, _ = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/img.png"):
+            await adapter._handle_envelope({
+                "envelope": {
+                    "sourceNumber": "+155****9999",
+                    "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                    "sourceName": "Elliott McManis",
+                    "timestamp": 1777600696077,
+                    "dataMessage": {
+                        "message": "",  # No text
+                        "attachments": [{"id": "att-123", "size": 200}],
+                    },
+                }
+            })
+
+        assert "event" in captured, "Message with attachment should NOT be skipped"
+        assert captured["event"].media_urls == ["/tmp/img.png"]
+
+    @pytest.mark.asyncio
+    async def test_allows_normal_text_message(self, monkeypatch):
+        """Normal text messages should still flow through."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "hello world",
+                },
+            }
+        })
+
+        assert "event" in captured, "Normal message should NOT be skipped"
+        assert captured["event"].text == "hello world"

@@ -624,19 +624,22 @@ class TestModelAutoCorrection:
         call_kwargs = mock_client.audio.transcriptions.create.call_args
         assert call_kwargs.kwargs["model"] == DEFAULT_GROQ_STT_MODEL
 
-    def test_groq_corrects_gpt4o_transcribe(self, monkeypatch, sample_wav):
+    def test_groq_corrects_openai_transcribe_models(self, monkeypatch, sample_wav):
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
 
-        mock_client = MagicMock()
-        mock_client.audio.transcriptions.create.return_value = "test"
+        from tools.transcription_tools import OPENAI_MODELS, DEFAULT_GROQ_STT_MODEL
 
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("openai.OpenAI", return_value=mock_client):
-            from tools.transcription_tools import _transcribe_groq, DEFAULT_GROQ_STT_MODEL
-            _transcribe_groq(sample_wav, "gpt-4o-transcribe")
+        for model in OPENAI_MODELS:
+            mock_client = MagicMock()
+            mock_client.audio.transcriptions.create.return_value = "test"
 
-        call_kwargs = mock_client.audio.transcriptions.create.call_args
-        assert call_kwargs.kwargs["model"] == DEFAULT_GROQ_STT_MODEL
+            with patch("tools.transcription_tools._HAS_OPENAI", True), \
+                 patch("openai.OpenAI", return_value=mock_client):
+                from tools.transcription_tools import _transcribe_groq
+                _transcribe_groq(sample_wav, model)
+
+            call_kwargs = mock_client.audio.transcriptions.create.call_args
+            assert call_kwargs.kwargs["model"] == DEFAULT_GROQ_STT_MODEL
 
     def test_openai_corrects_groq_model(self, monkeypatch, sample_wav):
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")

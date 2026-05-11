@@ -1299,7 +1299,7 @@ stt:
   local:
     model: "base"              # tiny, base, small, medium, large-v3
   openai:
-    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-realtime-whisper
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 

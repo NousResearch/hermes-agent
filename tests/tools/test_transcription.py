@@ -259,7 +259,13 @@ class TestNormalizeLocalModel:
 
     def test_openai_model_name_maps_to_default(self):
         from tools.transcription_tools import _normalize_local_model, DEFAULT_LOCAL_MODEL
-        assert _normalize_local_model("whisper-1") == DEFAULT_LOCAL_MODEL
+        for model in (
+            "whisper-1",
+            "gpt-4o-mini-transcribe",
+            "gpt-4o-transcribe",
+            "gpt-realtime-whisper",
+        ):
+            assert _normalize_local_model(model) == DEFAULT_LOCAL_MODEL
 
     def test_groq_model_name_maps_to_default(self):
         from tools.transcription_tools import _normalize_local_model, DEFAULT_LOCAL_MODEL

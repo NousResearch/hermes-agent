@@ -536,10 +536,13 @@ class TelegramAdapter(BasePlatformAdapter):
         cls,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]] = None,
+        reply_to_mode: Optional[str] = None,
     ) -> Optional[int]:
         if reply_to:
             return int(reply_to)
         if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+            if reply_to_mode == "off":
+                return None
             return cls._metadata_reply_to_message_id(metadata)
         return None
 
@@ -550,6 +553,7 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id: Optional[str],
         metadata: Optional[Dict[str, Any]] = None,
         reply_to_message_id: Optional[int] = None,
+        reply_to_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return Telegram send kwargs for forum and direct-message topic routing.
 
@@ -559,8 +563,14 @@ class TelegramAdapter(BasePlatformAdapter):
         ``telegram_dm_topic_reply_fallback`` and must send the private topic
         thread id together with a reply anchor. Live testing showed that either
         parameter alone can render outside the visible lane.
+
+        When ``reply_to_mode`` is ``"off"``, the reply anchor is suppressed for
+        DM topic fallback sends while preserving the ``message_thread_id`` so
+        the message still lands in the correct topic.
         """
         if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+            if reply_to_mode == "off":
+                return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
             if reply_to_message_id is None:
                 reply_to_message_id = cls._metadata_reply_to_message_id(metadata)
             if reply_to_message_id is None:
@@ -1550,7 +1560,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     if metadata and metadata.get("telegram_dm_topic_reply_fallback") and metadata_reply_to is not None else None
                 )
                 if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
-                    should_thread = reply_to_source is not None
+                    should_thread = (
+                        reply_to_source is not None
+                        and self._reply_to_mode != "off"
+                    )
                 else:
                     should_thread = self._should_thread_reply(reply_to_source, i)
                 reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
@@ -1559,6 +1572,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
                 )
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
@@ -1630,6 +1644,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                         thread_id,
                                         metadata,
                                         reply_to_message_id=reply_to_id,
+                                        reply_to_mode=self._reply_to_mode,
                                     )
                                     effective_thread_id = thread_kwargs.get("message_thread_id")
                                 continue
@@ -2095,7 +2110,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 ]
             ])
             thread_id = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
@@ -2107,6 +2122,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 ),
                 **self._link_preview_kwargs(),
             )
@@ -2165,7 +2181,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "reply_markup": keyboard,
                 **self._link_preview_kwargs(),
             }
-            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             kwargs["reply_to_message_id"] = reply_to_id
             kwargs.update(
                 self._thread_kwargs_for_send(
@@ -2173,6 +2189,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 )
             )
 
@@ -2217,7 +2234,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "reply_markup": keyboard,
                 **self._link_preview_kwargs(),
             }
-            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             kwargs["reply_to_message_id"] = reply_to_id
             kwargs.update(
                 self._thread_kwargs_for_send(
@@ -2225,6 +2242,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 )
             )
 
@@ -2369,7 +2387,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             thread_id = metadata.get("thread_id") if metadata else None
-            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
@@ -2381,6 +2399,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 ),
                 **self._link_preview_kwargs(),
             )
@@ -2795,6 +2814,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                         "telegram_dm_topic_reply_fallback": True,
                                     },
                                     reply_to_message_id=reply_to_id,
+                                    reply_to_mode=self._reply_to_mode
                                 )
                             )
                         elif thread_id is not None:
@@ -2803,6 +2823,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     str(query.message.chat_id),
                                     str(thread_id),
                                     {"thread_id": str(thread_id)},
+                                    reply_to_mode=self._reply_to_mode
                                 )
                             )
                         await self._send_message_with_thread_fallback(**send_kwargs)
@@ -2990,12 +3011,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # .ogg / .opus files -> send as voice (round playable bubble)
                 if ext in {".ogg", ".opus"}:
                     _voice_thread = self._metadata_thread_id(metadata)
-                    reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+                    reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
                     voice_thread_kwargs = self._thread_kwargs_for_send(
                         chat_id,
                         _voice_thread,
                         metadata,
                         reply_to_message_id=reply_to_id,
+                        reply_to_mode=self._reply_to_mode
                     )
                     msg = await self._send_with_dm_topic_reply_anchor_retry(
                         self._bot.send_voice,
@@ -3015,12 +3037,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 elif ext in {".mp3", ".m4a"}:
                     # Telegram's Bot API sendAudio only accepts MP3 / M4A.
                     _audio_thread = self._metadata_thread_id(metadata)
-                    reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+                    reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
                     audio_thread_kwargs = self._thread_kwargs_for_send(
                         chat_id,
                         _audio_thread,
                         metadata,
                         reply_to_message_id=reply_to_id,
+                        reply_to_mode=self._reply_to_mode
                     )
                     msg = await self._send_with_dm_topic_reply_anchor_retry(
                         self._bot.send_audio,
@@ -3145,12 +3168,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Sending media group of %d photo(s) (chunk %d/%d)",
                     self.name, len(media), chunk_idx + 1, len(chunks),
                 )
-                reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+                reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
                 thread_kwargs = self._thread_kwargs_for_send(
                     chat_id,
                     _thread,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 )
 
                 def _reset_opened_files() -> None:
@@ -3209,12 +3233,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
 
             _thread = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
             thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
                 _thread,
                 metadata,
                 reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode
             )
             with open(image_path, "rb") as image_file:
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
@@ -3303,12 +3328,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
             display_name = file_name or os.path.basename(file_path)
             _thread = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
             thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
                 _thread,
                 metadata,
                 reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode
             )
 
             with open(file_path, "rb") as f:
@@ -3351,12 +3377,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=self._missing_media_path_error("Video", video_path))
 
             _thread = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
             thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
                 _thread,
                 metadata,
                 reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode
             )
             with open(video_path, "rb") as f:
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
@@ -3403,12 +3430,13 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             # Telegram can send photos directly from URLs (up to ~5MB)
             _photo_thread = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
             photo_thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
                 _photo_thread,
                 metadata,
                 reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode
             )
             msg = await self._send_with_dm_topic_reply_anchor_retry(
                 self._bot.send_photo,
@@ -3445,6 +3473,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     _photo_thread,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 )
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_photo,
@@ -3485,12 +3514,13 @@ class TelegramAdapter(BasePlatformAdapter):
         
         try:
             _anim_thread = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
             animation_thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
                 _anim_thread,
                 metadata,
                 reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode
             )
             msg = await self._send_with_dm_topic_reply_anchor_retry(
                 self._bot.send_animation,

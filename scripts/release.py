@@ -53,6 +53,7 @@ AUTHOR_MAP = {
     "421774554@qq.com": "wuli666",
     "harish.kukreja@gmail.com": "counterposition",
     "1046611633@qq.com": "zhengyn0001",
+    "ahmed@abadr.net": "ahmedbadr3",
     "cleo@edaphic.xyz": "curiouscleo",
     "hirokazu.ogawa@kwansei.ac.jp": "hrkzogw",
     "datapod.k@gmail.com": "dandacompany",

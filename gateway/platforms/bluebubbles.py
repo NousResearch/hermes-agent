@@ -223,8 +223,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _webhook_url(self) -> str:
         """Compute the external webhook URL for BlueBubbles registration."""
         host = self.webhook_host
-        if host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
-            host = "localhost"
+        # Use 127.0.0.1 literal for loopback so BlueBubbles dials IPv4
+        # directly. The previous "localhost" rewrite caused ECONNREFUSED
+        # on macOS where Node's getaddrinfo returns ::1 first but our
+        # listener binds only to 127.0.0.1.
+        if host in ("0.0.0.0", "localhost", "::", "::1"):
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property

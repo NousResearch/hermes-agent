@@ -78,6 +78,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
+from dotenv import dotenv_values, set_key
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -707,7 +709,12 @@ class LineAdapter(BasePlatformAdapter):
         self._app = None  # aiohttp.web.Application
         self._runner = None  # aiohttp.web.AppRunner
         self._site = None  # aiohttp.web.TCPSite
-        self._reply_tokens: Dict[str, Tuple[str, float]] = {}  # chat_id → (token, expiry)
+        # Reply tokens are indexed by both chat_id (fallback/latest-message
+        # behaviour) and message_id (precise reply_to routing). The gateway
+        # passes MessageEvent.message_id back as reply_to, so keying by
+        # message_id prevents concurrent LINE messages in the same chat from
+        # consuming each other's single-use reply token.
+        self._reply_tokens: Dict[str, Tuple[str, float]] = {}
         self._cache = RequestCache()
         self._dedup = _MessageDeduplicator()
         self._bot_user_id: Optional[str] = None
@@ -924,12 +931,17 @@ class LineAdapter(BasePlatformAdapter):
         chat_id, chat_type = _resolve_chat(source)
         user_id = source.get("userId", "") or chat_id
 
-        # Stash the reply token for outbound use.
+        # Stash the reply token for outbound use. Keep a chat_id fallback for
+        # platform sends that do not pass reply_to, and a message_id entry for
+        # the normal inbound-response path.
         if chat_id and reply_token:
-            self._reply_tokens[chat_id] = (
+            token_entry = (
                 reply_token,
                 time.time() + LINE_REPLY_TOKEN_TTL_SECONDS,
             )
+            self._reply_tokens[chat_id] = token_entry
+            if message_id:
+                self._reply_tokens[message_id] = token_entry
 
         # Handle media inbound — fetch the binary, cache it, and surface a
         # vision-tool-friendly local path on the MessageEvent.
@@ -959,17 +971,33 @@ class LineAdapter(BasePlatformAdapter):
         if chat_type == "dm" and self._client:
             asyncio.create_task(self._client.loading(chat_id))
 
-        source_obj = self.create_source(
+        source_obj = self.build_source(
             chat_id=chat_id,
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_id,
             chat_name=chat_id,
+            message_id=message_id,
         )
+
+        if msg_type == "text":
+            message_type = MessageType.TEXT
+        elif msg_type == "video":
+            message_type = MessageType.VIDEO
+        elif msg_type == "audio":
+            message_type = MessageType.AUDIO
+        elif msg_type == "file":
+            message_type = MessageType.DOCUMENT
+        elif msg_type == "sticker":
+            message_type = MessageType.STICKER
+        elif msg_type == "location":
+            message_type = MessageType.LOCATION
+        else:
+            message_type = MessageType.PHOTO
 
         event_obj = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT if msg_type == "text" else MessageType.IMAGE,
+            message_type=message_type,
             source=source_obj,
             raw_message=event,
             message_id=message_id,
@@ -1076,7 +1104,9 @@ class LineAdapter(BasePlatformAdapter):
         # postback cache and route directly to LINE so they reach the user
         # as visible bubbles. Source: PR #18153.
         if _is_system_bypass(content):
-            return await self._send_text_chunks(chat_id, content, force_push=False)
+            return await self._send_text_chunks(
+                chat_id, content, reply_to=reply_to, force_push=False
+            )
 
         # If the chat has a PENDING postback button outstanding, route the
         # response into the cache for the user to fetch via tap.
@@ -1085,13 +1115,16 @@ class LineAdapter(BasePlatformAdapter):
             self._cache.set_ready(pending_rid, content)
             return SendResult(success=True, message_id=pending_rid)
 
-        return await self._send_text_chunks(chat_id, content, force_push=False)
+        return await self._send_text_chunks(
+            chat_id, content, reply_to=reply_to, force_push=False
+        )
 
     async def _send_text_chunks(
         self,
         chat_id: str,
         content: str,
         *,
+        reply_to: Optional[str] = None,
         force_push: bool,
     ) -> SendResult:
         if not self._client:
@@ -1102,7 +1135,7 @@ class LineAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         messages = [_text_message(c) for c in chunks][:LINE_MAX_MESSAGES_PER_CALL]
 
-        token, used_reply = self._consume_reply_token(chat_id)
+        token, used_reply = self._consume_reply_token(chat_id, reply_to=reply_to)
         if used_reply and not force_push:
             try:
                 await self._client.reply(token, messages)
@@ -1118,12 +1151,22 @@ class LineAdapter(BasePlatformAdapter):
             logger.error("LINE: push send failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
-    def _consume_reply_token(self, chat_id: str) -> Tuple[str, bool]:
+    def _consume_reply_token(self, chat_id: str, *, reply_to: Optional[str] = None) -> Tuple[str, bool]:
         """Consume a stashed reply token if present and unexpired.
 
         Returns ``(token, used_reply)``.
         """
-        entry = self._reply_tokens.pop(chat_id, None)
+        key = reply_to or chat_id
+        entry = self._reply_tokens.pop(key, None)
+        if entry and key != chat_id:
+            # Drop any alias for the same single-use token so it cannot be
+            # reused later via chat_id fallback.
+            token, _ = entry
+            for alias, (alias_token, _) in list(self._reply_tokens.items()):
+                if alias_token == token:
+                    self._reply_tokens.pop(alias, None)
+        if not entry and key != chat_id:
+            entry = self._reply_tokens.pop(chat_id, None)
         if not entry:
             return "", False
         token, expires_at = entry
@@ -1171,7 +1214,11 @@ class LineAdapter(BasePlatformAdapter):
             await super()._keep_typing(chat_id, *args, **kwargs)
             return
 
+        client = self._client
+
         async def _fire_postback() -> None:
+            if client is None:
+                return
             try:
                 await asyncio.sleep(self.slow_response_threshold)
             except asyncio.CancelledError:
@@ -1192,7 +1239,7 @@ class LineAdapter(BasePlatformAdapter):
                 self.pending_text, self.button_label, rid
             )
             try:
-                await self._client.reply(token, [msg])
+                await client.reply(token, [msg])
                 logger.info("LINE: sent slow-LLM postback button for chat %s (rid=%s)", chat_id, rid)
             except Exception as exc:
                 logger.warning("LINE: postback button send failed: %s", exc)
@@ -1308,7 +1355,9 @@ class LineAdapter(BasePlatformAdapter):
         chat_id: str,
         image_path: str,
         caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
         path = Path(image_path)
         if not path.exists() or not path.is_file():
@@ -1331,15 +1380,18 @@ class LineAdapter(BasePlatformAdapter):
         msgs: List[Dict[str, Any]] = [_image_message(url)]
         if caption:
             msgs.append(_text_message(caption))
-        return await self._send_messages(chat_id, msgs)
+        return await self._send_messages(chat_id, msgs, reply_to=reply_to)
 
     async def send_voice(
         self,
         chat_id: str,
         audio_path: str,
-        duration_ms: int = 1000,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
+        duration_ms = int(kwargs.get("duration_ms", 1000) or 1000)
         path = Path(audio_path)
         if not path.exists() or not path.is_file():
             return SendResult(success=False, error=f"audio file not found: {audio_path}")
@@ -1355,15 +1407,20 @@ class LineAdapter(BasePlatformAdapter):
 
         token = self._register_media(str(path.resolve()))
         url = self._media_url(token, path.name)
-        return await self._send_messages(chat_id, [_audio_message(url, duration_ms)])
+        return await self._send_messages(
+            chat_id, [_audio_message(url, duration_ms)], reply_to=reply_to
+        )
 
     async def send_video(
         self,
         chat_id: str,
         video_path: str,
-        preview_path: Optional[str] = None,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
+        preview_path = kwargs.get("preview_path")
         path = Path(video_path)
         if not path.exists() or not path.is_file():
             return SendResult(success=False, error=f"video file not found: {video_path}")
@@ -1400,12 +1457,15 @@ class LineAdapter(BasePlatformAdapter):
         video_token = self._register_media(str(path.resolve()))
         video_url = self._media_url(video_token, path.name)
         preview_url = self._media_url(preview_token, preview_filename)
-        return await self._send_messages(chat_id, [_video_message(video_url, preview_url)])
+        return await self._send_messages(
+            chat_id, [_video_message(video_url, preview_url)], reply_to=reply_to
+        )
 
     async def _send_messages(
         self,
         chat_id: str,
         messages: List[Dict[str, Any]],
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         """Send already-built message objects, batched at 5/call."""
         if not self._client:
@@ -1417,7 +1477,7 @@ class LineAdapter(BasePlatformAdapter):
         rest = messages[LINE_MAX_MESSAGES_PER_CALL:]
 
         # First batch: try reply token, fall back to push.
-        token, used_reply = self._consume_reply_token(chat_id)
+        token, used_reply = self._consume_reply_token(chat_id, reply_to=reply_to)
         if used_reply:
             try:
                 await self._client.reply(token, first_batch)
@@ -1574,14 +1634,18 @@ def interactive_setup() -> None:
     print("then copy the values below.")
     print()
 
-    try:
-        from hermes_cli.config import get_env_var, set_env_var
-    except ImportError:
-        print("hermes_cli.config not available; set LINE_* vars manually in ~/.hermes/.env")
-        return
+    env_path = get_hermes_home() / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _get_env_var(var: str) -> Optional[str]:
+        return os.getenv(var) or dotenv_values(env_path).get(var)
+
+    def _set_env_var(var: str, value: str) -> None:
+        env_path.touch(exist_ok=True)
+        set_key(str(env_path), var, value)
 
     def _prompt(var: str, prompt: str, *, secret: bool = False) -> None:
-        existing = get_env_var(var) if callable(get_env_var) else None
+        existing = _get_env_var(var)
         suffix = " [keep current]" if existing else ""
         try:
             if secret:
@@ -1593,7 +1657,7 @@ def interactive_setup() -> None:
             print()
             return
         if value:
-            set_env_var(var, value)
+            _set_env_var(var, value)
 
     _prompt("LINE_CHANNEL_ACCESS_TOKEN", "Channel access token", secret=True)
     _prompt("LINE_CHANNEL_SECRET", "Channel secret", secret=True)

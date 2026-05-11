@@ -20,6 +20,7 @@ import hmac
 import base64
 import json
 import os
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -298,8 +299,44 @@ class TestMarkdownAndChunking:
 
 
 # ---------------------------------------------------------------------------
-# 7. Send routing (reply -> push fallback, batching, system-bypass)
+# 7. Inbound message dispatch + send routing
 # ---------------------------------------------------------------------------
+
+class TestInboundDispatch:
+
+    def test_text_message_builds_source_and_dispatches_to_handler(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        }))
+        adapter.handle_message = AsyncMock()
+
+        event = {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "user", "userId": "U123"},
+            "message": {"type": "text", "id": "msg-1", "text": "hello line"},
+        }
+
+        asyncio.run(adapter._handle_message_event(event))
+
+        adapter.handle_message.assert_awaited_once()
+        await_args = adapter.handle_message.await_args
+        assert await_args is not None
+        message_event = await_args.args[0]
+        assert message_event.text == "hello line"
+        assert message_event.message_id == "msg-1"
+        assert message_event.source.chat_id == "U123"
+        assert message_event.source.user_id == "U123"
+        assert message_event.source.chat_type == "dm"
+        assert message_event.source.message_id == "msg-1"
+        assert adapter._reply_tokens["U123"][0] == "reply-token"
+        assert adapter._reply_tokens["msg-1"][0] == "reply-token"
+
 
 class TestSendRouting:
 
@@ -334,6 +371,22 @@ class TestSendRouting:
         adapter._client.push.assert_not_called()
         # Token consumed (single-use)
         assert "Uchat" not in adapter._reply_tokens
+
+    def test_send_uses_reply_token_for_reply_to_message_id(self, adapter):
+        import time as _time
+        adapter._reply_tokens["msg-1"] = ("rt-old", _time.time() + 30)
+        adapter._reply_tokens["msg-2"] = ("rt-new", _time.time() + 30)
+        adapter._reply_tokens["Uchat"] = ("rt-new", _time.time() + 30)
+
+        result = asyncio.run(adapter.send("Uchat", "first answer", reply_to="msg-1"))
+
+        assert result.success
+        adapter._client.reply.assert_called_once()
+        assert adapter._client.reply.call_args.args[0] == "rt-old"
+        adapter._client.push.assert_not_called()
+        assert "msg-1" not in adapter._reply_tokens
+        assert "msg-2" in adapter._reply_tokens
+        assert "Uchat" in adapter._reply_tokens
 
     def test_send_falls_back_to_push_when_no_token(self, adapter):
         result = asyncio.run(adapter.send("Uchat", "hello"))
@@ -408,7 +461,7 @@ class TestRegister:
 
     class _FakeCtx:
         def __init__(self):
-            self.kwargs = None
+            self.kwargs: dict[str, Any] = {}
 
         def register_platform(self, **kw):
             self.kwargs = kw

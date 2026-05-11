@@ -20,6 +20,8 @@ antseed buyer start
 
 Persistent state is stored in `~/.antseed/buyer.state.json` (survives restarts).
 
+For systemd deployment, see the official [hermes-antseed skill](https://github.com/AntSeed/antseed/blob/main/skills/hermes-antseed/SKILL.md).
+
 ## 3. Configure Chain
 
 ```bash
@@ -50,16 +52,12 @@ Deposit USDC into the buyer contract:
 antseed buyer deposit 1   # $1 USDC minimum recommended
 ```
 
-Check balance:
-
-```bash
-antseed buyer status
-```
+Check balance: `antseed buyer status`
 
 ## 6. Pin a Peer
 
 ```bash
-# Find peers
+# List peers on the network
 antseed network browse --top 15
 
 # Pin a peer by ID
@@ -67,6 +65,8 @@ antseed buyer connection set --peer <peer-id>
 ```
 
 Verify pin: `antseed buyer status` — look for "Pinned peer" field.
+
+Or use the smart peer selector: `bash ${HERMES_SKILL_DIR}/scripts/best-peer.sh <task_type>`
 
 ## 7. Wire Hermes Config
 
@@ -86,7 +86,7 @@ custom_providers:
       - deepseek-v4-flash
       - claude-sonnet-4-6
       - minimax-m2.7
-      # Sync with: curl -s http://127.0.0.1:8377/v1/models | jq '.data[].id'
+      # Discover live models: bash ${HERMES_SKILL_DIR}/scripts/models.sh --json | jq '.categories[].models[].model' -r
 
 auxiliary:
   title_generation:
@@ -108,7 +108,7 @@ Key settings:
 |---------|-------|-----|
 | `api_mode` | `chat_completions` | Mandatory. `openai-responses` requires streaming — breaks auxiliaries |
 | `api_key` | `antseed-p2p` | Convention — proxy ignores the key |
-| `model` | AntSeed service ID | NOT OpenAI model name — use the ID from proxy `/v1/models` |
+| `model` | AntSeed service ID | NOT OpenAI model name — use the ID from `models.sh` or proxy `/v1/models` |
 
 The `@antseed/api-adapter` handles automatic protocol translation (e.g., `chat_completions` → `anthropic-messages`).
 
@@ -116,8 +116,11 @@ The `@antseed/api-adapter` handles automatic protocol translation (e.g., `chat_c
 
 ```bash
 # Test proxy
-curl -s http://127.0.0.1:8377/v1/models -H "Authorization: Bearer antseed-p2p" | jq '.data[].id'
+curl -s http://127.0.0.1:8377/v1/models -H "Authorization: Bearer antseed-p2p" | head
 
-# Run full preflight
-bash scripts/best-peer.sh any
+# List live models grouped by category
+bash ${HERMES_SKILL_DIR}/scripts/models.sh
+
+# Find best peer for a task
+bash ${HERMES_SKILL_DIR}/scripts/best-peer.sh any
 ```

@@ -20,6 +20,7 @@ OBLITERATUS: abliterate LLM refusals (diff-in-means).
 | Author | Hermes Agent |
 | License | MIT |
 | Dependencies | `obliteratus`, `torch`, `transformers`, `bitsandbytes`, `accelerate`, `safetensors` |
+| Platforms | linux, macos |
 | Tags | `Abliteration`, `Uncensoring`, `Refusal-Removal`, `LLM`, `Weight-Projection`, `SVD`, `Mechanistic-Interpretability`, `HuggingFace`, `Model-Surgery` |
 | Related skills | `vllm`, `gguf`, [`huggingface-tokenizers`](/docs/user-guide/skills/optional/mlops/mlops-huggingface-tokenizers) |
 

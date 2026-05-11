@@ -41,8 +41,9 @@ class TestResolveDisplaySetting:
 
         # Empty config — should get built-in defaults
         config = {}
-        # Telegram defaults to tier_high → "all"
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
+        # Telegram tier_high override: "new" (not "all") to reduce edit
+        # pressure during streaming on Telegram's ~1 edit/s flood envelope.
+        assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
         # Email defaults to tier_minimal → "off"
         assert resolve_display_setting(config, "email", "tool_progress") == "off"
 
@@ -179,11 +180,14 @@ class TestPlatformDefaults:
     """Built-in defaults reflect platform capability tiers."""
 
     def test_high_tier_platforms(self):
-        """Telegram and Discord default to 'all' tool progress."""
+        """Discord defaults to 'all' tool progress; Telegram is in tier_high
+        but overrides tool_progress to 'new' (less edit pressure)."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("telegram", "discord"):
-            assert resolve_display_setting({}, plat, "tool_progress") == "all", plat
+        # Telegram: tier_high member with tool_progress="new" override.
+        assert resolve_display_setting({}, "telegram", "tool_progress") == "new"
+        # Discord: pure tier_high.
+        assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
     def test_medium_tier_platforms(self):
         """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""
@@ -333,3 +337,64 @@ class TestStreamingPerPlatform:
             }
         }
         assert resolve_display_setting(config, "email", "streaming") is True
+
+
+# ---------------------------------------------------------------------------
+# cleanup_progress — opt-in deletion of temporary progress bubbles
+# ---------------------------------------------------------------------------
+
+class TestCleanupProgress:
+    """``cleanup_progress`` is off by default and resolvable per-platform."""
+
+    def test_default_off_for_all_platforms(self):
+        """No config set → cleanup_progress resolves to False everywhere."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "discord", "slack", "email"):
+            assert resolve_display_setting({}, plat, "cleanup_progress") is False
+
+    def test_global_true_applies_to_all_platforms(self):
+        """display.cleanup_progress=true opts in globally."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"cleanup_progress": True}}
+        assert resolve_display_setting(config, "telegram", "cleanup_progress") is True
+        assert resolve_display_setting(config, "discord", "cleanup_progress") is True
+
+    def test_per_platform_override_wins(self):
+        """display.platforms.<plat>.cleanup_progress beats the global value."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "cleanup_progress": False,
+                "platforms": {
+                    "telegram": {"cleanup_progress": True},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "cleanup_progress") is True
+        assert resolve_display_setting(config, "discord", "cleanup_progress") is False
+
+    def test_yaml_off_string_normalises_to_false(self):
+        """YAML 1.1 bare ``off`` becomes string 'off' — treat as False."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {"telegram": {"cleanup_progress": "off"}},
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "cleanup_progress") is False
+
+    def test_yaml_true_string_normalises_to_true(self):
+        """String 'true'/'yes'/'on' all resolve to True."""
+        from gateway.display_config import resolve_display_setting
+
+        for val in ("true", "yes", "on", "1"):
+            config = {
+                "display": {
+                    "platforms": {"telegram": {"cleanup_progress": val}},
+                }
+            }
+            assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val

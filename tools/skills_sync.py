@@ -345,7 +345,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     manifest = _read_manifest()
     bundled_dir = _get_bundled_dir()
     bundled_skills = _discover_bundled_skills(bundled_dir)
-    bundled_by_name = {skill_name: skill_dir for skill_name, skill_dir in bundled_skills}
+    bundled_by_name = dict(bundled_skills)
 
     in_manifest = name in manifest
     is_bundled = name in bundled_by_name

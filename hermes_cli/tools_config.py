@@ -12,6 +12,8 @@ the `platform_toolsets` key.
 import json as _json
 import logging
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -56,6 +58,7 @@ CONFIGURABLE_TOOLSETS = [
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
+    ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
@@ -73,12 +76,13 @@ CONFIGURABLE_TOOLSETS = [
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
+    ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
 ]
 
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -298,6 +302,32 @@ TOOL_CATEGORIES = {
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
             },
+            {
+                "name": "SearXNG",
+                "badge": "free · self-hosted · search only",
+                "tag": "Privacy-respecting metasearch engine — search only (pair with any extract provider)",
+                "web_backend": "searxng",
+                "env_vars": [
+                    {"key": "SEARXNG_URL", "prompt": "Your SearXNG instance URL (e.g., http://localhost:8080)", "url": "https://searxng.github.io/searxng/"},
+                ],
+            },
+            {
+                "name": "Brave Search (Free Tier)",
+                "badge": "free tier · search only",
+                "tag": "2,000 queries/mo free — search only (pair with any extract provider)",
+                "web_backend": "brave-free",
+                "env_vars": [
+                    {"key": "BRAVE_SEARCH_API_KEY", "prompt": "Brave Search subscription token", "url": "https://brave.com/search/api/"},
+                ],
+            },
+            {
+                "name": "DuckDuckGo (ddgs)",
+                "badge": "free · no key · search only",
+                "tag": "Search via the ddgs Python package — no API key (pair with any extract provider)",
+                "web_backend": "ddgs",
+                "env_vars": [],
+                "post_setup": "ddgs",
+            },
         ],
     },
     "image_gen": {
@@ -418,6 +448,27 @@ TOOL_CATEGORIES = {
             },
         ],
     },
+    "computer_use": {
+        "name": "Computer Use (macOS)",
+        "icon": "🖱️",
+        "platform_gate": "darwin",
+        "providers": [
+            {
+                "name": "cua-driver (background)",
+                "badge": "★ recommended · free · local",
+                "tag": (
+                    "macOS background computer-use via SkyLight SPIs — does "
+                    "NOT steal your cursor or focus. Works with any model."
+                ),
+                "env_vars": [
+                    # cua-driver reads HOME/TMPDIR from the process env, no
+                    # extra keys required. HERMES_CUA_DRIVER_VERSION is an
+                    # optional pin for reproducibility across macOS updates.
+                ],
+                "post_setup": "cua_driver",
+            },
+        ],
+    },
     "rl": {
         "name": "RL Training",
         "icon": "🧪",
@@ -471,10 +522,79 @@ TOOLSET_ENV_REQUIREMENTS = {
 
 # ─── Post-Setup Hooks ─────────────────────────────────────────────────────────
 
+
+def _pip_install(
+    args: List[str],
+    *,
+    timeout: int = 300,
+    capture_output: bool = True,
+):
+    """Install Python packages from a post-setup hook.
+
+    Strategy (in order):
+    1. ``uv pip install`` if uv is on PATH — fast, doesn't need pip in the venv.
+    2. ``python -m pip install`` — works on stdlib venvs.
+    3. ``python -m ensurepip --upgrade`` then retry pip — covers ``uv venv``
+       which creates a venv WITHOUT pip.
+
+    Why this exists: the Windows installer creates the venv via ``uv venv``,
+    which doesn't seed pip. Post-setup hooks that shelled out to
+    ``[sys.executable, '-m', 'pip', 'install', ...]`` failed with
+    ``No module named pip`` on every fresh install. uv-first sidesteps that.
+
+    Returns the ``subprocess.CompletedProcess`` from whichever tier succeeded
+    (or the last failure for the caller to inspect).
+    """
+    venv_root = Path(sys.executable).parent.parent
+    uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
+
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        try:
+            result = subprocess.run(
+                [uv_bin, "pip", "install", *args],
+                capture_output=capture_output, text=True, timeout=timeout,
+                env=uv_env,
+            )
+            if result.returncode == 0:
+                return result
+            # Fall through to pip — uv may have failed for an unrelated reason
+            # (resolution conflict, network), and pip might handle it.
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+    pip_cmd = [sys.executable, "-m", "pip"]
+    try:
+        # Probe for pip; bootstrap via ensurepip if missing (uv venv lacks it).
+        probe = subprocess.run(
+            pip_cmd + ["--version"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if probe.returncode != 0:
+            raise FileNotFoundError("pip not in venv")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                capture_output=True, text=True, timeout=120, check=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            # Synthesize a result so callers see a clean failure path.
+            return subprocess.CompletedProcess(
+                pip_cmd, returncode=1, stdout="",
+                stderr=f"pip not available and ensurepip failed: {e}",
+            )
+
+    return subprocess.run(
+        pip_cmd + ["install", *args],
+        capture_output=capture_output, text=True, timeout=timeout,
+    )
+
+
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     import shutil
-    if post_setup_key in ("agent_browser", "browserbase"):
+    if post_setup_key in {"agent_browser", "browserbase"}:
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
         npm_bin = shutil.which("npm")
         npx_bin = shutil.which("npx")
@@ -482,8 +602,12 @@ def _run_post_setup(post_setup_key: str):
         if not node_modules.exists() and npm_bin:
             _print_info("    Installing Node.js dependencies for browser tools...")
             import subprocess
+            # Use the resolved npm_bin absolute path so subprocess.Popen can
+            # execute npm.cmd on Windows (CreateProcessW otherwise rejects
+            # batch shims).  On POSIX npm_bin is the plain path — same
+            # behaviour as before.
             result = subprocess.run(
-                ["npm", "install", "--silent"],
+                [npm_bin, "install", "--silent"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
@@ -582,11 +706,13 @@ def _run_post_setup(post_setup_key: str):
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
-        if not camofox_dir.exists() and shutil.which("npm"):
+        _npm_bin = shutil.which("npm")
+        if not camofox_dir.exists() and _npm_bin:
             _print_info("    Installing Camofox browser server...")
             import subprocess
+            # Absolute npm path so .cmd shim executes on Windows.
             result = subprocess.run(
-                ["npm", "install", "--silent"],
+                [_npm_bin, "install", "--silent"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
@@ -602,6 +728,53 @@ def _run_post_setup(post_setup_key: str):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
+    elif post_setup_key == "cua_driver":
+        # cua-driver provides macOS background computer-use (SkyLight SPIs).
+        # Install via upstream curl script if the binary isn't on $PATH yet.
+        import platform as _plat
+        import subprocess
+        if _plat.system() != "Darwin":
+            _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
+            return
+        if shutil.which("cua-driver"):
+            try:
+                version = subprocess.run(
+                    ["cua-driver", "--version"],
+                    capture_output=True, text=True, timeout=5,
+                ).stdout.strip()
+                _print_success(f"    cua-driver already installed: {version or 'unknown version'}")
+            except Exception:
+                _print_success("    cua-driver already installed.")
+            _print_info("    Grant macOS permissions if not done yet:")
+            _print_info("      System Settings > Privacy & Security > Accessibility")
+            _print_info("      System Settings > Privacy & Security > Screen Recording")
+            return
+        if not shutil.which("curl"):
+            _print_warning("    curl not found — install manually:")
+            _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
+            return
+        _print_info("    Installing cua-driver (macOS background computer-use)...")
+        try:
+            install_cmd = (
+                "/bin/bash -c \"$(curl -fsSL "
+                "https://raw.githubusercontent.com/trycua/cua/main/"
+                "libs/cua-driver/scripts/install.sh)\""
+            )
+            result = subprocess.run(install_cmd, shell=True, timeout=300)
+            if result.returncode == 0 and shutil.which("cua-driver"):
+                _print_success("    cua-driver installed.")
+                _print_info("    IMPORTANT — grant macOS permissions now:")
+                _print_info("      System Settings > Privacy & Security > Accessibility")
+                _print_info("      System Settings > Privacy & Security > Screen Recording")
+                _print_info("    Both must allow the terminal / Hermes process.")
+            else:
+                _print_warning("    cua-driver install did not complete. Re-run manually:")
+                _print_info(f"      {install_cmd}")
+        except subprocess.TimeoutExpired:
+            _print_warning("    cua-driver install timed out. Re-run manually.")
+        except Exception as e:
+            _print_warning(f"    cua-driver install failed: {e}")
+
     elif post_setup_key == "kittentts":
         try:
             __import__("kittentts")
@@ -609,55 +782,69 @@ def _run_post_setup(post_setup_key: str):
             return
         except ImportError:
             pass
-        import subprocess
         _print_info("    Installing kittentts (~25-80MB model, CPU-only)...")
         wheel_url = (
             "https://github.com/KittenML/KittenTTS/releases/download/"
             "0.8.1/kittentts-0.8.1-py3-none-any.whl"
         )
         try:
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-U", wheel_url, "soundfile", "--quiet"],
-                capture_output=True, text=True, timeout=300,
-            )
+            result = _pip_install(["-U", wheel_url, "soundfile", "--quiet"], timeout=300)
             if result.returncode == 0:
                 _print_success("    kittentts installed")
                 _print_info("    Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo")
                 _print_info("    Models: KittenML/kitten-tts-nano-0.8-int8 (25MB), micro (41MB), mini (80MB)")
             else:
                 _print_warning("    kittentts install failed:")
-                _print_info(f"      {result.stderr.strip()[:300]}")
-                _print_info(f"    Run manually: python -m pip install -U '{wheel_url}' soundfile")
+                _print_info(f"      {(result.stderr or '').strip()[:300]}")
+                _print_info(f"    Run manually: uv pip install -U '{wheel_url}' soundfile")
         except subprocess.TimeoutExpired:
             _print_warning("    kittentts install timed out (>5min)")
-            _print_info(f"    Run manually: python -m pip install -U '{wheel_url}' soundfile")
+            _print_info(f"    Run manually: uv pip install -U '{wheel_url}' soundfile")
 
     elif post_setup_key == "piper":
         try:
             __import__("piper")
             _print_success("    piper-tts is already installed")
         except ImportError:
-            import subprocess
             _print_info("    Installing piper-tts (~14MB wheel, voices downloaded on first use)...")
             try:
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "-U", "piper-tts", "--quiet"],
-                    capture_output=True, text=True, timeout=300,
-                )
+                result = _pip_install(["-U", "piper-tts", "--quiet"], timeout=300)
                 if result.returncode == 0:
                     _print_success("    piper-tts installed")
                 else:
                     _print_warning("    piper-tts install failed:")
-                    _print_info(f"      {result.stderr.strip()[:300]}")
-                    _print_info("    Run manually: python -m pip install -U piper-tts")
+                    _print_info(f"      {(result.stderr or '').strip()[:300]}")
+                    _print_info("    Run manually: uv pip install -U piper-tts")
                     return
             except subprocess.TimeoutExpired:
                 _print_warning("    piper-tts install timed out (>5min)")
-                _print_info("    Run manually: python -m pip install -U piper-tts")
+                _print_info("    Run manually: uv pip install -U piper-tts")
                 return
         _print_info("    Default voice: en_US-lessac-medium (downloaded on first TTS call)")
         _print_info("    Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md")
         _print_info("    Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")
+
+    elif post_setup_key == "ddgs":
+        try:
+            __import__("ddgs")
+            _print_success("    ddgs is already installed")
+        except ImportError:
+            _print_info("    Installing ddgs (DuckDuckGo search package)...")
+            try:
+                result = _pip_install(["-U", "ddgs", "--quiet"], timeout=300)
+                if result.returncode == 0:
+                    _print_success("    ddgs installed")
+                else:
+                    _print_warning("    ddgs install failed:")
+                    _print_info(f"      {(result.stderr or '').strip()[:300]}")
+                    _print_info("    Run manually: uv pip install -U ddgs")
+                    return
+            except subprocess.TimeoutExpired:
+                _print_warning("    ddgs install timed out (>5min)")
+                _print_info("    Run manually: uv pip install -U ddgs")
+                return
+        _print_info("    No API key required. DuckDuckGo enforces server-side rate limits.")
+        _print_info("    Pair with an extract provider if you also need web_extract.")
 
     elif post_setup_key == "spotify":
         # Run the full `hermes auth spotify` flow — if the user has no
@@ -695,18 +882,7 @@ def _run_post_setup(post_setup_key: str):
             tinker_dir = PROJECT_ROOT / "tinker-atropos"
             if tinker_dir.exists() and (tinker_dir / "pyproject.toml").exists():
                 _print_info("    Installing tinker-atropos submodule...")
-                import subprocess
-                uv_bin = shutil.which("uv")
-                if uv_bin:
-                    result = subprocess.run(
-                        [uv_bin, "pip", "install", "--python", sys.executable, "-e", str(tinker_dir)],
-                        capture_output=True, text=True
-                    )
-                else:
-                    result = subprocess.run(
-                        [sys.executable, "-m", "pip", "install", "-e", str(tinker_dir)],
-                        capture_output=True, text=True
-                    )
+                result = _pip_install(["-e", str(tinker_dir)])
                 if result.returncode == 0:
                     _print_success("    tinker-atropos installed")
                 else:
@@ -723,16 +899,12 @@ def _run_post_setup(post_setup_key: str):
             __import__("langfuse")
             _print_success("    langfuse SDK already installed")
         except ImportError:
-            import subprocess
             _print_info("    Installing langfuse SDK...")
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "langfuse", "--quiet"],
-                capture_output=True, text=True, timeout=120,
-            )
+            result = _pip_install(["langfuse", "--quiet"], timeout=120)
             if result.returncode == 0:
                 _print_success("    langfuse SDK installed")
             else:
-                _print_warning("    langfuse SDK install failed — run manually: pip install langfuse")
+                _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
         # Opt the bundled observability/langfuse plugin into plugins.enabled.
         # The plugin ships in the repo but doesn't load until the user enables
         # it (standalone plugins are opt-in).
@@ -844,6 +1016,38 @@ def _get_platform_tools(
             ts for ts in toolset_names
             if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
         }
+        # Mixed config: composite toolset alongside configurables (e.g.
+        # ``[hermes-cli, spotify]`` after enabling Spotify via ``hermes
+        # tools``). Without expansion the composite name is silently dropped,
+        # leaving sessions with only the configurable opt-ins and no native
+        # tools. Mirror the else-branch's subset inference, but apply
+        # _DEFAULT_OFF_TOOLSETS only to the implicit expansion — anything the
+        # user explicitly listed (e.g. ``spotify``) must survive.
+        composite_tools = set()
+        for ts_name in toolset_names:
+            if ts_name in configurable_keys or ts_name in plugin_ts_keys:
+                continue
+            if ts_name not in TOOLSETS:
+                continue
+            composite_tools.update(resolve_toolset(ts_name))
+
+        if composite_tools:
+            expanded = set()
+            for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
+                if not _toolset_allowed_for_platform(ts_key, platform):
+                    continue
+                ts_tools = set(resolve_toolset(ts_key))
+                if ts_tools and ts_tools.issubset(composite_tools):
+                    expanded.add(ts_key)
+
+            default_off = set(_DEFAULT_OFF_TOOLSETS)
+            if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
+                default_off.remove(platform)
+            if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
+                default_off.remove("homeassistant")
+            expanded -= default_off
+
+            enabled_toolsets |= expanded
     else:
         # No explicit config — fall back to resolving composite toolset names
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.
@@ -1264,11 +1468,51 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     return visible
 
 
+_POST_SETUP_INSTALLED: dict = {
+    # post_setup_key -> predicate(): True when the install side-effect
+    # is already satisfied. Used by `_toolset_needs_configuration_prompt`
+    # to force the provider-setup flow when a no-key provider still needs
+    # a binary/dependency install (otherwise an already-configured user
+    # who toggles the toolset on via `hermes tools` gets a silent no-op
+    # because the gate sees "no env vars to ask about" and skips the
+    # provider-setup flow that would have run the post_setup hook).
+    #
+    # Only entries here are gated; other post_setup hooks (kittentts,
+    # piper, agent_browser, etc.) keep their existing behaviour. Add an
+    # entry when (a) the post_setup is the ONLY install side-effect for
+    # a no-key provider, and (b) an installed-state check is cheap and
+    # doesn't trigger a heavy import.
+    "cua_driver": lambda: bool(shutil.which("cua-driver")),
+}
+
+
+def _post_setup_already_installed(post_setup_key: str) -> bool:
+    """Return True when the post_setup install side-effect is satisfied."""
+    predicate = _POST_SETUP_INSTALLED.get(post_setup_key)
+    if predicate is None:
+        # No install-state check registered → assume satisfied (don't
+        # change behaviour for hooks we haven't explicitly opted in).
+        return True
+    try:
+        return bool(predicate())
+    except Exception:
+        return True
+
+
 def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
     """Return True when enabling this toolset should open provider setup."""
     cat = TOOL_CATEGORIES.get(ts_key)
     if not cat:
         return not _toolset_has_keys(ts_key, config)
+
+    # If any visible provider has a registered post_setup install-state
+    # check that hasn't been satisfied (e.g. cua-driver binary not on
+    # PATH yet), force the configuration flow so `_configure_provider`
+    # invokes `_run_post_setup` and the install actually runs.
+    for provider in _visible_providers(cat, config):
+        post_setup = provider.get("post_setup")
+        if post_setup and not _post_setup_already_installed(post_setup):
+            return True
 
     if ts_key == "tts":
         tts_cfg = config.get("tts", {})
@@ -1387,7 +1631,7 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
             image_cfg = config.get("image_gen", {})
             if isinstance(image_cfg, dict):
                 configured_provider = image_cfg.get("provider")
-                if configured_provider not in (None, "", "fal"):
+                if configured_provider not in {None, "", "fal"}:
                     return False
                 if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
                     return False
@@ -1420,7 +1664,7 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
         configured_provider = image_cfg.get("provider")
         return (
             provider["imagegen_backend"] == "fal"
-            and configured_provider in (None, "", "fal")
+            and configured_provider in {None, "", "fal"}
             and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
         )
     return False
@@ -1670,7 +1914,7 @@ def _configure_provider(provider: dict, config: dict):
 
     # For tools without a specific config key (e.g. image_gen), still
     # track use_gateway so the runtime knows the user's intent.
-    if managed_feature and managed_feature not in ("web", "tts", "browser"):
+    if managed_feature and managed_feature not in {"web", "tts", "browser"}:
         config.setdefault(managed_feature, {})["use_gateway"] = True
     elif not managed_feature:
         # User picked a non-gateway provider — find which category this
@@ -1702,7 +1946,7 @@ def _configure_provider(provider: dict, config: dict):
             # image_gen.provider clear so the dispatch shim falls through
             # to the legacy FAL path.
             img_cfg = config.setdefault("image_gen", {})
-            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in (None, "", "fal"):
+            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
                 img_cfg["provider"] = "fal"
         return
 
@@ -1747,7 +1991,7 @@ def _configure_provider(provider: dict, config: dict):
         if backend:
             _configure_imagegen_model(backend, config)
             img_cfg = config.setdefault("image_gen", {})
-            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in (None, "", "fal"):
+            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
                 img_cfg["provider"] = "fal"
 
 
@@ -1822,7 +2066,7 @@ def _reconfigure_tool(config: dict):
         cat = TOOL_CATEGORIES.get(ts_key)
         reqs = TOOLSET_ENV_REQUIREMENTS.get(ts_key)
         if cat or reqs:
-            if _toolset_has_keys(ts_key, config):
+            if _toolset_has_keys(ts_key, config) or _toolset_enabled_for_reconfigure(ts_key, config):
                 configurable.append((ts_key, ts_label))
 
     if not configurable:
@@ -1846,6 +2090,28 @@ def _reconfigure_tool(config: dict):
         _reconfigure_simple_requirements(ts_key)
 
     save_config(config)
+
+
+def _toolset_enabled_for_reconfigure(ts_key: str, config: dict) -> bool:
+    """Return True if a configurable toolset is enabled anywhere.
+
+    Reconfigure must include enabled-but-unconfigured categories so users can
+    finish provider/API-key setup without disabling and re-enabling the toolset.
+    """
+    for platform in PLATFORMS:
+        if not _toolset_allowed_for_platform(ts_key, platform):
+            continue
+        try:
+            enabled = _get_platform_tools(
+                config,
+                platform,
+                include_default_mcp_servers=False,
+            )
+        except Exception:
+            continue
+        if ts_key in enabled:
+            return True
+    return False
 
 
 def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
@@ -1897,24 +2163,30 @@ def _reconfigure_provider(provider: dict, config: dict):
             return
 
     if provider.get("tts_provider"):
-        config.setdefault("tts", {})["provider"] = provider["tts_provider"]
+        tts_cfg = config.setdefault("tts", {})
+        tts_cfg["provider"] = provider["tts_provider"]
+        tts_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
 
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
+        browser_cfg = config.setdefault("browser", {})
         if bp == "local":
-            config.setdefault("browser", {})["cloud_provider"] = "local"
+            browser_cfg["cloud_provider"] = "local"
             _print_success("  Browser set to local mode")
         elif bp:
-            config.setdefault("browser", {})["cloud_provider"] = bp
+            browser_cfg["cloud_provider"] = bp
             _print_success(f"  Browser cloud provider set to: {bp}")
+        browser_cfg["use_gateway"] = bool(managed_feature)
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
-        config.setdefault("web", {})["backend"] = provider["web_backend"]
+        web_cfg = config.setdefault("web", {})
+        web_cfg["backend"] = provider["web_backend"]
+        web_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
-    if managed_feature and managed_feature not in ("web", "tts", "browser"):
+    if managed_feature and managed_feature not in {"web", "tts", "browser"}:
         section = config.setdefault(managed_feature, {})
         if not isinstance(section, dict):
             section = {}
@@ -2263,7 +2535,7 @@ def _configure_mcp_tools_interactive(config: dict):
     # Count enabled servers
     enabled_names = [
         k for k, v in mcp_servers.items()
-        if v.get("enabled", True) not in (False, "false", "0", "no", "off")
+        if v.get("enabled", True) not in {False, "false", "0", "no", "off"}
     ]
     if not enabled_names:
         _print_info("All MCP servers are disabled.")

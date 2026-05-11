@@ -5,6 +5,7 @@ version: 1.0.0
 author: Orchestra Research
 license: MIT
 dependencies: [flash-attn, torch, transformers]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Optimization, Flash Attention, Attention Optimization, Memory Efficiency, Speed Optimization, Long Context, PyTorch, SDPA, H100, FP8, Transformers]
@@ -344,10 +345,6 @@ Flash Attention uses float16/bfloat16 for speed. Float32 not supported.
 **Integration with HuggingFace Transformers**: See [references/transformers-integration.md](references/transformers-integration.md) for enabling Flash Attention in BERT, GPT, Llama models.
 
 **Performance benchmarks**: See [references/benchmarks.md](references/benchmarks.md) for detailed speed and memory comparisons across GPUs and sequence lengths.
-
-**Algorithm details**: See [references/algorithm.md](references/algorithm.md) for tiling strategy, recomputation, and IO complexity analysis.
-
-**Advanced features**: See [references/advanced-features.md](references/advanced-features.md) for rotary embeddings, ALiBi, paged KV cache, and custom attention masks.
 
 ## Hardware requirements
 

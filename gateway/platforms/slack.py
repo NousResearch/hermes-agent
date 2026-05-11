@@ -289,6 +289,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
+        self._USER_NAME_CACHE_MAX = 5000
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}   # team_id → WebClient
@@ -1355,12 +1356,16 @@ class SlackAdapter(BasePlatformAdapter):
                 or user.get("name")
                 or user_id
             )
-            self._user_name_cache[user_id] = name
-            return name
         except Exception as e:
             logger.debug("[Slack] users.info failed for %s: %s", user_id, e)
-            self._user_name_cache[user_id] = user_id
-            return user_id
+            name = user_id
+
+        self._user_name_cache[user_id] = name
+        if len(self._user_name_cache) > self._USER_NAME_CACHE_MAX:
+            excess = len(self._user_name_cache) - self._USER_NAME_CACHE_MAX // 2
+            for old_key in list(self._user_name_cache)[:excess]:
+                del self._user_name_cache[old_key]
+        return name
 
     async def send_image_file(
         self,

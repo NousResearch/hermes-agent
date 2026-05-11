@@ -259,6 +259,8 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "PPLX_API_KEY",
     )
 
     def setup_method(self):
@@ -383,11 +385,25 @@ class TestBackendSelection:
              patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
 
-    def test_fallback_no_keys_defaults_to_firecrawl(self):
-        """No keys, no config → 'firecrawl' (will fail at client init)."""
+    def test_fallback_no_keys_defaults_to_perplexity(self):
+        """No keys, no config → 'perplexity' (shipped default; will fail at client init)."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}):
-            assert _get_backend() == "firecrawl"
+            assert _get_backend() == "perplexity"
+
+    def test_fallback_perplexity_only_key(self):
+        """Only PERPLEXITY_API_KEY set → 'perplexity'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"PERPLEXITY_API_KEY": "pplx-test"}):
+            assert _get_backend() == "perplexity"
+
+    def test_fallback_perplexity_takes_priority_over_firecrawl(self):
+        """Perplexity + Firecrawl keys → 'perplexity' (Perplexity is the shipped default)."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"PERPLEXITY_API_KEY": "pplx-test", "FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "perplexity"
 
     def test_invalid_config_falls_through_to_fallback(self):
         """web.backend=invalid → ignored, uses key-based fallback."""
@@ -558,6 +574,8 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "PPLX_API_KEY",
     )
 
     def setup_method(self):

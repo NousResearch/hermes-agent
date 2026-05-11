@@ -140,15 +140,17 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"}:
+    if configured in {"perplexity", "parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
-    # available backend. Firecrawl also counts as available when the managed
-    # tool gateway is configured for Nous subscribers.
-    # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
-    # existing paid setups are unaffected.
+    # available backend. Perplexity is checked first because it ships as
+    # the default web search backend when its key is present. Firecrawl
+    # also counts as available when the managed tool gateway is configured
+    # for Nous subscribers. Free-tier backends (searxng / brave-free / ddgs)
+    # trail the paid ones so existing paid setups are unaffected.
     backend_candidates = (
+        ("perplexity", _has_env("PERPLEXITY_API_KEY") or _has_env("PPLX_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
@@ -161,7 +163,7 @@ def _get_backend() -> str:
         if available:
             return backend
 
-    return "firecrawl"  # default (backward compat)
+    return "perplexity"  # default — Perplexity Search API is the shipped default
 
 
 def _get_search_backend() -> str:
@@ -204,6 +206,8 @@ def _get_capability_backend(capability: str) -> str:
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
+    if backend == "perplexity":
+        return _has_env("PERPLEXITY_API_KEY") or _has_env("PPLX_API_KEY")
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -258,6 +262,8 @@ def _web_requires_env() -> list[str]:
     simply don't have the vars set, so the extra entries are harmless.
     """
     return [
+        "PERPLEXITY_API_KEY",
+        "PPLX_API_KEY",
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
@@ -789,8 +795,9 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
+        # Dispatch through the web search registry. Providers
+        # (perplexity, brave-free, ddgs, searxng, exa, parallel, tavily,
+        # firecrawl)
         # now live as plugins; the dispatcher is just a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
         from agent.web_search_registry import (
@@ -918,8 +925,8 @@ async def web_extract_tool(
         else:
             backend = _get_extract_backend()
 
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
+            # Web providers (perplexity, brave-free, ddgs, searxng, exa,
+            # parallel, tavily, firecrawl) now live as plugins. The dispatcher is a
             # registry lookup + delegation. Some providers' extract() is
             # async (parallel, firecrawl), others sync (exa, tavily) — we
             # detect coroutine functions and await; sync functions run
@@ -1171,7 +1178,11 @@ async def web_crawl_tool(
     try:
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
-        backend = _get_backend()
+        web_config = _load_web_config()
+        configured_crawl_backend = (
+            web_config.get("crawl_backend") or web_config.get("backend") or ""
+        ).lower().strip()
+        backend = configured_crawl_backend or _get_backend()
 
         # Tavily (and any future plugin advertising supports_crawl=True)
         # dispatches through agent.web_search_registry. The crawl response
@@ -1191,18 +1202,20 @@ async def web_crawl_tool(
             # but not crawl (e.g. firecrawl), fall through to the legacy
             # firecrawl-via-extract path below.
             if not crawl_provider.supports_extract():
-                return json.dumps(
-                    {
-                        "success": False,
-                        "error": (
-                            f"{crawl_provider.display_name} is a search-only "
-                            "backend and cannot crawl URLs. "
-                            "Set FIRECRAWL_API_KEY for crawling, or use "
-                            "web_search instead."
-                        ),
-                    },
-                    ensure_ascii=False,
-                )
+                if configured_crawl_backend:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                f"{crawl_provider.display_name} is a search-only "
+                                "backend and cannot crawl URLs. "
+                                "Set FIRECRAWL_API_KEY for crawling, or use "
+                                "web_search instead."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                crawl_provider = None
             crawl_provider = None  # let legacy firecrawl path handle it
         if crawl_provider is None:
             crawl_provider = get_active_crawl_provider()
@@ -1357,11 +1370,11 @@ async def web_crawl_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+    if configured in {"perplexity", "exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in ("perplexity", "exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
     )
 
 
@@ -1391,7 +1404,9 @@ if __name__ == "__main__":
     if web_available:
         backend = _get_backend()
         print(f"✅ Web backend: {backend}")
-        if backend == "exa":
+        if backend == "perplexity":
+            print("   Using Perplexity Search API (https://www.perplexity.ai)")
+        elif backend == "exa":
             print("   Using Exa API (https://exa.ai)")
         elif backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
@@ -1414,7 +1429,8 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set PERPLEXITY_API_KEY, EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, "
+            "FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

@@ -2,8 +2,8 @@
 
 Covers:
 
-- All seven bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl) instantiate and self-report the expected
+- All bundled plugins (perplexity, brave-free, ddgs, searxng, exa,
+  parallel, tavily, firecrawl) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -35,6 +35,8 @@ import pytest
 def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip every web-provider env var so is_available() returns False."""
     for k in (
+        "PERPLEXITY_API_KEY",
+        "PPLX_API_KEY",
         "BRAVE_SEARCH_API_KEY",
         "SEARXNG_URL",
         "TAVILY_API_KEY",
@@ -70,9 +72,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All seven bundled web plugins discover and register correctly."""
+    """All bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -83,6 +85,7 @@ class TestBundledPluginsRegister:
             "exa",
             "firecrawl",
             "parallel",
+            "perplexity",
             "searxng",
             "tavily",
         ]
@@ -95,6 +98,7 @@ class TestBundledPluginsRegister:
             ("searxng", True, False, False),
             ("exa", True, True, False),
             ("parallel", True, True, False),
+            ("perplexity", True, False, False),
             ("tavily", True, True, True),
             # firecrawl: search + extract + crawl. Crawl was originally
             # disabled in the migration (fell through to a legacy inline
@@ -120,7 +124,16 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl"],
+        [
+            "brave-free",
+            "ddgs",
+            "searxng",
+            "exa",
+            "parallel",
+            "perplexity",
+            "tavily",
+            "firecrawl",
+        ],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -133,7 +146,16 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl"],
+        [
+            "brave-free",
+            "ddgs",
+            "searxng",
+            "exa",
+            "parallel",
+            "perplexity",
+            "tavily",
+            "firecrawl",
+        ],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -204,6 +226,21 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False
         monkeypatch.setenv("PARALLEL_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_perplexity_accepts_primary_or_alias_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("perplexity")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("PERPLEXITY_API_KEY", "real")
+        assert p.is_available() is True
+        monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
+        monkeypatch.setenv("PPLX_API_KEY", "real")
         assert p.is_available() is True
 
     def test_firecrawl_requires_either_key_or_url(
@@ -409,6 +446,17 @@ class TestErrorResponseShapes:
         from agent.web_search_registry import get_provider
 
         p = get_provider("tavily")
+        assert p is not None
+        result = p.search("test", limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
+
+    def test_perplexity_returns_error_dict_when_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("perplexity")
         assert p is not None
         result = p.search("test", limit=5)
         assert isinstance(result, dict)

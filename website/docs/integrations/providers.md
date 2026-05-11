@@ -21,6 +21,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
+| **Perplexity** | `PERPLEXITY_API_KEY` in `~/.hermes/.env` (provider: `perplexity`; alias: `pplx`) — Agent API (OpenAI-compatible) |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |

@@ -118,6 +118,8 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
+| `PERPLEXITY_API_KEY` | Perplexity API key (default web search backend + Perplexity LLM provider) — [perplexity.ai/account/api/keys](https://www.perplexity.ai/account/api/keys) |
+| `PPLX_API_KEY` | Alias accepted in place of `PERPLEXITY_API_KEY` |
 | `PARALLEL_API_KEY` | AI-native web search ([parallel.ai](https://parallel.ai/)) |
 | `FIRECRAWL_API_KEY` | Web scraping and cloud browser ([firecrawl.dev](https://firecrawl.dev/)) |
 | `FIRECRAWL_API_URL` | Custom Firecrawl API endpoint for self-hosted instances (optional) |

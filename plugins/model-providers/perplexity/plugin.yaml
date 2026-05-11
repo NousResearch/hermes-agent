@@ -1,0 +1,5 @@
+name: perplexity-provider
+kind: model-provider
+version: 1.0.0
+description: Perplexity Agent API (OpenAI-compatible)
+author: Perplexity AI

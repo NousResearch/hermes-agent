@@ -375,6 +375,29 @@ Use it like:
 Inspect the project root and explain the directory layout.
 ```
 
+### Perplexity MCP server for live web research
+
+The official [Perplexity Ask MCP server](https://github.com/ppl-ai/modelcontextprotocol) exposes Perplexity's Search and Agent APIs through MCP so Hermes can ground answers in real-time web results without using the built-in `web_search` tool.
+
+```yaml
+mcp_servers:
+  perplexity:
+    command: "npx"
+    args: ["-y", "server-perplexity-ask"]
+    env:
+      PERPLEXITY_API_KEY: "***"
+```
+
+Get an API key at [perplexity.ai/account/api/keys](https://www.perplexity.ai/account/api/keys).
+
+Use it like:
+
+```text
+Use the Perplexity MCP server to find the three most-cited papers on retrieval-augmented generation published this year, then summarize each.
+```
+
+This MCP integration is separate from — and complementary to — the built-in Perplexity backend for `web_search`. Use the MCP server when you want the agent to call Perplexity through the standard MCP tool surface (handy when juggling several MCP-based research tools); use the built-in backend when you want `web_search` to be backed by Perplexity transparently.
+
 ## Troubleshooting
 
 ### MCP server not connecting

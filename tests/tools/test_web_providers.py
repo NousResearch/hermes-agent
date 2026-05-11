@@ -22,7 +22,7 @@ import pytest
 class TestWebProviderABCs:
     """The unified WebSearchProvider ABC enforces the interface contract.
 
-    After PR #25182, all seven providers are subclasses of
+    After PR #25182, all bundled providers are subclasses of
     :class:`agent.web_search_provider.WebSearchProvider`. The legacy
     in-tree ABCs at ``tools.web_providers.base`` (separate
     ``WebSearchProvider`` + ``WebExtractProvider``) were deleted in the
@@ -278,6 +278,8 @@ class TestUnconfiguredErrorEnvelopeParity:
 
     def _clear_web_creds(self, monkeypatch):
         for k in (
+            "PERPLEXITY_API_KEY",
+            "PPLX_API_KEY",
             "BRAVE_SEARCH_API_KEY",
             "SEARXNG_URL",
             "TAVILY_API_KEY",
@@ -291,8 +293,10 @@ class TestUnconfiguredErrorEnvelopeParity:
             monkeypatch.delenv(k, raising=False)
 
     def test_unconfigured_search_emits_top_level_error(self, monkeypatch):
-        """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
-        — matching main's ``tool_error()`` envelope, not a per-result shape.
+        """``web_search_tool`` with no creds returns a top-level credential error.
+
+        Perplexity is the shipped default search backend, so the missing-key
+        error points at ``PERPLEXITY_API_KEY`` instead of Firecrawl.
         """
         import json
         from tools import web_tools
@@ -305,17 +309,15 @@ class TestUnconfiguredErrorEnvelopeParity:
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
         assert "error" in result, f"expected top-level 'error' key, got {result}"
-        # ``Error searching web:`` prefix comes from web_tools' top-level except handler
-        assert "Error searching web:" in result["error"]
-        assert "FIRECRAWL_API_KEY" in result["error"]
+        assert "PERPLEXITY_API_KEY" in result["error"]
         # No per-result burying
         assert "results" not in result
 
     def test_unconfigured_crawl_emits_top_level_error(self, monkeypatch):
-        """``web_crawl_tool`` with no creds returns ``{"success": False, "error": "web_crawl requires Firecrawl..."}``
-        — the dispatcher gates on ``provider.is_available()`` BEFORE
-        delegating to the plugin so pre-config errors don't get wrapped
-        into ``results[]``.
+        """``web_crawl_tool`` with no crawl creds returns a top-level error.
+
+        Perplexity is search-only and is ignored for implicit crawl fallback,
+        so the crawl error points at crawl-capable providers.
         """
         import asyncio
         import json
@@ -329,6 +331,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         result = json.loads(asyncio.run(web_tools.web_crawl_tool("https://example.com", use_llm_processing=False)))
         assert result.get("success") is False
         assert "error" in result, f"expected top-level 'error' key, got {result}"
-        assert "web_crawl requires Firecrawl" in result["error"]
+        assert "web_crawl has no available backend" in result["error"]
+        assert "FIRECRAWL_API_KEY" in result["error"]
         # Crucially: no per-page burying
         assert "results" not in result

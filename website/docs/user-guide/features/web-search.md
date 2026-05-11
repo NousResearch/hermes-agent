@@ -18,13 +18,18 @@ Both are configured through a single backend selection. Providers are chosen via
 
 | Provider | Env Var | Search | Extract | Crawl | Free tier |
 |----------|---------|--------|---------|-------|-----------|
-| **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ | 500 credits/mo |
+| **Perplexity** (default) | `PERPLEXITY_API_KEY` | ✔ | — | — | Paid (pay-as-you-go) |
+| **Firecrawl** | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ | 500 credits/mo |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | — | ✔ Free (self-hosted) |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ | 1 000 searches/mo |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | — | 1 000 searches/mo |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — | Paid |
 
-**Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
+**Per-capability split:** you can use different providers for search and extract independently — for example Perplexity for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
+
+:::tip Default backend
+Hermes selects **Perplexity Search API** as the default web search backend when `PERPLEXITY_API_KEY` is set. Perplexity is a search-only provider, so pair it with Firecrawl/Tavily/Exa/Parallel for `web_extract` if you need URL content extraction.
+:::
 
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. Run `hermes tools` to enable it.
@@ -82,9 +87,33 @@ hermes tools
 
 ---
 
-### Firecrawl (default)
+### Perplexity (default)
 
-Full-featured search, extract, and crawl. Recommended for most users.
+The **Perplexity Search API** returns ranked web results (URL + title + snippet + content) directly — no LLM in the loop — making it a drop-in default for the `web_search` capability.
+
+```bash
+# ~/.hermes/.env
+PERPLEXITY_API_KEY=pplx-your-key-here
+```
+
+Get a key at [perplexity.ai/account/api/keys](https://www.perplexity.ai/account/api/keys).
+
+Perplexity is **search-only**. To enable `web_extract`, pair it with a provider that supports extraction:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "perplexity"
+  extract_backend: "firecrawl"   # or tavily, exa, parallel
+```
+
+The alias `PPLX_API_KEY` is also accepted for the API key.
+
+---
+
+### Firecrawl
+
+Full-featured search, extract, and crawl. Recommended when you need a single backend that can also extract URL content.
 
 ```bash
 # ~/.hermes/.env
@@ -278,7 +307,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | tavily | exa | parallel
+  backend: "perplexity"   # perplexity | firecrawl | searxng | tavily | exa | parallel
 ```
 
 ### Per-capability configuration
@@ -305,6 +334,7 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 
 | Credential present | Auto-selected backend |
 |--------------------|-----------------------|
+| `PERPLEXITY_API_KEY` or `PPLX_API_KEY` | perplexity |
 | `FIRECRAWL_API_KEY` or `FIRECRAWL_API_URL` | firecrawl |
 | `PARALLEL_API_KEY` | parallel |
 | `TAVILY_API_KEY` | tavily |
@@ -348,7 +378,7 @@ This prints the active backend and its status:
 
 ### `web_extract` says "search-only backend"
 
-SearXNG cannot extract URL content. Set `web.extract_backend` to a provider that supports extraction:
+Search-only providers such as Perplexity and SearXNG cannot extract URL content. Set `web.extract_backend` to a provider that supports extraction:
 
 ```yaml
 web:

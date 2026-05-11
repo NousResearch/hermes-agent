@@ -23,6 +23,21 @@ class ChatCommandRouterTest {
     }
 
     @Test
+    fun signinOpenAiPreparesOpenAiApiKeySetupInSettings() {
+        val host = RecordingCommandHost()
+
+        val result = ChatCommandRouter.execute("/signin openai", host.asHost())
+
+        assertTrue(result.handled)
+        assertEquals("openai", host.startedAuthMethods.single())
+        assertEquals(AppSection.Settings, host.sections.single())
+        assertEquals(
+            "Prepared openai API-key/token setup in Settings and opened the provider setup page. Paste the provider credential there to power Hermes.",
+            result.feedback,
+        )
+    }
+
+    @Test
     fun signinZaiAliasesPrepareApiKeySetupInSettings() {
         val host = RecordingCommandHost()
 

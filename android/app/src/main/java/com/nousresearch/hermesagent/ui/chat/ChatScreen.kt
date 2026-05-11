@@ -155,7 +155,7 @@ fun ChatScreen(
     }
 
     fun startAuthMethod(methodId: String): Boolean {
-        val supported = setOf("openrouter", "chatgpt", "claude", "gemini", "qwen", "qwen-oauth", "zai", "google", "email", "phone")
+        val supported = setOf("openrouter", "openai", "chatgpt", "claude", "gemini", "qwen", "qwen-oauth", "zai", "google", "email", "phone")
         if (methodId !in supported) return false
         return authViewModel.startAuth(methodId)
     }

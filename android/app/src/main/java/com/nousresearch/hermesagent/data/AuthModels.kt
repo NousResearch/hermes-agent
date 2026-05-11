@@ -73,6 +73,16 @@ object AuthCatalog {
             browserSignInSupported = false,
         ),
         AuthOption(
+            id = "openai",
+            label = "OpenAI",
+            description = "Use an OpenAI API key for Hermes Android remote model calls.",
+            scope = AuthScope.RuntimeProvider,
+            runtimeProvider = "openai",
+            defaultBaseUrl = "https://api.openai.com/v1",
+            defaultModel = "gpt-4.1",
+            browserSignInSupported = false,
+        ),
+        AuthOption(
             id = "chatgpt",
             label = "ChatGPT",
             description = "Paste a ChatGPT Web access token and sync it into Hermes Android.",

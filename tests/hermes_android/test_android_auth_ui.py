@@ -21,7 +21,7 @@ def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
     app_shell = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
     settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
 
-    for label in ["Email", "Google", "Phone", "ChatGPT", "Claude", "Gemini", "Qwen Cloud", "Qwen OAuth", "Z.AI"]:
+    for label in ["Email", "Google", "Phone", "OpenAI", "ChatGPT", "Claude", "Gemini", "Qwen Cloud", "Qwen OAuth", "Z.AI"]:
         assert label in auth_models
     assert 'Corr3xt auth base URL' in auth_screen
     assert 'Pending Corr3xt sign-in' in auth_screen
@@ -174,10 +174,13 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
 
     provider_presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
 
-    for provider in ["openrouter", "chatgpt", "claude", "gemini", "qwen", "qwen-oauth", "zai"]:
+    for provider in ["openrouter", "openai", "chatgpt", "claude", "gemini", "qwen", "qwen-oauth", "zai"]:
         block = auth_models.split(f'id = "{provider}"', 1)[1].split("AuthOption(", 1)[0]
         assert "browserSignInSupported = false" in block
 
+    openai_block = auth_models.split('id = "openai"', 1)[1].split("AuthOption(", 1)[0]
+    assert 'runtimeProvider = "openai"' in openai_block
+    assert 'https://api.openai.com/v1' in openai_block
     qwen_block = auth_models.split('id = "qwen"', 1)[1].split("AuthOption(", 1)[0]
     assert 'runtimeProvider = "alibaba"' in qwen_block
     assert 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' in qwen_block

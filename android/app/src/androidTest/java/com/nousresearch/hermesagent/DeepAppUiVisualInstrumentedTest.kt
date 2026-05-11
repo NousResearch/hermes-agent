@@ -177,6 +177,57 @@ class DeepAppUiVisualInstrumentedTest {
     }
 
     @Test
+    fun signinOpenAiCommandOpensOpenAiSetupPageAndReloadsSettingsProviderProfile() {
+        AppSettingsStore(app).save(
+            AppSettings(
+                provider = "openrouter",
+                baseUrl = "https://openrouter.ai/api/v1",
+                model = "anthropic/claude-sonnet-4",
+                onDeviceBackend = BackendKind.NONE.persistedValue,
+                languageTag = "en",
+            )
+        )
+
+        composeRule.setContent {
+            AppShellScreen(
+                bootUiState = BootUiState(
+                    status = "Hermes backend is ready",
+                    ready = true,
+                    probeResult = "signin-openai-test",
+                    baseUrl = "http://127.0.0.1:15436/v1",
+                ),
+                onRetryHermes = {},
+            )
+        }
+
+        val openAiSetupOpened = AtomicBoolean(false)
+        val openAiSetupIntent = browserChooserFor(
+            Uri.parse("https://platform.openai.com/settings/organization/api-keys")
+        ) {
+            openAiSetupOpened.set(true)
+        }
+        Intents.init()
+        try {
+            intending(openAiSetupIntent).respondWith(Instrumentation.ActivityResult(Activity.RESULT_OK, null))
+
+            composeRule.onNodeWithTag("HermesChatInput").performTextInput("/signin openai")
+            composeRule.onNodeWithText("Send").performClick()
+
+            composeRule.waitUntil(timeoutMillis = 10_000) { openAiSetupOpened.get() }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                AppSettingsStore(app).load().provider == "openai"
+            }
+
+            val settings = AppSettingsStore(app).load()
+            assertEquals("openai", settings.provider)
+            assertEquals("https://api.openai.com/v1", settings.baseUrl)
+            assertEquals("gpt-4.1", settings.model)
+        } finally {
+            Intents.release()
+        }
+    }
+
+    @Test
     fun accountsRuntimeProvidersExposeDirectSetupUrls() {
         AppSettingsStore(app).save(
             AppSettings(

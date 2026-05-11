@@ -829,7 +829,7 @@
           setFailedIds(new Set(selectedIds));
           loadBoard();
         });
-    }, [selectedIds, loadBoard, board]);
+    }, [selectedIds, loadBoard, board, t]);
 
     // --- board switching ----------------------------------------------------
     const switchBoard = useCallback(function (nextSlug) {
@@ -1659,7 +1659,7 @@
         onClick: props.onRefresh,
         size: "sm",
         title: "Reload the board from the database. The board auto-refreshes on task events; this is for forcing a re-read.",
-      }, "Refresh"),
+      }, tx(t, "refresh", "Refresh")),
       h(Button, {
         onClick: function () {
           props.setSearch("");
@@ -1669,7 +1669,7 @@
         },
         size: "sm",
         title: "Clear all active filters (search, tenant, assignee, archived).",
-      }, "Clear filters"),
+      }, tx(t, "clearFilters", "Clear filters")),
     );
   }
 
@@ -1722,14 +1722,14 @@
         },
         size: "sm",
         title: "Archive selected tasks. They disappear from the default board view but remain in the database.",
-      }, "Archive"),
+      }, tx(t, "archive", "Archive")),
       h("div", { className: "hermes-kanban-bulk-priority",
                  title: "Set priority on selected tasks. Higher = claimed first." },
         h(Input, {
           type: "number",
           value: priority,
           onChange: function (e) { setPriority(e.target.value); },
-          placeholder: "pri",
+          placeholder: tx(t, "priority", "pri"),
           className: "h-7 text-xs w-16",
         }),
         h(Button, {
@@ -1740,7 +1740,7 @@
           },
           disabled: priority === "",
           size: "sm",
-        }, "Set priority"),
+        }, tx(t, "setPriority", "Set priority")),
       ),
       h("div", { className: "hermes-kanban-bulk-reassign",
                  title: "Reassign selected tasks to a different Hermes profile. Pick a profile (or unassign) and click Apply." },
@@ -1893,7 +1893,7 @@
       onDrop: handleDrop,
     },
       h("div", { className: "hermes-kanban-column-header",
-                 title: COLUMN_HELP[props.column.name] || "" },
+                 title: colHelp || "" },
         h("input", {
           type: "checkbox",
           className: "hermes-kanban-col-check",
@@ -1941,11 +1941,11 @@
                   ),
                   lane.tasks.map(function (tk) {
                     return h(TaskCard, {
-                      key: t.id, task: t,
-                      selected: props.selectedIds.has(t.id),
-                      failed: props.failedIds && props.failedIds.has(t.id),
+                      key: tk.id, task: tk,
+                      selected: props.selectedIds.has(tk.id),
+                      failed: props.failedIds && props.failedIds.has(tk.id),
                       draggingTaskId: props.draggingTaskId,
-                      draggingSource: props.draggingTaskId && props.selectedIds.has(props.draggingTaskId) && props.selectedIds.size > 1 && props.selectedIds.has(t.id),
+                      draggingSource: props.draggingTaskId && props.selectedIds.has(props.draggingTaskId) && props.selectedIds.size > 1 && props.selectedIds.has(tk.id),
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
                       onOpen: props.onOpen,
@@ -1955,11 +1955,11 @@
               })
             : props.column.tasks.map(function (tk) {
                 return h(TaskCard, {
-                  key: t.id, task: t,
-                  selected: props.selectedIds.has(t.id),
-                  failed: props.failedIds && props.failedIds.has(t.id),
+                  key: tk.id, task: tk,
+                  selected: props.selectedIds.has(tk.id),
+                  failed: props.failedIds && props.failedIds.has(tk.id),
                   draggingTaskId: props.draggingTaskId,
-                  draggingSource: props.draggingTaskId && props.selectedIds.has(props.draggingTaskId) && props.selectedIds.size > 1 && props.selectedIds.has(t.id),
+                  draggingSource: props.draggingTaskId && props.selectedIds.has(props.draggingTaskId) && props.selectedIds.size > 1 && props.selectedIds.has(tk.id),
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
                   onOpen: props.onOpen,
@@ -2072,7 +2072,7 @@
           h("div", { className: "hermes-kanban-card-row" },
             h("label", {
               className: "hermes-kanban-card-check-wrap",
-              title: "Select for bulk actions",
+              title: tx(i18n, "selectForBulk", "Select for bulk actions"),
               onClick: function (e) { e.stopPropagation(); },
             },
               h("input", {

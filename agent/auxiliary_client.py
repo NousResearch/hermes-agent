@@ -1421,6 +1421,11 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
+        logger.warning(
+            "Auxiliary: Nous provider unavailable — no auth found (run 'hermes auth nous' "
+            "or set NOUS_API_KEY / NOUS_RUNTIME_API_KEY in ~/.hermes/.env). "
+            "Falling back to next available provider."
+        )
         return None, None
     global auxiliary_is_nous
     auxiliary_is_nous = True

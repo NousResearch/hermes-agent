@@ -549,6 +549,55 @@ class TestSendToPlatformChunking:
         helper.assert_not_awaited()
         lightweight.assert_awaited_once()
 
+    def test_qqbot_prefers_live_adapter_path(self):
+        live_send = AsyncMock(return_value={"success": True, "platform": "qqbot", "chat_id": "user-1", "message_id": "live-msg"})
+        rest_send = AsyncMock(return_value={"success": True, "platform": "qqbot", "chat_id": "user-1", "message_id": "rest-msg"})
+
+        with patch("tools.send_message_tool._send_via_adapter", live_send), \
+             patch("tools.send_message_tool._send_qqbot", rest_send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.QQBOT,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "user-1",
+                    "hello from tool",
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "live-msg"
+        live_send.assert_awaited_once()
+        call = live_send.await_args
+        assert call.args[0] == Platform.QQBOT
+        assert call.args[2] == "user-1"
+        assert call.args[3] == "hello from tool"
+        assert call.kwargs["thread_id"] is None
+        assert call.kwargs["media_files"] == []
+        assert call.kwargs["force_document"] is False
+        rest_send.assert_not_awaited()
+
+    def test_qqbot_falls_back_to_rest_when_live_adapter_missing(self):
+        live_send = AsyncMock(return_value={
+            "error": "No live gateway adapter for qqbot and no standalone_sender_fn registered."
+        })
+        rest_send = AsyncMock(return_value={"success": True, "platform": "qqbot", "chat_id": "user-1", "message_id": "rest-msg"})
+
+        with patch("tools.send_message_tool._send_via_adapter", live_send), \
+             patch("tools.send_message_tool._send_qqbot", rest_send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.QQBOT,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "user-1",
+                    "hello from tool",
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "rest-msg"
+        live_send.assert_awaited_once()
+        rest_send.assert_awaited_once()
+
     def test_send_matrix_via_adapter_sends_document(self, tmp_path):
         file_path = tmp_path / "report.pdf"
         file_path.write_bytes(b"%PDF-1.4 test")

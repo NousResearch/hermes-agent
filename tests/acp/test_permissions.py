@@ -87,3 +87,9 @@ class TestApprovalMapping:
             result = cb("echo hi", "demo")
 
         assert result == "deny"
+
+    def test_unknown_allowed_option_falls_back_to_once(self):
+        """Unknown allowed option IDs preserve Hermes' permissive fallback."""
+        outcome = AllowedOutcome(option_id="future_allow_variant", outcome="selected")
+        result = _setup_callback(outcome)
+        assert result == "once"

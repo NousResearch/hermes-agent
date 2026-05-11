@@ -3031,7 +3031,8 @@ def _normalize_empty_agent_response(
 
     Consolidates the existing ``failed`` handler and adds a catch-all for
     the case where the agent did work (api_calls > 0) but returned no text.
-    Fix for #18765.
+    Fix for #18765 — except intentional ``end_turn_tool_batch`` completions
+    (tool-only exits), which remain silent for the messaging layer.
 
     Also surfaces a retry hint when the agent never ran at all
     (api_calls == 0) for a non-interrupted, non-failed turn -- this is the
@@ -3082,6 +3083,8 @@ def _normalize_empty_agent_response(
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
             return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+        if agent_result.get("turn_exit_reason") == "end_turn_tool_batch":
+            return ""
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again."

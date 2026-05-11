@@ -8387,15 +8387,16 @@ class AIAgent:
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
-        if reason in (FailoverReason.rate_limit, FailoverReason.billing):
-            # Only start cooldown when leaving the primary provider.  If we're
-            # already on a fallback and chain-switching, the primary wasn't the
-            # source of the 429 so the cooldown should not be reset/extended.
-            fallback_already_active = bool(getattr(self, "_fallback_activated", False))
-            current_provider = (getattr(self, "provider", "") or "").strip().lower()
-            primary_provider = ((self._primary_runtime or {}).get("provider") or "").strip().lower()
-            if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
-                self._rate_limited_until = time.monotonic() + 60
+        # Start cooldown when leaving the primary provider so subsequent
+        # turns don't waste time retrying a provider that's known-down.
+        # Only apply when leaving the primary — chain-switching between
+        # fallbacks should not reset/extend the primary cooldown.
+        fallback_already_active = bool(getattr(self, "_fallback_activated", False))
+        current_provider = (getattr(self, "provider", "") or "").strip().lower()
+        primary_provider = ((self._primary_runtime or {}).get("provider") or "").strip().lower()
+        if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
+            _cooldown = int(os.getenv("HERMES_RATE_LIMIT_COOLDOWN", "3600"))
+            self._rate_limited_until = time.monotonic() + _cooldown
         if self._fallback_index >= len(self._fallback_chain):
             return False
 

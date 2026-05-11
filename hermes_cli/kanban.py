@@ -82,7 +82,7 @@ def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
     if not value:
         return ("scratch", None)
     v = value.strip()
-    if v in ("scratch", "worktree"):
+    if v in {"scratch", "worktree"}:
         return (v, None)
     if v.startswith("dir:"):
         path = v[len("dir:"):].strip()
@@ -788,15 +788,15 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
     can still run ``boards create`` / ``boards list``.
     """
     sub = getattr(args, "boards_action", None) or "list"
-    if sub in ("list", "ls"):
+    if sub in {"list", "ls"}:
         return _cmd_boards_list(args)
-    if sub in ("create", "new"):
+    if sub in {"create", "new"}:
         return _cmd_boards_create(args)
-    if sub in ("rm", "remove", "delete"):
+    if sub in {"rm", "remove", "delete"}:
         return _cmd_boards_rm(args)
-    if sub in ("switch", "use"):
+    if sub in {"switch", "use"}:
         return _cmd_boards_switch(args)
-    if sub in ("show", "current"):
+    if sub in {"show", "current"}:
         return _cmd_boards_show(args)
     if sub == "rename":
         return _cmd_boards_rename(args)
@@ -1301,7 +1301,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_assign(args: argparse.Namespace) -> int:
-    profile = None if args.profile.lower() in ("none", "-", "null") else args.profile
+    profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
     with kb.connect() as conn:
         ok = kb.assign_task(conn, args.task_id, profile)
     if not ok:
@@ -1328,7 +1328,7 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
 
 
 def _cmd_reassign(args: argparse.Namespace) -> int:
-    profile = None if args.profile.lower() in ("none", "-", "null") else args.profile
+    profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
     with kb.connect() as conn:
         ok = kb.reassign_task(
             conn, args.task_id, profile,
@@ -2230,7 +2230,7 @@ def run_slash(rest: str) -> str:
         out = buf_out.getvalue().rstrip()
         err = buf_err.getvalue().rstrip()
         # Help dump (exit 0) → return the captured help text directly.
-        if exc.code in (0, None) and out:
+        if exc.code in {0, None} and out:
             return out
         body = err or out
         return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"

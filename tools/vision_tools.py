@@ -346,7 +346,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         return data_url  # fall through to size-check in caller
     # Convert RGBA to RGB for JPEG output
-    if pil_format == "JPEG" and img.mode in ("RGBA", "P"):
+    if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
         img = img.convert("RGB")
 
     # Strategy: halve dimensions until base64 fits, up to 4 rounds.

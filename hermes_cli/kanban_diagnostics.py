@@ -177,7 +177,7 @@ def _active_hallucination_events(
     active: list[Any] = []
     for ev in events:
         k = _event_kind(ev)
-        if k in ("completed", "edited"):
+        if k in {"completed", "edited"}:
             active.clear()
         elif k == kind:
             active.append(ev)
@@ -193,7 +193,7 @@ def _latest_clean_event_ts(events: Iterable[Any]) -> int:
     """
     latest = 0
     for ev in events:
-        if _event_kind(ev) in ("completed", "edited"):
+        if _event_kind(ev) in {"completed", "edited"}:
             t = _event_ts(ev)
             latest = max(latest, t)
     return latest
@@ -355,7 +355,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     most_recent_outcome = None
     for r in reversed(ordered_runs):
         oc = _task_field(r, "outcome")
-        if oc in ("spawn_failed", "timed_out", "crashed"):
+        if oc in {"spawn_failed", "timed_out", "crashed"}:
             most_recent_outcome = oc
             break
 
@@ -373,7 +373,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             label=f"Fix profile auth: hermes -p {assignee} auth",
             payload={"command": f"hermes -p {assignee} auth"},
         ))
-    elif most_recent_outcome in ("timed_out", "crashed"):
+    elif most_recent_outcome in {"timed_out", "crashed"}:
         # Worker got off the ground but died. Logs are the right place
         # to diagnose; reclaim/reassign are the recovery levers.
         task_id = _task_field(task, "id")
@@ -466,7 +466,7 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
             consecutive += 1
             if last_err is None:
                 last_err = _task_field(r, "error")
-        elif outcome in ("completed", "reclaimed"):
+        elif outcome in {"completed", "reclaimed"}:
             # A success (or manual reclaim) breaks the streak.
             break
         else:
@@ -541,7 +541,7 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
         return []
     # Any comment / unblock after the block breaks the "stale" signal.
     for ev in events:
-        if _event_kind(ev) in ("commented", "unblocked") and _event_ts(ev) > last_blocked_ts:
+        if _event_kind(ev) in {"commented", "unblocked"} and _event_ts(ev) > last_blocked_ts:
             return []
     actions: list[DiagnosticAction] = [
         DiagnosticAction(

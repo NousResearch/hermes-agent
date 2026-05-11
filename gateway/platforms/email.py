@@ -54,7 +54,7 @@ _NOREPLY_PATTERNS = (
 # RFC headers that indicate bulk/automated mail
 _AUTOMATED_HEADERS = {
     "Auto-Submitted": lambda v: v.lower() != "no",
-    "Precedence": lambda v: v.lower() in ("bulk", "list", "junk"),
+    "Precedence": lambda v: v.lower() in {"bulk", "list", "junk"},
     "X-Auto-Response-Suppress": lambda v: bool(v),
     "List-Unsubscribe": lambda v: bool(v),
 }
@@ -203,7 +203,7 @@ def _extract_attachments(
             continue
         # Skip text/plain and text/html body parts
         content_type = part.get_content_type()
-        if content_type in ("text/plain", "text/html") and "attachment" not in disposition:
+        if content_type in {"text/plain", "text/html"} and "attachment" not in disposition:
             continue
 
         filename = part.get_filename()

@@ -470,11 +470,11 @@ class MemoryManager:
 
         accepted = [
             p for p in params
-            if p.kind in (
+            if p.kind in {
                 inspect.Parameter.POSITIONAL_ONLY,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 inspect.Parameter.KEYWORD_ONLY,
-            )
+            }
         ]
         if len(accepted) >= 4:
             return "positional"

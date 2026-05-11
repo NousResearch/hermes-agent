@@ -473,7 +473,7 @@ def run_doctor(args):
             if (
                 provider
                 and _resolve_auth_provider is not None
-                and provider not in ("auto", "custom")
+                and provider not in {"auto", "custom"}
             ):
                 try:
                     runtime_provider = _resolve_auth_provider(provider)
@@ -485,7 +485,7 @@ def run_doctor(args):
             if (
                 provider
                 and _resolve_provider_full is not None
-                and provider not in ("auto", "custom")
+                and provider not in {"auto", "custom"}
             ):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
                 catalog_provider = provider_def.id if provider_def is not None else None
@@ -542,7 +542,7 @@ def run_doctor(args):
             # own env-var checks elsewhere in doctor, and get_auth_status()
             # returns a bare {logged_in: False} for anything it doesn't
             # explicitly dispatch, which would produce false positives.
-            if runtime_provider and runtime_provider not in ("auto", "custom", "openrouter"):
+            if runtime_provider and runtime_provider not in {"auto", "custom", "openrouter"}:
                 try:
                     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
                     pconfig = PROVIDER_REGISTRY.get(runtime_provider)
@@ -1010,7 +1010,7 @@ def run_doctor(args):
             issues.append(f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}")
 
         disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
-        if disk in ("", "0", "51200"):
+        if disk in {"", "0", "51200"}:
             check_ok("Vercel disk setting", "(uses platform default)")
         else:
             check_fail("Vercel custom disk unsupported", "(reset terminal.container_disk to 51200)")
@@ -1036,7 +1036,7 @@ def run_doctor(args):
         for line in auth_status.detail_lines:
             check_info(f"Vercel auth {line}")
 
-        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("1", "true", "yes", "on")
+        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
         if persistent:
             check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
         else:

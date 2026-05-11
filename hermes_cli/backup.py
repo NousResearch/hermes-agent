@@ -298,7 +298,7 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
     if len(first_parts) == 1:
         prefix = first_parts.pop()
         # Only strip if it looks like a hermes dir name
-        if prefix in (".hermes", "hermes"):
+        if prefix in {".hermes", "hermes"}:
             return prefix + "/"
 
     return ""
@@ -349,7 +349,7 @@ def run_import(args) -> None:
             except (EOFError, KeyboardInterrupt):
                 print("\nAborted.")
                 sys.exit(1)
-            if answer not in ("y", "yes"):
+            if answer not in {"y", "yes"}:
                 print("Aborted.")
                 return
 

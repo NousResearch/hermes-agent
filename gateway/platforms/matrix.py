@@ -245,11 +245,11 @@ def check_matrix_requirements() -> bool:
 
     # If encryption is requested, verify E2EE deps are available at startup
     # rather than silently degrading to plaintext-only at connect time.
-    encryption_requested = os.getenv("MATRIX_ENCRYPTION", "").lower() in (
+    encryption_requested = os.getenv("MATRIX_ENCRYPTION", "").lower() in {
         "true",
         "1",
         "yes",
-    )
+    }
     if encryption_requested and not _check_e2ee_deps():
         logger.error(
             "Matrix: MATRIX_ENCRYPTION=true but E2EE dependencies are missing. %s. "
@@ -312,7 +312,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         self._encryption: bool = config.extra.get(
             "encryption",
-            os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes"),
+            os.getenv("MATRIX_ENCRYPTION", "").lower() in {"true", "1", "yes"},
         )
         self._device_id: str = config.extra.get("device_id", "") or os.getenv(
             "MATRIX_DEVICE_ID", ""
@@ -343,7 +343,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Mention/thread gating — parsed once from env vars.
         self._require_mention: bool = os.getenv(
             "MATRIX_REQUIRE_MENTION", "true"
-        ).lower() not in ("false", "0", "no")
+        ).lower() not in {"false", "0", "no"}
         free_rooms_raw = config.extra.get("free_response_rooms")
         if free_rooms_raw is None:
             free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
@@ -367,22 +367,22 @@ class MatrixAdapter(BasePlatformAdapter):
             self._allowed_rooms: Set[str] = {
                 r.strip() for r in str(allowed_rooms_raw).split(",") if r.strip()
             }
-        self._auto_thread: bool = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in (
+        self._auto_thread: bool = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in {
             "true",
             "1",
             "yes",
-        )
+        }
         self._dm_auto_thread: bool = os.getenv(
             "MATRIX_DM_AUTO_THREAD", "false"
-        ).lower() in ("true", "1", "yes")
+        ).lower() in {"true", "1", "yes"}
         self._dm_mention_threads: bool = os.getenv(
             "MATRIX_DM_MENTION_THREADS", "false"
-        ).lower() in ("true", "1", "yes")
+        ).lower() in {"true", "1", "yes"}
 
         # Reactions: configurable via MATRIX_REACTIONS (default: true).
         self._reactions_enabled: bool = os.getenv(
             "MATRIX_REACTIONS", "true"
-        ).lower() not in ("false", "0", "no")
+        ).lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Delay before redacting reactions so Matrix homeservers have time to
         # deliver the final message event without tripping "missing event"
@@ -1771,9 +1771,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Cache media locally when downstream tools need a real file path.
         cached_path = None
-        should_cache_locally = msg_type in (
+        should_cache_locally = msg_type in {
             MessageType.PHOTO, MessageType.AUDIO, MessageType.VIDEO, MessageType.DOCUMENT,
-        ) or is_voice_message or is_encrypted_media
+        } or is_voice_message or is_encrypted_media
         if should_cache_locally and url:
             try:
                 file_bytes = await self._client.download_media(ContentURI(url))
@@ -1834,7 +1834,7 @@ class MatrixAdapter(BasePlatformAdapter):
                             ext = ext_map.get(media_type, ".jpg")
                             cached_path = cache_image_from_bytes(file_bytes, ext=ext)
                             logger.info("[Matrix] Cached user image at %s", cached_path)
-                        elif msg_type in (MessageType.AUDIO, MessageType.VOICE):
+                        elif msg_type in {MessageType.AUDIO, MessageType.VOICE}:
                             ext = (
                                 Path(
                                     body
@@ -2602,7 +2602,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Sanitize a URL for use in an href attribute."""
         stripped = url.strip()
         scheme = stripped.split(":", 1)[0].lower().strip() if ":" in stripped else ""
-        if scheme in ("javascript", "data", "vbscript"):
+        if scheme in {"javascript", "data", "vbscript"}:
             return ""
         return stripped.replace('"', "&quot;")
 

@@ -769,8 +769,8 @@ def _build_patch_mode_content(patch_text: str) -> List[Any]:
                 old_chunks: list[str] = []
                 new_chunks: list[str] = []
                 for hunk in op.hunks:
-                    old_lines = [line.content for line in hunk.lines if line.prefix in (" ", "-")]
-                    new_lines = [line.content for line in hunk.lines if line.prefix in (" ", "+")]
+                    old_lines = [line.content for line in hunk.lines if line.prefix in {" ", "-"}]
+                    new_lines = [line.content for line in hunk.lines if line.prefix in {" ", "+"}]
                     if old_lines or new_lines:
                         old_chunks.append("\n".join(old_lines))
                         new_chunks.append("\n".join(new_lines))

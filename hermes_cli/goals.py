@@ -270,7 +270,7 @@ def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
 
     done_val = data.get("done")
     if isinstance(done_val, str):
-        done = done_val.strip().lower() in ("true", "yes", "1", "done")
+        done = done_val.strip().lower() in {"true", "yes", "1", "done"}
     else:
         done = bool(done_val)
     reason = str(data.get("reason") or "").strip()
@@ -389,11 +389,11 @@ class GoalManager:
         return self._state is not None and self._state.status == "active"
 
     def has_goal(self) -> bool:
-        return self._state is not None and self._state.status in ("active", "paused")
+        return self._state is not None and self._state.status in {"active", "paused"}
 
     def status_line(self) -> str:
         s = self._state
-        if s is None or s.status in ("cleared",):
+        if s is None or s.status in {"cleared",}:
             return "No active goal. Set one with /goal <text>."
         turns = f"{s.turns_used}/{s.max_turns} turns"
         if s.status == "active":

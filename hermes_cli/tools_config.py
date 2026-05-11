@@ -594,7 +594,7 @@ def _pip_install(
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     import shutil
-    if post_setup_key in ("agent_browser", "browserbase"):
+    if post_setup_key in {"agent_browser", "browserbase"}:
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
         npm_bin = shutil.which("npm")
         npx_bin = shutil.which("npx")
@@ -1631,7 +1631,7 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
             image_cfg = config.get("image_gen", {})
             if isinstance(image_cfg, dict):
                 configured_provider = image_cfg.get("provider")
-                if configured_provider not in (None, "", "fal"):
+                if configured_provider not in {None, "", "fal"}:
                     return False
                 if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
                     return False
@@ -1664,7 +1664,7 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
         configured_provider = image_cfg.get("provider")
         return (
             provider["imagegen_backend"] == "fal"
-            and configured_provider in (None, "", "fal")
+            and configured_provider in {None, "", "fal"}
             and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
         )
     return False
@@ -1914,7 +1914,7 @@ def _configure_provider(provider: dict, config: dict):
 
     # For tools without a specific config key (e.g. image_gen), still
     # track use_gateway so the runtime knows the user's intent.
-    if managed_feature and managed_feature not in ("web", "tts", "browser"):
+    if managed_feature and managed_feature not in {"web", "tts", "browser"}:
         config.setdefault(managed_feature, {})["use_gateway"] = True
     elif not managed_feature:
         # User picked a non-gateway provider — find which category this
@@ -1946,7 +1946,7 @@ def _configure_provider(provider: dict, config: dict):
             # image_gen.provider clear so the dispatch shim falls through
             # to the legacy FAL path.
             img_cfg = config.setdefault("image_gen", {})
-            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in (None, "", "fal"):
+            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
                 img_cfg["provider"] = "fal"
         return
 
@@ -1991,7 +1991,7 @@ def _configure_provider(provider: dict, config: dict):
         if backend:
             _configure_imagegen_model(backend, config)
             img_cfg = config.setdefault("image_gen", {})
-            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in (None, "", "fal"):
+            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
                 img_cfg["provider"] = "fal"
 
 
@@ -2186,7 +2186,7 @@ def _reconfigure_provider(provider: dict, config: dict):
         web_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
-    if managed_feature and managed_feature not in ("web", "tts", "browser"):
+    if managed_feature and managed_feature not in {"web", "tts", "browser"}:
         section = config.setdefault(managed_feature, {})
         if not isinstance(section, dict):
             section = {}
@@ -2535,7 +2535,7 @@ def _configure_mcp_tools_interactive(config: dict):
     # Count enabled servers
     enabled_names = [
         k for k, v in mcp_servers.items()
-        if v.get("enabled", True) not in (False, "false", "0", "no", "off")
+        if v.get("enabled", True) not in {False, "false", "0", "no", "off"}
     ]
     if not enabled_names:
         _print_info("All MCP servers are disabled.")

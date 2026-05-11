@@ -571,7 +571,7 @@ class HermesAgentBaseEnv(BaseEnv):
         # (e.g., API call failed on turn 1). No point spinning up a Modal sandbox
         # just to verify files that were never created.
         only_system_and_user = all(
-            msg.get("role") in ("system", "user") for msg in result.messages
+            msg.get("role") in {"system", "user"} for msg in result.messages
         )
         if result.turns_used == 0 or only_system_and_user:
             logger.warning(

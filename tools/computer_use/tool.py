@@ -131,7 +131,7 @@ def _get_backend() -> ComputerUseBackend:
     with _backend_lock:
         if _backend is None:
             backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-            if backend_name in ("cua", "cua-driver", ""):
+            if backend_name in {"cua", "cua-driver", ""}:
                 from tools.computer_use.cua_backend import CuaDriverBackend
                 _backend = CuaDriverBackend()
             elif backend_name == "noop":  # pragma: no cover
@@ -286,7 +286,7 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
 
 
 def _summarize_action(action: str, args: Dict[str, Any]) -> str:
-    if action in ("click", "double_click", "right_click", "middle_click"):
+    if action in {"click", "double_click", "right_click", "middle_click"}:
         if args.get("element") is not None:
             return f"{action} element #{args['element']}"
         coord = args.get("coordinate")
@@ -314,7 +314,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 
     if action == "capture":
         mode = str(args.get("mode", "som"))
-        if mode not in ("som", "vision", "ax"):
+        if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
         cap = backend.capture(mode=mode, app=args.get("app"))
         return _capture_response(cap)
@@ -335,7 +335,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
         return _maybe_follow_capture(backend, res, capture_after)
 
-    if action in ("click", "double_click", "right_click", "middle_click"):
+    if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
         click_count = 1
         if action == "double_click":

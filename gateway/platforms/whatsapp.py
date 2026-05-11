@@ -301,9 +301,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() in ("true", "1", "yes", "on")
+                return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("WHATSAPP_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("WHATSAPP_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
     def _whatsapp_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
@@ -679,7 +679,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         # getattr-with-default keeps tests that construct the adapter via
         # ``WhatsAppAdapter.__new__`` (bypassing __init__) working without
         # every _make_adapter() helper having to seed the attribute.
-        if getattr(self, "_shutting_down", False) and returncode in (0, -2, -15):
+        if getattr(self, "_shutting_down", False) and returncode in {0, -2, -15}:
             logger.info(
                 "[%s] Bridge exited during shutdown (code %d).",
                 self.name,
@@ -1183,7 +1183,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:
                     ext = Path(doc_path).suffix.lower()
-                    if ext in (".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"):
+                    if ext in {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}:
                         try:
                             file_size = Path(doc_path).stat().st_size
                             if file_size > MAX_TEXT_INJECT_BYTES:

@@ -1537,7 +1537,7 @@ def convert_messages_to_anthropic(
             # downgraded to a spurious text block on the last assistant message.
             reasoning_content = m.get("reasoning_content")
             _already_has_thinking = any(
-                isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
+                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
                 for b in blocks
             )
             if isinstance(reasoning_content, str) and not _already_has_thinking:
@@ -1688,7 +1688,7 @@ def convert_messages_to_anthropic(
                 if isinstance(m["content"], list):
                     m["content"] = [
                         b for b in m["content"]
-                        if not (isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"))
+                        if not (isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"})
                     ]
                 prev_blocks = fixed[-1]["content"]
                 curr_blocks = m["content"]

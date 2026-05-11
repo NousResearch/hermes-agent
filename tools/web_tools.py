@@ -126,7 +126,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"):
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -1074,7 +1074,7 @@ def _parallel_search(query: str, limit: int = 5) -> dict:
         return {"error": "Interrupted", "success": False}
 
     mode = os.getenv("PARALLEL_SEARCH_MODE", "agentic").lower().strip()
-    if mode not in ("fast", "one-shot", "agentic"):
+    if mode not in {"fast", "one-shot", "agentic"}:
         mode = "agentic"
 
     logger.info("Parallel search: '%s' (mode=%s, limit=%d)", query, mode, limit)
@@ -1397,7 +1397,7 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
-            elif backend in ("searxng", "brave-free", "ddgs"):
+            elif backend in {"searxng", "brave-free", "ddgs"}:
                 # These backends are search-only — they cannot extract URL content
                 _label = {"searxng": "SearXNG", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]
                 return json.dumps({
@@ -1781,7 +1781,7 @@ async def web_crawl_tool(
             return cleaned_result
 
         # SearXNG / Brave Search (free tier) / DuckDuckGo (ddgs) are search-only — they cannot crawl
-        if backend in ("searxng", "brave-free", "ddgs"):
+        if backend in {"searxng", "brave-free", "ddgs"}:
             _label = {"searxng": "SearXNG", "brave-free": "Brave Search (free tier)", "ddgs": "DuckDuckGo (ddgs)"}[backend]
             return json.dumps({
                 "error": f"{_label} is a search-only backend and cannot crawl URLs. "
@@ -2084,7 +2084,7 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"):
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)

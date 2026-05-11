@@ -264,7 +264,7 @@ def _parse_hint_result(text: str) -> tuple[int | None, str]:
     """Parse the judge's boxed decision and hint text."""
     boxed = _BOXED_RE.findall(text)
     score = int(boxed[-1]) if boxed else None
-    if score not in (1, -1):
+    if score not in {1, -1}:
         score = None
     hint_matches = _HINT_RE.findall(text)
     hint = hint_matches[-1].strip() if hint_matches else ""

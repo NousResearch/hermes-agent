@@ -280,7 +280,7 @@ def emit_llms_full() -> str:
         rel = path.relative_to(DOCS)
         parts = rel.parts
         if len(parts) >= 3 and parts[0] == "user-guide" and parts[1] == "skills" \
-                and parts[2] in ("bundled", "optional"):
+                and parts[2] in {"bundled", "optional"}:
             continue
         seen.add(path)
         meta, body = read_frontmatter(path)

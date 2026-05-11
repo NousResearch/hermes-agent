@@ -490,7 +490,7 @@ def run_uninstall(args):
         print("Cancelled.")
         return
     
-    if choice == "3" or choice.lower() in ("c", "cancel", "q", "quit", "n", "no"):
+    if choice == "3" or choice.lower() in {"c", "cancel", "q", "quit", "n", "no"}:
         print()
         print("Uninstall cancelled.")
         return
@@ -517,7 +517,7 @@ def run_uninstall(args):
             print()
             print("Cancelled.")
             return
-        remove_profiles = resp in ("y", "yes")
+        remove_profiles = resp in {"y", "yes"}
 
     # Final confirmation
     print()

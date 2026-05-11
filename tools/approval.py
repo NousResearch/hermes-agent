@@ -759,13 +759,13 @@ def prompt_dangerous_approval(command: str, description: str,
                 return "deny"
 
             choice = result["choice"]
-            if choice in ('o', 'once'):
+            if choice in {'o', 'once'}:
                 print(t("approval.allowed_once"))
                 return "once"
-            elif choice in ('s', 'session'):
+            elif choice in {'s', 'session'}:
                 print(t("approval.allowed_session"))
                 return "session"
-            elif choice in ('a', 'always'):
+            elif choice in {'a', 'always'}:
                 if not allow_permanent:
                     print(t("approval.allowed_session"))
                     return "session"
@@ -831,7 +831,7 @@ def _get_cron_approval_mode() -> str:
         from hermes_cli.config import load_config
         config = load_config()
         mode = str(cfg_get(config, "approvals", "cron_mode", default="deny")).lower().strip()
-        if mode in ("approve", "off", "allow", "yes"):
+        if mode in {"approve", "off", "allow", "yes"}:
             return "approve"
         return "deny"
     except Exception:
@@ -900,7 +900,7 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
         return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
@@ -1025,7 +1025,7 @@ def check_all_command_guards(command: str, env_type: str,
     other was shown to the user.
     """
     # Skip containers for both checks
-    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands
@@ -1104,7 +1104,7 @@ def check_all_command_guards(command: str, env_type: str,
     # Previously, tirith "block" was a hard block with no approval prompt.
     # Now both block and warn go through the approval flow so users can
     # inspect the explanation and approve if they understand the risk.
-    if tirith_result["action"] in ("block", "warn"):
+    if tirith_result["action"] in {"block", "warn"}:
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
         tirith_key = f"tirith:{rule_id}"

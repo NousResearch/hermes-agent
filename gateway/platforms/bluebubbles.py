@@ -275,7 +275,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message"],
+            # Subscribe only to new messages. "updated-message" can fire for the
+            # same inbound SMS/iMessage after metadata changes, causing duplicate
+            # Hermes replies unless every downstream handler dedupes perfectly.
+            "events": ["new-message"],
         }
 
         try:

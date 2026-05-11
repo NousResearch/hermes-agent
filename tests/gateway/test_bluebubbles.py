@@ -549,17 +549,27 @@ class TestBlueBubblesWebhookRegistration:
     # -- _register_webhook --
 
     def test_register_fresh(self, monkeypatch):
-        """No existing webhook → POST creates one."""
+        """No existing webhook → POST creates a new-message-only registration."""
         import asyncio
         adapter = _make_adapter(monkeypatch)
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": []},
             post_response={"status": 200, "data": {"id": 42}},
         )
+        captured_payload = None
+        orig_api_post = adapter._api_post
+
+        async def tracking_post(path, payload):
+            nonlocal captured_payload
+            captured_payload = payload
+            return await orig_api_post(path, payload)
+
+        adapter._api_post = tracking_post
         ok = asyncio.get_event_loop().run_until_complete(
             adapter._register_webhook()
         )
         assert ok is True
+        assert captured_payload["events"] == ["new-message"]
 
     def test_register_accepts_201(self, monkeypatch):
         """BB might return 201 Created — must still succeed."""

@@ -369,6 +369,26 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit JSON (structured) instead of the default human table",
     )
 
+    # --- recovery-report (blocked/crash classifier) ---
+    p_recovery = sub.add_parser(
+        "recovery-report",
+        aliases=["recoveries"],
+        help="Classify blocked/failing tasks and suggest safe recovery steps",
+    )
+    p_recovery.add_argument(
+        "--task",
+        default=None,
+        help="Only classify one task id",
+    )
+    p_recovery.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON with bounded retry specs instead of the human report",
+    )
+    p_recovery.add_argument(
+        "--blocked-only", action="store_true",
+        help="Only include blocked/running tasks, not ready tasks with failure counters",
+    )
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -717,6 +737,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         "reassign": _cmd_reassign,
         "diagnostics": _cmd_diagnostics,
         "diag":     _cmd_diagnostics,
+        "recovery-report": _cmd_recovery_report,
+        "recoveries": _cmd_recovery_report,
         "link":     _cmd_link,
         "unlink":   _cmd_unlink,
         "claim":    _cmd_claim,
@@ -1469,6 +1491,22 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 if a.suggested:
                     print(f"       → {a.label}")
         print()
+    return 0
+
+
+def _cmd_recovery_report(args: argparse.Namespace) -> int:
+    """Print a read-only blocked/crash recovery classification report."""
+    from hermes_cli import kanban_recovery as kr
+
+    try:
+        items = kr.build_recovery_items(
+            task_id=getattr(args, "task", None),
+            include_ready_failures=not bool(getattr(args, "blocked_only", False)),
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(kr.render_recovery_report(items, json_output=bool(getattr(args, "json", False))))
     return 0
 
 

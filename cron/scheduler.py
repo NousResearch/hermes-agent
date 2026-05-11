@@ -1295,6 +1295,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 else str(delivery_target["thread_id"])
             )
 
+        # Model resolution precedence: per-job override > HERMES_MODEL env >
+        # config.yaml ``model:`` (string or ``{default: ...}``). The per-job
+        # value is intentionally re-read from storage every tick so a
+        # ``cronjob action=update model=...`` after a failed run takes effect
+        # on the next tick — there is no in-memory cache.
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
@@ -1306,14 +1311,38 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _cfg = _expand_env_vars(_cfg)
-                _model_cfg = _cfg.get("model", {})
+                # ``model:`` may be a non-empty string, a dict like
+                # ``{default: ...}``, missing entirely, or explicitly null
+                # (``model: null`` after a clear). Coerce null/missing to {}
+                # so a falsy default never overwrites an already-resolved
+                # env value with ``None``.
+                _model_cfg = _cfg.get("model") or {}
                 if not job.get("model"):
                     if isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
+                        _default = _model_cfg.get("default")
+                        if _default:
+                            model = _default
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+        # If nothing resolved — job has no model, env is empty, and config
+        # has no ``model.default`` — fail fast with an actionable error.
+        # Without this guard the empty string flows through to the provider
+        # which returns an opaque 400 (``model: String should have at least
+        # 1 character``); the operator then has to inspect jobs.json to
+        # realize the job was stored with ``model: null``. See #23979.
+        if not (isinstance(model, str) and model.strip()):
+            raise RuntimeError(
+                f"Cron job '{job_name}' has no model configured "
+                f"(job.model={job.get('model')!r}, "
+                f"HERMES_MODEL={os.getenv('HERMES_MODEL', '')!r}, "
+                "config.yaml model.default missing or empty). "
+                "Set a per-job model via "
+                "`cronjob action=update job_id=<id> model=<name>` or set a "
+                "default with `hermes model <name>`."
+            )
 
         # Apply IPv4 preference if configured.
         try:

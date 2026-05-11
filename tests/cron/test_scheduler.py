@@ -1437,6 +1437,7 @@ class TestRunJobConfigEnvVarExpansion:
     def test_fallback_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
         """${VAR} in config.yaml fallback_providers model: is expanded."""
         (tmp_path / "config.yaml").write_text(
+            "model: primary-model\n"
             "fallback_providers:\n"
             "  - provider: openrouter\n"
             "    model: ${_HERMES_TEST_CRON_FALLBACK}\n"
@@ -1491,6 +1492,159 @@ class TestRunJobConfigEnvVarExpansion:
         kwargs = mock_agent_cls.call_args.kwargs
         # Unresolved refs are kept verbatim — _expand_env_vars contract
         assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
+
+
+class TestRunJobModelResolution:
+    """Verify defensive model resolution for jobs stored with ``model: null``.
+
+    Issue #23979: a cron job created without an explicit model is stored as
+    ``model: null``. At fire time the scheduler must:
+      1. fall back to ``HERMES_MODEL`` env if set,
+      2. else fall back to config.yaml ``model.default`` if set,
+      3. else fail fast with an actionable error — never let an empty string
+         reach the provider where it surfaces as an opaque 400.
+    """
+
+    _RUNTIME = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+    }
+
+    def test_null_job_model_falls_back_to_env(self, tmp_path, monkeypatch):
+        """``model: null`` on the job uses HERMES_MODEL when set."""
+        (tmp_path / "config.yaml").write_text("")
+        monkeypatch.setenv("HERMES_MODEL", "env-model")
+
+        job = {"id": "null-model-job", "name": "null model", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "env-model"
+
+    def test_null_job_model_falls_back_to_config_default(self, tmp_path, monkeypatch):
+        """``model: null`` on the job uses config.yaml model.default when env is empty."""
+        (tmp_path / "config.yaml").write_text("model:\n  default: config-default-model\n")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "cfg-default-job", "name": "cfg default", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "config-default-model"
+
+    def test_explicit_null_model_block_in_config_does_not_overwrite_env(self, tmp_path, monkeypatch):
+        """``model: null`` in config.yaml must not overwrite a resolved HERMES_MODEL.
+
+        Regression: before #23979 the resolver coerced ``model: null`` to
+        ``{}`` only via the ``.get("model", {})`` default — which does not
+        fire when the key is present with a None value. The resolver then
+        skipped both branches and kept the env value, but a similar
+        ``model: {default: null}`` shape would call ``.get("default", model)``
+        which returns ``None`` and clobbered ``model``.
+        """
+        (tmp_path / "config.yaml").write_text("model:\n  default: null\n")
+        monkeypatch.setenv("HERMES_MODEL", "env-model")
+
+        job = {"id": "null-default-job", "name": "null default", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert mock_agent_cls.call_args.kwargs["model"] == "env-model"
+
+    def test_no_model_anywhere_fails_with_actionable_error(self, tmp_path, monkeypatch):
+        """All three sources empty → fail fast with a clear message, not an opaque 400."""
+        (tmp_path / "config.yaml").write_text("")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "no-model-job", "name": "no model anywhere", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            success, _, _, error = run_job(job)
+
+        assert success is False
+        assert error is not None
+        assert "no model configured" in error
+        # AIAgent must never be constructed with an empty model — that's
+        # precisely the bug we're guarding against.
+        mock_agent_cls.assert_not_called()
+
+    def test_job_model_update_takes_effect_on_next_run(self, tmp_path, monkeypatch):
+        """The per-job model is re-read every tick — no in-memory cache.
+
+        This is the property the original bug report asked for. We verify
+        it by calling run_job twice with the same job dict mutated between
+        calls, simulating the storage update flow.
+        """
+        (tmp_path / "config.yaml").write_text("")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "updated-model-job", "name": "updated", "prompt": "hi", "model": "first-model"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            run_job(job)
+            assert mock_agent_cls.call_args.kwargs["model"] == "first-model"
+
+            job["model"] = "second-model"  # simulates jobs.json being rewritten
+            run_job(job)
+            assert mock_agent_cls.call_args.kwargs["model"] == "second-model"
 
 
 class TestRunJobSkillBacked:

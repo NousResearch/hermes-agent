@@ -168,3 +168,133 @@ class TestModelSupportsVision:
         agent = _make_agent()
         with patch("agent.models_dev.get_model_capabilities", side_effect=RuntimeError("boom")):
             assert agent._model_supports_vision() is False
+
+
+# ─── _build_api_kwargs profile-path call site (regression for #23733) ────────
+
+
+def _make_agent_for_build_kwargs() -> AIAgent:
+    """Bare-bones AIAgent with just enough state to traverse the
+    chat_completions profile branch in ``_build_api_kwargs``.
+
+    Mirrors the minimal-setup pattern of ``_make_agent`` above; only the
+    attributes actually read on the path are populated.
+    """
+    agent = object.__new__(AIAgent)
+    agent.provider = "opencode-go"  # has a registered ProviderProfile
+    agent.model = "deepseek-v4-pro"
+    agent.api_mode = "chat_completions"
+    agent.base_url = "https://opencode.ai/zen/go/v1"
+    agent._base_url_lower = agent.base_url.lower()
+    agent._base_url_hostname = "opencode.ai"
+    agent.session_id = "test-session"
+    agent.tools = []
+    agent.max_tokens = None
+    agent.reasoning_config = None
+    agent.request_overrides = None
+    agent._ollama_num_ctx = None
+    agent._ephemeral_max_output_tokens = None
+    agent.providers_allowed = None
+    agent.providers_ignored = None
+    agent.providers_order = None
+    agent.provider_sort = None
+    agent.provider_require_parameters = False
+    agent.provider_data_collection = None
+    agent.openrouter_min_coding_score = None
+    agent._anthropic_image_fallback_cache = {}
+    return agent
+
+
+class TestBuildApiKwargsProfileBranch:
+    """Regression coverage for issue #23733.
+
+    The profile branch of ``_build_api_kwargs`` (registered providers like
+    ``opencode-go``, ``deepseek``, ``kimi``, ...) must run the same
+    non-vision image fallback the legacy branch does. Without it, image
+    parts pass through to text-only models and the provider returns
+    HTTP 400 ``unknown variant 'image_url'``.
+    """
+
+    def test_profile_branch_strips_images_for_non_vision_models(self):
+        agent = _make_agent_for_build_kwargs()
+
+        fake_transport = MagicMock()
+        fake_transport.build_kwargs = MagicMock(side_effect=lambda **kw: kw)
+
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AAAA"},
+                    },
+                ],
+            }
+        ]
+
+        with patch.object(agent, "_get_transport", return_value=fake_transport), \
+             patch.object(agent, "_model_supports_vision", return_value=False), \
+             patch.object(agent, "_is_qwen_portal", return_value=False), \
+             patch.object(agent, "_is_openrouter_url", return_value=False), \
+             patch.object(agent, "_max_tokens_param", lambda v: {"max_tokens": v}), \
+             patch.object(agent, "_resolved_api_call_timeout", return_value=60.0), \
+             patch.object(agent, "_supports_reasoning_extra_body", return_value=False), \
+             patch.object(
+                 agent,
+                 "_describe_image_for_anthropic_fallback",
+                 return_value="[Image: thing]",
+             ):
+            agent._build_api_kwargs(msgs)
+
+        # The transport must have been called via the profile branch.
+        fake_transport.build_kwargs.assert_called_once()
+        kwargs = fake_transport.build_kwargs.call_args.kwargs
+        assert kwargs.get("provider_profile") is not None, \
+            "test must exercise the profile branch — got legacy path instead"
+
+        # The contract: image_url parts must be replaced with text before
+        # they reach the transport, just like the legacy branch already does.
+        sent_messages = kwargs["messages"]
+        assert len(sent_messages) == 1
+        content = sent_messages[0]["content"]
+        assert isinstance(content, str), (
+            f"expected stripped content (str), got {type(content).__name__}: "
+            f"profile branch is bypassing _prepare_messages_for_non_vision_model"
+        )
+        assert "image_url" not in content
+        assert "[Image: thing]" in content
+
+    def test_profile_branch_passes_through_when_model_supports_vision(self):
+        agent = _make_agent_for_build_kwargs()
+
+        fake_transport = MagicMock()
+        fake_transport.build_kwargs = MagicMock(side_effect=lambda **kw: kw)
+
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AAAA"},
+                    },
+                ],
+            }
+        ]
+
+        with patch.object(agent, "_get_transport", return_value=fake_transport), \
+             patch.object(agent, "_model_supports_vision", return_value=True), \
+             patch.object(agent, "_is_qwen_portal", return_value=False), \
+             patch.object(agent, "_is_openrouter_url", return_value=False), \
+             patch.object(agent, "_max_tokens_param", lambda v: {"max_tokens": v}), \
+             patch.object(agent, "_resolved_api_call_timeout", return_value=60.0), \
+             patch.object(agent, "_supports_reasoning_extra_body", return_value=False):
+            agent._build_api_kwargs(msgs)
+
+        kwargs = fake_transport.build_kwargs.call_args.kwargs
+        # Vision-capable: pixels must reach the transport unchanged.
+        sent_messages = kwargs["messages"]
+        assert sent_messages[0]["content"][1]["type"] == "image_url"

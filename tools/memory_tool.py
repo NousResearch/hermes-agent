@@ -291,7 +291,7 @@ class MemoryStore:
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), operate on the first one
-                unique_texts = set(e for _, e in matches)
+                unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
                     return {
@@ -341,7 +341,7 @@ class MemoryStore:
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), remove the first one
-                unique_texts = set(e for _, e in matches)
+                unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
                     return {

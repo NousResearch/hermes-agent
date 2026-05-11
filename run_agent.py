@@ -5842,6 +5842,7 @@ class AIAgent:
         manipulation are always caught.
         """
         # --- Role allowlist: drop messages with roles the API won't accept ---
+        # --- Internal metadata: strip Hermes-internal keys (prefixed _) before API call ---
         filtered = []
         for msg in messages:
             role = msg.get("role")
@@ -5851,6 +5852,11 @@ class AIAgent:
                     role,
                 )
                 continue
+            # Strip Hermes-internal metadata keys (e.g. _empty_recovery_synthetic,
+            # _empty_terminal_sentinel) that strict providers like Fireworks reject.
+            internal_keys = [k for k in msg if k.startswith("_")]
+            if internal_keys:
+                msg = {k: v for k, v in msg.items() if not k.startswith("_")}
             filtered.append(msg)
         messages = filtered
 

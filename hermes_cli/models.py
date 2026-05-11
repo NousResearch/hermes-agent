@@ -106,20 +106,13 @@ def _codex_curated_models() -> list[str]:
 
 
 # Static fallback for xAI when the models.dev disk cache is empty (fresh
-# install, offline first run, etc.). Mirrors the xAI-direct model IDs from
-# $HERMES_HOME/models_dev_cache.json as of 2026-04-28. Whenever xAI renames
-# or retires a model, the disk cache picks it up on the next refresh and the
-# fallback here only matters until that refresh lands.
+# install, offline first run, etc.). Keep this list conservative: it should
+# not advertise models scheduled for May 15, 2026 retirement.
 _XAI_STATIC_FALLBACK: list[str] = [
+    "grok-4.3",
     "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning",
     "grok-4.20-multi-agent-0309",
-    "grok-4-1-fast",
-    "grok-4-1-fast-non-reasoning",
-    "grok-4-fast",
-    "grok-4-fast-non-reasoning",
-    "grok-4",
-    "grok-code-fast-1",
 ]
 
 

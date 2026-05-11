@@ -11957,10 +11957,23 @@ class AIAgent:
         # and interrupt signal, then drive the loop through AgentLoop.
         # The body is unchanged — only the control flow is delegated.
         from agent.loop import AgentLoop as _AgentLoop, LoopContext as _LoopContext
+        from agent.middleware import (
+            SteerDrainMiddleware as _SteerDrainMiddleware,
+            StepCallbackMiddleware as _StepCallbackMiddleware,
+            SkillNudgeMiddleware as _SkillNudgeMiddleware,
+        )
         _loop_ctx = _LoopContext(max_iterations=self.max_iterations)
         # Sync already-consumed iterations from the budget object.
         _loop_ctx._consumed = self.iteration_budget.used
-        _agent_loop = _AgentLoop(_loop_ctx)
+
+        # Build middleware instances for loop-body concerns
+        _mw_steer = _SteerDrainMiddleware(self)
+        _mw_step = _StepCallbackMiddleware(self.step_callback)
+        _mw_skill = _SkillNudgeMiddleware(
+            nudge_interval=getattr(self, "_skill_nudge_interval", 0),
+            has_skill_manage="skill_manage" in self.valid_tool_names,
+        )
+        _agent_loop = _AgentLoop(_loop_ctx, middlewares=[_mw_steer, _mw_step, _mw_skill])
 
         while _agent_loop.context.should_continue() or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
@@ -11995,88 +12008,16 @@ class AIAgent:
             _loop_ctx._consumed = self.iteration_budget.used
 
             # Fire step_callback for gateway hooks (agent:step event)
-            if self.step_callback is not None:
-                try:
-                    prev_tools = []
-                    for _idx, _m in enumerate(reversed(messages)):
-                        if _m.get("role") == "assistant" and _m.get("tool_calls"):
-                            _fwd_start = len(messages) - _idx
-                            _results_by_id = {}
-                            for _tm in messages[_fwd_start:]:
-                                if _tm.get("role") != "tool":
-                                    break
-                                _tcid = _tm.get("tool_call_id")
-                                if _tcid:
-                                    _results_by_id[_tcid] = _tm.get("content", "")
-                            prev_tools = [
-                                {
-                                    "name": tc["function"]["name"],
-                                    "result": _results_by_id.get(tc.get("id")),
-                                    "arguments": tc["function"].get("arguments"),
-                                }
-                                for tc in _m["tool_calls"]
-                                if isinstance(tc, dict)
-                            ]
-                            break
-                    self.step_callback(api_call_count, prev_tools)
-                except Exception as _step_err:
-                    logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
+            # Delegated to StepCallbackMiddleware
+            _mw_step.before_iteration(_loop_ctx, api_call_count, messages=messages)
 
             # Track tool-calling iterations for skill nudge.
-            # Counter resets whenever skill_manage is actually used.
-            if (self._skill_nudge_interval > 0
-                    and "skill_manage" in self.valid_tool_names):
-                self._iters_since_skill += 1
+            # Delegated to SkillNudgeMiddleware
+            _mw_skill.before_iteration(_loop_ctx, api_call_count)
             
             # ── Pre-API-call /steer drain ──────────────────────────────────
-            # If a /steer arrived during the previous API call (while the model
-            # was thinking), drain it now — before we build api_messages — so
-            # the model sees the steer text on THIS iteration.  Without this,
-            # steers sent during an API call only land after the NEXT tool batch,
-            # which may never come if the model returns a final response.
-            #
-            # We scan backwards for the last tool-role message in the messages
-            # list.  If found, the steer is appended there.  If not (first
-            # iteration, no tools yet), the steer stays pending for the next
-            # tool batch — injecting into a user message would break role
-            # alternation, and there's no tool output to piggyback on.
-            _pre_api_steer = self._drain_pending_steer()
-            if _pre_api_steer:
-                _injected = False
-                for _si in range(len(messages) - 1, -1, -1):
-                    _sm = messages[_si]
-                    if isinstance(_sm, dict) and _sm.get("role") == "tool":
-                        marker = f"\n\nUser guidance: {_pre_api_steer}"
-                        existing = _sm.get("content", "")
-                        if isinstance(existing, str):
-                            _sm["content"] = existing + marker
-                        else:
-                            # Multimodal content blocks — append text block
-                            try:
-                                blocks = list(existing) if existing else []
-                                blocks.append({"type": "text", "text": marker})
-                                _sm["content"] = blocks
-                            except Exception:
-                                pass
-                        _injected = True
-                        logger.debug(
-                            "Pre-API-call steer drain: injected into tool msg at index %d",
-                            _si,
-                        )
-                        break
-                if not _injected:
-                    # No tool message to inject into — put it back so
-                    # the post-tool-execution drain picks it up later.
-                    _lock = getattr(self, "_pending_steer_lock", None)
-                    if _lock is not None:
-                        with _lock:
-                            if self._pending_steer:
-                                self._pending_steer = self._pending_steer + "\n" + _pre_api_steer
-                            else:
-                                self._pending_steer = _pre_api_steer
-                    else:
-                        existing = getattr(self, "_pending_steer", None)
-                        self._pending_steer = (existing + "\n" + _pre_api_steer) if existing else _pre_api_steer
+            # Delegated to SteerDrainMiddleware
+            _mw_steer.before_iteration(_loop_ctx, api_call_count, messages=messages)
 
             # Prepare messages for API call
             # If we have an ephemeral system prompt, prepend it to the messages
@@ -15265,10 +15206,10 @@ class AIAgent:
         # Check skill trigger NOW — based on how many tool iterations THIS turn used.
         _should_review_skills = False
         if (self._skill_nudge_interval > 0
-                and self._iters_since_skill >= self._skill_nudge_interval
+                and _mw_skill.iters_since_skill >= self._skill_nudge_interval
                 and "skill_manage" in self.valid_tool_names):
             _should_review_skills = True
-            self._iters_since_skill = 0
+            _mw_skill.reset()
 
         # External memory provider: sync the completed turn + queue next prefetch.
         self._sync_external_memory_for_turn(

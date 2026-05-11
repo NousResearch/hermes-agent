@@ -37,7 +37,7 @@ class TestAgentLoopCreation:
         class LoggingMiddleware(MiddlewareBase):
             def __init__(self):
                 self.calls = []
-            def before_iteration(self, ctx, iteration):
+            def before_iteration(self, ctx, iteration, **kw):
                 self.calls.append(("before", iteration))
             def after_iteration(self, ctx, iteration, result):
                 self.calls.append(("after", iteration))
@@ -108,7 +108,7 @@ class TestMiddlewareBase:
         events = []
 
         class Tracker(MiddlewareBase):
-            def before_iteration(self, ctx, i):
+            def before_iteration(self, ctx, i, **kw):
                 events.append(f"before:{i}")
             def after_iteration(self, ctx, i, result):
                 events.append(f"after:{i}")
@@ -217,7 +217,7 @@ class TestAgentLoopRun:
         injected = []
 
         class InjectMiddleware(MiddlewareBase):
-            def before_iteration(self, ctx, i):
+            def before_iteration(self, ctx, i, **kw):
                 injected.append(f"turn-{i}")
 
         ctx = LoopContext(max_iterations=3)

@@ -96,8 +96,8 @@ class MiddlewareBase:
     no-ops so middleware only needs to define the hooks it cares about.
     """
 
-    def before_iteration(self, ctx: LoopContext, iteration: int) -> None:
-        """Called before each API call."""
+    def before_iteration(self, ctx: LoopContext, iteration: int, **kwargs) -> None:
+        """Called before each API call.  kwargs may include 'messages'."""
 
     def after_iteration(
         self, ctx: LoopContext, iteration: int, result: Dict[str, Any]
@@ -180,7 +180,7 @@ class AgentLoop:
 
             # --- middleware: before ---
             for mw in self.middlewares:
-                mw.before_iteration(self.context, it)
+                mw.before_iteration(self.context, it, messages=messages)
 
             # --- API call ---
             # NOTE: consume() is the caller's responsibility (mirrors the

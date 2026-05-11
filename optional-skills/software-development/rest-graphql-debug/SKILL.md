@@ -1,5 +1,5 @@
 ---
-name: api-testing
+name: rest-graphql-debug
 description: "Debug REST/GraphQL APIs: status codes, auth, schemas, repro."
 version: 1.2.0
 author: eren-karakus0
@@ -470,7 +470,7 @@ web_extract(urls=["https://docs.example.com/api/v1/users"])
 delegate_task(
     goal="Test all CRUD endpoints for /api/v1/users",
     context="""
-Follow the api-testing skill (optional-skills/software-development/api-testing).
+Follow the rest-graphql-debug skill (optional-skills/software-development/rest-graphql-debug).
 Base URL: https://api.example.com
 Auth: Bearer token from API_TOKEN env var.
 

@@ -328,6 +328,13 @@ TOOL_CATEGORIES = {
                 "env_vars": [],
                 "post_setup": "ddgs",
             },
+            {
+                "name": "MiniMax (Coding Plan)",
+                "badge": "subscription",
+                "tag": "MiniMax-powered web search via your OAuth login",
+                "web_backend": "minimax",
+                "env_vars": [],
+            },
         ],
     },
     "image_gen": {

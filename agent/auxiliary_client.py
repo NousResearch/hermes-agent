@@ -286,6 +286,8 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALL
 # differs from their main chat model, map it here.  The vision auto-detect
 # "exotic provider" branch checks this before falling back to the main model.
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
+    "minimax": "MiniMax-VL-01",
+    "minimax-oauth": "MiniMax-VL-01",
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
 }
@@ -2571,6 +2573,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
             return sync_client, model
     except ImportError:
         pass
+    try:
+        from agent.minimax_client import MiniMaxOAuthClient, AsyncMiniMaxOAuthClient
+        if isinstance(sync_client, MiniMaxOAuthClient):
+            return AsyncMiniMaxOAuthClient(sync_client), model
+    except ImportError:
+        pass
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -3142,12 +3150,22 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    elif pconfig.auth_type in ("oauth_device_code", "oauth_external"):
+    elif pconfig.auth_type in ("oauth_device_code", "oauth_external", "oauth_minimax"):
         # OAuth providers — route through their specific try functions
         if provider == "nous":
             return resolve_provider_client("nous", model, async_mode)
         if provider == "openai-codex":
             return resolve_provider_client("openai-codex", model, async_mode)
+        if provider == "minimax-oauth":
+            from agent.minimax_client import get_minimax_oauth_client
+            client = get_minimax_oauth_client()
+            if not client:
+                logger.warning("resolve_provider_client: minimax-oauth requested but no session found")
+                return None, None
+            
+            final_model = _normalize_resolved_model(model or _get_aux_model_for_provider(provider), provider)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)

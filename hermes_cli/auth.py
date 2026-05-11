@@ -3128,10 +3128,10 @@ def _refresh_access_token(
 ) -> Dict[str, Any]:
     response = client.post(
         f"{portal_base_url}/api/oauth/token",
-        headers={"x-nous-refresh-token": refresh_token},
         data={
             "grant_type": "refresh_token",
             "client_id": client_id,
+            "refresh_token": refresh_token,
         },
     )
 
@@ -4749,6 +4749,12 @@ def _minimax_request_user_code(
                 f"MiniMax OAuth response missing field: {field}",
                 provider="minimax-oauth", code="authorization_incomplete",
             )
+    # Hotfix: MiniMax server returns deprecated www.minimax.io URL which redirects to homepage.
+    # Rewrite to platform.minimax.io to ensure the auth page actually loads.
+    if "www.minimax.io" in payload.get("verification_uri", ""):
+        payload["verification_uri"] = payload["verification_uri"].replace("www.minimax.io", "platform.minimax.io")
+
+
     if payload.get("state") != state:
         raise AuthError(
             "MiniMax OAuth state mismatch (possible CSRF).",

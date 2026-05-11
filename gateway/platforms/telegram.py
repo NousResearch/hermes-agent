@@ -823,8 +823,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # giving up, so the old session has time to expire.
         self._polling_conflict_count += 1
 
-        MAX_CONFLICT_RETRIES = 3
-        RETRY_DELAY = 10  # seconds
+        MAX_CONFLICT_RETRIES = 5
+        RETRY_DELAY = 20  # seconds
 
         if self._polling_conflict_count <= MAX_CONFLICT_RETRIES:
             logger.warning(
@@ -864,7 +864,7 @@ class TelegramAdapter(BasePlatformAdapter):
             % MAX_CONFLICT_RETRIES
         )
         logger.error("[%s] %s Original error: %s", self.name, message, error)
-        self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
+        self._set_fatal_error("telegram_polling_conflict", message, retryable=True)
         try:
             if self._app and self._app.updater:
                 await self._app.updater.stop()

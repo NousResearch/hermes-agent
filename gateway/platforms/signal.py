@@ -52,6 +52,22 @@ SSE_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
 HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
 
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float from an environment variable, with fallback."""
+    val = os.environ.get(name)
+    if val is not None:
+        try:
+            return float(val)
+        except ValueError:
+            pass
+    return default
+
+_SIGNAL_HTTP_TIMEOUT = _env_float("HERMES_SIGNAL_HTTP_TIMEOUT", 30.0)
+_SIGNAL_POLL_TIMEOUT = _env_float("HERMES_SIGNAL_POLL_TIMEOUT", 10.0)
+_SIGNAL_HEALTH_TIMEOUT = _env_float("HERMES_SIGNAL_HEALTH_TIMEOUT", 10.0)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -231,11 +247,11 @@ class SignalAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = httpx.AsyncClient(timeout=_SIGNAL_HTTP_TIMEOUT)
         try:
             # Health check — verify signal-cli daemon is reachable
             try:
-                resp = await self.client.get(f"{self.http_url}/api/v1/check", timeout=10.0)
+                resp = await self.client.get(f"{self.http_url}/api/v1/check", timeout=_SIGNAL_HEALTH_TIMEOUT)
                 if resp.status_code != 200:
                     logger.error("Signal: health check failed (status %d)", resp.status_code)
                     return False
@@ -374,7 +390,7 @@ class SignalAdapter(BasePlatformAdapter):
                 logger.warning("Signal: SSE idle for %.0fs, checking daemon health", elapsed)
                 try:
                     resp = await self.client.get(
-                        f"{self.http_url}/api/v1/check", timeout=10.0
+                        f"{self.http_url}/api/v1/check", timeout=_SIGNAL_HEALTH_TIMEOUT
                     )
                     if resp.status_code == 200:
                         # Daemon is alive but SSE is idle — update activity to
@@ -659,6 +675,7 @@ class SignalAdapter(BasePlatformAdapter):
         rpc_id: str = None,
         *,
         log_failures: bool = True,
+        timeout: float = _SIGNAL_HTTP_TIMEOUT,
     ) -> Any:
         """Send a JSON-RPC 2.0 request to signal-cli daemon.
 
@@ -686,7 +703,7 @@ class SignalAdapter(BasePlatformAdapter):
             resp = await self.client.post(
                 f"{self.http_url}/api/v1/rpc",
                 json=payload,
-                timeout=30.0,
+                timeout=timeout,
             )
             resp.raise_for_status()
             data = resp.json()

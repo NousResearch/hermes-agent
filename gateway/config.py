@@ -317,6 +317,16 @@ class PlatformConfig:
         )
 
 
+# Streaming defaults — single source of truth so both StreamingConfig and
+# StreamConsumerConfig agree on the out-of-the-box edit rhythm.  Tuned for
+# Telegram's ~1 edit/s flood envelope: a touch under 1s lets the cadence
+# breathe without bumping into rate limits, and a smaller buffer threshold
+# makes short replies feel near-instant in DMs.
+DEFAULT_STREAMING_EDIT_INTERVAL: float = 0.8
+DEFAULT_STREAMING_BUFFER_THRESHOLD: int = 24
+DEFAULT_STREAMING_CURSOR: str = " ▉"
+
+
 @dataclass
 class StreamingConfig:
     """Configuration for real-time token streaming to messaging platforms."""
@@ -330,9 +340,9 @@ class StreamingConfig:
     #   "edit"  — progressive editMessageText only (legacy behaviour).
     #   "off"   — disable streaming entirely.
     transport: str = "auto"
-    edit_interval: float = 1.0    # Seconds between message edits (Telegram rate-limits at ~1/s)
-    buffer_threshold: int = 40    # Chars before forcing an edit
-    cursor: str = " ▉"           # Cursor shown during streaming
+    edit_interval: float = DEFAULT_STREAMING_EDIT_INTERVAL
+    buffer_threshold: int = DEFAULT_STREAMING_BUFFER_THRESHOLD
+    cursor: str = DEFAULT_STREAMING_CURSOR
     # Ported from openclaw/openclaw#72038.  When >0, the final edit for
     # a long-running streamed response is delivered as a fresh message
     # if the original preview has been visible for at least this many
@@ -359,9 +369,13 @@ class StreamingConfig:
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             transport=data.get("transport", "auto"),
-            edit_interval=_coerce_float(data.get("edit_interval"), 1.0),
-            buffer_threshold=_coerce_int(data.get("buffer_threshold"), 40),
-            cursor=data.get("cursor", " ▉"),
+            edit_interval=_coerce_float(
+                data.get("edit_interval"), DEFAULT_STREAMING_EDIT_INTERVAL,
+            ),
+            buffer_threshold=_coerce_int(
+                data.get("buffer_threshold"), DEFAULT_STREAMING_BUFFER_THRESHOLD,
+            ),
+            cursor=data.get("cursor", DEFAULT_STREAMING_CURSOR),
             fresh_final_after_seconds=_coerce_float(
                 data.get("fresh_final_after_seconds"), 60.0
             ),

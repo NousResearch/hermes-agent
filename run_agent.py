@@ -11515,6 +11515,9 @@ class AIAgent:
         self._last_content_with_tools = None
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
+        empty_response_exhausted = False
+        empty_response_error = None
+        empty_response_code = None
         self._unicode_sanitization_passes = 0
         self._tool_guardrails.reset_for_turn()
         self._tool_guardrail_halt_decision = None
@@ -14709,6 +14712,7 @@ class AIAgent:
                                     "results above and continue with the task."
                                 ),
                                 "_empty_recovery_synthetic": True,
+                                "_empty_recovery_user_nudge": True,
                             })
                             continue
 
@@ -14810,6 +14814,12 @@ class AIAgent:
                         # fallback configured).  Fall through to the
                         # "(empty)" terminal.
                         _turn_exit_reason = "empty_response_exhausted"
+                        empty_response_exhausted = True
+                        empty_response_code = "empty_response_exhausted"
+                        empty_response_error = (
+                            "Model returned no visible response after "
+                            "empty-response retries were exhausted."
+                        )
                         reasoning_text = self._extract_reasoning(assistant_message)
                         self._drop_trailing_empty_response_scaffolding(messages)
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
@@ -15083,7 +15093,8 @@ class AIAgent:
         # Fired once per turn after the tool-calling loop completes.
         # Plugins can transform the LLM's output text before it's returned.
         # First hook to return a string wins; None/empty return leaves text unchanged.
-        if final_response and not interrupted:
+        _has_meaningful_final_response = bool(final_response) and not empty_response_exhausted
+        if _has_meaningful_final_response and not interrupted:
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _transform_results = _invoke_hook(
@@ -15104,7 +15115,7 @@ class AIAgent:
         # Fired once per turn after the tool-calling loop completes.
         # Plugins can use this to persist conversation data (e.g. sync
         # to an external memory system).
-        if final_response and not interrupted:
+        if _has_meaningful_final_response and not interrupted:
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _invoke_hook(
@@ -15163,6 +15174,10 @@ class AIAgent:
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
         }
+        if empty_response_exhausted:
+            result["empty_response_exhausted"] = True
+            result["error_code"] = empty_response_code
+            result["error"] = empty_response_error
         if self._tool_guardrail_halt_decision is not None:
             result["guardrail"] = self._tool_guardrail_halt_decision.to_metadata()
         # If a /steer landed after the final assistant turn (no more tool
@@ -15194,13 +15209,13 @@ class AIAgent:
         # External memory provider: sync the completed turn + queue next prefetch.
         self._sync_external_memory_for_turn(
             original_user_message=original_user_message,
-            final_response=final_response,
+            final_response=final_response if _has_meaningful_final_response else None,
             interrupted=interrupted,
         )
 
         # Background memory/skill review — runs AFTER the response is delivered
         # so it never competes with the user's task for model attention.
-        if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+        if _has_meaningful_final_response and not interrupted and (_should_review_memory or _should_review_skills):
             try:
                 self._spawn_background_review(
                     messages_snapshot=list(messages),

@@ -2707,6 +2707,169 @@ class TestRunConversation:
         assert result["final_response"] == "Here is the actual answer."
         assert result["api_calls"] == 2  # 1 original + 1 nudge retry
 
+    def test_replayed_tool_history_empty_nudge_keeps_messages_protocol_valid(self, agent):
+        """Empty recovery after replayed tool history must use real message dicts."""
+        self._setup_agent(agent)
+        conversation_history = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_replayed",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_replayed",
+                "content": '{"ok": true}',
+            },
+        ]
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        success_resp = _mock_response(content="Recovered after replay", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [empty_resp, success_resp]
+        persisted_messages = []
+
+        def fake_persist(messages, conversation_history=None):
+            persisted_messages.append([m.copy() for m in messages])
+
+        with (
+            patch.object(agent, "_persist_session", side_effect=fake_persist),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "continue after the tool",
+                conversation_history=conversation_history,
+            )
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after replay"
+        assert agent.client.chat.completions.create.call_count == 2
+
+        retry_messages = agent.client.chat.completions.create.call_args_list[1].kwargs[
+            "messages"
+        ]
+        assert retry_messages[-2]["role"] == "assistant"
+        assert retry_messages[-2]["content"] == "(empty)"
+        assert retry_messages[-2]["_empty_recovery_synthetic"] is True
+        assert retry_messages[-1]["role"] == "user"
+        assert retry_messages[-1]["_empty_recovery_user_nudge"] is True
+
+        assert all("_empty_recovery_synthetic" not in m for m in result["messages"])
+        assert all("_empty_recovery_user_nudge" not in m for m in result["messages"])
+        assert persisted_messages
+        assert all(
+            "_empty_recovery_synthetic" not in m and "_empty_recovery_user_nudge" not in m
+            for m in persisted_messages[-1]
+        )
+
+    def test_tool_empty_response_exhaustion_reports_metadata_and_cleans_scaffolding(
+        self, agent
+    ):
+        """Exhausted post-tool empty recovery should be explicit but not persisted."""
+        self._setup_agent(agent)
+        tool_resp = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(name="web_search", arguments="{}", call_id="call_empty")
+            ],
+        )
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [
+            tool_resp,
+            empty_resp,
+            empty_resp,
+            empty_resp,
+            empty_resp,
+            empty_resp,
+        ]
+        persisted_messages = []
+        hook_calls = []
+
+        def fake_persist(messages, conversation_history=None):
+            persisted_messages.append([m.copy() for m in messages])
+
+        def record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=record_hook),
+            patch.object(agent, "_persist_session", side_effect=fake_persist),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_sync_external_memory_for_turn") as sync_memory,
+        ):
+            result = agent.run_conversation("call the tool")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "(empty)"
+        assert result["turn_exit_reason"] == "empty_response_exhausted"
+        assert result["empty_response_exhausted"] is True
+        assert result["error_code"] == "empty_response_exhausted"
+        assert "no visible response" in result["error"]
+        assert agent.client.chat.completions.create.call_count == 6
+        assert all("_empty_recovery_synthetic" not in m for m in result["messages"])
+        assert all("_empty_recovery_user_nudge" not in m for m in result["messages"])
+        assert all("_empty_terminal_sentinel" not in m for m in result["messages"])
+        assert persisted_messages
+        assert all(
+            "_empty_recovery_synthetic" not in m
+            and "_empty_recovery_user_nudge" not in m
+            and "_empty_terminal_sentinel" not in m
+            for m in persisted_messages[-1]
+        )
+        sync_memory.assert_called_once()
+        assert sync_memory.call_args.kwargs["final_response"] is None
+        hook_names = [name for name, _kwargs in hook_calls]
+        assert "transform_llm_output" not in hook_names
+        assert "post_llm_call" not in hook_names
+        assert "pre_api_request" in hook_names
+        assert "post_api_request" in hook_names
+
+    def test_tool_empty_response_nudge_success_cleans_transient_messages(self, agent):
+        """Successful post-tool empty recovery should not leak synthetic messages."""
+        self._setup_agent(agent)
+        tool_resp = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(name="web_search", arguments="{}", call_id="call_recover")
+            ],
+        )
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        success_resp = _mock_response(content="Recovered after tools", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [
+            tool_resp,
+            empty_resp,
+            success_resp,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("call the tool")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after tools"
+        assert "empty_response_exhausted" not in result
+        assert agent.client.chat.completions.create.call_count == 3
+        assert all("_empty_recovery_synthetic" not in m for m in result["messages"])
+        assert all("_empty_recovery_user_nudge" not in m for m in result["messages"])
+        assert all("_empty_terminal_sentinel" not in m for m in result["messages"])
+
     def test_empty_response_triggers_fallback_provider(self, agent):
         """After 3 empty retries, fallback provider is activated and produces content."""
         self._setup_agent(agent)

@@ -1658,7 +1658,7 @@ def text_to_speech_tool(
     # and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    want_opus = (platform in {"telegram", "discord"})
 
     # Determine output path
     if output_path:
@@ -1677,9 +1677,13 @@ def text_to_speech_tool(
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
-        # Use .ogg for Telegram with providers that support native Opus output,
-        # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini", "openrouter"}:
+        # Use .ogg for Telegram with providers that support native Opus output.
+        # OpenRouter TTS does NOT support opus format (only mp3/pcm) — its
+        # audio is decoded by FFmpegPCMAudio in Discord's voice path anyway,
+        # so .mp3 works fine without any extension special-casing.
+        # For all other providers (openai, elevenlabs, mistral, gemini) that
+        # do support native opus, request .ogg on Discord too.
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"

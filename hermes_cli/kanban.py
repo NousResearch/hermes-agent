@@ -278,8 +278,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
                                "the dispatcher SIGTERMs (then SIGKILLs) the worker "
                                "and re-queues the task.")
-    p_create.add_argument("--created-by", default="user",
-                          help="Author name recorded on the task (default: user)")
+    p_create.add_argument("--created-by", default=None,
+                          help="Author name recorded on the task (default: active profile or user)")
     p_create.add_argument("--skill", action="append", default=[], dest="skills",
                           help="Skill to force-load into the worker "
                                "(repeatable). Appended to the built-in "
@@ -510,6 +510,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nsub.add_argument("--chat-id", required=True)
     p_nsub.add_argument("--thread-id", default=None)
     p_nsub.add_argument("--user-id", default=None)
+    p_nsub.add_argument(
+        "--notifier-profile", default=None,
+        help="Profile gateway that owns/delivers this subscription (default: active profile)",
+    )
 
     p_nlist = sub.add_parser(
         "notify-list",
@@ -1921,6 +1925,7 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             conn, task_id=args.task_id,
             platform=args.platform, chat_id=args.chat_id,
             thread_id=args.thread_id, user_id=args.user_id,
+            notifier_profile=args.notifier_profile or _profile_author(),
         )
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")
@@ -1939,8 +1944,9 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
         return 0
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
+        owner = f"  owner={s['notifier_profile']}" if s.get("notifier_profile") else ""
         print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
-              f"  (since event {s['last_event_id']})")
+              f"  (since event {s['last_event_id']}){owner}")
     return 0
 
 

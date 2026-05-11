@@ -2692,11 +2692,14 @@ class AIAgent:
         try:
             data = json.loads(result)
             if isinstance(data, dict):
-                if "error" in data:
+                if data.get("error") is not None:
                     return True
                 if "BLOCKED" in str(data):
                     return True
                 if data.get("total_count") == 0 and data.get("total_count") is not None:
+                    return True
+                # Check exit_code for terminal/execute_code results
+                if data.get("exit_code", 0) != 0:
                     return True
         except (json.JSONDecodeError, TypeError):
             pass

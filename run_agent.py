@@ -1252,18 +1252,13 @@ class AIAgent:
         except Exception:
             pass
 
-        # GPT-5.x models usually require the Responses API path, but some
+        # GPT-5.x models require the Responses API path, but some
         # providers have exceptions (for example Copilot's gpt-5-mini still
-        # uses chat completions). Also auto-upgrade for direct OpenAI URLs
-        # (api.openai.com) since all newer tool-calling models prefer
-        # Responses there. ACP runtimes are excluded: CopilotACPClient
-        # handles its own routing and does not implement the Responses API
-        # surface.
-        # When api_mode was explicitly provided, respect it — the user
-        # knows what their endpoint supports (#10473).
-        # Exception: Azure OpenAI serves gpt-5.x on /chat/completions and
-        # does NOT support the Responses API — skip the upgrade for Azure
-        # (openai.azure.com), even though it looks OpenAI-compatible.
+        # uses chat completions). Only upgrade when the model actually
+        # requires the Responses API — guessing based on base URL alone
+        # breaks Chat Completions models like gpt-4o that don't support
+        # the ``include: ["reasoning.encrypted_content"]`` parameter.
+        # Azure OpenAI is excluded (serves gpt-5.x on /chat/completions).
         if (
             api_mode is None
             and self.api_mode == "chat_completions"
@@ -1271,12 +1266,9 @@ class AIAgent:
             and not str(self.base_url or "").lower().startswith("acp://copilot")
             and not str(self.base_url or "").lower().startswith("acp+tcp://")
             and not self._is_azure_openai_url()
-            and (
-                self._is_direct_openai_url()
-                or self._provider_model_requires_responses_api(
-                    self.model,
-                    provider=self.provider,
-                )
+            and self._provider_model_requires_responses_api(
+                self.model,
+                provider=self.provider,
             )
         ):
             self.api_mode = "codex_responses"

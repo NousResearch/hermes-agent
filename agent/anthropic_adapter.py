@@ -17,8 +17,6 @@ import os
 import platform
 import subprocess
 from pathlib import Path
-from urllib.parse import urlparse
-
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, normalize_proxy_env_vars
@@ -370,19 +368,14 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     return True  # Any other endpoint is a third-party proxy
 
 
-def _is_claude_code_proxy_endpoint(base_url: str | None) -> bool:
-    """Return True for local Anthropic proxies that emulate Claude Code traffic."""
-    normalized = _normalize_base_url_text(base_url)
-    if not normalized:
-        return False
-    parsed = urlparse(normalized if "://" in normalized else f"//{normalized}")
-    host = (parsed.hostname or "").lower()
-    return (
-        host == "localhost"
-        or host == "::1"
-        or host == "0.0.0.0"
-        or host.startswith("127.")
-    )
+def _uses_claude_code_proxy_shape(base_url: str | None) -> bool:
+    """Return True for Anthropic-compatible proxy endpoints.
+
+    Hermes uses the Claude Code wire shape for non-native Anthropic Messages
+    endpoints: Bearer auth, session header, and latest signed thinking replay.
+    Native Anthropic keeps its existing API-key/OAuth handling.
+    """
+    return _is_third_party_anthropic_endpoint(base_url)
 
 
 def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
@@ -582,21 +575,21 @@ def build_anthropic_client(
         drop_context_1m_beta=drop_context_1m_beta,
     )
 
-    if _is_claude_code_proxy_endpoint(base_url):
-        # Local Claude-Code-compatible gateways expect bearer auth, matching
-        # Claude Code's POST /v1/messages shape.
-        kwargs["auth_token"] = api_key
-        if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
-    elif _is_kimi_coding_endpoint(base_url):
+    if _is_kimi_coding_endpoint(base_url):
         # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
         # to be recognized as a valid Coding Agent. Without it, returns 403.
-        # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
+        # Check this BEFORE the generic Claude Code proxy shape.
         kwargs["api_key"] = api_key
         kwargs["default_headers"] = {
             "User-Agent": "claude-code/0.1.0",
             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
         }
+    elif _uses_claude_code_proxy_shape(base_url):
+        # Anthropic-compatible gateways expect bearer auth, matching Claude
+        # Code's POST /v1/messages shape.
+        kwargs["auth_token"] = api_key
+        if common_betas:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer *** for regular API keys. Route those endpoints
@@ -1735,14 +1728,7 @@ def convert_messages_to_anthropic(
     # orphan stripping, message merging) invalidates the signature,
     # causing HTTP 400 "Invalid signature in thinking block".
     #
-    # Signatures are Anthropic-proprietary.  Third-party endpoints
-    # (MiniMax, Azure AI Foundry, self-hosted proxies) cannot validate
-    # them and will reject them outright.  When targeting a third-party
-    # endpoint, strip ALL thinking/redacted_thinking blocks from every
-    # assistant message — the third-party will generate its own
-    # thinking blocks if it supports extended thinking.
-    #
-    # For direct Anthropic (strategy following clawdbot/OpenClaw):
+    # Strategy following clawdbot/OpenClaw:
     # 1. Strip thinking/redacted_thinking from all assistant messages
     #    EXCEPT the last one — preserves reasoning continuity on the
     #    current tool-use chain while avoiding stale signature errors.
@@ -1751,10 +1737,6 @@ def convert_messages_to_anthropic(
     # 3. Strip cache_control from thinking/redacted_thinking blocks —
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
-    _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    _strip_all_thinking = (
-        _is_third_party and not _is_claude_code_proxy_endpoint(base_url)
-    )
     # Kimi /coding and DeepSeek /anthropic share a contract: both speak the
     # Anthropic Messages protocol upstream but require that thinking blocks
     # synthesised from reasoning_content round-trip on subsequent turns when
@@ -1794,10 +1776,8 @@ def convert_messages_to_anthropic(
                 # keep it: the upstream needs it for message-history validation.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-        elif _strip_all_thinking or idx != last_assistant_idx:
-            # Third-party endpoint: strip ALL thinking blocks from every
-            # assistant message — signatures are Anthropic-proprietary.
-            # Direct Anthropic: strip from non-latest assistant messages only.
+        elif idx != last_assistant_idx:
+            # Strip thinking from non-latest assistant messages only.
             stripped = [
                 b for b in m["content"]
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
@@ -2085,4 +2065,3 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-

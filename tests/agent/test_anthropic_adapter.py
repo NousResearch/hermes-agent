@@ -111,13 +111,27 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
             }
 
-    def test_loopback_anthropic_proxy_uses_bearer_auth(self):
+    def test_third_party_anthropic_messages_uses_bearer_auth(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("gateway-key", base_url="http://127.0.0.1:4000")
+            build_anthropic_client(
+                "gateway-key",
+                base_url="https://gateway.example.com/anthropic",
+            )
             kwargs = mock_sdk.Anthropic.call_args[1]
-            assert kwargs["base_url"] == "http://127.0.0.1:4000"
+            assert kwargs["base_url"] == "https://gateway.example.com/anthropic"
             assert kwargs["auth_token"] == "gateway-key"
             assert "api_key" not in kwargs
+
+    def test_kimi_coding_endpoint_keeps_user_agent_auth_shape(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "kimi-key",
+                base_url="https://api.kimi.com/coding",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["api_key"] == "kimi-key"
+            assert "auth_token" not in kwargs
+            assert kwargs["default_headers"]["User-Agent"] == "claude-code/0.1.0"
 
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -1636,7 +1650,7 @@ class TestThinkingBlockSignatureManagement:
         blocks = result[0]["content"]
         assert not any(b.get("type") == "redacted_thinking" for b in blocks)
 
-    def test_third_party_thinking_stripped_by_default(self):
+    def test_third_party_preserves_latest_signed_thinking(self):
         messages = [
             {
                 "role": "assistant",
@@ -1653,9 +1667,13 @@ class TestThinkingBlockSignatureManagement:
         )
         blocks = result[0]["content"]
 
-        assert not any(block.get("type") in {"thinking", "redacted_thinking"} for block in blocks)
+        assert any(
+            block.get("type") == "thinking" and block.get("signature") == "sig_valid"
+            for block in blocks
+        )
+        assert any(block.get("type") == "redacted_thinking" for block in blocks)
 
-    def test_loopback_proxy_preserves_latest_signed_thinking(self):
+    def test_remote_proxy_preserves_latest_signed_thinking(self):
         messages = [
             {
                 "role": "assistant",
@@ -1678,7 +1696,7 @@ class TestThinkingBlockSignatureManagement:
         ]
         _, result = convert_messages_to_anthropic(
             messages,
-            base_url="http://127.0.0.1:4000",
+            base_url="https://gateway.example.com/anthropic",
         )
 
         assistants = [m for m in result if m["role"] == "assistant"]

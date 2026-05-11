@@ -9225,10 +9225,10 @@ class AIAgent:
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
                 drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
-            from agent.anthropic_adapter import _is_claude_code_proxy_endpoint
+            from agent.anthropic_adapter import _uses_claude_code_proxy_shape
             if (
                 getattr(self, "session_id", None)
-                and _is_claude_code_proxy_endpoint(getattr(self, "_anthropic_base_url", None))
+                and _uses_claude_code_proxy_shape(getattr(self, "_anthropic_base_url", None))
             ):
                 extra_headers = dict(api_kwargs.get("extra_headers") or {})
                 extra_headers["X-Hermes-Code-Session-Id"] = self.session_id

@@ -1192,7 +1192,7 @@ class TestBuildApiKwargs:
             return_value=[{"role": "user", "content": "hi"}]
         )
         agent._anthropic_preserve_dots = MagicMock(return_value=False)
-        agent._anthropic_base_url = "http://127.0.0.1:4000"
+        agent._anthropic_base_url = "https://gateway.example.com/anthropic"
         agent.request_overrides = {}
         agent._oauth_1m_beta_disabled = False
         agent.session_id = "test-session-123"

@@ -2132,6 +2132,14 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg(hermes_home)
+        # ExecReload (USR1 → exit-75 restart) is only safe on the primary
+        # gateway. Secondary/profile services must not expose it — a stray
+        # `systemctl reload hermes-gateway-<profile>` would trigger the
+        # exit-75 self-restart cycle, and if refresh_systemd_unit_if_needed()
+        # then regenerates the unit with wrong paths the service enters a
+        # crash loop. --replace stays in ExecStart for all profiles (it is
+        # load-bearing for the exit-75 PID-file race on normal restarts).
+        _exec_reload_line = "" if profile_arg else "ExecReload=/bin/kill -USR1 $MAINPID\n"
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
@@ -2170,8 +2178,7 @@ RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
-ExecReload=/bin/kill -USR1 $MAINPID
-TimeoutStopSec={restart_timeout}
+{_exec_reload_line}TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
 
@@ -2181,6 +2188,14 @@ WantedBy=multi-user.target
 
     hermes_home = str(get_hermes_home().resolve())
     profile_arg = _profile_arg(hermes_home)
+    # ExecReload (USR1 → exit-75 restart) is only safe on the primary
+    # gateway. Secondary/profile services must not expose it — a stray
+    # `systemctl reload hermes-gateway-<profile>` would trigger the
+    # exit-75 self-restart cycle, and if refresh_systemd_unit_if_needed()
+    # then regenerates the unit with wrong paths the service enters a
+    # crash loop. --replace stays in ExecStart for all profiles (it is
+    # load-bearing for the exit-75 PID-file race on normal restarts).
+    _exec_reload_line = "" if profile_arg else "ExecReload=/bin/kill -USR1 $MAINPID\n"
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
@@ -2205,8 +2220,7 @@ RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
-ExecReload=/bin/kill -USR1 $MAINPID
-TimeoutStopSec={restart_timeout}
+{_exec_reload_line}TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
 

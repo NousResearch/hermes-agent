@@ -2183,6 +2183,42 @@ class TestAuxiliaryClientPoisonedCacheEviction:
         assert _evict_cached_client_instance(None) is False
         assert _evict_cached_client_instance(MagicMock()) is False
 
+    def test_evict_cached_client_instance_walks_async_wrapper(self):
+        """async_mode is part of the cache key so sync and async share the same
+        underlying OpenAI client across two distinct cache entries. A single
+        timeout that closes the leaf must evict BOTH — otherwise the async
+        entry survives, keeps reusing the dead transport, and every async
+        aux call (compression, vision, session_search) fails fast with
+        'Connection error' until gateway restart even while the sync route
+        recovers.
+
+        Regression for the async-side gap left by #23482, which fixed the
+        sync wrapper's _real_client walk but missed the async wrappers.
+        """
+        from agent.auxiliary_client import (
+            _client_cache, _client_cache_lock, _evict_cached_client_instance,
+            CodexAuxiliaryClient, AsyncCodexAuxiliaryClient,
+        )
+
+        real = SimpleNamespace(api_key="k", base_url="https://chatgpt.com/backend-api/codex",
+                               responses=SimpleNamespace(stream=lambda **k: None),
+                               close=lambda: None)
+        sync_wrapper = CodexAuxiliaryClient(real, "gpt-5.5")
+        async_wrapper = AsyncCodexAuxiliaryClient(sync_wrapper)
+        with _client_cache_lock:
+            _client_cache.clear()
+            _client_cache[("openai-codex", False, None, None, None)] = (sync_wrapper, "gpt-5.5", None)
+            _client_cache[("openai-codex", True, None, None, None)] = (async_wrapper, "gpt-5.5", None)
+        try:
+            assert _evict_cached_client_instance(real) is True
+            assert ("openai-codex", False, None, None, None) not in _client_cache
+            assert ("openai-codex", True, None, None, None) not in _client_cache, (
+                "async cache entry survived eviction — wrapper is missing _real_client"
+            )
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+
     def test_codex_timeout_evicts_cached_wrapper(self):
         """The timeout closer evicts the cache entry that wraps the closed client."""
         from agent.auxiliary_client import (

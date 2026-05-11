@@ -945,6 +945,12 @@ class AsyncGeminiNativeClient:
         self.api_key = sync_client.api_key
         self.base_url = sync_client.base_url
         self.chat = _AsyncGeminiChatNamespace(self)
+        # Expose the underlying sync client as _real_client so the auxiliary
+        # cache's eviction-by-leaf-client helper (#23482) can find and drop
+        # this async entry when the sync GeminiNativeClient is poisoned.
+        # GeminiNativeClient is itself the leaf (no OpenAI client beneath
+        # it), so we point at the sync_client directly.
+        self._real_client = sync_client
 
     async def _create_chat_completion(self, **kwargs: Any) -> Any:
         stream = bool(kwargs.get("stream"))

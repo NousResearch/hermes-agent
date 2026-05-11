@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.Browser
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.chaquo.python.Python
@@ -112,12 +113,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
         val intent = Intent(Intent.ACTION_VIEW, uri).apply {
             addCategory(Intent.CATEGORY_BROWSABLE)
-        }
-        val chooser = Intent.createChooser(intent, "Open provider setup page").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra(Browser.EXTRA_APPLICATION_ID, getApplication<Application>().packageName)
         }
         runCatching {
-            getApplication<Application>().startActivity(chooser)
+            getApplication<Application>().startActivity(intent)
         }.onSuccess {
             _uiState.update { it.copy(status = "Opened provider setup page. If your browser stalls, copy the setup URL and paste it into another browser.") }
         }.onFailure { error ->

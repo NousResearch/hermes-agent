@@ -4,6 +4,9 @@ import json
 import os
 import stat
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,9 @@ from hermes_cli.config import load_env, save_env_value
 
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 QWEN_BASE_URL_ENV = "HERMES_QWEN_BASE_URL"
+QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
+QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
+QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
 
 def _qwen_auth_path() -> Path:
@@ -91,6 +97,59 @@ def _clear_qwen_tokens() -> None:
 
 
 
+def _qwen_access_token_is_expiring(expiry_date_ms: Any, skew_seconds: int = QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> bool:
+    try:
+        expiry_ms = int(expiry_date_ms)
+    except Exception:
+        return True
+    return (time.time() + max(0, int(skew_seconds))) * 1000 >= expiry_ms
+
+
+
+def _refresh_qwen_tokens(tokens: dict[str, Any], timeout_seconds: float = 20.0) -> dict[str, Any]:
+    refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+    if not refresh_token:
+        raise RuntimeError("Qwen OAuth refresh token missing")
+    body = urllib.parse.urlencode(
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": QWEN_OAUTH_CLIENT_ID,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        QWEN_OAUTH_TOKEN_URL,
+        data=body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"Qwen OAuth refresh failed: HTTP {exc.code} {detail}".strip()) from exc
+    if not isinstance(payload, dict) or not str(payload.get("access_token", "") or "").strip():
+        raise RuntimeError("Qwen OAuth refresh response missing access_token")
+    try:
+        expires_in_seconds = int(payload.get("expires_in"))
+    except Exception:
+        expires_in_seconds = 6 * 60 * 60
+    refreshed = {
+        "access_token": str(payload.get("access_token", "") or "").strip(),
+        "refresh_token": str(payload.get("refresh_token", refresh_token) or refresh_token).strip(),
+        "token_type": str(payload.get("token_type", tokens.get("token_type", "Bearer")) or "Bearer").strip() or "Bearer",
+        "resource_url": str(payload.get("resource_url", tokens.get("resource_url", "portal.qwen.ai")) or "portal.qwen.ai").strip(),
+        "expiry_date": int(time.time() * 1000) + max(1, expires_in_seconds) * 1000,
+    }
+    _save_qwen_tokens(refreshed)
+    return refreshed
+
+
+
 def provider_env_key(provider: str) -> str:
     normalized = str(provider or "").strip().lower()
     return PROVIDER_ENV_KEYS.get(normalized, normalized.upper().replace("-", "_") + "_API_KEY")
@@ -110,6 +169,12 @@ def read_provider_auth_bundle(provider: str) -> dict[str, Any]:
     env = load_env()
     if normalized == "qwen-oauth":
         tokens = _read_qwen_tokens()
+        refresh_error = ""
+        if tokens and _qwen_access_token_is_expiring(tokens.get("expiry_date")) and str(tokens.get("refresh_token", "") or "").strip():
+            try:
+                tokens = _refresh_qwen_tokens(tokens)
+            except Exception as exc:
+                refresh_error = exc.__class__.__name__
         access_token = str(tokens.get("access_token", "") or "")
         refresh_token = str(tokens.get("refresh_token", "") or "")
         base_url = env.get(QWEN_BASE_URL_ENV, "").strip().rstrip("/") or DEFAULT_QWEN_BASE_URL
@@ -120,6 +185,8 @@ def read_provider_auth_bundle(provider: str) -> dict[str, Any]:
             "refresh_token": refresh_token,
             "session_token": "",
             "base_url": base_url,
+            "expires_at_ms": tokens.get("expiry_date", 0),
+            "refresh_error": refresh_error,
             "configured": bool(access_token or refresh_token),
         }
     keys = dict(PROVIDER_AUTH_BUNDLE_KEYS.get(normalized, {}))
@@ -170,7 +237,7 @@ def write_provider_auth_bundle(
             expiry_date = int(existing_expiry)
         except Exception:
             expiry_date = int(time.time() * 1000) + default_ttl_ms
-        if expiry_date <= 0:
+        if expiry_date <= 0 or (access_value and access_value != str(existing.get("access_token", "") or "")):
             expiry_date = int(time.time() * 1000) + default_ttl_ms
         tokens = {
             "access_token": access_value,

@@ -56,6 +56,10 @@ class TestResolveToolset:
         tools = resolve_toolset("web")
         assert set(tools) == {"web_search", "web_extract"}
 
+    def test_slack_toolset_exposes_readonly_history_tool(self):
+        assert resolve_toolset("slack") == ["slack_history"]
+        assert validate_toolset("slack") is True
+
     def test_composite_toolset(self):
         tools = resolve_toolset("debugging")
         assert "terminal" in tools
@@ -229,6 +233,7 @@ class TestToolsetConsistency:
         # Sanity: the shared core must be non-trivial (i.e. we didn't
         # silently let a platform diverge so far that nothing is shared).
         assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"
+        assert "slack_history" in core
 
 
 class TestPluginToolsets:

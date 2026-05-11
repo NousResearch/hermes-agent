@@ -723,7 +723,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                        if not adapter_self._message_mentions_self(message):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
@@ -752,10 +752,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
                 if not isinstance(message.channel, discord.DMChannel) and message.mentions:
-                    _self_mentioned = (
-                        self._client.user is not None
-                        and self._client.user in message.mentions
-                    )
+                    _self_mentioned = adapter_self._message_mentions_self(message)
                     _other_bots_mentioned = any(
                         m.bot and m != self._client.user
                         for m in message.mentions
@@ -3530,6 +3527,75 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
+    def _self_role_mention_ids(self, message: Any) -> set[str]:
+        """Return role IDs in ``message`` that mention this bot's managed role.
+
+        Discord users often mention a bot by clicking the bot's managed role
+        (``<@&role_id>``) instead of the bot user (``<@user_id>``).  The
+        former appears in ``message.role_mentions``, not ``message.mentions``.
+        Treat only this bot's own managed role as a mention so generic role
+        pings (for example @bots or @team) do not wake the agent.
+        """
+        role_mentions = getattr(message, "role_mentions", None) or []
+        client_user = getattr(getattr(self, "_client", None), "user", None)
+        if not role_mentions or client_user is None:
+            return set()
+
+        bot_id = str(getattr(client_user, "id", ""))
+        guild = getattr(message, "guild", None) or getattr(getattr(message, "channel", None), "guild", None)
+
+        bot_member = None
+        if guild is not None:
+            bot_member = getattr(guild, "me", None)
+            if bot_member is None:
+                get_member = getattr(guild, "get_member", None)
+                if callable(get_member) and bot_id.isdigit():
+                    try:
+                        bot_member = get_member(int(bot_id))
+                    except Exception:
+                        bot_member = None
+
+        own_role_ids: set[str] = set()
+        if bot_member is not None:
+            guild_id = str(getattr(guild, "id", "")) if guild is not None else ""
+            for role in getattr(bot_member, "roles", []) or []:
+                role_id = str(getattr(role, "id", ""))
+                if role_id and role_id != guild_id:  # skip @everyone
+                    own_role_ids.add(role_id)
+
+        matched: set[str] = set()
+        bot_name = getattr(client_user, "name", None) or getattr(client_user, "display_name", None)
+        for role in role_mentions:
+            role_id = str(getattr(role, "id", ""))
+            if not role_id:
+                continue
+
+            tags = getattr(role, "tags", None)
+            tag_bot_id = getattr(tags, "bot_id", None) if tags is not None else None
+            is_bot_managed = bool(getattr(role, "managed", False))
+            role_is_bot_managed = getattr(role, "is_bot_managed", None)
+            if callable(role_is_bot_managed):
+                try:
+                    is_bot_managed = bool(role_is_bot_managed()) or is_bot_managed
+                except Exception:
+                    pass
+
+            belongs_to_this_bot = (
+                (role_id in own_role_ids and is_bot_managed)
+                or (tag_bot_id is not None and str(tag_bot_id) == bot_id)
+                or (role_id in own_role_ids and bot_name and getattr(role, "name", None) == bot_name)
+            )
+            if belongs_to_this_bot:
+                matched.add(role_id)
+        return matched
+
+    def _message_mentions_self(self, message: Any) -> bool:
+        """Return true if the message mentions this bot user or its bot role."""
+        client_user = getattr(getattr(self, "_client", None), "user", None)
+        if client_user is not None and client_user in (getattr(message, "mentions", None) or []):
+            return True
+        return bool(self._self_role_mention_ids(message))
+
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
 
@@ -4143,10 +4209,18 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
-        if self._client.user and self._client.user in message.mentions:
+        if self._client.user and self._client.user in (getattr(message, "mentions", None) or []):
             mention_prefix = True
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+
+        self_role_mention_ids = self._self_role_mention_ids(message)
+        if self_role_mention_ids:
+            mention_prefix = True
+            for role_id in self_role_mention_ids:
+                normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
+
+        if mention_prefix:
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}

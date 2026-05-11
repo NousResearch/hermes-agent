@@ -96,16 +96,21 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None, msg_type=None):
     author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
+    guild = getattr(channel, "guild", None)
+    if guild is not None and not hasattr(guild, "id"):
+        guild = None
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
         channel=channel,
+        guild=guild,
         author=author,
         type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
     )
@@ -274,6 +279,51 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_accepts_and_strips_bot_managed_role_mentions_when_required(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_user = adapter._client.user
+    bot_user.name = "Hermes Work"
+    bot_role = SimpleNamespace(id=777, name="Hermes Work", managed=True)
+    guild = SimpleNamespace(id=111, name="Hermes Server", me=SimpleNamespace(roles=[bot_role]))
+    channel = FakeTextChannel(channel_id=321)
+    channel.guild = guild
+    message = make_message(
+        channel=channel,
+        content=f"<@&{bot_role.id}> hello with role mention",
+        role_mentions=[bot_role],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello with role mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_ignores_non_bot_role_mentions_when_required(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_role = SimpleNamespace(id=777, name="Hermes Work", managed=True)
+    other_role = SimpleNamespace(id=888, name="Other Bot", managed=True)
+    guild = SimpleNamespace(id=111, name="Hermes Server", me=SimpleNamespace(roles=[bot_role]))
+    channel = FakeTextChannel(channel_id=321)
+    channel.guild = guild
+    message = make_message(
+        channel=channel,
+        content=f"<@&{other_role.id}> hello other role",
+        role_mentions=[other_role],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

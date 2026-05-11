@@ -107,6 +107,29 @@ _REMOTE_ENV_BACKENDS = frozenset(
 _secret_capture_callback = None
 
 
+def _get_profile_skills_dir():
+    import os
+    from pathlib import Path
+    # Check HERMES_HOME first (if it points to a profile dir directly)
+    home_env = os.environ.get("HERMES_HOME")
+    if home_env:
+        p = Path(home_env) / "skills"
+        if p.exists():
+            return p
+    # Check active_profile file
+    active_path = Path.home() / ".hermes" / "active_profile"
+    if active_path.exists():
+        try:
+            profile_name = active_path.read_text().strip()
+            if profile_name:
+                p = Path.home() / ".hermes" / "profiles" / profile_name / "skills"
+                if p.exists():
+                    return p
+        except Exception:
+            pass
+    return None
+
+
 def load_env() -> Dict[str, str]:
     """Load profile-scoped environment variables from HERMES_HOME/.env."""
     env_path = get_hermes_home() / ".env"
@@ -567,6 +590,13 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     # Scan local dir first, then external dirs (local takes precedence)
     dirs_to_scan = []
+    
+    # 1. Load Profile-specific skills (Highest Priority)
+    profile_dir = _get_profile_skills_dir()
+    if profile_dir:
+        dirs_to_scan.append(profile_dir)
+        
+    # 2. Load Global skills
     if SKILLS_DIR.exists():
         dirs_to_scan.append(SKILLS_DIR)
     dirs_to_scan.extend(get_external_skills_dirs())

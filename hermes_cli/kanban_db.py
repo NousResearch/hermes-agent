@@ -101,12 +101,14 @@ DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 # dispatcher is allowed to continue bookkeeping (reclaim stale locks,
 # record crashed workers, promote ready tasks), but it must not start new
 # Gridlux workers while the host data volume is critically low.  Hysteresis
-# avoids flap-spawning around the threshold: once held below 10 GiB, dispatch
-# stays held until free space reaches at least 15 GiB.
+# avoids flap-spawning around the threshold: once held below 3 GiB, dispatch
+# stays held until free space reaches at least 6 GiB.  Gridlux janitor
+# watchdogs now react at 8 GiB and alert at 4 GiB, leaving cleanup runway
+# before this last-resort pause threshold.
 GRIDLUX_DISK_PRESSURE_BOARD = "gridlux"
 GRIDLUX_DISK_PRESSURE_PATH = "/System/Volumes/Data"
-GRIDLUX_DISK_PRESSURE_CRITICAL_KIB = 10 * 1024 * 1024
-GRIDLUX_DISK_PRESSURE_RECOVERY_KIB = 15 * 1024 * 1024
+GRIDLUX_DISK_PRESSURE_CRITICAL_KIB = 3 * 1024 * 1024
+GRIDLUX_DISK_PRESSURE_RECOVERY_KIB = 6 * 1024 * 1024
 GRIDLUX_EMERGENCY_PRIORITY = 1000
 _gridlux_disk_pressure_hold_active = False
 

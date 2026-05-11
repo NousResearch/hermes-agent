@@ -130,7 +130,8 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawna
 def test_gridlux_dispatch_pauses_non_emergency_workers_under_disk_pressure(
     kanban_home, monkeypatch, all_assignees_spawnable
 ):
-    """Gridlux ready tasks stay unclaimed below the 10 GiB data-volume floor."""
+    """Gridlux ready tasks stay unclaimed below the 3 GiB data-volume floor."""
+    assert kb.GRIDLUX_DISK_PRESSURE_CRITICAL_KIB == 3 * 1024 * 1024
     kb.create_board("gridlux")
     monkeypatch.setattr(kb, "_gridlux_disk_pressure_hold_active", False)
     monkeypatch.setattr(
@@ -162,7 +163,9 @@ def test_gridlux_dispatch_pauses_non_emergency_workers_under_disk_pressure(
 def test_gridlux_dispatch_resumes_only_after_recovery_threshold(
     kanban_home, monkeypatch, all_assignees_spawnable
 ):
-    """The Gridlux disk hold has hysteresis: hold at 12 GiB, resume at 15 GiB."""
+    """The Gridlux disk hold has hysteresis: hold below 3 GiB, resume at 6 GiB."""
+    assert kb.GRIDLUX_DISK_PRESSURE_CRITICAL_KIB == 3 * 1024 * 1024
+    assert kb.GRIDLUX_DISK_PRESSURE_RECOVERY_KIB == 6 * 1024 * 1024
     kb.create_board("gridlux")
     free = {"kib": kb.GRIDLUX_DISK_PRESSURE_CRITICAL_KIB - 1}
     monkeypatch.setattr(kb, "_gridlux_disk_pressure_hold_active", False)

@@ -1359,6 +1359,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         hass_url = os.getenv("HASS_URL")
         if hass_url:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
+        hass_notify_service = os.getenv("HASS_NOTIFY_SERVICE")
+        if hass_notify_service:
+            config.platforms[Platform.HOMEASSISTANT].extra["notify_service"] = hass_notify_service
 
     # Email
     email_addr = os.getenv("EMAIL_ADDRESS")

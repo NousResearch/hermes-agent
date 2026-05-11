@@ -32,6 +32,10 @@ HASS_TOKEN=your-long-lived-access-token
 
 # Optional: HA URL (default: http://homeassistant.local:8123)
 HASS_URL=http://192.168.1.100:8123
+
+# Optional: send agent responses through a notify service
+# Accepts either notify.mobile_app_iphone or mobile_app_iphone
+HASS_NOTIFY_SERVICE=mobile_app_iphone
 ```
 
 :::info
@@ -158,6 +162,7 @@ platforms:
 | `watch_all` | `false` | Set to `true` to receive **all** state changes (not recommended for most setups) |
 | `ignore_entities` | *(none)* | Always ignore these entities (applied before domain/entity filters) |
 | `cooldown_seconds` | `30` | Minimum seconds between events for the same entity |
+| `notify_service` | *(none)* | Send agent responses through `notify.<service>` instead of persistent notifications |
 
 :::tip
 Start with a focused set of domains — `climate`, `binary_sensor`, and `alarm_control_panel` cover the most useful automations. Add more as needed. Use `ignore_entities` to suppress noisy sensors like CPU temperature or uptime counters.
@@ -178,7 +183,9 @@ State changes are formatted as human-readable messages based on domain:
 
 ### Agent Responses
 
-Outbound messages from the agent are delivered as **Home Assistant persistent notifications** (via `persistent_notification.create`). These appear in the HA notification panel with the title "Hermes Agent".
+Outbound messages from the agent are delivered as **Home Assistant persistent notifications** (via `persistent_notification.create`) by default. These appear in the HA notification panel with the title "Hermes Agent".
+
+To send responses through a mobile push notify service instead, set `HASS_NOTIFY_SERVICE=mobile_app_iphone` or configure `platforms.homeassistant.extra.notify_service` in `config.yaml`. Both `notify.mobile_app_iphone` and `mobile_app_iphone` are accepted.
 
 ### Connection Management
 

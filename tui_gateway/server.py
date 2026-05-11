@@ -617,8 +617,19 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
 
 def _sess_nowait(params, rid):
-    s = _sessions.get(params.get("session_id") or "")
-    return (s, None) if s else (None, _err(rid, 4001, "session not found"))
+    sid = params.get("session_id") or ""
+    s = _sessions.get(sid)
+    if s:
+        return (s, None)
+    # Defensive fallback: if no session_id provided, use the first available
+    # session.  This handles TUI commands that omit session_id (e.g. a
+    # pre-rebuild TUI that still sends "voice.toggle" without session_id).
+    if not sid and _sessions:
+        first_sid = next(iter(_sessions))
+        s = _sessions[first_sid]
+        logger.warning("_sess_nowait: no session_id provided, falling back to %r", first_sid)
+        return (s, None)
+    return (None, _err(rid, 4001, "session not found"))
 
 
 def _sess(params, rid):
@@ -5657,6 +5668,33 @@ def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
 
+def _voice_interrupt_state_path() -> str:
+    """Path to the persistent voice interrupt state file (shared with cli.py)."""
+    home = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+    return str(Path(home) / "voice_interrupt_state.json")
+
+
+def _load_voice_interrupt_state() -> dict:
+    """Load voice interrupt state from the shared state file.
+
+    The slash worker (separate process) writes this file when /voice tts_interrupt
+    is run.  The gateway reads it to return correct status without going through
+    the slash worker (which starts fresh each time with _voice_tts_interrupt=False).
+    """
+    path = _voice_interrupt_state_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return {
+                "tts_interrupt": bool(data.get("tts_interrupt", False)),
+                "tts": bool(data.get("tts", False)),
+            }
+    except Exception:
+        pass
+    return {"tts_interrupt": False, "tts": False}
+
+
 def _voice_cfg_dict() -> dict:
     """Shape-safe accessor for the ``voice:`` block in config.yaml.
 
@@ -5705,10 +5743,12 @@ def _(rid, params: dict) -> dict:
         # TUI can both bind it (frontend ``isVoiceToggleKey``) and display
         # it in /voice status — previously the TUI hardcoded Ctrl+B and
         # ignored the config (#18994).
+        _file_state = _load_voice_interrupt_state()
         payload: dict = {
             "enabled": _voice_mode_enabled(),
             "record_key": _voice_record_key(),
-            "tts": _voice_tts_enabled(),
+            "tts": _file_state["tts"],
+            "tts_interrupt": _file_state["tts_interrupt"],
         }
         try:
             from tools.voice_mode import check_voice_requirements
@@ -5769,6 +5809,50 @@ def _(rid, params: dict) -> dict:
                 "enabled": True,
                 "record_key": _voice_record_key(),
                 "tts": new_value,
+            },
+        )
+
+    if action == "tts_interrupt":
+        # DEBUG
+        import logging
+        logger = logging.getLogger("hermes_gateway")
+        logger.warning("voice.toggle tts_interrupt: session_id=%r", params.get("session_id"))
+        # Route through the CLI subprocess so _toggle_tts_interrupt() runs
+        # in the same CLI instance that handles chat — state stays in sync.
+        sess, err = _sess(params, rid)
+        if err:
+            return err
+        worker = sess.get("slash_worker")
+        if not worker:
+            try:
+                worker = _SlashWorker(
+                    sess["session_key"],
+                    getattr(sess.get("agent"), "model", _resolve_model()),
+                )
+                sess["slash_worker"] = worker
+            except Exception as e:
+                return _err(rid, 5030, f"slash worker start failed: {e}")
+        try:
+            output = worker.run("/voice tts_interrupt")
+        except Exception as e:
+            return _err(rid, 5030, f"voice tts_interrupt failed: {e}")
+
+        # Read the state file directly — the slash worker (CLI process) writes it
+        # after every toggle, so this gives us the ground-truth current values
+        # instead of fragile string parsing of CLI output.
+        _file_state = _load_voice_interrupt_state()
+        tts_interrupt = _file_state["tts_interrupt"]
+        tts = _file_state["tts"]
+        # Keep HERMES_VOICE_TTS in sync so the gateway's _voice_tts_enabled()
+        # reflects the CLI's _voice_tts after the toggle.
+        os.environ["HERMES_VOICE_TTS"] = "1" if tts else "0"
+        return _ok(
+            rid,
+            {
+                "enabled": _voice_mode_enabled(),
+                "record_key": _voice_record_key(),
+                "tts": tts,
+                "tts_interrupt": tts_interrupt,
             },
         )
 

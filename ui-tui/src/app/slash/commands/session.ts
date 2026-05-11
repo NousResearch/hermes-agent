@@ -220,17 +220,17 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'voice mode: [on|off|tts|status]',
+    help: 'voice mode: [on|off|tts|tts_interrupt|status]',
     name: 'voice',
     run: (arg, ctx) => {
       const normalized = (arg ?? '').trim().toLowerCase()
 
       const action =
-        normalized === 'on' || normalized === 'off' || normalized === 'tts' || normalized === 'status'
+        normalized === 'on' || normalized === 'off' || normalized === 'tts' || normalized === 'tts_interrupt' || normalized === 'status'
           ? normalized
           : 'status'
 
-      ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
+      ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action, session_id: ctx.sid }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
 
@@ -264,10 +264,12 @@ export const sessionCommands: SlashCommand[] = [
           if (action === 'status') {
             const mode = r.enabled ? 'ON' : 'OFF'
             const tts = r.tts ? 'ON' : 'OFF'
+            const ttsInterrupt = r.tts_interrupt ? 'ON' : 'OFF'
             ctx.transcript.sys('Voice Mode Status')
-            ctx.transcript.sys(`  Mode:       ${mode}`)
-            ctx.transcript.sys(`  TTS:        ${tts}`)
-            ctx.transcript.sys(`  Record key: ${recordKeyLabel}`)
+            ctx.transcript.sys(`  Mode:          ${mode}`)
+            ctx.transcript.sys(`  TTS:           ${tts}`)
+            ctx.transcript.sys(`  TTS interrupt: ${ttsInterrupt}`)
+            ctx.transcript.sys(`  Record key:    ${recordKeyLabel}`)
 
             // CLI's "Requirements:" block — surfaces STT/audio setup issues
             // so the user sees "STT provider: MISSING ..." instead of
@@ -288,6 +290,15 @@ export const sessionCommands: SlashCommand[] = [
 
           if (action === 'tts') {
             ctx.transcript.sys(`Voice TTS ${r.tts ? 'enabled' : 'disabled'}.`)
+
+            return
+          }
+
+          if (action === 'tts_interrupt') {
+            ctx.transcript.sys(`TTS interrupt ${r.tts_interrupt ? 'enabled' : 'disabled'} — Enter during playback stops audio.`)
+            ctx.transcript.sys(`  Mode:          ${r.enabled ? 'ON' : 'OFF'}`)
+            ctx.transcript.sys(`  TTS:           ${r.tts ? 'ON' : 'OFF'}`)
+            ctx.transcript.sys(`  TTS interrupt: ${r.tts_interrupt ? 'ON' : 'OFF'}`)
 
             return
           }

@@ -2971,6 +2971,57 @@ class HermesCLI:
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
 
+    # ── Voice interrupt state file (shared between main CLI and slash worker) ──
+
+    def _voice_interrupt_state_path(self) -> Path:
+        """Path to the persistent voice interrupt state file.
+
+        The slash worker is a separate process from the main CLI, so state
+        changes made via /voice tts_interrupt in the TUI (which routes through
+        the slash worker) must be persisted to a file that the main CLI can
+        read before checking the interrupt flag.
+        """
+        try:
+            home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+        except Exception:
+            home = Path.home() / ".hermes"
+        return home / "voice_interrupt_state.json"
+
+    def _load_voice_interrupt_state(self) -> dict:
+        """Load voice interrupt state from the shared state file.
+
+        Returns {'tts_interrupt': bool, 'tts': bool}.  If the file doesn't
+        exist or is corrupt, returns the current in-memory values.
+        """
+        path = self._voice_interrupt_state_path()
+        try:
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return {
+                    "tts_interrupt": bool(data.get("tts_interrupt", False)),
+                    "tts": bool(data.get("tts", False)),
+                }
+        except Exception:
+            pass
+        return {
+            "tts_interrupt": self._voice_tts_interrupt,
+            "tts": self._voice_tts,
+        }
+
+    def _save_voice_interrupt_state(self) -> None:
+        """Persist the current voice interrupt state to the shared state file."""
+        path = self._voice_interrupt_state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "tts_interrupt": self._voice_tts_interrupt,
+                    "tts": self._voice_tts,
+                }, f)
+        except Exception:
+            pass
+
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
         # When True, the input separator rules and the dynamic status bar are
@@ -10521,15 +10572,43 @@ class HermesCLI:
 
         _cprint(f"{_ACCENT}Voice TTS {status}.{_RST}")
 
+    def _toggle_tts_interrupt(self):
+        """Toggle TTS interrupt: new input stops TTS playback immediately."""
+        self._voice_tts_interrupt = not self._voice_tts_interrupt
+        status = "enabled" if self._voice_tts_interrupt else "disabled"
+        _cprint(f"{_ACCENT}TTS interrupt {status} — Enter during playback stops audio.{_RST}")
+
+        # Auto-enable TTS when turning on interrupt (interrupt is useless without TTS)
+        if self._voice_tts_interrupt and not self._voice_tts:
+            if not self._voice_mode:
+                _cprint(f"{_DIM}Voice mode is off — enabling first...{_RST}")
+                self._enable_voice_mode()
+                if not self._voice_mode:  # enable failed (missing requirements)
+                    self._voice_tts_interrupt = False  # rollback
+                    self._save_voice_interrupt_state()
+                    return
+            with self._voice_lock:
+                self._voice_tts = True
+            from tools.tts_tool import check_tts_requirements
+            if not check_tts_requirements():
+                _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
+            _cprint(f"{_ACCENT}Voice TTS enabled.{_RST}")
+
+        # Persist to shared state file so the main CLI (a separate process from
+        # the slash worker) can read the current interrupt/tts flags.
+        self._save_voice_interrupt_state()
+
     def _show_voice_status(self):
         """Show current voice mode status."""
         from tools.voice_mode import check_voice_requirements
 
         reqs = check_voice_requirements()
 
+        _file_state = self._load_voice_interrupt_state()
         _cprint(f"\n{_BOLD}Voice Mode Status{_RST}")
         _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
-        _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
+        _cprint(f"  TTS:       {'ON' if _file_state['tts'] else 'OFF'}")
+        _cprint(f"  TTS interrupt: {'ON' if _file_state['tts_interrupt'] else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
         # Display the startup-pinned label so /voice status always
         # matches the live prompt_toolkit binding (Copilot round-14 on
@@ -11281,6 +11360,16 @@ class HermesCLI:
                             # Signal TTS to stop on interrupt
                             if stop_event is not None:
                                 stop_event.set()
+                            # Stop non-streaming TTS (Edge TTS, mac-say, etc.) when tts_interrupt is enabled
+                            # Load from the shared state file: the slash worker (separate process) writes
+                            # the interrupt state when /voice tts_interrupt is run from the TUI.
+                            _file_state = self._load_voice_interrupt_state()
+                            if _file_state["tts_interrupt"]:
+                                try:
+                                    from tools.voice_mode import stop_playback
+                                    stop_playback()
+                                except Exception:
+                                    pass
                             self.agent.interrupt(interrupt_msg)
                             # Debug: log to file (stdout may be devnull from redirect_stdout)
                             try:

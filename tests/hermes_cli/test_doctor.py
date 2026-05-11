@@ -657,6 +657,118 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
     assert any(url == "https://api.moonshot.cn/v1/models" for url, _, _ in calls)
 
 
+def test_run_doctor_fix_uses_truncate_checkpoint_and_reports_if_wal_remains(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    for dirname in ("cron", "sessions", "logs", "skills", "memories"):
+        (home / dirname).mkdir()
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    (home / ".env").write_text("OPENAI_API_KEY=sk-test\n", encoding="utf-8")
+    (home / "SOUL.md").write_text("persona\n", encoding="utf-8")
+    (home / "memories" / "MEMORY.md").write_text("m\n", encoding="utf-8")
+    (home / "memories" / "USER.md").write_text("u\n", encoding="utf-8")
+    (home / "state.db").write_text("", encoding="utf-8")
+    with (home / "state.db-wal").open("wb") as f:
+        f.truncate(51 * 1024 * 1024)
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except ImportError:
+        pass
+
+    executed = []
+
+    class FakeCursor:
+        def fetchone(self):
+            return (0,)
+
+    class FakeConn:
+        def execute(self, statement):
+            executed.append(statement)
+            return FakeCursor()
+
+        def close(self):
+            pass
+
+    import sqlite3
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: FakeConn())
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=True))
+    out = buf.getvalue()
+
+    assert "PRAGMA wal_checkpoint(TRUNCATE)" in executed
+    assert "WAL checkpoint incomplete" in out
+    assert "Large WAL file remains after checkpoint" in out
+
+
+def test_run_doctor_gemini_uses_x_goog_api_key_for_native_models_probe(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    (home / ".env").write_text("GOOGLE_API_KEY=sk-test\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setenv("GOOGLE_API_KEY", "sk-test")
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except ImportError:
+        pass
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers, timeout))
+        return types.SimpleNamespace(status_code=200)
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    gemini_calls = [
+        (url, headers)
+        for url, headers, _ in calls
+        if url == "https://generativelanguage.googleapis.com/v1beta/models"
+    ]
+    assert gemini_calls
+    assert gemini_calls[0][1]["x-goog-api-key"] == "sk-test"
+    assert "Authorization" not in gemini_calls[0][1]
+    assert "gemini" in out
+    assert "invalid API key" not in out
+
+
 def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

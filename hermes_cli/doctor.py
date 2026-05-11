@@ -823,11 +823,22 @@ def run_doctor(args):
                 if should_fix:
                     import sqlite3
                     conn = sqlite3.connect(str(state_db_path))
-                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                    conn.close()
+                    try:
+                        # PASSIVE checkpoints copy frames but usually leave the
+                        # WAL file allocated at its original size, so doctor
+                        # would claim a fix while the next run reported the
+                        # same large-WAL issue. TRUNCATE is the user-visible
+                        # cleanup `doctor --fix` promises.
+                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    finally:
+                        conn.close()
                     new_size = wal_path.stat().st_size if wal_path.exists() else 0
-                    check_ok(f"WAL checkpoint performed ({wal_size // 1024}K → {new_size // 1024}K)")
-                    fixed_count += 1
+                    if new_size <= 50 * 1024 * 1024:
+                        check_ok(f"WAL checkpoint performed ({wal_size // 1024}K → {new_size // 1024}K)")
+                        fixed_count += 1
+                    else:
+                        check_warn(f"WAL checkpoint incomplete ({wal_size // 1024}K → {new_size // 1024}K)")
+                        issues.append("Large WAL file remains after checkpoint; close active Hermes processes and rerun 'hermes doctor --fix'")
                 else:
                     issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
             elif wal_size > 10 * 1024 * 1024:  # 10 MB
@@ -1359,10 +1370,14 @@ def run_doctor(args):
             if base_url_host_matches(base, "api.kimi.com") and base.rstrip("/").endswith("/coding"):
                 base = base.rstrip("/") + "/v1"
             url = (base.rstrip("/") + "/models") if base else default_url
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "User-Agent": _HERMES_USER_AGENT,
-            }
+            headers = {"User-Agent": _HERMES_USER_AGENT}
+            if pname == "gemini":
+                # Gemini's native API expects x-goog-api-key on the models
+                # endpoint. A generic Bearer probe falsely reports valid
+                # GOOGLE_API_KEY values as unauthorized.
+                headers["x-goog-api-key"] = key
+            else:
+                headers["Authorization"] = f"Bearer {key}"
             if base_url_host_matches(base, "api.kimi.com"):
                 headers["User-Agent"] = "claude-code/0.1.0"
             r = httpx.get(url, headers=headers, timeout=10)

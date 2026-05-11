@@ -1724,9 +1724,11 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    # Handle both legacy "post" type and new "interactive" type failures
+                    # by falling back to plain text so the user still sees the message.
+                    if msg_type not in ("post", "interactive") or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    logger.warning("[Feishu] Invalid %s payload rejected by API; falling back to plain text", msg_type)
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1735,11 +1737,11 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 if (
-                    msg_type == "post"
+                    msg_type in ("post", "interactive")
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    logger.warning("[Feishu] %s payload rejected by API response; falling back to plain text", msg_type)
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -4177,14 +4179,50 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
+        # With CardKit 2.0's ``tag: "markdown"`` component, GFM tables render
+        # correctly, so we route all markdown content through interactive cards.
+        has_markdown = bool(_MARKDOWN_HINT_RE.search(content) or _MARKDOWN_TABLE_RE.search(content))
+        logger.info("[Feishu] _build_outbound_payload: content_len=%d, has_markdown=%s", len(content), has_markdown)
+        if has_markdown:
+            payload = self._build_cardkit_markdown_payload(content)
+            logger.info("[Feishu] Using interactive type, payload_len=%d", len(payload))
+            return "interactive", payload
         text_payload = {"text": content}
+        logger.info("[Feishu] Using text type")
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    def _build_cardkit_markdown_payload(self, content: str) -> str:
+        """Build CardKit 2.0 interactive card with markdown component.
+
+        CardKit 2.0's ``tag: "markdown"`` component natively supports standard
+        GFM syntax (bold, italic, code, tables, etc.) and renders correctly on
+        both desktop and mobile Feishu clients.  This replaces the legacy
+        ``post`` message type with ``md`` tag which no longer renders markdown
+        markup in recent Feishu releases.
+        """
+        # Split content by horizontal rules and double newlines to create
+        # multiple markdown elements for better rendering compatibility.
+        sections = re.split(r'\n---\n|\n\n(?=# )|\n\n(?=\|)', content)
+        sections = [s.strip() for s in sections if s.strip()]
+
+        if not sections:
+            sections = [content]
+
+        elements = []
+        for section in sections[:10]:  # Limit to 10 elements
+            elements.append({
+                "tag": "markdown",
+                "content": section,
+            })
+
+        card = {
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
+            "body": {
+                "elements": elements
+            },
+        }
+        return json.dumps(card, ensure_ascii=False)
 
     async def _send_uploaded_file_message(
         self,

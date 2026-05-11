@@ -507,6 +507,12 @@ class TestGetModelContextLength:
         assert get_model_context_length("qwen3-coder-plus") == 1000000
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen36_flash_context_length(self, mock_fetch):
+        """qwen3.6-flash has a 1M context window, not the generic 128K Qwen default."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3.6-flash") == 1000000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_qwen3_coder_context_length(self, mock_fetch):
         """qwen3-coder has a 256K context window, not the generic 128K Qwen default."""
         mock_fetch.return_value = {}

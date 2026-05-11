@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
     is_nous_free_tier, partition_nous_models_by_tier,
-    check_nous_free_tier, _FREE_TIER_CACHE_TTL,
+    check_nous_free_tier, _FREE_TIER_CACHE_TTL, _PROVIDER_MODELS,
 )
 import hermes_cli.models as _models_mod
 
@@ -56,6 +56,12 @@ class TestOpenRouterModels:
     def test_at_least_5_models(self):
         """Sanity check that the models list hasn't been accidentally truncated."""
         assert len(OPENROUTER_MODELS) >= 5
+
+
+class TestAlibabaModels:
+    def test_qwen36_flash_is_in_static_catalog(self):
+        """Alibaba's documented qwen3.6-flash model is available offline."""
+        assert "qwen3.6-flash" in _PROVIDER_MODELS["alibaba"]
 
 
 class TestFetchOpenRouterModels:

@@ -7,6 +7,7 @@ import com.nousresearch.hermesagent.api.HermesApiClient
 import com.nousresearch.hermesagent.api.toJsonObject
 import com.nousresearch.hermesagent.device.HermesAccessibilityController
 import com.nousresearch.hermesagent.device.HermesAccessibilityUiBridge
+import com.nousresearch.hermesagent.device.HermesAppControlBridge
 import com.nousresearch.hermesagent.device.HermesAutomationBridge
 import com.nousresearch.hermesagent.device.HermesPrivilegedAccessBridge
 import com.nousresearch.hermesagent.device.HermesSystemControlBridge
@@ -382,6 +383,18 @@ class NativeToolCallingChatClient(
             "recents", "global_recents" -> HermesAccessibilityUiBridge.performGlobalActionJson("recents")
             "notifications", "global_notifications" -> HermesAccessibilityUiBridge.performGlobalActionJson("notifications")
             "quick_settings", "global_quick_settings" -> HermesAccessibilityUiBridge.performGlobalActionJson("quick_settings")
+            "open_app", "launch_app" -> HermesAppControlBridge.launchApp(
+                context = appContext,
+                packageName = stringArgument(
+                    toolCall.arguments,
+                    "package_name",
+                    "packageName",
+                    "package",
+                    "app_package",
+                    "application_id",
+                ).orEmpty(),
+                appName = stringArgument(toolCall.arguments, "app_name", "appName", "application_name", "label").orEmpty(),
+            ).toString()
             "open_accessibility_settings" -> HermesSystemControlBridge.performActionJson("open_accessibility_settings")
             else -> JSONObject()
                 .put("success", false)
@@ -557,11 +570,12 @@ class NativeToolCallingChatClient(
                     name = "android_ui_tool",
                     description = "Inspect or control the visible Android UI through Hermes accessibility.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, snapshot, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, back, home, press_back, press_home, recents, notifications, quick_settings, open_accessibility_settings."))
+                        .put("action", stringProp("status, snapshot, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, open_app, launch_app, back, home, press_back, press_home, recents, notifications, quick_settings, open_accessibility_settings."))
                         .put("text_contains", stringProp("Visible text selector."))
                         .put("content_description_contains", stringProp("Accessibility description selector."))
                         .put("view_id", stringProp("Android view id selector."))
-                        .put("package_name", stringProp("Package filter."))
+                        .put("package_name", stringProp("Package filter for selectors, or package name for action=open_app."))
+                        .put("app_name", stringProp("OpenGUI-style launcher app label for action=open_app when package_name is unknown."))
                         .put("class_name", stringProp("Android accessibility class-name filter, such as EditText, Button, or RecyclerView."))
                         .put("value", stringProp("Text for set_text."))
                         .put("index", intProp("Zero-based match index."))
@@ -1636,7 +1650,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_ui_tool")
                             .put(
                                 "description",
-                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots, selector-based click/type/scroll/focus, OpenGUI-style scroll/type/press aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
+                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots, selector-based click/type/scroll/focus, OpenGUI-style scroll/type/press/open-app aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
                             )
                             .put(
                                 "parameters",
@@ -1649,7 +1663,7 @@ class NativeToolCallingChatClient(
                                                 "action",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "status, snapshot, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, back, home, press_back, press_home, recents, notifications, quick_settings, or open_accessibility_settings."),
+                                                    .put("description", "status, snapshot, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, open_app, launch_app, back, home, press_back, press_home, recents, notifications, quick_settings, or open_accessibility_settings."),
                                             )
                                             .put(
                                                 "text_contains",
@@ -1673,7 +1687,13 @@ class NativeToolCallingChatClient(
                                                 "package_name",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Restrict matching to a package name fragment."),
+                                                    .put("description", "Restrict matching to a package name fragment, or launch this package for action=open_app."),
+                                            )
+                                            .put(
+                                                "app_name",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "OpenGUI-style launcher app label for action=open_app when package_name is unknown."),
                                             )
                                             .put(
                                                 "value",
@@ -2003,6 +2023,8 @@ class NativeToolCallingChatClient(
             "tap",
             "long_press",
             "swipe",
+            "open_app",
+            "launch_app",
             "back",
             "home",
             "press_back",
@@ -2017,6 +2039,7 @@ class NativeToolCallingChatClient(
             "content_description_contains",
             "view_id",
             "package_name",
+            "app_name",
             "class_name",
             "value",
             "index",

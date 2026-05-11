@@ -50,7 +50,10 @@
 
   async function api(path, options) {
     const url = "/api/plugins/hermes-achievements" + path;
-    const res = await fetch(url, options || {});
+    const token = window.__HERMES_SESSION_TOKEN__ || "";
+    const headers = { ...((options && options.headers) || {}) };
+    if (token) headers["X-Hermes-Session-Token"] = token;
+    const res = await fetch(url, { ...(options || {}), headers });
     if (!res.ok) {
       const text = await res.text().catch(function () { return res.statusText; });
       throw new Error(res.status + ": " + text);

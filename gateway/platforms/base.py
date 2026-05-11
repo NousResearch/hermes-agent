@@ -1320,6 +1320,52 @@ class BasePlatformAdapter(ABC):
         """
         return len
 
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Whether this adapter supports native streaming-draft updates.
+
+        Telegram Bot API 9.5 introduced ``sendMessageDraft``, which renders an
+        animated streaming preview as the bot calls it repeatedly with the
+        same ``draft_id`` and growing text.  Adapters that implement
+        ``send_draft`` should return True here for the chat types where the
+        platform supports it (Telegram restricts drafts to private DMs).
+
+        Default implementation returns False.  Stream consumers fall back to
+        the edit-based path (``send`` + ``edit_message``) when this returns
+        False or when ``send_draft`` raises.
+        """
+        return False
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send or update an animated streaming-draft preview.
+
+        Reuse the same ``draft_id`` (any non-zero int) across consecutive
+        calls within a single response so the platform animates the preview
+        rather than re-creating it.  Different responses must use different
+        ``draft_id`` values within the same chat to avoid animating over a
+        prior bubble.
+
+        Drafts have no message_id and cannot be edited, replied to, or
+        deleted via normal message APIs.  When the response finishes, the
+        caller delivers the final answer as a regular ``send`` and the
+        draft preview clears naturally on the client.
+
+        Default implementation raises NotImplementedError; adapters that
+        also return True from :meth:`supports_draft_streaming` must override.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement send_draft"
+        )
+
     @property
     def has_fatal_error(self) -> bool:
         return self._fatal_error_message is not None

@@ -3456,7 +3456,7 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 # Every auxiliary LLM consumer should use these instead of manually
 # constructing clients and calling .chat.completions.create().
 
-# Client cache: (provider, async_mode, base_url, api_key, api_mode, runtime_key) -> (client, default_model, loop)
+# Client cache: (provider, async_mode, base_url, api_key, api_mode, runtime_key, is_vision, pool_hint, model) -> (client, default_model, loop)
 # NOTE: loop identity is NOT part of the key.  On async cache hits we check
 # whether the cached loop is the *current* loop; if not, the stale entry is
 # replaced in-place.  This bounds cache growth to one entry per unique
@@ -3476,11 +3476,12 @@ def _client_cache_key(
     api_mode: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    model: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
     runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
-    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, pool_hint)
+    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, pool_hint, model or "")
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
@@ -3710,6 +3711,7 @@ def _get_cached_client(
         api_mode=api_mode,
         main_runtime=main_runtime,
         is_vision=is_vision,
+        model=model,
     )
     with _client_cache_lock:
         if cache_key in _client_cache:

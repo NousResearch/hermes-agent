@@ -468,6 +468,217 @@ def _convert_tool_msg_to_responses_item(
 # Input preflight / validation
 # ---------------------------------------------------------------------------
 
+def _validate_function_call_item(
+    item: Dict[str, Any], idx: int, normalized: List[Dict[str, Any]],
+) -> None:
+    """Validate and append a ``function_call`` input item."""
+    call_id = item.get("call_id")
+    name = item.get("name")
+    if not isinstance(call_id, str) or not call_id.strip():
+        raise ValueError(f"Codex Responses input[{idx}] function_call is missing call_id.")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"Codex Responses input[{idx}] function_call is missing name.")
+
+    arguments = item.get("arguments", "{}")
+    if isinstance(arguments, dict):
+        arguments = json.dumps(arguments, ensure_ascii=False)
+    elif not isinstance(arguments, str):
+        arguments = str(arguments)
+    arguments = arguments.strip() or "{}"
+
+    normalized.append(
+        {
+            "type": "function_call",
+            "call_id": call_id.strip(),
+            "name": name.strip(),
+            "arguments": arguments,
+        }
+    )
+
+
+def _validate_function_call_output_item(
+    item: Dict[str, Any], idx: int, normalized: List[Dict[str, Any]],
+) -> None:
+    """Validate and append a ``function_call_output`` input item."""
+    call_id = item.get("call_id")
+    if not isinstance(call_id, str) or not call_id.strip():
+        raise ValueError(f"Codex Responses input[{idx}] function_call_output is missing call_id.")
+    output = item.get("output", "")
+    if output is None:
+        output = ""
+    # Output may be a string OR an array of structured content
+    # items (input_text / input_image) for multimodal tool results.
+    # Both shapes are accepted by the Responses API. We preserve
+    # the array form when present.
+    if isinstance(output, list):
+        # Validate each item is a recognised content shape; drop
+        # anything else to avoid 4xx from the API.
+        cleaned: List[Dict[str, Any]] = []
+        for part in output:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            if ptype == "input_text":
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    cleaned.append({"type": "input_text", "text": text})
+            elif ptype == "input_image":
+                url = part.get("image_url")
+                if isinstance(url, str) and url:
+                    entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
+                    detail = part.get("detail")
+                    if isinstance(detail, str) and detail.strip():
+                        entry["detail"] = detail.strip()
+                    cleaned.append(entry)
+        normalized.append(
+            {
+                "type": "function_call_output",
+                "call_id": call_id.strip(),
+                "output": cleaned if cleaned else "",
+            }
+        )
+        return
+    if not isinstance(output, str):
+        output = str(output)
+
+    normalized.append(
+        {
+            "type": "function_call_output",
+            "call_id": call_id.strip(),
+            "output": output,
+        }
+    )
+
+
+def _validate_reasoning_item(
+    item: Dict[str, Any],
+    idx: int,
+    normalized: List[Dict[str, Any]],
+    seen_ids: set,
+) -> None:
+    """Validate and append a ``reasoning`` input item (with dedup)."""
+    encrypted = item.get("encrypted_content")
+    if not (isinstance(encrypted, str) and encrypted):
+        return
+    item_id = item.get("id")
+    if isinstance(item_id, str) and item_id:
+        if item_id in seen_ids:
+            return
+        seen_ids.add(item_id)
+    reasoning_item = {"type": "reasoning", "encrypted_content": encrypted}
+    # Do NOT include the "id" in the outgoing item — with
+    # store=False (our default) the API tries to resolve the
+    # id server-side and returns 404.  The id is still used
+    # above for local deduplication via seen_ids.
+    summary = item.get("summary")
+    if isinstance(summary, list):
+        reasoning_item["summary"] = summary
+    else:
+        reasoning_item["summary"] = []
+    normalized.append(reasoning_item)
+
+
+def _validate_message_item(
+    item: Dict[str, Any], idx: int, normalized: List[Dict[str, Any]],
+) -> None:
+    """Validate and append a ``message`` input item."""
+    role = item.get("role")
+    if role != "assistant":
+        raise ValueError(f"Codex Responses input[{idx}] message items must have role='assistant'.")
+    content = item.get("content")
+    if not isinstance(content, list):
+        raise ValueError(f"Codex Responses input[{idx}] message item must have content list.")
+    normalized_content = []
+    for part_idx, part in enumerate(content):
+        if not isinstance(part, dict):
+            raise ValueError(
+                f"Codex Responses input[{idx}] message content[{part_idx}] must be an object."
+            )
+        part_type = part.get("type")
+        if part_type not in {"output_text", "text"}:
+            raise ValueError(
+                f"Codex Responses input[{idx}] message content[{part_idx}] has unsupported type {part_type!r}."
+            )
+        text = part.get("text", "")
+        if text is None:
+            text = ""
+        if not isinstance(text, str):
+            text = str(text)
+        normalized_content.append({"type": "output_text", "text": text})
+    if not normalized_content:
+        raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
+    normalized_item: Dict[str, Any] = {
+        "type": "message",
+        "role": "assistant",
+        "status": _normalize_responses_message_status(item.get("status")),
+        "content": normalized_content,
+    }
+    item_id = item.get("id")
+    if isinstance(item_id, str) and item_id.strip():
+        normalized_item["id"] = item_id.strip()
+    phase = item.get("phase")
+    if isinstance(phase, str) and phase.strip():
+        normalized_item["phase"] = phase.strip()
+    normalized.append(normalized_item)
+
+
+def _validate_role_content_item(
+    item: Dict[str, Any], idx: int, normalized: List[Dict[str, Any]],
+) -> None:
+    """Validate and append a bare ``role``+``content`` input item."""
+    role = item.get("role")
+    content = item.get("content", "")
+    if content is None:
+        content = ""
+    if isinstance(content, list):
+        # Multimodal content from ``_chat_messages_to_responses_input``
+        # is already in Responses format (``input_text`` / ``output_text``
+        # / ``input_image``).  Validate each part and pass through.
+        # Use the correct text type for the role — ``output_text`` for
+        # assistant messages, ``input_text`` for user messages.
+        text_type = "output_text" if role == "assistant" else "input_text"
+        validated: List[Dict[str, Any]] = []
+        for part_idx, part in enumerate(content):
+            if isinstance(part, str):
+                if part:
+                    validated.append({"type": text_type, "text": part})
+                continue
+            if not isinstance(part, dict):
+                raise ValueError(
+                    f"Codex Responses input[{idx}].content[{part_idx}] must be an object or string."
+                )
+            ptype = str(part.get("type") or "").strip().lower()
+            if ptype in {"input_text", "text", "output_text"}:
+                text = part.get("text", "")
+                if not isinstance(text, str):
+                    text = str(text or "")
+                validated.append({"type": text_type, "text": text})
+            elif ptype in {"input_image", "image_url"}:
+                image_ref = part.get("image_url", "")
+                detail = part.get("detail")
+                if isinstance(image_ref, dict):
+                    url = image_ref.get("url", "")
+                    detail = image_ref.get("detail", detail)
+                else:
+                    url = image_ref
+                if not isinstance(url, str):
+                    url = str(url or "")
+                image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+                if isinstance(detail, str) and detail.strip():
+                    image_part["detail"] = detail.strip()
+                validated.append(image_part)
+            else:
+                raise ValueError(
+                    f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
+                )
+        normalized.append({"role": role, "content": validated})
+        return
+    if not isinstance(content, str):
+        content = str(content)
+
+    normalized.append({"role": role, "content": content})
+
+
 def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
         raise ValueError("Codex Responses input must be a list of input items.")
@@ -480,195 +691,24 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
 
         item_type = item.get("type")
         if item_type == "function_call":
-            call_id = item.get("call_id")
-            name = item.get("name")
-            if not isinstance(call_id, str) or not call_id.strip():
-                raise ValueError(f"Codex Responses input[{idx}] function_call is missing call_id.")
-            if not isinstance(name, str) or not name.strip():
-                raise ValueError(f"Codex Responses input[{idx}] function_call is missing name.")
-
-            arguments = item.get("arguments", "{}")
-            if isinstance(arguments, dict):
-                arguments = json.dumps(arguments, ensure_ascii=False)
-            elif not isinstance(arguments, str):
-                arguments = str(arguments)
-            arguments = arguments.strip() or "{}"
-
-            normalized.append(
-                {
-                    "type": "function_call",
-                    "call_id": call_id.strip(),
-                    "name": name.strip(),
-                    "arguments": arguments,
-                }
-            )
+            _validate_function_call_item(item, idx, normalized)
             continue
 
         if item_type == "function_call_output":
-            call_id = item.get("call_id")
-            if not isinstance(call_id, str) or not call_id.strip():
-                raise ValueError(f"Codex Responses input[{idx}] function_call_output is missing call_id.")
-            output = item.get("output", "")
-            if output is None:
-                output = ""
-            # Output may be a string OR an array of structured content
-            # items (input_text / input_image) for multimodal tool results.
-            # Both shapes are accepted by the Responses API. We preserve
-            # the array form when present.
-            if isinstance(output, list):
-                # Validate each item is a recognised content shape; drop
-                # anything else to avoid 4xx from the API.
-                cleaned: List[Dict[str, Any]] = []
-                for part in output:
-                    if not isinstance(part, dict):
-                        continue
-                    ptype = part.get("type")
-                    if ptype == "input_text":
-                        text = part.get("text")
-                        if isinstance(text, str) and text:
-                            cleaned.append({"type": "input_text", "text": text})
-                    elif ptype == "input_image":
-                        url = part.get("image_url")
-                        if isinstance(url, str) and url:
-                            entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
-                            detail = part.get("detail")
-                            if isinstance(detail, str) and detail.strip():
-                                entry["detail"] = detail.strip()
-                            cleaned.append(entry)
-                normalized.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": call_id.strip(),
-                        "output": cleaned if cleaned else "",
-                    }
-                )
-                continue
-            if not isinstance(output, str):
-                output = str(output)
-
-            normalized.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call_id.strip(),
-                    "output": output,
-                }
-            )
+            _validate_function_call_output_item(item, idx, normalized)
             continue
 
         if item_type == "reasoning":
-            encrypted = item.get("encrypted_content")
-            if isinstance(encrypted, str) and encrypted:
-                item_id = item.get("id")
-                if isinstance(item_id, str) and item_id:
-                    if item_id in seen_ids:
-                        continue
-                    seen_ids.add(item_id)
-                reasoning_item = {"type": "reasoning", "encrypted_content": encrypted}
-                # Do NOT include the "id" in the outgoing item — with
-                # store=False (our default) the API tries to resolve the
-                # id server-side and returns 404.  The id is still used
-                # above for local deduplication via seen_ids.
-                summary = item.get("summary")
-                if isinstance(summary, list):
-                    reasoning_item["summary"] = summary
-                else:
-                    reasoning_item["summary"] = []
-                normalized.append(reasoning_item)
+            _validate_reasoning_item(item, idx, normalized, seen_ids)
             continue
 
         if item_type == "message":
-            role = item.get("role")
-            if role != "assistant":
-                raise ValueError(f"Codex Responses input[{idx}] message items must have role='assistant'.")
-            content = item.get("content")
-            if not isinstance(content, list):
-                raise ValueError(f"Codex Responses input[{idx}] message item must have content list.")
-            normalized_content = []
-            for part_idx, part in enumerate(content):
-                if not isinstance(part, dict):
-                    raise ValueError(
-                        f"Codex Responses input[{idx}] message content[{part_idx}] must be an object."
-                    )
-                part_type = part.get("type")
-                if part_type not in {"output_text", "text"}:
-                    raise ValueError(
-                        f"Codex Responses input[{idx}] message content[{part_idx}] has unsupported type {part_type!r}."
-                    )
-                text = part.get("text", "")
-                if text is None:
-                    text = ""
-                if not isinstance(text, str):
-                    text = str(text)
-                normalized_content.append({"type": "output_text", "text": text})
-            if not normalized_content:
-                raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
-            normalized_item: Dict[str, Any] = {
-                "type": "message",
-                "role": "assistant",
-                "status": _normalize_responses_message_status(item.get("status")),
-                "content": normalized_content,
-            }
-            item_id = item.get("id")
-            if isinstance(item_id, str) and item_id.strip():
-                normalized_item["id"] = item_id.strip()
-            phase = item.get("phase")
-            if isinstance(phase, str) and phase.strip():
-                normalized_item["phase"] = phase.strip()
-            normalized.append(normalized_item)
+            _validate_message_item(item, idx, normalized)
             continue
 
         role = item.get("role")
         if role in {"user", "assistant"}:
-            content = item.get("content", "")
-            if content is None:
-                content = ""
-            if isinstance(content, list):
-                # Multimodal content from ``_chat_messages_to_responses_input``
-                # is already in Responses format (``input_text`` / ``output_text``
-                # / ``input_image``).  Validate each part and pass through.
-                # Use the correct text type for the role — ``output_text`` for
-                # assistant messages, ``input_text`` for user messages.
-                text_type = "output_text" if role == "assistant" else "input_text"
-                validated: List[Dict[str, Any]] = []
-                for part_idx, part in enumerate(content):
-                    if isinstance(part, str):
-                        if part:
-                            validated.append({"type": text_type, "text": part})
-                        continue
-                    if not isinstance(part, dict):
-                        raise ValueError(
-                            f"Codex Responses input[{idx}].content[{part_idx}] must be an object or string."
-                        )
-                    ptype = str(part.get("type") or "").strip().lower()
-                    if ptype in {"input_text", "text", "output_text"}:
-                        text = part.get("text", "")
-                        if not isinstance(text, str):
-                            text = str(text or "")
-                        validated.append({"type": text_type, "text": text})
-                    elif ptype in {"input_image", "image_url"}:
-                        image_ref = part.get("image_url", "")
-                        detail = part.get("detail")
-                        if isinstance(image_ref, dict):
-                            url = image_ref.get("url", "")
-                            detail = image_ref.get("detail", detail)
-                        else:
-                            url = image_ref
-                        if not isinstance(url, str):
-                            url = str(url or "")
-                        image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
-                        if isinstance(detail, str) and detail.strip():
-                            image_part["detail"] = detail.strip()
-                        validated.append(image_part)
-                    else:
-                        raise ValueError(
-                            f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
-                        )
-                normalized.append({"role": role, "content": validated})
-                continue
-            if not isinstance(content, str):
-                content = str(content)
-
-            normalized.append({"role": role, "content": content})
+            _validate_role_content_item(item, idx, normalized)
             continue
 
         raise ValueError(

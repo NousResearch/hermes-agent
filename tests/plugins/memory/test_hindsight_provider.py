@@ -1117,6 +1117,74 @@ class TestUpdateModeAppendCapability:
         item = kw["items"][0]
         assert item["update_mode"] == "append"
 
+    def test_modern_api_sends_only_new_turns_on_subsequent_retain(
+        self, provider_with_config, monkeypatch
+    ):
+        """With update_mode='append' the server preserves prior content,
+        so each retain must ship ONLY the turns accumulated since the last
+        retain. Resending the full growing transcript would duplicate
+        every earlier turn on the server (#23724)."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=2)
+
+        # First retain batch: turns 1-2 should be shipped.
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+        first_content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        assert "turn1-user" in first_content
+        assert "turn2-user" in first_content
+
+        p._client.aretain_batch.reset_mock()
+
+        # Second retain batch: only turns 3-4 should be shipped — the
+        # server already has turns 1-2 from the previous append.
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.sync_turn("turn4-user", "turn4-asst")
+        p._retain_queue.join()
+        second_content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        assert "turn3-user" in second_content
+        assert "turn4-user" in second_content
+        assert "turn1-user" not in second_content
+        assert "turn2-user" not in second_content
+
+    def test_legacy_api_still_sends_full_session_on_each_retain(
+        self, provider_with_config, monkeypatch
+    ):
+        """On legacy servers (no update_mode support) each retain replaces
+        the per-process document, so we MUST keep resending the full
+        accumulated session. Otherwise the second retain would overwrite
+        the document with only the new turns and lose earlier content."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: None,
+        )
+        p = provider_with_config(retain_every_n_turns=2)
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        p._client.aretain_batch.reset_mock()
+
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.sync_turn("turn4-user", "turn4-asst")
+        p._retain_queue.join()
+
+        kw = p._client.aretain_batch.call_args.kwargs
+        content = kw["items"][0]["content"]
+        # Legacy path: no update_mode, replace-on-write, full session each time.
+        assert "update_mode" not in kw["items"][0]
+        assert "turn1-user" in content
+        assert "turn2-user" in content
+        assert "turn3-user" in content
+        assert "turn4-user" in content
+
     def test_capability_cached_per_url(self, provider, monkeypatch):
         """The /version probe must run at most once per (process, api_url)."""
         self._clear_capability_cache()

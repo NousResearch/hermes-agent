@@ -1453,6 +1453,19 @@ class HindsightMemoryProvider(MemoryProvider):
         retain_async_flag = self._retain_async
         retain_context = self._retain_context
 
+        # On the modern API (update_mode='append'), the server preserves
+        # prior document content across retains, so the next retain only
+        # needs to ship NEW turns. Without this clear, every retain would
+        # re-append the full growing transcript and the document would
+        # accumulate duplicates of every earlier turn (#23724).
+        #
+        # On the legacy path (update_mode is None, per-process document_id,
+        # replace semantics), each retain overwrites the document, so we
+        # MUST keep the full session buffer to avoid losing earlier turns
+        # on the next retain. Leave _session_turns intact in that case.
+        if update_mode == "append":
+            self._session_turns = []
+
         def _do_retain() -> None:
             item = self._build_retain_kwargs(
                 content,

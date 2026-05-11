@@ -29,7 +29,10 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
     adapter.config = PlatformConfig(enabled=True, extra=extra)
     adapter._message_handler = AsyncMock()
     adapter._dm_policy = str(extra.get("dm_policy", "open")).strip().lower()
-    adapter._allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("allow_from"))
+    adapter._allow_from = WhatsAppAdapter._coerce_allow_list(
+        extra.get("allow_from"),
+        normalize_whatsapp_ids=True,
+    )
     adapter._group_policy = str(extra.get("group_policy", "open")).strip().lower()
     adapter._group_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("group_allow_from"))
     adapter._mention_patterns = adapter._compile_mention_patterns()
@@ -195,6 +198,44 @@ def test_dm_policy_allowlist_allows_listed_sender():
     adapter = _make_adapter(dm_policy="allowlist", allow_from=["6281234567890@s.whatsapp.net"])
 
     assert adapter._should_process_message(_dm_message("hello")) is True
+
+
+def test_dm_policy_allowlist_allows_sender_lid_alias(monkeypatch, tmp_path):
+    session_dir = tmp_path / "whatsapp" / "session"
+    session_dir.mkdir(parents=True)
+    (session_dir / "lid-mapping-123456789012345_reverse.json").write_text(
+        json.dumps("6281234567890"),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = _make_adapter(dm_policy="allowlist", allow_from=["+6281234567890"])
+
+    assert adapter._should_process_message(
+        _dm_message(
+            "hello",
+            senderId="123456789012345@lid",
+            **{"from": "123456789012345@lid"},
+        )
+    ) is True
+
+
+def test_dm_policy_allowlist_blocks_unlisted_sender_lid_alias(monkeypatch, tmp_path):
+    session_dir = tmp_path / "whatsapp" / "session"
+    session_dir.mkdir(parents=True)
+    (session_dir / "lid-mapping-123456789012345_reverse.json").write_text(
+        json.dumps("6281234567890"),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = _make_adapter(dm_policy="allowlist", allow_from=["+6289999999999"])
+
+    assert adapter._should_process_message(
+        _dm_message(
+            "hello",
+            senderId="123456789012345@lid",
+            **{"from": "123456789012345@lid"},
+        )
+    ) is False
 
 
 def test_dm_policy_open_allows_all_dms():

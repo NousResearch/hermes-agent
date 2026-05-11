@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Dict, Optional, Any
 
 from hermes_constants import get_hermes_dir
+from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +262,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
-        self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
+        self._allow_from = self._coerce_allow_list(
+            config.extra.get("allow_from") or config.extra.get("allowFrom"),
+            normalize_whatsapp_ids=True,
+        )
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
         self._mention_patterns = self._compile_mention_patterns()
@@ -314,20 +318,32 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
     @staticmethod
-    def _coerce_allow_list(raw) -> set[str]:
+    def _coerce_allow_list(raw, *, normalize_whatsapp_ids: bool = False) -> set[str]:
         """Parse allow_from / group_allow_from from config or env var."""
+        def coerce_part(part: Any) -> str:
+            value = str(part).strip()
+            if not value:
+                return ""
+            if normalize_whatsapp_ids:
+                if value == "*":
+                    return value
+                return normalize_whatsapp_identifier(value)
+            return value
+
         if raw is None:
             return set()
         if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        return {part.strip() for part in str(raw).split(",") if part.strip()}
+            return {value for part in raw if (value := coerce_part(part))}
+        return {value for part in str(raw).split(",") if (value := coerce_part(part))}
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Check whether a DM from the given sender should be processed."""
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
+            if "*" in self._allow_from:
+                return True
+            return bool(expand_whatsapp_aliases(sender_id) & self._allow_from)
         # "open" — all DMs allowed
         return True
 

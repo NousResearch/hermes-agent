@@ -269,129 +269,9 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
                 content_text = str(content) if content is not None else ""
 
             if role == "assistant":
-                # Replay encrypted reasoning items from previous turns
-                # so the API can maintain coherent reasoning chains.
-                codex_reasoning = msg.get("codex_reasoning_items")
-                has_codex_reasoning = False
-                if isinstance(codex_reasoning, list):
-                    for ri in codex_reasoning:
-                        if isinstance(ri, dict) and ri.get("encrypted_content"):
-                            item_id = ri.get("id")
-                            if item_id and item_id in seen_item_ids:
-                                continue
-                            # Strip the "id" field — with store=False the
-                            # Responses API cannot look up items by ID and
-                            # returns 404.  The encrypted_content blob is
-                            # self-contained for reasoning chain continuity.
-                            replay_item = {k: v for k, v in ri.items() if k != "id"}
-                            items.append(replay_item)
-                            if item_id:
-                                seen_item_ids.add(item_id)
-                            has_codex_reasoning = True
-
-                # Replay exact assistant message items (with id/phase) from
-                # previous turns so the API can maintain prefix-cache hits.
-                # OpenAI docs: "preserve and resend phase on all assistant
-                # messages — dropping it can degrade performance."
-                codex_message_items = msg.get("codex_message_items")
-                replayed_message_items = 0
-                if isinstance(codex_message_items, list):
-                    for raw_item in codex_message_items:
-                        if not isinstance(raw_item, dict):
-                            continue
-                        if raw_item.get("type") != "message" or raw_item.get("role") != "assistant":
-                            continue
-                        raw_content_parts = raw_item.get("content")
-                        if not isinstance(raw_content_parts, list):
-                            continue
-
-                        normalized_content_parts = []
-                        for part in raw_content_parts:
-                            if not isinstance(part, dict):
-                                continue
-                            part_type = str(part.get("type") or "").strip()
-                            if part_type not in {"output_text", "text"}:
-                                continue
-                            text = part.get("text", "")
-                            if text is None:
-                                text = ""
-                            if not isinstance(text, str):
-                                text = str(text)
-                            normalized_content_parts.append({"type": "output_text", "text": text})
-
-                        if not normalized_content_parts:
-                            continue
-
-                        replay_item = {
-                            "type": "message",
-                            "role": "assistant",
-                            "status": _normalize_responses_message_status(raw_item.get("status")),
-                            "content": normalized_content_parts,
-                        }
-                        item_id = raw_item.get("id")
-                        if isinstance(item_id, str) and item_id.strip():
-                            replay_item["id"] = item_id.strip()
-                        phase = raw_item.get("phase")
-                        if isinstance(phase, str) and phase.strip():
-                            replay_item["phase"] = phase.strip()
-                        items.append(replay_item)
-                        replayed_message_items += 1
-
-                if replayed_message_items > 0:
-                    pass
-                elif content_parts:
-                    items.append({"role": "assistant", "content": content_parts})
-                elif content_text.strip():
-                    items.append({"role": "assistant", "content": content_text})
-                elif has_codex_reasoning:
-                    # The Responses API requires a following item after each
-                    # reasoning item (otherwise: missing_following_item error).
-                    # When the assistant produced only reasoning with no visible
-                    # content, emit an empty assistant message as the required
-                    # following item.
-                    items.append({"role": "assistant", "content": ""})
-
-                tool_calls = msg.get("tool_calls")
-                if isinstance(tool_calls, list):
-                    for tc in tool_calls:
-                        if not isinstance(tc, dict):
-                            continue
-                        fn = tc.get("function", {})
-                        fn_name = fn.get("name")
-                        if not isinstance(fn_name, str) or not fn_name.strip():
-                            continue
-
-                        embedded_call_id, embedded_response_item_id = _split_responses_tool_id(
-                            tc.get("id")
-                        )
-                        call_id = tc.get("call_id")
-                        if not isinstance(call_id, str) or not call_id.strip():
-                            call_id = embedded_call_id
-                        if not isinstance(call_id, str) or not call_id.strip():
-                            if (
-                                isinstance(embedded_response_item_id, str)
-                                and embedded_response_item_id.startswith("fc_")
-                                and len(embedded_response_item_id) > len("fc_")
-                            ):
-                                call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
-                            else:
-                                _raw_args = str(fn.get("arguments", "{}"))
-                                call_id = _deterministic_call_id(fn_name, _raw_args, len(items))
-                        call_id = call_id.strip()
-
-                        arguments = fn.get("arguments", "{}")
-                        if isinstance(arguments, dict):
-                            arguments = json.dumps(arguments, ensure_ascii=False)
-                        elif not isinstance(arguments, str):
-                            arguments = str(arguments)
-                        arguments = arguments.strip() or "{}"
-
-                        items.append({
-                            "type": "function_call",
-                            "call_id": call_id,
-                            "name": fn_name,
-                            "arguments": arguments,
-                        })
+                _convert_assistant_msg_to_responses_items(
+                    msg, items, seen_item_ids, content_parts, content_text,
+                )
                 continue
 
             # Non-assistant (user) role: emit multimodal parts when present,
@@ -403,39 +283,185 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
             continue
 
         if role == "tool":
-            raw_tool_call_id = msg.get("tool_call_id")
-            call_id, _ = _split_responses_tool_id(raw_tool_call_id)
-            if not isinstance(call_id, str) or not call_id.strip():
-                if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
-                    call_id = raw_tool_call_id.strip()
-            if not isinstance(call_id, str) or not call_id.strip():
-                continue
-
-            # Multimodal tool result: convert OpenAI-style content list into
-            # Responses ``function_call_output.output`` array. The Responses
-            # API accepts ``output`` as either a string or an array of
-            # ``input_text``/``input_image`` items. See
-            # https://developers.openai.com/api/reference/python/resources/responses/.
-            tool_content = msg.get("content")
-            output_value: Any
-            if isinstance(tool_content, list):
-                converted = _chat_content_to_responses_parts(
-                    tool_content, role="user",
-                )
-                if converted:
-                    output_value = converted
-                else:
-                    output_value = ""
-            else:
-                output_value = str(tool_content or "")
-
-            items.append({
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": output_value,
-            })
+            tool_item = _convert_tool_msg_to_responses_item(msg)
+            if tool_item is not None:
+                items.append(tool_item)
 
     return items
+
+
+def _convert_assistant_msg_to_responses_items(
+    msg: Dict[str, Any],
+    items: List[Dict[str, Any]],
+    seen_item_ids: set,
+    content_parts: List[Dict[str, Any]],
+    content_text: str,
+) -> None:
+    """Convert an assistant message to one or more Responses input items.
+
+    Handles reasoning item replay, message item replay, content emission,
+    and tool call conversion.  Appends directly to *items*.
+    """
+    # Replay encrypted reasoning items from previous turns
+    # so the API can maintain coherent reasoning chains.
+    codex_reasoning = msg.get("codex_reasoning_items")
+    has_codex_reasoning = False
+    if isinstance(codex_reasoning, list):
+        for ri in codex_reasoning:
+            if isinstance(ri, dict) and ri.get("encrypted_content"):
+                item_id = ri.get("id")
+                if item_id and item_id in seen_item_ids:
+                    continue
+                # Strip the "id" field — with store=False the
+                # Responses API cannot look up items by ID and
+                # returns 404.  The encrypted_content blob is
+                # self-contained for reasoning chain continuity.
+                replay_item = {k: v for k, v in ri.items() if k != "id"}
+                items.append(replay_item)
+                if item_id:
+                    seen_item_ids.add(item_id)
+                has_codex_reasoning = True
+
+    # Replay exact assistant message items (with id/phase) from
+    # previous turns so the API can maintain prefix-cache hits.
+    # OpenAI docs: "preserve and resend phase on all assistant
+    # messages — dropping it can degrade performance."
+    codex_message_items = msg.get("codex_message_items")
+    replayed_message_items = 0
+    if isinstance(codex_message_items, list):
+        for raw_item in codex_message_items:
+            if not isinstance(raw_item, dict):
+                continue
+            if raw_item.get("type") != "message" or raw_item.get("role") != "assistant":
+                continue
+            raw_content_parts = raw_item.get("content")
+            if not isinstance(raw_content_parts, list):
+                continue
+
+            normalized_content_parts = []
+            for part in raw_content_parts:
+                if not isinstance(part, dict):
+                    continue
+                part_type = str(part.get("type") or "").strip()
+                if part_type not in {"output_text", "text"}:
+                    continue
+                text = part.get("text", "")
+                if text is None:
+                    text = ""
+                if not isinstance(text, str):
+                    text = str(text)
+                normalized_content_parts.append({"type": "output_text", "text": text})
+
+            if not normalized_content_parts:
+                continue
+
+            replay_item = {
+                "type": "message",
+                "role": "assistant",
+                "status": _normalize_responses_message_status(raw_item.get("status")),
+                "content": normalized_content_parts,
+            }
+            item_id = raw_item.get("id")
+            if isinstance(item_id, str) and item_id.strip():
+                replay_item["id"] = item_id.strip()
+            phase = raw_item.get("phase")
+            if isinstance(phase, str) and phase.strip():
+                replay_item["phase"] = phase.strip()
+            items.append(replay_item)
+            replayed_message_items += 1
+
+    if replayed_message_items > 0:
+        pass
+    elif content_parts:
+        items.append({"role": "assistant", "content": content_parts})
+    elif content_text.strip():
+        items.append({"role": "assistant", "content": content_text})
+    elif has_codex_reasoning:
+        # The Responses API requires a following item after each
+        # reasoning item (otherwise: missing_following_item error).
+        # When the assistant produced only reasoning with no visible
+        # content, emit an empty assistant message as the required
+        # following item.
+        items.append({"role": "assistant", "content": ""})
+
+    tool_calls = msg.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {})
+            fn_name = fn.get("name")
+            if not isinstance(fn_name, str) or not fn_name.strip():
+                continue
+
+            embedded_call_id, embedded_response_item_id = _split_responses_tool_id(
+                tc.get("id")
+            )
+            call_id = tc.get("call_id")
+            if not isinstance(call_id, str) or not call_id.strip():
+                call_id = embedded_call_id
+            if not isinstance(call_id, str) or not call_id.strip():
+                if (
+                    isinstance(embedded_response_item_id, str)
+                    and embedded_response_item_id.startswith("fc_")
+                    and len(embedded_response_item_id) > len("fc_")
+                ):
+                    call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
+                else:
+                    _raw_args = str(fn.get("arguments", "{}"))
+                    call_id = _deterministic_call_id(fn_name, _raw_args, len(items))
+            call_id = call_id.strip()
+
+            arguments = fn.get("arguments", "{}")
+            if isinstance(arguments, dict):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+            elif not isinstance(arguments, str):
+                arguments = str(arguments)
+            arguments = arguments.strip() or "{}"
+
+            items.append({
+                "type": "function_call",
+                "call_id": call_id,
+                "name": fn_name,
+                "arguments": arguments,
+            })
+
+
+def _convert_tool_msg_to_responses_item(
+    msg: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Convert a tool message to a ``function_call_output`` input item.
+
+    Returns *None* when the tool_call_id is missing or invalid.
+    """
+    raw_tool_call_id = msg.get("tool_call_id")
+    call_id, _ = _split_responses_tool_id(raw_tool_call_id)
+    if not isinstance(call_id, str) or not call_id.strip():
+        if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
+            call_id = raw_tool_call_id.strip()
+    if not isinstance(call_id, str) or not call_id.strip():
+        return None
+
+    # Multimodal tool result: convert OpenAI-style content list into
+    # Responses ``function_call_output.output`` array. The Responses
+    # API accepts ``output`` as either a string or an array of
+    # ``input_text``/``input_image`` items. See
+    # https://developers.openai.com/api/reference/python/resources/responses/.
+    tool_content = msg.get("content")
+    output_value: Any
+    if isinstance(tool_content, list):
+        converted = _chat_content_to_responses_parts(
+            tool_content, role="user",
+        )
+        output_value = converted if converted else ""
+    else:
+        output_value = str(tool_content or "")
+
+    return {
+        "type": "function_call_output",
+        "call_id": call_id,
+        "output": output_value,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -352,3 +352,98 @@ class TestShowStatusXaiOAuth:
 
         assert "xAI OAuth" in out
         assert "not logged in (run: hermes auth add xai-oauth)" in out
+
+
+class TestMessagingPlatformStatus:
+    """Platform rows must mirror the gateway env ingestion semantics."""
+
+    _ENV_VARS = (
+        "MATRIX_HOMESERVER",
+        "MATRIX_ACCESS_TOKEN",
+        "MATRIX_PASSWORD",
+        "MATTERMOST_TOKEN",
+        "MATTERMOST_BOT_TOKEN",
+        "HASS_TOKEN",
+        "HOMEASSISTANT_WEBHOOK_URL",
+        "API_SERVER_ENABLED",
+        "API_SERVER_KEY",
+        "WEBHOOK_ENABLED",
+        "WEBHOOK_SECRET",
+    )
+
+    def _run_status(self, monkeypatch, capsys, tmp_path, env):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for var in self._ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        for var, value in env.items():
+            monkeypatch.setenv(var, value)
+
+        show_status(SimpleNamespace(all=False, deep=False))
+        return capsys.readouterr().out
+
+    @staticmethod
+    def _platform_line(output, label):
+        for line in output.splitlines():
+            if line.strip().startswith(label):
+                return line
+        raise AssertionError(f"{label!r} row not found in status output:\n{output}")
+
+    def test_matrix_token_alone_is_not_configured(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(
+            monkeypatch, capsys, tmp_path, {"MATRIX_ACCESS_TOKEN": "syt_secret"}
+        )
+        assert "not configured" in self._platform_line(out, "Matrix")
+
+    def test_matrix_homeserver_plus_token_is_configured(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(
+            monkeypatch,
+            capsys,
+            tmp_path,
+            {"MATRIX_HOMESERVER": "https://matrix.example.org", "MATRIX_ACCESS_TOKEN": "syt_secret"},
+        )
+        assert "not configured" not in self._platform_line(out, "Matrix")
+
+    def test_matrix_homeserver_plus_password_is_configured(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(
+            monkeypatch,
+            capsys,
+            tmp_path,
+            {"MATRIX_HOMESERVER": "https://matrix.example.org", "MATRIX_PASSWORD": "hunter2"},
+        )
+        assert "not configured" not in self._platform_line(out, "Matrix")
+
+    def test_mattermost_uses_runtime_token_var(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(monkeypatch, capsys, tmp_path, {"MATTERMOST_TOKEN": "tok"})
+        assert "not configured" not in self._platform_line(out, "Mattermost")
+
+    def test_mattermost_ignores_nonexistent_bot_token_var(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(monkeypatch, capsys, tmp_path, {"MATTERMOST_BOT_TOKEN": "tok"})
+        assert "not configured" in self._platform_line(out, "Mattermost")
+
+    def test_homeassistant_uses_hass_token(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(monkeypatch, capsys, tmp_path, {"HASS_TOKEN": "tok"})
+        assert "not configured" not in self._platform_line(out, "HomeAssistant")
+
+    def test_homeassistant_disabled_without_token(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(monkeypatch, capsys, tmp_path, {})
+        assert "not configured" in self._platform_line(out, "HomeAssistant")
+
+    def test_api_server_false_flag_is_not_configured(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(monkeypatch, capsys, tmp_path, {"API_SERVER_ENABLED": "false"})
+        assert "not configured" in self._platform_line(out, "API Server")
+
+    def test_api_server_truthy_flag_is_configured(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(monkeypatch, capsys, tmp_path, {"API_SERVER_ENABLED": "true"})
+        assert "not configured" not in self._platform_line(out, "API Server")
+
+    def test_api_server_key_alone_is_configured(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(monkeypatch, capsys, tmp_path, {"API_SERVER_KEY": "k"})
+        assert "not configured" not in self._platform_line(out, "API Server")
+
+    def test_webhook_secret_alone_is_not_configured(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(monkeypatch, capsys, tmp_path, {"WEBHOOK_SECRET": "s"})
+        assert "not configured" in self._platform_line(out, "Webhook")
+
+    def test_webhook_truthy_flag_is_configured(self, monkeypatch, capsys, tmp_path):
+        out = self._run_status(monkeypatch, capsys, tmp_path, {"WEBHOOK_ENABLED": "1"})
+        assert "not configured" not in self._platform_line(out, "Webhook")

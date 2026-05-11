@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from hermes_constants import display_hermes_home
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +315,7 @@ def cronjob(
             if not schedule:
                 return tool_error("schedule is required for create", success=False)
             canonical_skills = _canonical_skills(skill, skills)
-            _no_agent = bool(no_agent)
+            _no_agent = is_truthy_value(no_agent, default=False)
             # Job-shape validation differs by mode:
             #   - no_agent=True → script is the job; prompt/skills are optional
             #     (and irrelevant to execution).
@@ -486,7 +487,7 @@ def cronjob(
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
                 # the same update) — otherwise the next tick would error out.
-                target_no_agent = bool(no_agent)
+                target_no_agent = is_truthy_value(no_agent, default=False)
                 if target_no_agent:
                     effective_script = updates.get("script") if "script" in updates else job.get("script")
                     if not effective_script:

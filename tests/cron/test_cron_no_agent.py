@@ -78,6 +78,18 @@ def test_create_job_default_is_not_no_agent(hermes_env):
     assert job.get("no_agent") is False
 
 
+def test_create_job_string_false_does_not_enable_no_agent(hermes_env):
+    from cron.jobs import create_job
+
+    job = create_job(
+        prompt="say hi",
+        schedule="every 5m",
+        no_agent="false",
+        deliver="local",
+    )
+    assert job["no_agent"] is False
+
+
 def test_update_job_roundtrips_no_agent_flag(hermes_env):
     from cron.jobs import create_job, update_job, get_job
 
@@ -92,6 +104,18 @@ def test_update_job_roundtrips_no_agent_flag(hermes_env):
     update_job(job["id"], {"no_agent": True})
     reloaded = get_job(job["id"])
     assert reloaded["no_agent"] is True
+
+
+def test_update_job_string_false_disables_no_agent(hermes_env):
+    from cron.jobs import create_job, update_job, get_job
+
+    script_path = hermes_env / "scripts" / "w.sh"
+    script_path.write_text("echo hi\n")
+    job = create_job(prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local")
+
+    update_job(job["id"], {"no_agent": "false"})
+    reloaded = get_job(job["id"])
+    assert reloaded["no_agent"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +153,22 @@ def test_cronjob_tool_create_no_agent_with_script_succeeds(hermes_env):
     assert result["job"]["script"] == "alert.sh"
 
 
+def test_cronjob_tool_create_string_false_keeps_agent_mode(hermes_env):
+    from tools.cronjob_tools import cronjob
+
+    result = json.loads(
+        cronjob(
+            action="create",
+            schedule="every 5m",
+            prompt="ping",
+            no_agent="false",
+            deliver="local",
+        )
+    )
+    assert result.get("success") is True
+    assert result["job"].get("no_agent") in (False, None)
+
+
 def test_cronjob_tool_update_toggles_no_agent(hermes_env):
     from tools.cronjob_tools import cronjob
 
@@ -153,6 +193,28 @@ def test_cronjob_tool_update_toggles_no_agent(hermes_env):
     on = json.loads(cronjob(action="update", job_id=job_id, no_agent=True))
     assert on["success"] is True
     assert on["job"]["no_agent"] is True
+
+
+def test_cronjob_tool_update_string_false_disables_no_agent(hermes_env):
+    from tools.cronjob_tools import cronjob
+
+    script_path = hermes_env / "scripts" / "w.sh"
+    script_path.write_text("echo hi\n")
+
+    created = json.loads(
+        cronjob(
+            action="create",
+            schedule="every 5m",
+            script="w.sh",
+            no_agent=True,
+            deliver="local",
+        )
+    )
+    job_id = created["job_id"]
+
+    off = json.loads(cronjob(action="update", job_id=job_id, no_agent="false", prompt="run"))
+    assert off["success"] is True
+    assert off["job"].get("no_agent") in (False, None)
 
 
 def test_cronjob_tool_update_no_agent_without_script_errors(hermes_env):

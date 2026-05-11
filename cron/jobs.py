@@ -22,7 +22,7 @@ from typing import Optional, Dict, List, Any, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_replace, is_truthy_value
 
 try:
     from croniter import croniter
@@ -573,7 +573,7 @@ def create_job(
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
-    normalized_no_agent = bool(no_agent)
+    normalized_no_agent = is_truthy_value(no_agent, default=False)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -668,6 +668,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["workdir"] = None
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
+
+        if "no_agent" in updates:
+            updates["no_agent"] = is_truthy_value(updates.get("no_agent"), default=False)
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates

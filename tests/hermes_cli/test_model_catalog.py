@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -282,3 +283,48 @@ class TestIntegrationWithModelsModule:
             result = get_curated_nous_model_ids()
 
         assert result == ["anthropic/claude-opus-4.7", "moonshotai/kimi-k2.6"]
+
+    def test_picker_nous_row_uses_manifest(self, tmp_path, monkeypatch):
+        """The /model picker must surface the manifest's nous list, not the
+        in-repo _PROVIDER_MODELS["nous"] snapshot. Regression: before this
+        fix, list_authenticated_providers() built the curated dict from
+        _PROVIDER_MODELS only — so newly-added Portal models never reached
+        the slash-command picker until the next Hermes release.
+        """
+        # We deliberately do NOT use the ``isolated_home`` fixture here:
+        # that fixture monkeypatches ``Path.home`` to ``tmp_path``, which
+        # trips the auth-store seat-belt in ``_auth_file_path()`` because
+        # ``HERMES_HOME / auth.json`` then resolves to the same path the
+        # seat-belt thinks is the "real" user store. Use the autouse
+        # ``_hermetic_environment`` HERMES_HOME directly instead.
+        import importlib
+        from hermes_cli import model_catalog
+        importlib.reload(model_catalog)
+        try:
+            from hermes_cli.model_switch import list_picker_providers
+
+            active_home = Path(os.environ["HERMES_HOME"])
+            (active_home / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "providers": {"nous": {"access_token": "fake"}},
+                        "credential_pool": {},
+                    }
+                )
+            )
+
+            with patch.object(
+                model_catalog, "_fetch_manifest", return_value=_valid_manifest()
+            ):
+                picker = list_picker_providers(
+                    current_provider="nous", max_models=99
+                )
+        finally:
+            model_catalog.reset_cache()
+
+        nous_row = next((r for r in picker if r["slug"] == "nous"), None)
+        assert nous_row is not None, "nous row must appear when authed"
+        assert nous_row["models"] == [
+            "anthropic/claude-opus-4.7",
+            "moonshotai/kimi-k2.6",
+        ]

@@ -299,6 +299,49 @@ class TestBlocklistCoverage:
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
 
+class TestVirtualEnvIsBlocked:
+    """VIRTUAL_ENV and friends must be stripped from subprocess envs.
+
+    Regression test for the gateway-clobbering bug: if Hermes' VIRTUAL_ENV
+    leaks into a terminal subprocess that runs ``uv sync`` / ``poetry install``
+    / ``pip install`` in some other project, those tools treat Hermes' venv as
+    the implicit install target and rebuild it against the wrong
+    pyproject.toml — wiping every Hermes runtime dependency and bricking the
+    gateway. The gateway systemd unit deliberately sets VIRTUAL_ENV for its
+    own use; the blocklist makes sure it stops there.
+    """
+
+    def test_virtual_env_is_blocked(self):
+        assert "VIRTUAL_ENV" in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+    def test_related_venv_markers_are_blocked(self):
+        for name in (
+            "VIRTUAL_ENV_PROMPT",
+            "UV_PROJECT_ENVIRONMENT",
+            "POETRY_ACTIVE",
+            "PIPENV_ACTIVE",
+            "CONDA_PREFIX",
+            "CONDA_DEFAULT_ENV",
+        ):
+            assert name in _HERMES_PROVIDER_ENV_BLOCKLIST, (
+                f"{name} should be in the blocklist so package managers "
+                f"don't treat Hermes' venv as the active environment"
+            )
+
+    def test_sanitize_strips_virtual_env(self):
+        from tools.environments.local import _sanitize_subprocess_env
+
+        env = {
+            "PATH": "/usr/bin",
+            "VIRTUAL_ENV": "/home/user/.hermes/hermes-agent/venv",
+            "VIRTUAL_ENV_PROMPT": "hermes-agent",
+        }
+        result = _sanitize_subprocess_env(env)
+        assert "VIRTUAL_ENV" not in result
+        assert "VIRTUAL_ENV_PROMPT" not in result
+        assert result["PATH"] == "/usr/bin"
+
+
 class TestSanePathIncludesHomebrew:
     """Verify _SANE_PATH includes macOS Homebrew directories."""
 

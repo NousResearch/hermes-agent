@@ -137,6 +137,21 @@ def _build_provider_env_blocklist() -> frozenset:
         "VERCEL_TOKEN",
         "VERCEL_PROJECT_ID",
         "VERCEL_TEAM_ID",
+        # Hermes' own Python virtualenv must NOT leak into agent subprocesses.
+        # If it does, tools like `uv sync` / `uv pip install` / `poetry install`
+        # treat Hermes' venv as the implicit install target for the user's
+        # project and rebuild it against the wrong pyproject.toml, wiping every
+        # Hermes runtime dependency. Users who genuinely want their tools to
+        # run inside Hermes' venv can opt back in via tools.env_passthrough.
+        # See: gateway systemd unit emits Environment="VIRTUAL_ENV=..." for
+        # its own use; this blocklist makes sure it stops at the gateway.
+        "VIRTUAL_ENV",
+        "VIRTUAL_ENV_PROMPT",
+        "UV_PROJECT_ENVIRONMENT",
+        "POETRY_ACTIVE",
+        "PIPENV_ACTIVE",
+        "CONDA_PREFIX",
+        "CONDA_DEFAULT_ENV",
     })
     return frozenset(blocked)
 

@@ -1124,15 +1124,15 @@ def skill_view(
                 # Scan for all readable files
                 for f in skill_dir.rglob("*"):
                     if f.is_file() and f.name != "SKILL.md":
-                        rel = str(f.relative_to(skill_dir))
-                        if rel.startswith("references/"):
-                            available_files["references"].append(rel)
-                        elif rel.startswith("templates/"):
-                            available_files["templates"].append(rel)
-                        elif rel.startswith("assets/"):
-                            available_files["assets"].append(rel)
-                        elif rel.startswith("scripts/"):
-                            available_files["scripts"].append(rel)
+                        rel_path = f.relative_to(skill_dir)
+                        if rel_path.parts[0] == "references":
+                            available_files["references"].append(str(rel_path))
+                        elif rel_path.parts[0] == "templates":
+                            available_files["templates"].append(str(rel_path))
+                        elif rel_path.parts[0] == "assets":
+                            available_files["assets"].append(str(rel_path))
+                        elif rel_path.parts[0] == "scripts":
+                            available_files["scripts"].append(str(rel_path))
                         elif f.suffix in {
                             ".md",
                             ".py",

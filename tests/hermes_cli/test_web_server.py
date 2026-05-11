@@ -2324,3 +2324,95 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+# ---------------------------------------------------------------------------
+# _load_or_create_session_token tests (opt-in token persistence)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadOrCreateSessionToken:
+    """Tests for `_load_or_create_session_token` — controlled by
+    HERMES_DASHBOARD_SESSION_TOKEN_FILE."""
+
+    def _import_fn(self):
+        # Imported lazily so the env var is read at call time, not import.
+        from hermes_cli.web_server import _load_or_create_session_token
+        return _load_or_create_session_token
+
+    def test_returns_random_when_env_unset(self, monkeypatch):
+        """Default behavior: no env var → fresh random token each call."""
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", raising=False)
+        fn = self._import_fn()
+        a = fn()
+        b = fn()
+        assert a and b and len(a) >= 32 and len(b) >= 32
+        assert a != b  # randomness check
+
+    def test_returns_random_when_env_empty_string(self, monkeypatch):
+        """Empty string treated the same as unset."""
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", "   ")
+        fn = self._import_fn()
+        a = fn()
+        b = fn()
+        assert a != b
+
+    def test_creates_file_when_missing(self, tmp_path, monkeypatch):
+        """First call with env var pointing at a missing file: generate +
+        write, then return the same token on subsequent calls."""
+        token_file = tmp_path / "subdir" / "dashboard.token"
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", str(token_file))
+        fn = self._import_fn()
+        a = fn()
+        assert token_file.exists()
+        assert token_file.read_text().strip() == a
+        b = fn()
+        assert a == b  # persistence: same token returned
+
+    def test_reads_existing_file(self, tmp_path, monkeypatch):
+        """Existing non-empty file: read and return its contents (no rewrite)."""
+        token_file = tmp_path / "dashboard.token"
+        token_file.write_text("pre-existing-token-value\n")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", str(token_file))
+        fn = self._import_fn()
+        assert fn() == "pre-existing-token-value"
+
+    def test_regenerates_when_file_empty(self, tmp_path, monkeypatch):
+        """Empty file: generate fresh token, overwrite."""
+        token_file = tmp_path / "dashboard.token"
+        token_file.write_text("")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", str(token_file))
+        fn = self._import_fn()
+        token = fn()
+        assert token
+        assert token_file.read_text().strip() == token
+
+    def test_file_mode_is_0600(self, tmp_path, monkeypatch):
+        """Created token file should be owner-only (0600)."""
+        if os.name != "posix":
+            pytest.skip("file mode check only meaningful on POSIX")
+        token_file = tmp_path / "dashboard.token"
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", str(token_file))
+        fn = self._import_fn()
+        fn()
+        assert oct(token_file.stat().st_mode & 0o777) == "0o600"
+
+    def test_falls_back_on_unwritable_path(self, tmp_path, monkeypatch):
+        """If the target path is unwritable, fall back to ephemeral token
+        rather than crashing the dashboard."""
+        if os.name != "posix":
+            pytest.skip("permission semantics differ on non-POSIX")
+        readonly_dir = tmp_path / "readonly"
+        readonly_dir.mkdir()
+        readonly_dir.chmod(0o500)
+        try:
+            token_file = readonly_dir / "dashboard.token"
+            monkeypatch.setenv(
+                "HERMES_DASHBOARD_SESSION_TOKEN_FILE", str(token_file)
+            )
+            fn = self._import_fn()
+            token = fn()
+            assert token and len(token) >= 32
+            assert not token_file.exists()
+        finally:
+            readonly_dir.chmod(0o700)  # let pytest clean up

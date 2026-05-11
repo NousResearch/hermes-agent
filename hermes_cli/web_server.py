@@ -68,10 +68,49 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
-# Generated fresh on every server start — dies when the process exits.
-# Injected into the SPA HTML so only the legitimate web UI can use it.
+#
+# Default: generated fresh on every server start — dies when the process
+# exits. Injected into the SPA HTML so only the legitimate web UI can use it.
+#
+# Opt-in persistence: set ``HERMES_DASHBOARD_SESSION_TOKEN_FILE=<path>`` to
+# read/write the token from disk. Useful when a second container (workspace
+# UI, reverse proxy, sidecar) needs a stable token across dashboard
+# restarts — restarting the dashboard otherwise invalidates any token that
+# another process has cached at start-up. The token file is created with
+# mode 0600 when written.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = secrets.token_urlsafe(32)
+def _load_or_create_session_token() -> str:
+    token_file_path = os.getenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", "").strip()
+    if not token_file_path:
+        return secrets.token_urlsafe(32)
+    token_file = Path(token_file_path)
+    try:
+        if token_file.exists():
+            existing = token_file.read_text().strip()
+            if existing:
+                return existing
+            # File present but empty — regenerate and overwrite below.
+        token = secrets.token_urlsafe(32)
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(token)
+        try:
+            token_file.chmod(0o600)
+        except (OSError, NotImplementedError):
+            # chmod isn't supported on every filesystem (e.g. some Windows
+            # setups). The token still works; just not 0600.
+            pass
+        return token
+    except OSError as exc:
+        _log.warning(
+            "HERMES_DASHBOARD_SESSION_TOKEN_FILE=%s could not be read/written "
+            "(%s); falling back to ephemeral random token for this process.",
+            token_file_path,
+            exc,
+        )
+        return secrets.token_urlsafe(32)
+
+
+_SESSION_TOKEN = _load_or_create_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``

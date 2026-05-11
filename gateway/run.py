@@ -3639,6 +3639,9 @@ class GatewayRunner:
         # Start background session expiry watcher to finalize expired sessions
         asyncio.create_task(self._session_expiry_watcher())
 
+        # Start background MCP config watcher to auto-reload MCP servers
+        asyncio.create_task(self._mcp_config_watcher())
+
         # Start background kanban notifier — delivers `completed`, `blocked`,
         # `spawn_auto_blocked`, and `crashed` events to gateway subscribers
         # so human-in-the-loop workflows hear back without polling.
@@ -3824,6 +3827,82 @@ class GatewayRunner:
                 if not self._running:
                     break
                 await asyncio.sleep(1)
+
+    async def _mcp_config_watcher(self, interval: int = 5) -> None:
+        """Background task that watches config.yaml for mcp_servers changes.
+
+        Mirrors the CLI's ``_check_config_mcp_changes`` behaviour for the
+        gateway.  When ``mcp_servers`` in config.yaml changes (detected via
+        mtime + section diff), triggers an MCP reload and updates all cached
+        agents so existing sessions can use the new tools immediately.
+
+        Runs every ``interval`` seconds (default 5s).  A short interval is
+        acceptable because the fast path (mtime unchanged) is a single stat()
+        call.
+        """
+        import yaml as _yaml
+
+        await asyncio.sleep(10)  # initial delay — let the gateway fully start
+        _last_check = 0.0
+        _config_mtime: float = 0.0
+        _config_mcp_servers: dict = {}
+        while self._running:
+            try:
+                now = time.monotonic()
+                if now - _last_check < interval:
+                    await asyncio.sleep(1)
+                    continue
+                _last_check = now
+
+                from hermes_cli.config import get_config_path as _get_config_path
+                cfg_path = _get_config_path()
+                if not cfg_path.exists():
+                    continue
+
+                try:
+                    mtime = cfg_path.stat().st_mtime
+                except OSError:
+                    continue
+
+                if mtime == _config_mtime:
+                    continue  # unchanged
+
+                _config_mtime = mtime
+                try:
+                    with open(cfg_path, encoding="utf-8") as f:
+                        new_cfg = _yaml.safe_load(f) or {}
+                except Exception:
+                    continue
+
+                new_mcp = new_cfg.get("mcp_servers") or {}
+                if new_mcp == _config_mcp_servers:
+                    continue  # mcp_servers unchanged
+
+                _config_mcp_servers = new_mcp
+                logger.info("MCP server config changed — reloading connections...")
+
+                # Build a synthetic MessageEvent so we can reuse _execute_mcp_reload.
+                # source doesn't matter for the reload itself (it's only used for
+                # transcript injection, which we skip when source is None).
+                class _DummySource:
+                    platform = ""
+                    chat_id = ""
+                    thread_id = ""
+                    user_id = ""
+                    message_id = ""
+                    raw = None
+
+                class _DummyEvent:
+                    source = _DummySource()
+
+                loop = asyncio.get_running_loop()
+                try:
+                    result = await self._execute_mcp_reload(_DummyEvent())
+                    logger.info("%s", result.replace("\n", " "))
+                except Exception as exc:
+                    logger.warning("MCP auto-reload failed: %s", exc)
+            except Exception as e:
+                logger.debug("MCP config watcher error: %s", e)
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
@@ -11296,6 +11375,26 @@ class GatewayRunner:
                 lines.append("No MCP servers connected.")
             else:
                 lines.append(f"\n🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
+
+            # Update cached agents so existing sessions see new tools immediately
+            try:
+                from model_tools import get_tool_definitions
+                _cache = getattr(self, "_agent_cache", None)
+                _cache_lock = getattr(self, "_agent_cache_lock", None)
+                if _cache_lock and _cache:
+                    with _cache_lock:
+                        for _sess_key, (_agent, _sig) in list(_cache.items()):
+                            if _agent is None:
+                                continue
+                            _agent.tools = get_tool_definitions(
+                                enabled_toolsets=getattr(_agent, "enabled_toolsets", None),
+                                quiet_mode=True,
+                            )
+                            _agent.valid_tool_names = {
+                                t["function"]["name"] for t in _agent.tools
+                            } if _agent.tools else set()
+            except Exception as _exc:
+                logger.debug("Failed to update cached agent tools after MCP reload: %s", _exc)
 
             # Inject a message at the END of the session history so the
             # model knows tools changed on its next turn.  Appended after

@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+_DEFAULT_ATOMIC_FILE_MODE = 0o644
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -51,7 +52,7 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
     right after ``os.replace`` restores the original permissions.
     """
     if mode is None:
-        return
+        mode = _DEFAULT_ATOMIC_FILE_MODE
     try:
         os.chmod(path, mode)
     except OSError:

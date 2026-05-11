@@ -1,5 +1,7 @@
 """Tests for utils.atomic_yaml_write — crash-safe YAML file writes."""
 
+import os
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -42,3 +44,11 @@ class TestAtomicYamlWrite:
         text = target.read_text(encoding="utf-8")
         assert "key: value" in text
         assert "# comment" in text
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
+    def test_new_file_defaults_to_world_readable_mode(self, tmp_path):
+        target = tmp_path / "data.yaml"
+
+        atomic_yaml_write(target, {"key": "value"})
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644

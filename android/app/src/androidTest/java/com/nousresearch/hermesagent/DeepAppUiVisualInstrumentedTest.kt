@@ -152,7 +152,7 @@ class DeepAppUiVisualInstrumentedTest {
         }
 
         val qwenSetupOpened = AtomicBoolean(false)
-        val qwenSetupIntent = browserChooserFor(Uri.parse("https://home.qwencloud.com/api-keys")) {
+        val qwenSetupIntent = browserOpenFor(Uri.parse("https://home.qwencloud.com/api-keys")) {
             qwenSetupOpened.set(true)
         }
         Intents.init()
@@ -201,7 +201,7 @@ class DeepAppUiVisualInstrumentedTest {
         }
 
         val openAiSetupOpened = AtomicBoolean(false)
-        val openAiSetupIntent = browserChooserFor(
+        val openAiSetupIntent = browserOpenFor(
             Uri.parse("https://platform.openai.com/settings/organization/api-keys")
         ) {
             openAiSetupOpened.set(true)
@@ -314,18 +314,19 @@ class DeepAppUiVisualInstrumentedTest {
         }
     }
 
-    private fun browserChooserFor(uri: Uri, onMatch: (() -> Unit)? = null): Matcher<Intent> {
+    private fun browserOpenFor(uri: Uri, onMatch: (() -> Unit)? = null): Matcher<Intent> {
         return object : TypeSafeMatcher<Intent>() {
             override fun describeTo(description: Description) {
-                description.appendText("browser chooser for ").appendValue(uri)
+                description.appendText("browser open intent for ").appendValue(uri)
             }
 
             override fun matchesSafely(intent: Intent): Boolean {
-                if (intent.action != Intent.ACTION_CHOOSER) {
-                    return false
+                val target = if (intent.action == Intent.ACTION_CHOOSER) {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                } else {
+                    intent
                 }
-                @Suppress("DEPRECATION")
-                val target = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                 val matches = target?.action == Intent.ACTION_VIEW && target.data == uri
                 if (matches) {
                     onMatch?.invoke()

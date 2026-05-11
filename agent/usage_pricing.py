@@ -715,6 +715,15 @@ def normalize_usage(
             cache_write_tokens = _to_int(
                 getattr(response_usage, "cache_creation_input_tokens", 0)
             )
+        # DeepSeek: implicit disk-based context caching returns
+        # prompt_cache_hit_tokens at the usage top level (not inside
+        # prompt_tokens_details).  Treated as cache reads — the tokens
+        # were served from the KV cache at a 90% discount.
+        # Ref: https://api-docs.deepseek.com/guides/kv_cache
+        if not cache_read_tokens:
+            cache_read_tokens = _to_int(
+                getattr(response_usage, "prompt_cache_hit_tokens", 0)
+            )
         input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
     reasoning_tokens = 0

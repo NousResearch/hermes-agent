@@ -330,14 +330,20 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun copyProviderSetupUrl(methodId: String, updateStatus: Boolean) {
         val option = AuthCatalog.find(methodId) ?: return
-        val setupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty().trim()
-        if (setupUrl.isBlank()) {
+        val setupText = ProviderPresets.setupClipboardText(option.runtimeProvider)
+        if (setupText.isBlank()) {
             return
         }
         val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        clipboard?.setPrimaryClip(ClipData.newPlainText("Hermes ${option.label} setup URL", setupUrl))
+        clipboard?.setPrimaryClip(ClipData.newPlainText("Hermes ${option.label} setup URLs", setupText))
         if (updateStatus) {
-            _uiState.update { it.copy(globalStatus = "Copied ${option.label} setup URL.") }
+            val fallbackCount = ProviderPresets.setupUrls(option.runtimeProvider).size - 1
+            val suffix = when (fallbackCount) {
+                0 -> ""
+                1 -> " and 1 alternate official page"
+                else -> " and $fallbackCount alternate official pages"
+            }
+            _uiState.update { it.copy(globalStatus = "Copied ${option.label} setup URL$suffix.") }
         }
     }
 

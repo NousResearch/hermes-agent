@@ -75,8 +75,14 @@ def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
     assert 'id = "qwen-oauth"' in presets
     assert 'id = "zai"' in presets
     assert 'apiKeyUrl = "https://openrouter.ai/keys"' in presets
+    assert 'apiKeyUrl = "https://platform.openai.com/settings/organization/api-keys"' in presets
     assert 'apiKeyUrl = "https://home.qwencloud.com/api-keys"' in presets
     assert 'apiKeyUrl = "https://z.ai/manage-apikey/apikey-list"' in presets
+    assert 'fallbackSetupUrls = listOf(' in presets
+    assert 'https://docs.qwencloud.com/api-reference/preparation/api-key' in presets
+    assert 'https://docs.z.ai/guides/' in presets
+    assert 'fun setupClipboardText(providerId: String): String' in presets
+    assert 'fun providerIdForSetupUrl(url: String): String?' in presets
     assert 'fun runtimeConfigBaseUrl(providerId: String, baseUrl: String): String' in presets
     assert 'providerId == "zai" && normalized == presetDefault -> ""' in presets
 
@@ -173,7 +179,10 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "prepareApiKeySetup(methodId)\n            openProviderSetupPage(methodId)" in auth_view_model
     assert "getApplication<Application>().startActivity(browserIntent)" in auth_view_model
     assert "fun copyProviderSetupUrl(methodId: String)" in auth_view_model
-    assert "ClipData.newPlainText(\"Hermes ${option.label} setup URL\", setupUrl)" in auth_view_model
+    assert "ProviderPresets.setupClipboardText(option.runtimeProvider)" in auth_view_model
+    assert 'ClipData.newPlainText("Hermes ${option.label} setup URLs", setupText)' in auth_view_model
+    assert '" and 1 alternate official page"' in auth_view_model
+    assert '" and $fallbackCount alternate official pages"' in auth_view_model
     assert "strings.setUpApiKeyFor(option.label)" in auth_screen
     assert "prepareApiKeySetup(methodId)" in auth_view_model
     assert "providers use secure API keys or tokens in Settings" in strings
@@ -194,6 +203,9 @@ def test_settings_opens_official_provider_key_pages():
     assert "putExtra(Browser.EXTRA_APPLICATION_ID" in settings_view_model
     assert "ClipboardManager" in settings_view_model
     assert "ClipData.newPlainText" in settings_view_model
+    assert "ProviderPresets.providerIdForSetupUrl(target)" in settings_view_model
+    assert "ProviderPresets.setupClipboardText(it)" in settings_view_model
+    assert 'ClipData.newPlainText("Hermes provider setup URLs", setupText)' in settings_view_model
     assert "addCategory(Intent.CATEGORY_BROWSABLE)" in settings_view_model
     assert "openProviderKeyPage(providerLabel)" in settings_screen
     assert "copyProviderSetupUrl()" in settings_screen

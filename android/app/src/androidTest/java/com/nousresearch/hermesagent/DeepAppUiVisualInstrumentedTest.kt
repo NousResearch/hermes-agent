@@ -200,7 +200,7 @@ class DeepAppUiVisualInstrumentedTest {
         composeRule.onNodeWithTag("AuthProviderOpenSetup-qwen-oauth").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("AuthProviderCopySetup-qwen-oauth").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("AuthProviderCopySetup-qwen-oauth").performClick()
-        composeRule.onNodeWithText("Copied Qwen OAuth setup URL.").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Copied Qwen OAuth setup URL and 1 alternate official page.").performScrollTo().assertIsDisplayed()
     }
 
     @Test

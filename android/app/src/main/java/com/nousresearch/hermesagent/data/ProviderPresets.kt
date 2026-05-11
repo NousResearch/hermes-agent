@@ -6,6 +6,7 @@ data class ProviderPreset(
     val baseUrl: String,
     val modelHint: String,
     val apiKeyUrl: String = "",
+    val fallbackSetupUrls: List<String> = emptyList(),
 )
 
 data class ModelSelectionPreset(
@@ -55,13 +56,15 @@ object ProviderPresets {
             baseUrl = "https://openrouter.ai/api/v1",
             modelHint = "anthropic/claude-sonnet-4",
             apiKeyUrl = "https://openrouter.ai/keys",
+            fallbackSetupUrls = listOf("https://openrouter.ai/docs/quickstart"),
         ),
         ProviderPreset(
             id = "openai",
             label = "OpenAI",
             baseUrl = "https://api.openai.com/v1",
             modelHint = "gpt-4.1",
-            apiKeyUrl = "https://platform.openai.com/api-keys",
+            apiKeyUrl = "https://platform.openai.com/settings/organization/api-keys",
+            fallbackSetupUrls = listOf("https://platform.openai.com/docs/quickstart"),
         ),
         ProviderPreset(
             id = "chatgpt-web",
@@ -69,6 +72,7 @@ object ProviderPresets {
             baseUrl = "https://chatgpt.com/backend-api/f",
             modelHint = "gpt-5-thinking",
             apiKeyUrl = "https://chatgpt.com/",
+            fallbackSetupUrls = listOf("https://chatgpt.com/#settings"),
         ),
         ProviderPreset(
             id = "anthropic",
@@ -76,6 +80,7 @@ object ProviderPresets {
             baseUrl = "https://api.anthropic.com",
             modelHint = "claude-sonnet-4",
             apiKeyUrl = "https://console.anthropic.com/settings/keys",
+            fallbackSetupUrls = listOf("https://docs.anthropic.com/claude/docs/quickstart-guide"),
         ),
         ProviderPreset(
             id = "gemini",
@@ -83,6 +88,7 @@ object ProviderPresets {
             baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
             modelHint = "gemini-2.5-pro",
             apiKeyUrl = "https://aistudio.google.com/apikey",
+            fallbackSetupUrls = listOf("https://ai.google.dev/gemini-api/docs/api-key"),
         ),
         ProviderPreset(
             id = "alibaba",
@@ -90,6 +96,10 @@ object ProviderPresets {
             baseUrl = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
             modelHint = "qwen3.6-plus",
             apiKeyUrl = "https://home.qwencloud.com/api-keys",
+            fallbackSetupUrls = listOf(
+                "https://docs.qwencloud.com/api-reference/preparation/api-key",
+                "https://docs.qwencloud.com/developer-guides/administration/api-keys",
+            ),
         ),
         ProviderPreset(
             id = "qwen-oauth",
@@ -97,6 +107,7 @@ object ProviderPresets {
             baseUrl = "https://portal.qwen.ai/v1",
             modelHint = "qwen3-coder-plus",
             apiKeyUrl = "https://chat.qwen.ai/",
+            fallbackSetupUrls = listOf("https://docs.qwencloud.com/developer-guides/getting-started/first-api-call"),
         ),
         ProviderPreset(
             id = "zai",
@@ -104,6 +115,7 @@ object ProviderPresets {
             baseUrl = "https://api.z.ai/api/paas/v4",
             modelHint = "glm-5",
             apiKeyUrl = "https://z.ai/manage-apikey/apikey-list",
+            fallbackSetupUrls = listOf("https://docs.z.ai/guides/"),
         ),
         ProviderPreset(
             id = "nous",
@@ -122,6 +134,25 @@ object ProviderPresets {
     val androidSettingsDefaults = defaults
 
     fun find(id: String): ProviderPreset? = defaults.firstOrNull { it.id == id }
+
+    fun setupUrls(providerId: String): List<String> {
+        val preset = find(providerId) ?: return emptyList()
+        return (listOf(preset.apiKeyUrl) + preset.fallbackSetupUrls)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    fun setupClipboardText(providerId: String): String {
+        return setupUrls(providerId).joinToString(separator = "\n")
+    }
+
+    fun providerIdForSetupUrl(url: String): String? {
+        val normalized = url.trim()
+        return defaults.firstOrNull { preset ->
+            setupUrls(preset.id).any { it == normalized }
+        }?.id
+    }
 
     fun runtimeConfigBaseUrl(providerId: String, baseUrl: String): String {
         val normalized = baseUrl.trim().trimEnd('/')

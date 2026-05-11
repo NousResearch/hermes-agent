@@ -235,10 +235,20 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         if (target.isBlank()) {
             return
         }
+        val providerId = ProviderPresets.providerIdForSetupUrl(target)
+        val setupText = providerId?.let { ProviderPresets.setupClipboardText(it) }
+            .orEmpty()
+            .ifBlank { target }
+        val fallbackCount = providerId?.let { ProviderPresets.setupUrls(it).size - 1 } ?: 0
         val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        clipboard?.setPrimaryClip(ClipData.newPlainText("Hermes provider setup URL", target))
+        clipboard?.setPrimaryClip(ClipData.newPlainText("Hermes provider setup URLs", setupText))
         if (updateSuccessStatus) {
-            _uiState.update { it.copy(status = "Copied provider setup URL") }
+            val suffix = when (fallbackCount) {
+                0 -> ""
+                1 -> " and 1 alternate official page"
+                else -> " and $fallbackCount alternate official pages"
+            }
+            _uiState.update { it.copy(status = "Copied provider setup URL$suffix") }
         }
     }
 

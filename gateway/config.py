@@ -422,6 +422,39 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
 
 
 @dataclass
+class SlackAutoJoinConfig:
+    """Auto-join Slack channels whose names match a regex.
+
+    Config schema (top-level key in config.yaml):
+
+        slack_auto_join:
+          enabled: false
+          channel_regex: "^inc-.*$"
+
+    Requires the Slack app to have the ``channels:join`` OAuth scope and
+    the ``channel_created`` event subscribed in the app manifest.
+    """
+    enabled: bool = False
+    # Compiled at load time; None means regex was empty/invalid (skip all).
+    channel_regex: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "channel_regex": self.channel_regex,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SlackAutoJoinConfig":
+        if not data:
+            return cls()
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            channel_regex=str(data.get("channel_regex", "")),
+        )
+
+
+@dataclass
 class GatewayConfig:
     """
     Main gateway configuration.
@@ -460,6 +493,9 @@ class GatewayConfig:
 
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
+
+    # Slack auto-join configuration
+    slack_auto_join: SlackAutoJoinConfig = field(default_factory=SlackAutoJoinConfig)
 
     # Session store pruning: drop SessionEntry records older than this many
     # days from the in-memory dict and sessions.json.  Keeps the store from
@@ -629,6 +665,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            slack_auto_join=SlackAutoJoinConfig.from_dict(data.get("slack_auto_join", {})),
             session_store_max_age_days=session_store_max_age_days,
         )
 
@@ -720,6 +757,10 @@ def load_gateway_config() -> GatewayConfig:
             streaming_cfg = yaml_cfg.get("streaming")
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
+
+            slack_auto_join_cfg = yaml_cfg.get("slack_auto_join")
+            if isinstance(slack_auto_join_cfg, dict):
+                gw_data["slack_auto_join"] = slack_auto_join_cfg
 
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]

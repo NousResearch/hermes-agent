@@ -598,9 +598,10 @@ DEFAULT_CONFIG = {
     },
 
     "web": {
-        "backend": "",           # shared fallback — applies to both search and extract
-        "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
-        "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        "backend": "",                   # shared fallback — applies to both search and extract
+        "search_backend": "",            # per-capability override for web_search (e.g. "searxng")
+        "extract_backend": "",           # per-capability override for web_extract (e.g. "firecrawl")
+        "extract_fallback_backends": [],  # optional ordered failover list for web_extract (e.g. ["tavily"])
     },
 
     "browser": {

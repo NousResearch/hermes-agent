@@ -288,11 +288,14 @@ Use different providers for search vs extract. This lets you combine free search
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  search_backend: "searxng"     # used by web_search
-  extract_backend: "firecrawl"  # used by web_extract (and its deep-crawl modes)
+  search_backend: "searxng"               # used by web_search
+  extract_backend: "firecrawl"            # primary web_extract backend
+  extract_fallback_backends: ["tavily"]   # optional: try these only if primary extract backend fails
 ```
 
 When per-capability keys are empty, both fall through to `web.backend`. When `web.backend` is also empty, the backend is auto-detected from whichever API key/URL is present.
+
+`extract_fallback_backends` is ordered and optional. Entries must be extract-capable providers (`firecrawl`, `tavily`, `exa`, `parallel`). Search-only providers (`searxng`, `brave-free`, `ddgs`) are ignored.
 
 **Priority order (per capability):**
 1. `web.search_backend` / `web.extract_backend` (explicit per-capability)

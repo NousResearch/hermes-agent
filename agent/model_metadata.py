@@ -1006,6 +1006,79 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     return None
 
 
+def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+    """Query an Ollama server's native ``/api/show`` for context length.
+
+    Provider-agnostic: works against ANY Ollama-compatible server regardless
+    of hostname — local Ollama, Ollama Cloud (``ollama.com``), custom Ollama
+    hosting behind a reverse proxy, etc.  For non-Ollama servers the POST
+    returns 404/405 quickly; the function handles errors gracefully.
+
+    For hosted servers the GGUF ``model_info.*.context_length`` is the
+    authoritative source: the user can't set their own ``num_ctx``, and the
+    OpenAI-compat ``/v1/models`` endpoint correctly omits ``context_length``
+    per the OpenAI schema.
+
+    Resolution order for hosted Ollama:
+      1. ``model_info.*.context_length`` — GGUF training max (authoritative)
+      2. ``parameters`` → ``num_ctx`` — server-side Modelfile override
+    The order is flipped vs ``query_ollama_num_ctx()`` because local users
+    control ``num_ctx`` themselves; hosted users can't.
+    """
+    import httpx
+
+    server_url = base_url.rstrip("/")
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+
+    headers = _auth_headers(api_key)
+
+    try:
+        with httpx.Client(timeout=5.0, headers=headers) as client:
+            resp = client.post(f"{server_url}/api/show", json={"name": model})
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+
+            # Hosted Ollama: GGUF model_info is the real max — prefer it over
+            # num_ctx which the Cloud operator may have capped arbitrarily.
+            model_info = data.get("model_info", {})
+            for key, value in model_info.items():
+                if "context_length" in key and isinstance(value, (int, float)):
+                    ctx = int(value)
+                    if ctx >= 1024:
+                        return ctx
+
+            # Fall back to num_ctx from Modelfile parameters (rare on Cloud)
+            params = data.get("parameters", "")
+            if "num_ctx" in params:
+                for line in params.split("\n"):
+                    if "num_ctx" in line:
+                        parts = line.strip().split()
+                        if len(parts) >= 2:
+                            try:
+                                ctx = int(parts[-1])
+                                if ctx >= 1024:
+                                    return ctx
+                            except ValueError:
+                                pass
+    except Exception:
+        pass
+    return None
+
+
+def _model_name_suggests_kimi(model: str) -> bool:
+    """Return True if the model name looks like a Kimi-family model.
+
+    Catches ``kimi-k2.6``, ``kimi-k2.5``, ``kimi-k2-thinking``,
+    ``moonshotai/Kimi-K2.6``, and similar variants.  Used as a guard
+    against stale OpenRouter metadata that underreports these models
+    as 32K context when they actually support 262K+.
+    """
+    lower = model.lower()
+    return lower.startswith("kimi") or "moonshot" in lower
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
@@ -1307,12 +1380,17 @@ def get_model_context_length(
     2. Active endpoint metadata (/models for explicit custom endpoints)
     3. Local server query (for local endpoints)
     4. Anthropic /v1/models API (API-key users only, not OAuth)
-    5. OpenRouter live API metadata
-    6. Nous suffix-match via OpenRouter cache
-    7. models.dev registry lookup (provider-aware)
-    8. Thin hardcoded defaults (broad family patterns)
-    9. Default fallback (256K)
-    """
+    5. Provider-aware lookups (before generic OpenRouter cache):
+       a. Copilot live /models API
+       b. Nous suffix-match via OpenRouter cache
+       c. Codex OAuth /models probe
+       d. GMI /models endpoint
+       e. Ollama native /api/show probe (any base_url, provider-agnostic)
+       f. models.dev registry lookup (with :cloud/-cloud suffix fallback)
+    6. OpenRouter live API metadata (Kimi-family 32k guard)
+    7. Hardcoded defaults (broad family patterns, longest-key-first)
+    8. Local server query (last resort)
+    9. Default fallback (256K)"""
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
@@ -1392,6 +1470,13 @@ def get_model_context_length(
         if context_length is not None:
             return context_length
         if not _is_known_provider_base_url(base_url):
+            # 2b. Ollama native /api/show — any URL might be an Ollama server
+            # (local, cloud, or custom hosting).  Non-Ollama servers return
+            # 404/405 quickly.  Fall through on failure.
+            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+            if ctx is not None:
+                save_context_length(model, base_url, ctx)
+                return ctx
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
@@ -1461,6 +1546,20 @@ def get_model_context_length(
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx
+    # 5e. Ollama native /api/show probe — runs for ANY provider with a
+    # base_url, not just ollama-cloud.  Ollama-compatible servers expose
+    # this endpoint regardless of hostname (local Ollama, Ollama Cloud,
+    # custom Ollama hosting).  The OpenAI-compat /v1/models endpoint
+    # correctly omits context_length per the OpenAI schema, but /api/show
+    # returns the authoritative GGUF model_info.context_length.
+    # For non-Ollama servers (OpenAI, Anthropic, etc.), the POST returns
+    # 404/405 quickly.  Results are cached, so the hit is per-model+URL,
+    # once per hour.
+    if base_url:
+        ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+        if ctx is not None:
+            save_context_length(model, base_url, ctx)
+            return ctx
     if effective_provider:
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
@@ -1470,7 +1569,24 @@ def get_model_context_length(
     # 6. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
     if model in metadata:
-        return metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
+        or_ctx = metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
+        # Guard against stale OpenRouter metadata for Kimi-family models.
+        # OpenRouter reports 32768 for moonshotai/kimi-k2.6, but the model
+        # actually supports 262144 (models.dev + official Kimi docs agree).
+        # Providers that host their own Kimi endpoints (Ollama Cloud, Kimi
+        # Coding, Moonshot) would otherwise trip the 64k minimum-context
+        # guard and reject a perfectly capable model.
+        # The filter is narrow: only reject exactly 32768 for Kimi-named
+        # models.  If OpenRouter ever updates its data, the stale path
+        # becomes dead code with no impact.
+        if or_ctx == 32768 and _model_name_suggests_kimi(model):
+            logger.info(
+                "Rejecting OpenRouter metadata context=%s for %r "
+                "(Kimi-family underreport); falling through to hardcoded defaults",
+                or_ctx, model,
+            )
+        else:
+            return or_ctx
 
     # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
     # Only check `default_model in model` (is the key a substring of the input).

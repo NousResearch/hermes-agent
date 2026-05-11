@@ -610,8 +610,7 @@ class GatewayConfig:
 
         try:
             session_store_max_age_days = int(data.get("session_store_max_age_days", 90))
-            if session_store_max_age_days < 0:
-                session_store_max_age_days = 0
+            session_store_max_age_days = max(session_store_max_age_days, 0)
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 

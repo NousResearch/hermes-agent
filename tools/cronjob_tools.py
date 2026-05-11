@@ -327,9 +327,8 @@ def cronjob(
                         "the script is the job.",
                         success=False,
                     )
-            else:
-                if not prompt and not canonical_skills:
-                    return tool_error("create requires either prompt or at least one skill", success=False)
+            elif not prompt and not canonical_skills:
+                return tool_error("create requires either prompt or at least one skill", success=False)
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:

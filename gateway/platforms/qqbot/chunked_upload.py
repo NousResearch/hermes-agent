@@ -592,8 +592,7 @@ async def _run_with_concurrency(
     concurrency: int,
 ) -> None:
     """Run a list of thunks with a bounded number in flight at once."""
-    if concurrency < 1:
-        concurrency = 1
+    concurrency = max(concurrency, 1)
     sem = asyncio.Semaphore(concurrency)
 
     async def _wrap(thunk: Callable[[], Awaitable[None]]) -> None:

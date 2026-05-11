@@ -456,8 +456,7 @@ class AudioRecorder:
             # Compute RMS for level display and silence detection
             rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
             self._current_rms = rms
-            if rms > self._peak_rms:
-                self._peak_rms = rms
+            self._peak_rms = max(self._peak_rms, rms)
 
             # Silence detection
             if self._on_silence_stop is not None:

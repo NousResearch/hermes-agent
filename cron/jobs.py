@@ -107,6 +107,52 @@ def store_lock(store: CronStore | None = None) -> threading.Lock:
             _store_locks[key] = lock
         return lock
 
+
+
+def _normalize_job_scope(job: dict, *, default: str = "profile") -> dict:
+    """Normalize a job record's scope field to a canonical value."""
+    normalized = dict(job)
+    scope = str(normalized.get("scope") or default).strip().lower()
+    if scope not in {"profile", "global"}:
+        scope = "profile"
+    normalized["scope"] = scope
+    return normalized
+
+
+def _parse_job_ref(job_ref: str) -> tuple:
+    """Parse a scoped job ref.
+    
+    Returns (scope_or_None, job_id).
+    - "global:abc123" → ("global", "abc123")  
+    - "profile:deepseek:abc123" → ("profile", "abc123")
+    - "abc123" → (None, "abc123")
+    """
+    text = str(job_ref or "").strip()
+    if text.startswith("global:"):
+        return "global", text.split(":", 1)[1]
+    if text.startswith("profile:"):
+        parts = text.split(":")
+        return "profile", parts[-1] if parts else ""
+    return None, text
+
+
+def _make_job_ref(job: dict) -> str:
+    """Build a scoped ref string from a job dict."""
+    scope = str(job.get("scope") or "profile")
+    return f"{scope}:{job.get('id', '')}"
+
+
+def _normalize_job_for_return(job: dict, *, store: "CronStore | None" = None) -> dict:
+    """Normalize a job record for API/tool/UI output.
+    
+    Adds job_ref field and ensures scope is canonical.
+    """
+    from cron.jobs import resolve_store
+    default_scope = resolve_store(store=store).scope if store is not None else "profile"
+    normalized = _normalize_job_record(_normalize_job_scope(job, default=default_scope))
+    normalized["job_ref"] = _make_job_ref(normalized)
+    return normalized
+
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
     """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
     if skills is None:
@@ -470,7 +516,8 @@ def load_jobs(store: CronStore | None = None) -> List[Dict[str, Any]]:
     try:
         with open(resolved.jobs_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("jobs", [])
+            jobs = [_normalize_job_for_return(j, store=resolved) for j in data.get("jobs", [])]
+            return jobs
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
@@ -481,7 +528,7 @@ def load_jobs(store: CronStore | None = None) -> List[Dict[str, Any]]:
                     # Auto-repair: rewrite with proper escaping
                     save_jobs(jobs, store=resolved)
                     logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-                return jobs
+                return [_normalize_job_for_return(j, store=resolved) for j in jobs]
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
             raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e

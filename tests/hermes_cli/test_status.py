@@ -109,3 +109,14 @@ def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_pa
     assert "oidc-token" not in output
     assert "snapshot filesystem" in output
     assert "live processes do not survive" in output
+
+
+def test_show_status_accepts_zai_api_key(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("ZAI_API_KEY", "zai-secret-1234")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    line = next(line for line in output.splitlines() if "Z.AI / GLM" in line)
+    assert "(not set)" not in line

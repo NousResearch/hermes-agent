@@ -3100,6 +3100,24 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
 
+    def test_length_continuation_preserves_newline_for_multiline_output(self, agent):
+        """Multiline truncation should not merge the continuation into the last line."""
+        self._setup_agent(agent)
+        first = _mock_response(content="Done:\n✅ Update DC", finish_reason="length")
+        second = _mock_response(content="⬜ Bugs high", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [first, second]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert result["final_response"] == "Done:\n✅ Update DC\n⬜ Bugs high"
+
     def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
         """Ollama-hosted GLM responses can misreport truncated output as stop."""
         self._setup_agent(agent)

@@ -11974,6 +11974,17 @@ class AIAgent:
         truncated_response_prefix = ""
         compression_attempts = 0
         _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+
+        def _join_truncated_continuation(prefix: str, continuation: str) -> str:
+            if not prefix:
+                return continuation
+            if not continuation:
+                return prefix
+            if prefix[-1].isspace() or continuation[0].isspace():
+                return prefix + continuation
+            if "\n" in prefix:
+                return prefix + "\n" + continuation
+            return prefix + continuation
         
         # Record the execution thread so interrupt()/clear_interrupt() can
         # scope the tool-level interrupt signal to THIS agent's thread only.
@@ -15094,7 +15105,10 @@ class AIAgent:
                     codex_ack_continuations = 0
 
                     if truncated_response_prefix:
-                        final_response = truncated_response_prefix + final_response
+                        final_response = _join_truncated_continuation(
+                            truncated_response_prefix,
+                            final_response,
+                        )
                         truncated_response_prefix = ""
                         length_continue_retries = 0
                     

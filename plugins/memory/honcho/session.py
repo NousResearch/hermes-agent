@@ -1007,11 +1007,11 @@ class HonchoSessionManager:
             return self._fetch_peer_context(peer_id, target=peer_id)
 
         try:
-            peer_id = self._resolve_peer_id(session, peer)
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
             ctx = honcho_session.context(
                 summary=True,
-                peer_target=peer_id,
-                peer_perspective=session.user_peer_id if peer == "user" else session.assistant_peer_id,
+                peer_target=target_peer_id or observer_peer_id,
+                peer_perspective=observer_peer_id,
             )
 
             result: dict[str, Any] = {}

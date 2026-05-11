@@ -10497,7 +10497,7 @@ class GatewayRunner:
                         current_model=current_model,
                         user_providers=user_provs,
                         custom_providers=custom_provs,
-                        max_models=50,
+                        max_models=500,
                     )
                 except Exception:
                     providers = []
@@ -10630,7 +10630,7 @@ class GatewayRunner:
                     current_model=current_model,
                     user_providers=user_provs,
                     custom_providers=custom_provs,
-                    max_models=5,
+                    max_models=500,
                 )
                 for p in providers:
                     tag = t("gateway.model.current_tag") if p["is_current"] else ""

@@ -1124,6 +1124,18 @@ def fetch_openrouter_models(
         desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
 
+    # Also surface free, tool-capable models from the live catalog that
+    # aren't in the curated preferred list. Keeps the picker responsive
+    # to new free models without waiting for the curated list to update.
+    curated_ids = {mid for mid, _ in curated}
+    for mid, live_item in live_by_id.items():
+        if mid in curated_ids:
+            continue
+        if not _openrouter_model_supports_tools(live_item):
+            continue
+        if _openrouter_model_is_free(live_item.get("pricing")):
+            curated.append((mid, "free"))
+
     if not curated:
         return list(_openrouter_catalog_cache or fallback)
 

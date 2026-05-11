@@ -5359,6 +5359,9 @@ def _define_discord_view_classes() -> None:
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
             self._selected_provider: str = ""
+            self._model_page: int = 0
+            self._model_pages: int = 1
+            self._free_only: bool = True
 
             self._build_provider_select()
 
@@ -5400,7 +5403,7 @@ def _define_discord_view_classes() -> None:
             self.add_item(cancel_btn)
 
         def _build_model_select(self, provider_slug: str):
-            """Build the model dropdown for a specific provider."""
+            """Build the model picker as a button grid with pagination."""
             self.clear_items()
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None
@@ -5408,36 +5411,71 @@ def _define_discord_view_classes() -> None:
             if not provider:
                 return
 
-            models = provider.get("models", [])
-            options = []
-            for model_id in models[:25]:
+            # Use free_models if free-only mode is on and provider has them
+            has_free = bool(provider.get("free_models"))
+            models = (
+                provider["free_models"]
+                if self._free_only and has_free
+                else provider.get("models", [])
+            )
+            page = self._model_page
+            # Sort models alphabetically
+            sorted_models = sorted(models, key=lambda m: m.lower())
+            # 20 models per page (4 rows × 5 buttons), 5th row for nav/actions
+            per_page = 20
+            total_pages = max(1, (len(sorted_models) + per_page - 1) // per_page)
+            page = min(page, total_pages - 1)
+            page_models = sorted_models[page * per_page : (page + 1) * per_page]
+
+            self._model_pages = total_pages
+
+            # Model buttons: up to 5 per row, 4 rows = 20 per page
+            seen_values: set = set()
+            row = 0
+            col = 0
+            for model_id in page_models:
+                if model_id in seen_values:
+                    continue
+                seen_values.add(model_id)
                 short = model_id.split("/")[-1] if "/" in model_id else model_id
-                options.append(
-                    discord.SelectOption(
-                        label=short[:100],
-                        value=model_id[:100],
-                    )
+                btn = discord.ui.Button(
+                    label=short[:80],
+                    style=discord.ButtonStyle.secondary,
+                    row=row,
                 )
-            if not options:
-                return
+                mid = model_id
+                btn.callback = lambda i, m=mid: self._model_button_clicked(i, m)
+                self.add_item(btn)
+                col += 1
+                if col >= 5:
+                    col = 0
+                    row += 1
 
-            select = discord.ui.Select(
-                placeholder=f"Choose a model from {provider.get('name', provider_slug)}...",
-                options=options,
-                custom_id="model_model_select",
-            )
-            select.callback = self._on_model_selected
-            self.add_item(select)
+            # Row 4: pagination + actions
+            row4 = 4
+            if total_pages > 1:
+                if page > 0:
+                    prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.grey, row=row4)
+                    prev_btn.callback = self._on_model_prev
+                    self.add_item(prev_btn)
+                if page < total_pages - 1:
+                    nxt_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.grey, row=row4)
+                    nxt_btn.callback = self._on_model_next
+                    self.add_item(nxt_btn)
 
-            back_btn = discord.ui.Button(
-                label="◀ Back", style=discord.ButtonStyle.grey, custom_id="model_back"
-            )
+            if has_free:
+                free_label = "🆓 Free" if self._free_only else "💳 All"
+                free_btn = discord.ui.Button(
+                    label=free_label, style=discord.ButtonStyle.green if self._free_only else discord.ButtonStyle.grey, row=row4
+                )
+                free_btn.callback = self._on_free_toggle
+                self.add_item(free_btn)
+
+            back_btn = discord.ui.Button(label="◀ Back", style=discord.ButtonStyle.grey, row=row4)
             back_btn.callback = self._on_back
             self.add_item(back_btn)
 
-            cancel_btn = discord.ui.Button(
-                label="Cancel", style=discord.ButtonStyle.red, custom_id="model_cancel2"
-            )
+            cancel_btn = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.red, row=row4)
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
 
@@ -5450,6 +5488,7 @@ def _define_discord_view_classes() -> None:
 
             provider_slug = interaction.data["values"][0]
             self._selected_provider = provider_slug
+            self._model_page = 0
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None
             )
@@ -5457,20 +5496,18 @@ def _define_discord_view_classes() -> None:
 
             self._build_model_select(provider_slug)
 
-            total = provider.get("total_models", 0) if provider else 0
-            shown = min(len(provider.get("models", [])), 25) if provider else 0
-            extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
-
+            page_info = f" (page 1/{self._model_pages})" if self._model_pages > 1 else ""
             await interaction.response.edit_message(
                 embed=discord.Embed(
                     title="⚙ Model Configuration",
-                    description=f"Provider: **{pname}**\nSelect a model:{extra}",
+                    description=f"Provider: **{pname}**{page_info}\nSelect a model:",
                     color=discord.Color.blue(),
                 ),
                 view=self,
             )
 
-        async def _on_model_selected(self, interaction: discord.Interaction):
+        async def _model_button_clicked(self, interaction: discord.Interaction, model_id: str):
+            """Handle a model button click — immediately switch to the selected model."""
             if self.resolved:
                 await interaction.response.send_message(
                     "Already resolved~", ephemeral=True
@@ -5483,7 +5520,6 @@ def _define_discord_view_classes() -> None:
                 return
 
             self.resolved = True
-            model_id = interaction.data["values"][0]
             self.clear_items()
             await interaction.response.edit_message(
                 embed=discord.Embed(
@@ -5510,6 +5546,63 @@ def _define_discord_view_classes() -> None:
                     color=discord.Color.green(),
                 ),
                 view=None,
+            )
+
+        async def _on_model_prev(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized~", ephemeral=True)
+                return
+            self._model_page = max(0, self._model_page - 1)
+            self._build_model_select(self._selected_provider)
+            provider = next((p for p in self.providers if p["slug"] == self._selected_provider), None)
+            pname = provider.get("name", self._selected_provider) if provider else self._selected_provider
+            page_info = f" (page {self._model_page + 1}/{self._model_pages})" if self._model_pages > 1 else ""
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=f"Provider: **{pname}**{page_info}\nSelect a model:",
+                    color=discord.Color.blue(),
+                ),
+                view=self,
+            )
+
+        async def _on_model_next(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized~", ephemeral=True)
+                return
+            self._model_page = min(self._model_pages - 1, self._model_page + 1)
+            self._build_model_select(self._selected_provider)
+            provider = next((p for p in self.providers if p["slug"] == self._selected_provider), None)
+            pname = provider.get("name", self._selected_provider) if provider else self._selected_provider
+            page_info = f" (page {self._model_page + 1}/{self._model_pages})" if self._model_pages > 1 else ""
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=f"Provider: **{pname}**{page_info}\nSelect a model:",
+                    color=discord.Color.blue(),
+                ),
+                view=self,
+            )
+
+        async def _on_free_toggle(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized~", ephemeral=True)
+                return
+            self._free_only = not self._free_only
+            self._model_page = 0
+            self._build_model_select(self._selected_provider)
+            provider = next((p for p in self.providers if p["slug"] == self._selected_provider), None)
+            has_free = bool(provider.get("free_models")) if provider else False
+            mode = "🆓 Free Only" if self._free_only else "💳 All Models"
+            pname = provider.get("name", self._selected_provider) if provider else self._selected_provider
+            page_info = f" (page 1/{self._model_pages})" if self._model_pages > 1 else ""
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=f"Provider: **{pname}**{page_info}\n{mode}\nSelect a model:",
+                    color=discord.Color.blue(),
+                ),
+                view=self,
             )
 
         async def _on_back(self, interaction: discord.Interaction):

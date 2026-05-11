@@ -1784,11 +1784,15 @@ def list_picker_providers(
             try:
                 live = fetch_openrouter_models()
                 live_ids = [mid for mid, _ in live]
+                free_ids = [mid for mid, tag in live if tag == "free"]
             except Exception:
                 live_ids = list(p.get("models", []))
+                free_ids = []
             p = dict(p)
             p["models"] = live_ids[:max_models]
             p["total_models"] = len(live_ids)
+            if free_ids:
+                p["free_models"] = free_ids[:max_models]
 
         has_models = bool(p.get("models"))
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))

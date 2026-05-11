@@ -224,6 +224,14 @@ TOOL_CATEGORIES = {
                 "tts_provider": "gemini",
             },
             {
+                "name": "Xiaomi MiMo TTS",
+                "tag": "Voice design & cloning, style control, needs API key",
+                "env_vars": [
+                    {"key": "XIAOMI_API_KEY", "prompt": "Xiaomi API key", "url": "https://platform.xiaomimimo.com/"},
+                ],
+                "tts_provider": "mimo",
+            },
+            {
                 "name": "KittenTTS",
                 "badge": "local · free",
                 "tag": "Lightweight local ONNX TTS (~25MB), no API key",

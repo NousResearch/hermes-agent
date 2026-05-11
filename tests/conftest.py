@@ -77,6 +77,7 @@ _CREDENTIAL_NAMES = frozenset({
     "GOOGLE_API_KEY",
     "GROQ_API_KEY",
     "XAI_API_KEY",
+    "XIAOMI_API_KEY",
     "MISTRAL_API_KEY",
     "DEEPSEEK_API_KEY",
     "KIMI_API_KEY",

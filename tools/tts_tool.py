@@ -2,7 +2,7 @@
 """
 Text-to-Speech Tool Module
 
-Built-in TTS providers:
+**Built-in TTS providers:**
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
@@ -10,6 +10,7 @@ Built-in TTS providers:
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - xAI TTS: Grok voices, needs XAI_API_KEY
+- Xiaomi MiMo TTS: Voice design & cloning, style control, needs XIAOMI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
 - Piper (local, free, no API key): OHF-Voice/piper1-gpl neural VITS, 44 languages
@@ -154,6 +155,10 @@ GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
 GEMINI_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM (L16)
 
+DEFAULT_MIMO_VOICE = "冰糖"
+DEFAULT_MIMO_MODEL = "mimo-v2.5-tts"
+DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1"
+
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
     return str(get_hermes_dir("cache/audio", "audio_cache"))
@@ -174,6 +179,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
+    "mimo": 4000,         # MiMo TTS via chat completions; conservative limit
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
@@ -321,6 +327,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "xai",
     "mistral",
     "gemini",
+    "mimo",
     "neutts",
     "kittentts",
     "piper",
@@ -929,6 +936,77 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
 
     with open(output_path, "wb") as f:
         f.write(response.content)
+
+    return output_path
+
+
+# ===========================================================================
+# Provider: Xiaomi MiMo TTS
+# ===========================================================================
+def _generate_mimo_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using Xiaomi MiMo TTS (mimo-v2.5-tts series).
+
+    MiMo TTS uses the OpenAI-compatible chat completions endpoint with audio
+    output. The text to synthesize goes in the ``assistant`` message, and
+    optional style/emotion instructions go in the ``user`` message.
+
+    Supports built-in voices (冰糖, 茉莉, 苏打, 白桦, Mia, Chloe, Milo, Dean),
+    audio tag control for fine-grained style, and singing mode.
+    """
+    import base64
+    import requests
+
+    api_key = (get_env_value("XIAOMI_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "XIAOMI_API_KEY not set. Get one at https://platform.xiaomimimo.com/"
+        )
+
+    mimo_config = tts_config.get("mimo", {})
+    voice = str(mimo_config.get("voice", DEFAULT_MIMO_VOICE)).strip() or DEFAULT_MIMO_VOICE
+    model = str(mimo_config.get("model", DEFAULT_MIMO_MODEL)).strip() or DEFAULT_MIMO_MODEL
+    base_url = str(
+        mimo_config.get("base_url")
+        or get_env_value("XIAOMI_BASE_URL")
+        or DEFAULT_MIMO_BASE_URL
+    ).strip().rstrip("/")
+
+    # MiMo TTS: assistant message = text to speak, user message = style (optional)
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": ""},
+            {"role": "assistant", "content": text},
+        ],
+        "audio": {
+            "format": "wav",
+            "voice": voice,
+        },
+    }
+
+    response = requests.post(
+        f"{base_url}/chat/completions",
+        headers={
+            "api-key": api_key,
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=120,
+    )
+    response.raise_for_status()
+
+    result = response.json()
+    try:
+        audio_data = result["choices"][0]["message"]["audio"]["data"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(
+            f"MiMo TTS: unexpected response format: {e}"
+        ) from e
+
+    audio_bytes = base64.b64decode(audio_data)
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
 
     return output_path
 
@@ -1662,6 +1740,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with xAI TTS...")
             _generate_xai_tts(text, file_str, tts_config)
 
+        elif provider == "mimo":
+            logger.info("Generating speech with MiMo TTS...")
+            _generate_mimo_tts(text, file_str, tts_config)
+
         elif provider == "mistral":
             try:
                 _import_mistral_client()
@@ -1763,7 +1845,7 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in ("edge", "neutts", "minimax", "xai", "kittentts", "piper") and not file_str.endswith(".ogg"):
+        elif provider in ("edge", "neutts", "minimax", "xai", "mimo", "kittentts", "piper") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -1841,6 +1923,8 @@ def check_tts_requirements() -> bool:
     if get_env_value("MINIMAX_API_KEY"):
         return True
     if get_env_value("XAI_API_KEY"):
+        return True
+    if get_env_value("XIAOMI_API_KEY"):
         return True
     if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
         return True

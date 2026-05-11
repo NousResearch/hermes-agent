@@ -283,6 +283,48 @@ def test_persist_dm_topic_thread_id_skips_if_already_set(tmp_path):
 # ── _get_dm_topic_info ──
 
 
+def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
+    """Failed writes should leave the original config.yaml intact."""
+    import yaml
+
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": [
+                        {
+                            "chat_id": 111,
+                            "topics": [
+                                {"name": "General", "icon_color": 123},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    original_text = yaml.dump(config_data)
+    config_file.write_text(original_text, encoding="utf-8")
+
+    adapter = _make_adapter()
+
+    def fail_dump(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}), \
+         patch("yaml.dump", side_effect=fail_dump):
+        adapter._persist_dm_topic_thread_id(111, "General", 999)
+
+    assert config_file.read_text(encoding="utf-8") == original_text
+    result = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    topics = result["platforms"]["telegram"]["extra"]["dm_topics"][0]["topics"]
+    assert "thread_id" not in topics[0]
+
+
 def test_get_dm_topic_info_finds_cached_topic():
     """Should return topic config when thread_id is in cache."""
     adapter = _make_adapter([
@@ -406,7 +448,8 @@ def test_cache_dm_topic_from_message_no_overwrite():
 
 
 def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id=None,
-                       user_id=42, user_name="Test User", forum_topic_created=None):
+                       user_id=42, user_name="Test User", forum_topic_created=None,
+                       is_topic_message=None):
     """Create a mock Telegram Message for _build_message_event tests."""
     chat = SimpleNamespace(
         id=chat_id,
@@ -422,11 +465,15 @@ def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id
         full_name=user_name,
     )
 
+    if is_topic_message is None:
+        is_topic_message = bool(thread_id) if chat_type == "private" else None
+
     msg = SimpleNamespace(
         chat=chat,
         from_user=user,
         text=text,
         message_thread_id=thread_id,
+        is_topic_message=is_topic_message,
         message_id=1001,
         reply_to_message=None,
         date=None,
@@ -487,6 +534,40 @@ def test_build_message_event_no_auto_skill_without_thread():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.auto_skill is None
+
+
+def test_build_message_event_filters_non_topic_dm_thread_id():
+    """A DM reply-thread id should not be persisted unless Telegram marks it as a topic message."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(chat_id=111, thread_id=777, is_topic_message=False)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.source.thread_id is None
+    assert event.source.chat_topic is None
+    assert event.auto_skill is None
+
+
+def test_build_message_event_preserves_true_dm_topic_thread_id():
+    """True DM topic messages should keep their thread id for routing."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter([
+        {
+            "chat_id": 111,
+            "topics": [
+                {"name": "General", "thread_id": 200},
+            ],
+        }
+    ])
+    adapter._dm_topics["111:General"] = 200
+
+    msg = _make_mock_message(chat_id=111, thread_id=200, is_topic_message=True)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.source.thread_id == "200"
+    assert event.source.chat_topic == "General"
 
 
 # ── _build_message_event: group_topics skill binding ──
@@ -645,3 +726,54 @@ def test_group_topic_chat_id_int_string_coercion():
 
     assert event.auto_skill == "hermes-agent-dev"
     assert event.source.chat_topic == "Dev"
+
+
+# ── _build_message_event: from_user=None fallback in DMs ──
+
+
+def test_build_message_event_dm_from_user_none_falls_back_to_chat_id():
+    """When from_user is None in a DM, user_id should fall back to chat.id."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(chat_id=12345, user_id=42, user_name="Alice")
+    # Simulate from_user being None (edge case on fresh restart / forwarded msg)
+    msg.from_user = None
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # Should fall back to chat.id since chat_type is "dm"
+    assert event.source.user_id == "12345"
+    assert event.source.user_name == "Alice"  # falls back to chat.full_name
+
+
+def test_build_message_event_group_from_user_none_stays_none():
+    """When from_user is None in a group, user_id should remain None."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(
+        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP,
+        user_id=42, user_name="Alice"
+    )
+    msg.from_user = None
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # Groups should NOT fall back — anonymous senders stay None
+    assert event.source.user_id is None
+    assert event.source.user_name is None
+
+
+def test_build_message_event_dm_from_user_present_uses_user():
+    """When from_user is present in a DM, it should be used (no fallback)."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(chat_id=12345, user_id=99999, user_name="Bob")
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # Normal case — from_user is used directly
+    assert event.source.user_id == "99999"
+    assert event.source.user_name == "Bob"

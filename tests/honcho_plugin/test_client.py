@@ -1,5 +1,6 @@
 """Tests for plugins/memory/honcho/client.py — Honcho client configuration."""
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ from plugins.memory.honcho.client import (
     reset_honcho_client,
     resolve_active_host,
     resolve_config_path,
-    GLOBAL_CONFIG_PATH,
+    resolve_global_config_path,
     HOST,
 )
 
@@ -25,6 +26,7 @@ class TestHonchoClientConfigDefaults:
         assert config.workspace_id == "hermes"
         assert config.api_key is None
         assert config.environment == "production"
+        assert config.timeout is None
         assert config.enabled is False
         assert config.save_messages is True
         assert config.session_strategy == "per-directory"
@@ -76,6 +78,11 @@ class TestFromEnv:
         assert config.base_url == "http://localhost:8000"
         assert config.enabled is True
 
+    def test_reads_timeout_from_env(self):
+        with patch.dict(os.environ, {"HONCHO_TIMEOUT": "90"}, clear=True):
+            config = HonchoClientConfig.from_env()
+        assert config.timeout == 90.0
+
 
 class TestFromGlobalConfig:
     def test_missing_config_falls_back_to_env(self, tmp_path):
@@ -87,10 +94,10 @@ class TestFromGlobalConfig:
         assert config.enabled is False
         assert config.api_key is None
 
-    def test_reads_full_config(self, tmp_path):
+    def test_reads_full_config(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({
-            "apiKey": "my-honcho-key",
+            "apiKey": "***",
             "workspace": "my-workspace",
             "environment": "staging",
             "peerName": "alice",
@@ -108,9 +115,11 @@ class TestFromGlobalConfig:
                 }
             }
         }))
+        # Isolate from real ~/.hermes/honcho.json
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "isolated"))
 
         config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.api_key == "my-honcho-key"
+        assert config.api_key == "***"
         # Host block workspace overrides root workspace
         assert config.workspace_id == "override-ws"
         assert config.ai_peer == "override-ai"
@@ -154,9 +163,30 @@ class TestFromGlobalConfig:
     def test_session_strategy_default_from_global_config(self, tmp_path):
         """from_global_config with no sessionStrategy should match dataclass default."""
         config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"apiKey": "key"}))
+        config_file.write_text(json.dumps({"apiKey": "***"}))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.session_strategy == "per-directory"
+
+    def test_context_tokens_default_is_none(self, tmp_path):
+        """Default context_tokens should be None (uncapped) unless explicitly set."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***"}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.context_tokens is None
+
+    def test_context_tokens_explicit_sets_cap(self, tmp_path):
+        """Explicit contextTokens in config sets the cap."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***", "contextTokens": 1200}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.context_tokens == 1200
+
+    def test_context_tokens_explicit_overrides_default(self, tmp_path):
+        """Explicit contextTokens in config should override the default."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***", "contextTokens": 2000}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.context_tokens == 2000
 
     def test_context_tokens_host_block_wins(self, tmp_path):
         """Host block contextTokens should override root."""
@@ -231,6 +261,20 @@ class TestFromGlobalConfig:
 
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.base_url == "http://root:9000"
+
+    def test_timeout_from_config_root(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"timeout": 75}))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.timeout == 75.0
+
+    def test_request_timeout_alias_from_config_root(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"requestTimeout": "82.5"}))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.timeout == 82.5
 
 
 class TestResolveSessionName:
@@ -316,7 +360,7 @@ class TestResolveConfigPath:
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
              patch.object(Path, "home", return_value=fake_home):
             result = resolve_config_path()
-        assert result == GLOBAL_CONFIG_PATH
+        assert result == fake_home / ".honcho" / "config.json"
 
     def test_falls_back_to_global_without_hermes_home_env(self, tmp_path):
         fake_home = tmp_path / "fakehome"
@@ -326,20 +370,32 @@ class TestResolveConfigPath:
              patch.object(Path, "home", return_value=fake_home):
             os.environ.pop("HERMES_HOME", None)
             result = resolve_config_path()
-        assert result == GLOBAL_CONFIG_PATH
+        assert result == fake_home / ".honcho" / "config.json"
+
+    def test_global_fallback_uses_home_at_call_time(self, tmp_path):
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "home", return_value=fake_home):
+            assert resolve_global_config_path() == fake_home / ".honcho" / "config.json"
+            assert resolve_config_path() == fake_home / ".honcho" / "config.json"
 
     def test_from_global_config_uses_local_path(self, tmp_path):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         local_cfg = hermes_home / "honcho.json"
         local_cfg.write_text(json.dumps({
-            "apiKey": "local-key",
+            "apiKey": "***",
             "workspace": "local-ws",
         }))
 
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "home", return_value=tmp_path):
             config = HonchoClientConfig.from_global_config()
-        assert config.api_key == "local-key"
+        assert config.api_key == "***"
         assert config.workspace_id == "local-ws"
 
 
@@ -500,46 +556,213 @@ class TestObservationModeMigration:
         assert cfg.ai_observe_others is True
 
 
-class TestInitOnSessionStart:
-    """Tests for the initOnSessionStart config field."""
+class TestGetHonchoClient:
+    def teardown_method(self):
+        reset_honcho_client()
 
-    def test_default_is_false(self):
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_passes_timeout_from_config(self):
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            timeout=91.0,
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho:
+            client = get_honcho_client(cfg)
+
+        assert client is fake_honcho
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["timeout"] == 91.0
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_hermes_config_timeout_override_used_when_config_timeout_missing(self):
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 88}}):
+            client = get_honcho_client(cfg)
+
+        assert client is fake_honcho
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["timeout"] == 88.0
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_defaults_to_30s_when_no_timeout_configured(self):
+        from plugins.memory.honcho.client import _DEFAULT_HTTP_TIMEOUT
+
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            client = get_honcho_client(cfg)
+
+        assert client is fake_honcho
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["timeout"] == _DEFAULT_HTTP_TIMEOUT
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_hermes_request_timeout_alias_used(self):
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={"honcho": {"request_timeout": "77.5"}}):
+            client = get_honcho_client(cfg)
+
+        assert client is fake_honcho
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["timeout"] == 77.5
+
+
+class TestResolveSessionNameGatewayKey:
+    """Regression tests for gateway_session_key priority in resolve_session_name.
+
+    Ensures gateway platforms get stable per-chat Honcho sessions even when
+    sessionStrategy=per-session would otherwise create ephemeral sessions.
+    Regression: plugin refactor 924bc67e dropped gateway key plumbing.
+    """
+
+    def test_gateway_key_overrides_per_session_strategy(self):
+        """gateway_session_key must win over per-session session_id."""
+        config = HonchoClientConfig(session_strategy="per-session")
+        result = config.resolve_session_name(
+            session_id="20260412_171002_69bb38",
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        assert result == "agent-main-telegram-dm-8439114563"
+
+    def test_session_title_still_wins_over_gateway_key(self):
+        """Explicit /title remap takes priority over gateway_session_key."""
+        config = HonchoClientConfig(session_strategy="per-session")
+        result = config.resolve_session_name(
+            session_title="my-custom-title",
+            session_id="20260412_171002_69bb38",
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        assert result == "my-custom-title"
+
+    def test_per_session_fallback_without_gateway_key(self):
+        """Without gateway_session_key, per-session returns session_id (CLI path)."""
+        config = HonchoClientConfig(session_strategy="per-session")
+        result = config.resolve_session_name(
+            session_id="20260412_171002_69bb38",
+            gateway_session_key=None,
+        )
+        assert result == "20260412_171002_69bb38"
+
+    def test_gateway_key_sanitizes_special_chars(self):
+        """Colons and other non-alphanumeric chars are replaced with hyphens."""
         config = HonchoClientConfig()
-        assert config.init_on_session_start is False
+        result = config.resolve_session_name(
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        assert result == "agent-main-telegram-dm-8439114563"
+        assert ":" not in result
 
-    def test_root_level_true(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({
-            "apiKey": "k",
-            "initOnSessionStart": True,
-        }))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.init_on_session_start is True
 
-    def test_host_block_overrides_root(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({
-            "apiKey": "k",
-            "initOnSessionStart": True,
-            "hosts": {"hermes": {"initOnSessionStart": False}},
-        }))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.init_on_session_start is False
+class TestResolveSessionNameLengthLimit:
+    """Regression tests for Honcho's 100-char session ID limit (issue #13868).
 
-    def test_host_block_true_overrides_root_absent(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({
-            "apiKey": "k",
-            "hosts": {"hermes": {"initOnSessionStart": True}},
-        }))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.init_on_session_start is True
+    Long gateway session keys (Matrix room+event IDs, Telegram supergroup
+    reply chains, Slack thread IDs with long workspace prefixes) can overflow
+    Honcho's 100-char session_id limit after sanitization. Before this fix,
+    every Honcho API call for those sessions 400'd with "session_id too long".
+    """
 
-    def test_absent_everywhere_defaults_false(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k"}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.init_on_session_start is False
+    HONCHO_MAX = 100
+
+    def test_short_gateway_key_unchanged(self):
+        """Short keys must not get a hash suffix appended."""
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        # Unchanged fast-path: sanitize only, no truncation, no hash suffix.
+        assert result == "agent-main-telegram-dm-8439114563"
+        assert len(result) <= self.HONCHO_MAX
+
+    def test_key_at_exact_limit_unchanged(self):
+        """A sanitized key that is exactly 100 chars must be returned as-is."""
+        key = "a" * self.HONCHO_MAX
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result == key
+        assert len(result) == self.HONCHO_MAX
+
+    def test_long_gateway_key_truncated_to_limit(self):
+        """An over-limit sanitized key must truncate to exactly 100 chars."""
+        key = "!roomid:matrix.example.org|" + "$event_" + ("a" * 300)
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result is not None
+        assert len(result) == self.HONCHO_MAX
+
+    def test_truncation_is_deterministic(self):
+        """Same long key must always produce the same truncated session ID."""
+        key = "matrix-" + ("a" * 300)
+        config = HonchoClientConfig()
+        first = config.resolve_session_name(gateway_session_key=key)
+        second = config.resolve_session_name(gateway_session_key=key)
+        assert first == second
+
+    def test_truncated_result_respects_char_allowlist(self):
+        """Truncated result must still match Honcho's [a-zA-Z0-9_-] allowlist."""
+        import re
+        key = "slack:T12345:thread-reply:" + ("x" * 300) + ":with:colons:and:slashes/here"
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result is not None
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", result)
+
+    def test_distinct_long_keys_do_not_collide(self):
+        """Two long keys sharing a prefix must produce different truncated IDs."""
+        prefix = "matrix:!room:example.org|" + "a" * 200
+        key_a = prefix + "-suffix-alpha"
+        key_b = prefix + "-suffix-beta"
+        config = HonchoClientConfig()
+        result_a = config.resolve_session_name(gateway_session_key=key_a)
+        result_b = config.resolve_session_name(gateway_session_key=key_b)
+        assert result_a != result_b
+        assert len(result_a) == self.HONCHO_MAX
+        assert len(result_b) == self.HONCHO_MAX
+
+    def test_truncated_result_has_hash_suffix(self):
+        """Truncated IDs must end with '-<8 hex chars>' for collision resistance."""
+        import re
+        key = "matrix-" + ("a" * 300)
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        # Last 9 chars: '-' + 8 hex chars.
+        assert re.search(r"-[0-9a-f]{8}$", result)
 
 
 class TestResetHonchoClient:
@@ -549,3 +772,91 @@ class TestResetHonchoClient:
         assert mod._honcho_client is not None
         reset_honcho_client()
         assert mod._honcho_client is None
+
+
+class TestDialecticDepthParsing:
+    """Tests for _parse_dialectic_depth and _parse_dialectic_depth_levels."""
+
+    def test_default_depth_is_1(self, tmp_path):
+        """Default dialecticDepth should be 1."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***"}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth == 1
+
+    def test_depth_from_root(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***", "dialecticDepth": 2}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth == 2
+
+    def test_depth_host_block_wins(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "dialecticDepth": 1,
+            "hosts": {"hermes": {"dialecticDepth": 3}},
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth == 3
+
+    def test_depth_clamped_high(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***", "dialecticDepth": 10}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth == 3
+
+    def test_depth_clamped_low(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***", "dialecticDepth": -1}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth == 1
+
+    def test_depth_levels_default_none(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***"}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth_levels is None
+
+    def test_depth_levels_from_config(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "dialecticDepth": 2,
+            "dialecticDepthLevels": ["minimal", "high"],
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth_levels == ["minimal", "high"]
+
+    def test_depth_levels_padded_if_short(self, tmp_path):
+        """Array shorter than depth gets padded with 'low'."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "dialecticDepth": 3,
+            "dialecticDepthLevels": ["high"],
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth_levels == ["high", "low", "low"]
+
+    def test_depth_levels_truncated_if_long(self, tmp_path):
+        """Array longer than depth gets truncated."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "dialecticDepth": 1,
+            "dialecticDepthLevels": ["high", "max", "medium"],
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth_levels == ["high"]
+
+    def test_depth_levels_invalid_values_default_to_low(self, tmp_path):
+        """Invalid reasoning levels in the array fall back to 'low'."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "dialecticDepth": 2,
+            "dialecticDepthLevels": ["invalid", "high"],
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.dialectic_depth_levels == ["low", "high"]

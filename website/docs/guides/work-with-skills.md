@@ -94,6 +94,10 @@ hermes skills install official/research/arxiv
 
 # Install from the hub in a chat session
 /skills install official/creative/songwriting-and-ai-music
+
+# Install a single-file SKILL.md directly from any HTTP(S) URL
+hermes skills install https://sharethis.chat/SKILL.md
+/skills install https://example.com/SKILL.md --name my-skill
 ```
 
 What happens:
@@ -114,6 +118,24 @@ hermes skills list | grep arxiv
 # Or in chat
 /skills search arxiv
 ```
+
+---
+
+## Plugin-Provided Skills
+
+Plugins can bundle their own skills using namespaced names (`plugin:skill`). This prevents name collisions with built-in skills.
+
+```bash
+# Load a plugin skill by its qualified name
+skill_view("superpowers:writing-plans")
+
+# Built-in skill with the same base name is unaffected
+skill_view("writing-plans")
+```
+
+Plugin skills are **not** listed in the system prompt and don't appear in `skills_list`. They're opt-in — load them explicitly when you know a plugin provides one. When loaded, the agent sees a banner listing sibling skills from the same plugin.
+
+For how to ship skills in your own plugin, see [Build a Hermes Plugin → Bundle skills](/docs/guides/build-a-hermes-plugin#bundle-skills).
 
 ---
 

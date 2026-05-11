@@ -1,0 +1,50 @@
+{
+  "name": "hermes-tui",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build --prefix packages/hermes-ink && tsx --watch src/entry.tsx",
+    "start": "tsx src/entry.tsx",
+    "build": "npm run build --prefix packages/hermes-ink && tsc -p tsconfig.build.json && npm run build:compile && chmod +x dist/entry.js",
+    "build:compile": "babel dist --out-dir dist --config-file ./babel.compiler.config.cjs --extensions .js --keep-file-extension",
+    "type-check": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/ packages/",
+    "lint:fix": "eslint src/ packages/ --fix",
+    "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'packages/**/*.{ts,tsx}'",
+    "fix": "npm run lint:fix && npm run fmt",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@hermes/ink": "file:./packages/hermes-ink",
+    "@nanostores/react": "^1.1.0",
+    "ink": "^6.8.0",
+    "ink-text-input": "^6.0.0",
+    "nanostores": "^1.2.0",
+    "react": "^19.2.4",
+    "unicode-animations": "^1.0.3"
+  },
+  "devDependencies": {
+    "@babel/cli": "^7.28.6",
+    "@babel/core": "^7.29.0",
+    "@babel/plugin-syntax-jsx": "^7.28.6",
+    "@eslint/js": "^9",
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.2.14",
+    "@typescript-eslint/eslint-plugin": "^8",
+    "@typescript-eslint/parser": "^8",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "eslint": "^9",
+    "eslint-plugin-perfectionist": "^5",
+    "eslint-plugin-react": "^7",
+    "eslint-plugin-react-compiler": "^19.1.0-rc.2",
+    "eslint-plugin-react-hooks": "^7",
+    "eslint-plugin-unused-imports": "^4",
+    "globals": "^16",
+    "prettier": "^3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.3"
+  }
+}

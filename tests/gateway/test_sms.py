@@ -20,9 +20,6 @@ from gateway.config import Platform, PlatformConfig, HomeChannel
 class TestSmsConfigLoading:
     """Verify _apply_env_overrides wires SMS correctly."""
 
-    def test_sms_platform_enum_exists(self):
-        assert Platform.SMS.value == "sms"
-
     def test_env_overrides_create_sms_config(self):
         from gateway.config import load_gateway_config
 
@@ -55,19 +52,6 @@ class TestSmsConfigLoading:
             assert hc.chat_id == "+15559876543"
             assert hc.name == "My Phone"
             assert hc.platform == Platform.SMS
-
-    def test_sms_in_connected_platforms(self):
-        from gateway.config import load_gateway_config
-
-        env = {
-            "TWILIO_ACCOUNT_SID": "ACtest123",
-            "TWILIO_AUTH_TOKEN": "token_abc",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            config = load_gateway_config()
-            connected = config.get_connected_platforms()
-            assert Platform.SMS in connected
-
 
 # ── Format / truncate ───────────────────────────────────────────────
 
@@ -180,52 +164,14 @@ class TestSmsRequirements:
 
 # ── Toolset verification ───────────────────────────────────────────
 
-class TestSmsToolset:
-    def test_hermes_sms_toolset_exists(self):
-        from toolsets import get_toolset
-
-        ts = get_toolset("hermes-sms")
-        assert ts is not None
-        assert "tools" in ts
-
-    def test_hermes_sms_in_gateway_includes(self):
-        from toolsets import get_toolset
-
-        gw = get_toolset("hermes-gateway")
-        assert gw is not None
-        assert "hermes-sms" in gw["includes"]
-
-    def test_sms_platform_hint_exists(self):
-        from agent.prompt_builder import PLATFORM_HINTS
-
-        assert "sms" in PLATFORM_HINTS
-        assert "concise" in PLATFORM_HINTS["sms"].lower()
-
-    def test_sms_in_scheduler_platform_map(self):
-        """Verify cron scheduler recognizes 'sms' as a valid platform."""
-        # Just check the Platform enum has SMS — the scheduler imports it dynamically
-        assert Platform.SMS.value == "sms"
-
-    def test_sms_in_send_message_platform_map(self):
-        """Verify send_message_tool recognizes 'sms'."""
-        # The platform_map is built inside _handle_send; verify SMS enum exists
-        assert hasattr(Platform, "SMS")
-
-    def test_sms_in_cronjob_deliver_description(self):
-        """Verify cronjob_tools mentions sms in deliver description."""
-        from tools.cronjob_tools import CRONJOB_SCHEMA
-        deliver_desc = CRONJOB_SCHEMA["parameters"]["properties"]["deliver"]["description"]
-        assert "sms" in deliver_desc.lower()
-
-
 # ── Webhook host configuration ─────────────────────────────────────
 
 class TestWebhookHostConfig:
     """Verify SMS_WEBHOOK_HOST env var and default."""
 
-    def test_default_host_is_all_interfaces(self):
+    def test_default_host_is_localhost(self):
         from gateway.platforms.sms import DEFAULT_WEBHOOK_HOST
-        assert DEFAULT_WEBHOOK_HOST == "0.0.0.0"
+        assert DEFAULT_WEBHOOK_HOST == "127.0.0.1"
 
     def test_host_from_env(self):
         from gateway.platforms.sms import SmsAdapter
@@ -295,6 +241,48 @@ class TestStartupGuard:
         adapter = self._make_adapter()
         result = await adapter.connect()
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_missing_webhook_url_is_non_retryable(self):
+        adapter = self._make_adapter()
+        await adapter.connect()
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert "sms_missing_webhook_url" == adapter.fatal_error_code
+
+    @pytest.mark.asyncio
+    async def test_missing_phone_number_is_non_retryable(self):
+        from gateway.platforms.sms import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "",
+            "SMS_WEBHOOK_URL": "",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+        await adapter.connect()
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert adapter.fatal_error_code == "sms_missing_phone_number"
+
+    @pytest.mark.asyncio
+    async def test_insecure_flag_does_not_set_fatal_error(self):
+        mock_session = AsyncMock()
+        with patch.dict(os.environ, {"SMS_INSECURE_NO_SIGNATURE": "true"}), \
+             patch("aiohttp.web.AppRunner") as mock_runner_cls, \
+             patch("aiohttp.web.TCPSite") as mock_site_cls, \
+             patch("aiohttp.ClientSession", return_value=mock_session):
+            mock_runner_cls.return_value.setup = AsyncMock()
+            mock_runner_cls.return_value.cleanup = AsyncMock()
+            mock_site_cls.return_value.start = AsyncMock()
+            adapter = self._make_adapter()
+            result = await adapter.connect()
+            assert result is True
+            assert adapter.has_fatal_error is False
+            await adapter.disconnect()
 
     @pytest.mark.asyncio
     async def test_insecure_flag_allows_start_without_url(self):

@@ -311,7 +311,8 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
     """When .[all] fails, update should keep base deps and retry extras individually."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda: ["matrix", "mcp"])
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
+    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda group="all": ["matrix", "mcp"])
 
     recorded = []
 
@@ -323,17 +324,20 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", "."]:
             return SimpleNamespace(returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"]:
             return SimpleNamespace(returncode=0)
-        return SimpleNamespace(returncode=0)
+        # Catch-all must include stdout/stderr so consumers that parse
+        # output (e.g. the dashboard-restart `ps -A` scan added in the
+        # updater) don't crash on AttributeError.
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
@@ -341,10 +345,10 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert install_cmds == [
-        ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]", "--quiet"],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
+        ["/usr/bin/uv", "pip", "install", "-e", "."],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
     ]
 
     out = capsys.readouterr().out
@@ -357,6 +361,7 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     """When .[all] succeeds, no fallback should be attempted."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
 
     recorded = []
 
@@ -368,9 +373,9 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
@@ -379,6 +384,54 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert len(install_cmds) == 1
     assert ".[all]" in install_cmds[0]
+
+
+def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
+    """Termux update path should target .[termux-all] when requested."""
+    calls = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_load_installable_optional_extras",
+        lambda group="all": ["termux", "mcp"] if group == "termux-all" else [],
+    )
+
+    def fake_run_with_heartbeat(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-1] == ".[termux-all]":
+            raise CalledProcessError(returncode=1, cmd=cmd)
+        return None
+
+    monkeypatch.setattr(hermes_main, "_run_install_with_heartbeat", fake_run_with_heartbeat)
+
+    hermes_main._install_python_dependencies_with_optional_fallback(
+        ["/usr/bin/uv", "pip"],
+        group="termux-all",
+    )
+
+    assert calls == [
+        ["/usr/bin/uv", "pip", "install", "-e", ".[termux-all]"],
+        ["/usr/bin/uv", "pip", "install", "-e", "."],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[termux]"],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
+    ]
+
+
+def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch, capsys):
+    """Long quiet installs should emit periodic heartbeat lines."""
+
+    def fake_run(cmd, **kwargs):
+        hermes_main._time.sleep(1.2)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main._run_install_with_heartbeat(
+        ["uv", "pip", "install", "-e", "."],
+        heartbeat_interval_seconds=1,
+    )
+
+    out = capsys.readouterr().out
+    assert "still installing dependencies" in out
 
 
 # ---------------------------------------------------------------------------

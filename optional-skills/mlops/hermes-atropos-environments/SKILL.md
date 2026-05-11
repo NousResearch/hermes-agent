@@ -4,10 +4,11 @@ description: Build, test, and debug Hermes Agent RL environments for Atropos tra
 version: 1.1.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [atropos, rl, environments, training, reinforcement-learning, reward-functions]
-    related_skills: [axolotl, grpo-rl-training, trl-fine-tuning, lm-evaluation-harness]
+    related_skills: [axolotl, fine-tuning-with-trl, lm-evaluation-harness]
 ---
 
 # Hermes Agent Atropos Environments

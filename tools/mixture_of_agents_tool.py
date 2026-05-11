@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 # Keep this list aligned with current top-tier OpenRouter frontier options.
 REFERENCE_MODELS = [
     "anthropic/claude-opus-4.6",
-    "google/gemini-3-pro-preview",
+    "google/gemini-2.5-pro",
     "openai/gpt-5.4-pro",
     "deepseek/deepseek-v3.2",
 ]
@@ -129,6 +129,7 @@ async def _run_reference_model_safe(
             api_params = {
                 "model": model,
                 "messages": [{"role": "user", "content": user_prompt}],
+                "max_tokens": max_tokens,
                 "extra_body": {
                     "reasoning": {
                         "enabled": True,
@@ -203,6 +204,7 @@ async def _run_aggregator_model(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
+        "max_tokens": max_tokens,
         "extra_body": {
             "reasoning": {
                 "enabled": True,
@@ -415,29 +417,6 @@ def check_moa_requirements() -> bool:
     """
     return check_openrouter_api_key()
 
-
-def get_debug_session_info() -> Dict[str, Any]:
-    """
-    Get information about the current debug session.
-    
-    Returns:
-        Dict[str, Any]: Dictionary containing debug session information
-    """
-    return _debug.get_session_info()
-
-
-def get_available_models() -> Dict[str, List[str]]:
-    """
-    Get information about available models for MoA processing.
-    
-    Returns:
-        Dict[str, List[str]]: Dictionary with reference and aggregator models
-    """
-    return {
-        "reference_models": REFERENCE_MODELS,
-        "aggregator_models": [AGGREGATOR_MODEL],
-        "supported_models": REFERENCE_MODELS + [AGGREGATOR_MODEL]
-    }
 
 
 def get_moa_configuration() -> Dict[str, Any]:

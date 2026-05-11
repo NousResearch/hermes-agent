@@ -26,7 +26,6 @@ CATEGORY_LABELS = {
     "dogfood": "Dogfood",
     "domain": "Domain",
     "email": "Email",
-    "feeds": "Feeds",
     "gaming": "Gaming",
     "gifs": "GIFs",
     "github": "GitHub",
@@ -57,6 +56,67 @@ SOURCE_LABELS = {
 }
 
 
+def _extract_overview(body: str) -> str:
+    """Pull the first non-heading paragraph from a SKILL.md body.
+
+    Skips H1/H2/etc. lines so the overview is real prose, not a heading.
+    Strips markdown links/code-fence syntax to plain-ish text. Capped at
+    ~500 chars so the SkillCard panel stays a reasonable size.
+    """
+    if not body:
+        return ""
+    paragraphs = [p.strip() for p in body.split("\n\n") if p.strip()]
+    for p in paragraphs[:6]:
+        # Skip pure heading paragraphs ("# Foo", "## Foo")
+        if p.startswith("#"):
+            # If a heading paragraph also has body text on later lines, take those
+            lines = [ln for ln in p.split("\n") if ln.strip() and not ln.lstrip().startswith("#")]
+            if lines:
+                p = "\n".join(lines).strip()
+            else:
+                continue
+        # Skip a leading admonition fence (:::tip / :::info / etc.)
+        if p.startswith(":::"):
+            continue
+        # Skip pure code fences and frontmatter-style blocks
+        if p.startswith("```") or p.startswith("~~~"):
+            continue
+        # Trim to roughly 500 chars at a sentence boundary
+        if len(p) > 500:
+            cut = p[:500]
+            last_period = cut.rfind(". ")
+            if last_period > 200:
+                p = cut[: last_period + 1]
+            else:
+                p = cut.rstrip() + "…"
+        return p
+    return ""
+
+
+def _docs_page_path(rel_dir: str, source_label: str) -> str:
+    """Compute the per-skill docs-site URL slug for a given SKILL.md location.
+
+    Mirrors the slug logic in website/scripts/generate-skill-docs.py:
+      bundled  + skills/<cat>/<slug>/SKILL.md          -> bundled/<cat>/<cat>-<slug>
+      bundled  + skills/<cat>/<sub>/<slug>/SKILL.md    -> bundled/<cat>/<cat>-<sub>-<slug>
+      optional + optional-skills/<cat>/<slug>/SKILL.md -> optional/<cat>/<cat>-<slug>
+    """
+    parts = [p for p in rel_dir.split(os.sep) if p]
+    if not parts:
+        return ""
+    source_dir = "bundled" if source_label == "built-in" else "optional"
+    if len(parts) == 1:
+        category, slug = parts[0], parts[0]
+        return f"{source_dir}/{category}/{category}-{slug}"
+    if len(parts) == 2:
+        category, slug = parts
+        return f"{source_dir}/{category}/{category}-{slug}"
+    if len(parts) == 3:
+        category, sub, slug = parts
+        return f"{source_dir}/{category}/{category}-{sub}-{slug}"
+    return ""
+
+
 def extract_local_skills():
     skills = []
 
@@ -70,7 +130,7 @@ def extract_local_skills():
                 continue
 
             skill_path = os.path.join(root, "SKILL.md")
-            with open(skill_path) as f:
+            with open(skill_path, encoding="utf-8") as f:
                 content = f.read()
 
             if not content.startswith("---"):
@@ -88,6 +148,9 @@ def extract_local_skills():
             if not fm or not isinstance(fm, dict):
                 continue
 
+            body = parts[2].strip()
+            overview = _extract_overview(body)
+
             rel = os.path.relpath(root, base_path)
             category = rel.split(os.sep)[0]
 
@@ -102,9 +165,26 @@ def extract_local_skills():
             if isinstance(tags, str):
                 tags = [tags]
 
+            # Optional structured prerequisites — surfaced in the SkillCard panel
+            prereq = fm.get("prerequisites") or {}
+            env_vars = []
+            commands = []
+            if isinstance(prereq, dict):
+                ev = prereq.get("env_vars")
+                if isinstance(ev, list):
+                    env_vars = [str(x) for x in ev if x]
+                elif isinstance(ev, str) and ev.strip():
+                    env_vars = [ev.strip()]
+                cmds = prereq.get("commands")
+                if isinstance(cmds, list):
+                    commands = [str(x) for x in cmds if x]
+                elif isinstance(cmds, str) and cmds.strip():
+                    commands = [cmds.strip()]
+
             skills.append({
                 "name": fm.get("name", os.path.basename(root)),
                 "description": fm.get("description", ""),
+                "overview": overview,
                 "category": category,
                 "categoryLabel": CATEGORY_LABELS.get(category, category.replace("-", " ").title()),
                 "source": source_label,
@@ -112,6 +192,10 @@ def extract_local_skills():
                 "platforms": fm.get("platforms", []),
                 "author": fm.get("author", ""),
                 "version": fm.get("version", ""),
+                "license": fm.get("license", ""),
+                "envVars": env_vars,
+                "commands": commands,
+                "docsPath": _docs_page_path(rel, source_label),
             })
 
     return skills
@@ -129,7 +213,7 @@ def extract_cached_index_skills():
 
         filepath = os.path.join(INDEX_CACHE_DIR, filename)
         try:
-            with open(filepath) as f:
+            with open(filepath, encoding="utf-8") as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError):
             continue
@@ -255,7 +339,7 @@ def main():
     ))
 
     os.makedirs(os.path.dirname(OUTPUT), exist_ok=True)
-    with open(OUTPUT, "w") as f:
+    with open(OUTPUT, "w", encoding="utf-8") as f:
         json.dump(all_skills, f, indent=2)
 
     print(f"Extracted {len(all_skills)} skills to {OUTPUT}")

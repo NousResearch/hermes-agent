@@ -10,7 +10,7 @@ Hermes Agent automatically saves every conversation as a session. Sessions enabl
 
 ## How Sessions Work
 
-Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in two complementary systems:
+Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in two complementary systems:
 
 1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search
 2. **JSONL transcripts** (`~/.hermes/sessions/`) — raw conversation transcripts including tool calls (gateway)
@@ -46,6 +46,7 @@ Each session is tagged with its source platform:
 | `wecom` | WeCom (WeChat Work) |
 | `weixin` | Weixin (personal WeChat) |
 | `bluebubbles` | Apple iMessage via BlueBubbles macOS server |
+| `qqbot` | QQ Bot (Tencent QQ) via Official API v2 |
 | `homeassistant` | Home Assistant conversation |
 | `webhook` | Incoming webhooks |
 | `api-server` | API server requests |
@@ -123,8 +124,46 @@ display:
 ```
 
 :::tip
-Session IDs follow the format `YYYYMMDD_HHMMSS_<8-char-hex>`, e.g. `20250305_091523_a1b2c3d4`. You can resume by ID or by title — both work with `-c` and `-r`.
+Session IDs follow the format `YYYYMMDD_HHMMSS_<hex>` — CLI/TUI sessions use a 6-char hex suffix (e.g. `20250305_091523_a1b2c3`), gateway sessions use an 8-char suffix (e.g. `20250305_091523_a1b2c3d4`). You can resume by ID (full or unique prefix) or by title — both work with `-c` and `-r`.
 :::
+
+## Cross-Platform Handoff
+
+Use `/handoff <platform>` from a CLI session to transfer the live conversation to a messaging platform's home channel. The agent picks up exactly where the CLI left off — same session id, full role-aware transcript, tool calls and all.
+
+```bash
+# Inside a CLI session
+/handoff telegram
+```
+
+What happens:
+
+1. The CLI validates that `<platform>` is enabled and has a home channel set (run `/sethome` from the destination chat once to configure it).
+2. The CLI marks the session pending and **block-polls the gateway**. It refuses if the agent is mid-turn — wait for the current response to finish first.
+3. The gateway watcher claims the handoff and asks the destination adapter for a fresh thread:
+   - **Telegram** — opens a new forum topic (DM topics if Bot API 9.4+ Topics mode is enabled in the chat, or a forum supergroup topic).
+   - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
+   - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
+   - **WhatsApp / Signal / Matrix / SMS** — no native threads, falls back to the home channel directly.
+4. The gateway re-binds the destination key to your existing CLI session id, then forges a synthetic user turn asking the agent to confirm and summarize. The reply lands in the new thread.
+5. When the gateway acknowledges success, the CLI prints a `/resume` hint and exits cleanly:
+
+   ```
+   ↻ Handoff complete. The session is now active on telegram.
+     Resume it on this CLI later with: /resume my-session-title
+   ```
+
+6. From that point, the conversation lives on the platform. Reply in the new thread — anyone authorized in that channel shares the same session, and any later real user message in the thread joins seamlessly because thread sessions key without `user_id`.
+
+**Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off.
+
+**Failure modes:**
+- No home channel configured → CLI refuses with a `/sethome` hint.
+- Platform not enabled / gateway not running → CLI times out at 60s with a clear message and your CLI session stays intact.
+- Thread creation fails (permissions, topics-mode off) → falls back to the home channel directly and still completes; no thread isolation but the handoff itself works.
+- `adapter.send` fails (rate limit, transient API error) → handoff marked failed with the reason; the row clears so you can retry.
+
+**Limitation worth knowing:** for non-thread-capable platforms with multi-user group home channels, the synthetic turn keys as a DM-style session. This works for self-DM home channels (the typical setup) but isn't ideal for genuinely shared group chats. Threading covers Telegram / Discord / Slack — by far the common case — so most setups never hit this.
 
 ## Session Naming
 
@@ -325,9 +364,9 @@ On messaging platforms, sessions are keyed by a deterministic session key built 
 |-----------|--------------------|----------|
 | Telegram DM | `agent:main:telegram:dm:<chat_id>` | One session per DM chat |
 | Discord DM | `agent:main:discord:dm:<chat_id>` | One session per DM chat |
-| WhatsApp DM | `agent:main:whatsapp:dm:<chat_id>` | One session per DM chat |
+| WhatsApp DM | `agent:main:whatsapp:dm:<canonical_identifier>` | One session per DM user (LID/phone aliases collapse to one identity when mapping exists) |
 | Group chat | `agent:main:<platform>:group:<chat_id>:<user_id>` | Per-user inside the group when the platform exposes a user ID |
-| Group thread/topic | `agent:main:<platform>:group:<chat_id>:<thread_id>:<user_id>` | Per-user inside that thread/topic |
+| Group thread/topic | `agent:main:<platform>:group:<chat_id>:<thread_id>` | Shared session for all thread participants (default). Per-user with `thread_sessions_per_user: true`. |
 | Channel | `agent:main:<platform>:channel:<chat_id>:<user_id>` | Per-user inside the channel when the platform exposes a user ID |
 
 When Hermes cannot get a participant identifier for a shared chat, it falls back to one shared session for that room.
@@ -385,7 +424,21 @@ Key tables in `state.db`:
 
 - Gateway sessions auto-reset based on the configured reset policy
 - Before reset, the agent saves memories and skills from the expiring session
-- Ended sessions remain in the database until pruned
+- Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions older than `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
+- After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space (SQLite does not shrink the file on plain DELETE)
+- Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
+
+Default is **off** — session history is valuable for `session_search` recall, and silently deleting it could surprise users. Enable in `~/.hermes/config.yaml`:
+
+```yaml
+sessions:
+  auto_prune: true          # opt in — default is false
+  retention_days: 90        # keep ended sessions this many days
+  vacuum_after_prune: true  # reclaim disk space after a pruning sweep
+  min_interval_hours: 24    # don't re-run the sweep more often than this
+```
+
+Active sessions are never auto-pruned, regardless of age.
 
 ### Manual Cleanup
 
@@ -402,5 +455,5 @@ hermes sessions prune --older-than 30 --yes
 ```
 
 :::tip
-The database grows slowly (typical: 10-15 MB for hundreds of sessions). Pruning is mainly useful for removing old conversations you no longer need for search recall.
+The database grows slowly (typical: 10-15 MB for hundreds of sessions) and session history powers `session_search` recall across past conversations, so auto-prune ships disabled. Enable it if you're running a heavy gateway/cron workload where `state.db` is meaningfully affecting performance (observed failure mode: 384 MB state.db with ~1000 sessions slowing down FTS5 inserts and `/resume` listing). Use `hermes sessions prune` for one-off cleanup without turning on the automatic sweep.
 :::

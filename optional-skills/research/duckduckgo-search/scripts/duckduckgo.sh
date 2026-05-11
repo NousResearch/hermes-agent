@@ -25,4 +25,4 @@ if ! command -v ddgs &> /dev/null; then
     exit 1
 fi
 
-ddgs text -k "$QUERY" -m "$MAX_RESULTS"
+ddgs text -q "$QUERY" -m "$MAX_RESULTS"

@@ -1,0 +1,18 @@
+name: 'Setup Nix'
+description: 'Install Nix and configure Cachix binary cache'
+
+inputs:
+  cachix-auth-token:
+    description: 'Cachix auth token (enables push). Omit for read-only.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+    - uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c # v17
+      with:
+        name: hermes-agent
+        authToken: ${{ inputs.cachix-auth-token }}
+      continue-on-error: true

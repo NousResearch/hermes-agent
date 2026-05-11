@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -50,13 +51,28 @@ from gateway.platforms.telegram import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
 
 
-def _make_adapter():
+def _make_adapter(extra=None):
     """Create a TelegramAdapter with mocked internals."""
-    config = PlatformConfig(enabled=True, token="test-token")
+    config = PlatformConfig(enabled=True, token="test-token", extra=extra or {})
     adapter = TelegramAdapter(config)
     adapter._bot = AsyncMock()
     adapter._app = MagicMock()
     return adapter
+
+
+class _AuthRunner:
+    """Minimal runner shim for callback auth tests."""
+
+    def __init__(self, authorized: bool):
+        self.authorized = authorized
+        self.last_source = None
+
+    async def _handle_message(self, event):
+        return None
+
+    def _is_user_authorized(self, source):
+        self.last_source = source
+        return self.authorized
 
 
 # ===========================================================================
@@ -126,6 +142,34 @@ class TestTelegramExecApproval:
         assert kwargs.get("message_thread_id") == 999
 
     @pytest.mark.asyncio
+    async def test_retries_without_thread_when_thread_not_found(self):
+        adapter = _make_adapter()
+        call_log = []
+
+        class FakeBadRequest(Exception):
+            pass
+
+        async def mock_send_message(**kwargs):
+            call_log.append(dict(kwargs))
+            if kwargs.get("message_thread_id") is not None:
+                raise FakeBadRequest("Message thread not found")
+            return SimpleNamespace(message_id=42)
+
+        adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
+
+        result = await adapter.send_exec_approval(
+            chat_id="12345",
+            command="ls",
+            session_key="s",
+            metadata={"thread_id": "999"},
+        )
+
+        assert result.success is True
+        assert len(call_log) == 2
+        assert call_log[0]["message_thread_id"] == 999
+        assert "message_thread_id" not in call_log[1] or call_log[1]["message_thread_id"] is None
+
+    @pytest.mark.asyncio
     async def test_not_connected(self):
         adapter = _make_adapter()
         adapter._bot = None
@@ -133,6 +177,23 @@ class TestTelegramExecApproval:
             chat_id="12345", command="ls", session_key="s"
         )
         assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_disable_link_previews_sets_preview_kwargs(self):
+        adapter = _make_adapter(extra={"disable_link_previews": True})
+        mock_msg = MagicMock()
+        mock_msg.message_id = 42
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="ls", session_key="s"
+        )
+
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert (
+            kwargs.get("disable_web_page_preview") is True
+            or kwargs.get("link_preview_options") is not None
+        )
 
     @pytest.mark.asyncio
     async def test_truncates_long_command(self):
@@ -177,9 +238,11 @@ class TestTelegramApprovalCallback:
         update = MagicMock()
         update.callback_query = query
         context = MagicMock()
+        query.from_user.id = "12345"
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-            await adapter._handle_callback_query(update, context)
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
 
         mock_resolve.assert_called_once_with("agent:main:telegram:group:12345:99", "once")
         query.answer.assert_called_once()
@@ -205,13 +268,50 @@ class TestTelegramApprovalCallback:
         update = MagicMock()
         update.callback_query = query
         context = MagicMock()
+        query.from_user.id = "12345"
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-            await adapter._handle_callback_query(update, context)
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
 
         mock_resolve.assert_called_once_with("some-session", "deny")
         edit_kwargs = query.edit_message_text.call_args[1]
         assert "Denied" in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_approval_callback_rejects_user_blocked_by_global_allowlist(self):
+        adapter = _make_adapter()
+        adapter._approval_state[7] = "agent:main:telegram:group:12345:99"
+        runner = _AuthRunner(authorized=False)
+        adapter._message_handler = runner._handle_message
+
+        query = AsyncMock()
+        query.data = "ea:once:7"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_not_called()
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert adapter._approval_state[7] == "agent:main:telegram:group:12345:99"
+        assert runner.last_source is not None
+        assert runner.last_source.platform == Platform.TELEGRAM
+        assert runner.last_source.user_id == "222"
+        assert runner.last_source.chat_id == "12345"
 
     @pytest.mark.asyncio
     async def test_already_resolved(self):
@@ -229,9 +329,11 @@ class TestTelegramApprovalCallback:
         update = MagicMock()
         update.callback_query = query
         context = MagicMock()
+        query.from_user.id = "12345"
 
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
-            await adapter._handle_callback_query(update, context)
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+                await adapter._handle_callback_query(update, context)
 
         # Should NOT resolve — already handled
         mock_resolve.assert_not_called()
@@ -263,7 +365,7 @@ class TestTelegramApprovalCallback:
         mock_resolve.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_update_prompt_callback_not_affected(self):
+    async def test_update_prompt_callback_not_affected(self, tmp_path):
         """Ensure update prompt callbacks still work."""
         adapter = _make_adapter()
 
@@ -281,11 +383,96 @@ class TestTelegramApprovalCallback:
         context = MagicMock()
 
         with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
-            with patch("hermes_constants.get_hermes_home", return_value=Path("/tmp/test")):
-                try:
+            with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
                     await adapter._handle_callback_query(update, context)
-                except Exception:
-                    pass  # May fail on file write, that's fine
 
         # Should NOT have triggered approval resolution
         mock_resolve.assert_not_called()
+        assert (tmp_path / ".update_response").read_text() == "y"
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_callback_rejects_unauthorized_user(self, tmp_path):
+        """Update prompt buttons should honor TELEGRAM_ALLOWED_USERS."""
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "update_prompt:y"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+                await adapter._handle_callback_query(update, context)
+
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert not (tmp_path / ".update_response").exists()
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_callback_rejects_user_blocked_by_global_allowlist(self, tmp_path):
+        adapter = _make_adapter()
+        runner = _AuthRunner(authorized=False)
+        adapter._message_handler = runner._handle_message
+
+        query = AsyncMock()
+        query.data = "update_prompt:y"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
+                await adapter._handle_callback_query(update, context)
+
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert not (tmp_path / ".update_response").exists()
+        assert runner.last_source is not None
+        assert runner.last_source.platform == Platform.TELEGRAM
+        assert runner.last_source.user_id == "222"
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_callback_allows_authorized_user(self, tmp_path):
+        """Allowed Telegram users can still answer update prompt buttons."""
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "update_prompt:n"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+                await adapter._handle_callback_query(update, context)
+
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_called_once()
+        assert (tmp_path / ".update_response").read_text() == "n"

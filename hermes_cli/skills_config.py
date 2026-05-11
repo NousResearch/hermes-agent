@@ -13,9 +13,9 @@ Config stored in ~/.hermes/config.yaml under:
 """
 from typing import List, Optional, Set
 
-from hermes_cli.config import load_config, save_config
+from hermes_cli.config import cfg_get, load_config, save_config
 from hermes_cli.colors import Colors, color
-from hermes_cli.platforms import PLATFORMS as _PLATFORMS, platform_label
+from hermes_cli.platforms import PLATFORMS as _PLATFORMS
 
 # Backward-compatible view: {key: label_string} so existing code that
 # iterates ``PLATFORMS.items()`` or calls ``PLATFORMS.get(key)`` keeps
@@ -30,7 +30,7 @@ def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str
     global_disabled = set(skills_cfg.get("disabled", []))
     if platform is None:
         return global_disabled
-    platform_disabled = skills_cfg.get("platform_disabled", {}).get(platform)
+    platform_disabled = cfg_get(skills_cfg, "platform_disabled", platform)
     if platform_disabled is None:
         return global_disabled
     return set(platform_disabled)

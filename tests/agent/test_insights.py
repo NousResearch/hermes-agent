@@ -51,6 +51,12 @@ def populated_db(db):
     db.append_message("s1", role="assistant", content="I found the bug. Let me fix it.",
                       tool_calls=[{"function": {"name": "patch"}}])
     db.append_message("s1", role="tool", content="patched successfully", tool_name="patch")
+    db.append_message(
+        "s1",
+        role="assistant",
+        content="Let me load the PR workflow skill.",
+        tool_calls=[{"function": {"name": "skill_view", "arguments": '{"name":"github-pr-workflow"}'}}],
+    )
     db.append_message("s1", role="user", content="Thanks!")
     db.append_message("s1", role="assistant", content="You're welcome!")
 
@@ -88,6 +94,12 @@ def populated_db(db):
     db.append_message("s3", role="assistant", content="And search files",
                       tool_calls=[{"function": {"name": "search_files"}}])
     db.append_message("s3", role="tool", content="found stuff", tool_name="search_files")
+    db.append_message(
+        "s3",
+        role="assistant",
+        content="Load the debugging skill.",
+        tool_calls=[{"function": {"name": "skill_view", "arguments": '{"name":"systematic-debugging"}'}}],
+    )
 
     # Session 4: Discord, same model as s1, ended, 1 day ago
     db.create_session(
@@ -100,6 +112,15 @@ def populated_db(db):
     db.update_token_counts("s4", input_tokens=10000, output_tokens=5000)
     db.append_message("s4", role="user", content="Quick question")
     db.append_message("s4", role="assistant", content="Sure, go ahead")
+    db.append_message(
+        "s4",
+        role="assistant",
+        content="Load and update GitHub skills.",
+        tool_calls=[
+            {"function": {"name": "skill_view", "arguments": '{"name":"github-pr-workflow"}'}},
+            {"function": {"name": "skill_manage", "arguments": '{"name":"github-code-review"}'}},
+        ],
+    )
 
     # Session 5: Old session, 45 days ago (should be excluded from 30-day window)
     db.create_session(
@@ -332,6 +353,35 @@ class TestInsightsPopulated:
         total_pct = sum(t["percentage"] for t in tools)
         assert total_pct == pytest.approx(100.0, abs=0.1)
 
+    def test_skill_breakdown(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        skills = report["skills"]
+
+        assert skills["summary"]["distinct_skills_used"] == 3
+        assert skills["summary"]["total_skill_loads"] == 3
+        assert skills["summary"]["total_skill_edits"] == 1
+        assert skills["summary"]["total_skill_actions"] == 4
+
+        top_skill = skills["top_skills"][0]
+        assert top_skill["skill"] == "github-pr-workflow"
+        assert top_skill["view_count"] == 2
+        assert top_skill["manage_count"] == 0
+        assert top_skill["total_count"] == 2
+        assert top_skill["last_used_at"] is not None
+
+    def test_skill_breakdown_respects_days_filter(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=3)
+        skills = report["skills"]
+
+        assert skills["summary"]["distinct_skills_used"] == 2
+        assert skills["summary"]["total_skill_loads"] == 2
+        assert skills["summary"]["total_skill_edits"] == 1
+
+        skill_names = [s["skill"] for s in skills["top_skills"]]
+        assert "systematic-debugging" not in skill_names
+
     def test_activity_patterns(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
@@ -401,6 +451,7 @@ class TestTerminalFormatting:
         assert "Overview" in text
         assert "Models Used" in text
         assert "Top Tools" in text
+        assert "Top Skills" in text
         assert "Activity Patterns" in text
         assert "Notable Sessions" in text
 
@@ -411,8 +462,10 @@ class TestTerminalFormatting:
 
         assert "Input tokens" in text
         assert "Output tokens" in text
-        assert "Est. cost" in text
-        assert "$" in text
+        # Cost and cache metrics are intentionally hidden (pricing was unreliable).
+        assert "Est. cost" not in text
+        assert "Cache read" not in text
+        assert "Cache write" not in text
 
     def test_terminal_format_shows_platforms(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -431,8 +484,8 @@ class TestTerminalFormatting:
 
         assert "█" in text  # Bar chart characters
 
-    def test_terminal_format_shows_na_for_custom_models(self, db):
-        """Custom models should show N/A instead of fake cost."""
+    def test_terminal_format_hides_cost_for_custom_models(self, db):
+        """Cost display is hidden entirely — custom models no longer show 'N/A' either."""
         db.create_session(session_id="s1", source="cli", model="my-custom-model")
         db.update_token_counts("s1", input_tokens=1000, output_tokens=500)
         db._conn.commit()
@@ -441,8 +494,9 @@ class TestTerminalFormatting:
         report = engine.generate(days=30)
         text = engine.format_terminal(report)
 
-        assert "N/A" in text
-        assert "custom/self-hosted" in text
+        assert "N/A" not in text
+        assert "custom/self-hosted" not in text
+        assert "Cost" not in text
 
 
 class TestGatewayFormatting:
@@ -461,13 +515,14 @@ class TestGatewayFormatting:
 
         assert "**" in text  # Markdown bold
 
-    def test_gateway_format_shows_cost(self, populated_db):
+    def test_gateway_format_hides_cost(self, populated_db):
+        """Gateway format omits dollar figures and internal cache details."""
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
-        assert "$" in text
-        assert "Est. cost" in text
+        assert "$" not in text
+        assert "cache" not in text.lower()
 
     def test_gateway_format_shows_models(self, populated_db):
         engine = InsightsEngine(populated_db)

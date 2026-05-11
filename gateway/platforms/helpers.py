@@ -11,10 +11,12 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Dict
+
+from utils import atomic_json_write
 
 if TYPE_CHECKING:
-    from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+    from gateway.platforms.base import MessageEvent
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +51,23 @@ class MessageDeduplicator:
             return False
         now = time.time()
         if msg_id in self._seen:
-            return True
+            if now - self._seen[msg_id] < self._ttl:
+                return True
+            # Entry has expired — remove it and treat as new
+            del self._seen[msg_id]
         self._seen[msg_id] = now
         if len(self._seen) > self._max_size:
             cutoff = now - self._ttl
             self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
+            if len(self._seen) > self._max_size:
+                # TTL pruning alone does not cap the cache when every entry is
+                # still fresh. Keep the newest entries so the helper's
+                # max_size bound is enforced under sustained traffic.
+                newest = sorted(
+                    self._seen.items(),
+                    key=lambda item: item[1],
+                )[-self._max_size:]
+                self._seen = dict(newest)
         return False
 
     def clear(self):
@@ -208,34 +222,37 @@ class ThreadParticipationTracker:
     def __init__(self, platform_name: str, max_tracked: int = 500):
         self._platform = platform_name
         self._max_tracked = max_tracked
-        self._threads: set = self._load()
+        self._threads: dict[str, None] = {
+            str(thread_id): None for thread_id in self._load()
+        }
 
     def _state_path(self) -> Path:
         from hermes_constants import get_hermes_home
         return get_hermes_home() / f"{self._platform}_threads.json"
 
-    def _load(self) -> set:
+    def _load(self) -> list[str]:
         path = self._state_path()
         if path.exists():
             try:
-                return set(json.loads(path.read_text(encoding="utf-8")))
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return [str(thread_id) for thread_id in data]
             except Exception:
                 pass
-        return set()
+        return []
 
     def _save(self) -> None:
         path = self._state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
         thread_list = list(self._threads)
         if len(thread_list) > self._max_tracked:
             thread_list = thread_list[-self._max_tracked:]
-            self._threads = set(thread_list)
-        path.write_text(json.dumps(thread_list), encoding="utf-8")
+            self._threads = {thread_id: None for thread_id in thread_list}
+        atomic_json_write(path, thread_list, indent=None)
 
     def mark(self, thread_id: str) -> None:
         """Mark *thread_id* as participated and persist."""
         if thread_id not in self._threads:
-            self._threads.add(thread_id)
+            self._threads[thread_id] = None
             self._save()
 
     def __contains__(self, thread_id: str) -> bool:

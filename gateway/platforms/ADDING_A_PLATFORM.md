@@ -1,9 +1,62 @@
 # Adding a New Messaging Platform
 
-Checklist for integrating a new messaging platform into the Hermes gateway.
-Use this as a reference when building a new adapter — every item here is a
-real integration point that exists in the codebase. Missing any of them will
-cause broken functionality, missing features, or inconsistent behavior.
+There are two ways to add a platform to the Hermes gateway:
+
+## Plugin Path (Recommended for Community/Third-Party)
+
+Create a plugin directory in `~/.hermes/plugins/` (or under `plugins/platforms/`
+for bundled plugins) with a `plugin.yaml` and `adapter.py`.  The adapter
+inherits from `BasePlatformAdapter` and registers via
+`ctx.register_platform()` in the `register(ctx)` entry point.  This requires
+**zero changes to core Hermes code**.
+
+The plugin system automatically handles: adapter creation, config parsing,
+user authorization, cron delivery, send_message routing, system prompt hints,
+status display, gateway setup, and more.
+
+**Optional hooks cover the edges most adapters need:**
+
+- `env_enablement_fn: () -> Optional[dict]` — seeds `PlatformConfig.extra`
+  (and an optional `home_channel` dict) from env vars BEFORE the adapter is
+  constructed.  Without this, env-only setups don't surface in
+  `hermes gateway status` or `get_connected_platforms()` until the SDK
+  instantiates.
+- `cron_deliver_env_var: str` — name of the `*_HOME_CHANNEL` env var.  When
+  set, `deliver=<name>` cron jobs route to this var without editing
+  `cron/scheduler.py`'s hardcoded sets.
+- `standalone_sender_fn: async (...) -> dict`: out-of-process delivery
+  for cron jobs that run separately from the gateway.  Without this, a
+  `deliver=<name>` job fires correctly but the actual send returns
+  `No live adapter for platform '<name>'`.  Pair with `cron_deliver_env_var`
+  for end-to-end cron support.  See the docsite for the signature.
+- `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
+  auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
+  wizard surfaces proper descriptions, prompts, password flags, and URLs.
+
+**Subclassing for platform-specific UX.** When a platform has a hard
+time-window constraint that the base adapter can't anticipate (LINE's
+60s single-use reply token, WhatsApp's 24h session window, etc.), an
+adapter can override `_keep_typing` to layer a mid-flight bubble at a
+threshold without expanding the kwarg surface. Always
+`await super()._keep_typing(...)` so the typing heartbeat keeps running,
+and tear down your side task in `finally`. See `plugins/platforms/line/`
+for the full pattern (Template Buttons postback at 45s, `RequestCache`
+state machine, `interrupt_session_activity` override for `/stop`
+orphans) and the developer-guide page for the prose walkthrough.
+
+See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
+`plugins/platforms/google_chat/` for complete working examples, and
+`website/docs/developer-guide/adding-platform-adapters.md` for the full
+plugin guide with code examples and hook documentation.
+
+---
+
+## Built-in Path (Core Contributors Only)
+
+Checklist for integrating a platform directly into the Hermes core.
+Use this as a reference when building a built-in adapter — every item here
+is a real integration point. Missing any of them will cause broken
+functionality, missing features, or inconsistent behavior.
 
 ---
 

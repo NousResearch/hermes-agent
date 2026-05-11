@@ -261,6 +261,42 @@ class TestGatewayMode:
         ]
         assert len(gw_handlers) == 0
 
+    def test_gateway_log_created_after_cli_init(self, hermes_home):
+        """Gateway mode attaches gateway.log even after earlier CLI init."""
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="cli")
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+
+        root = logging.getLogger()
+        gw_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gateway.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gw_handlers) == 1
+
+        logging.getLogger("gateway.run").info("gateway connected after cli init")
+
+        for h in root.handlers:
+            h.flush()
+
+        gw_log = hermes_home / "logs" / "gateway.log"
+        assert gw_log.exists()
+        assert "gateway connected after cli init" in gw_log.read_text()
+
+    def test_gateway_log_created_after_cli_init_without_duplicate_handlers(self, hermes_home):
+        """Repeated gateway setup calls do not attach duplicate gateway handlers."""
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="cli")
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+
+        root = logging.getLogger()
+        gw_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gateway.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gw_handlers) == 1
+
     def test_gateway_log_receives_gateway_records(self, hermes_home):
         """gateway.log captures records from gateway.* loggers."""
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
@@ -298,8 +334,17 @@ class TestGatewayMode:
         """agent.log (catch-all) still receives gateway AND tool records."""
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
 
-        logging.getLogger("gateway.run").info("gateway msg")
-        logging.getLogger("tools.file_tools").info("file msg")
+        gw_logger = logging.getLogger("gateway.run")
+        file_logger = logging.getLogger("tools.file_tools")
+        # Ensure propagation and levels are clean (cross-test pollution defense)
+        gw_logger.propagate = True
+        file_logger.propagate = True
+        logging.getLogger("tools").propagate = True
+        file_logger.setLevel(logging.NOTSET)
+        logging.getLogger("tools").setLevel(logging.NOTSET)
+
+        gw_logger.info("gateway msg")
+        file_logger.info("file msg")
 
         for h in logging.getLogger().handlers:
             h.flush()

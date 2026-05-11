@@ -322,7 +322,7 @@ class TestFallbackTransportInit:
             seen_kwargs.append(kwargs.copy())
             return FakeTransport([], {})
 
-        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
@@ -332,6 +332,25 @@ class TestFallbackTransportInit:
         assert transport._fallback_ips == ["149.154.167.220"]
         assert len(seen_kwargs) == 2
         assert all(kwargs["proxy"] == "http://proxy.example:8080" for kwargs in seen_kwargs)
+
+    def test_no_proxy_bypasses_fallback_ip_cidr(self, monkeypatch):
+        seen_kwargs = []
+
+        def factory(**kwargs):
+            seen_kwargs.append(kwargs.copy())
+            return FakeTransport([], {})
+
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "149.154.160.0/20")
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        assert transport._fallback_ips == ["149.154.167.220"]
+        assert len(seen_kwargs) == 2
+        assert all("proxy" not in kwargs for kwargs in seen_kwargs)
 
 
 class TestFallbackTransportClose:
@@ -515,15 +534,20 @@ class TestDiscoverFallbackIps:
         assert "149.154.167.221" in ips
 
     @pytest.mark.asyncio
-    async def test_system_dns_ip_excluded(self, monkeypatch):
-        """The IP from system DNS is the one that doesn't work — exclude it."""
+    async def test_system_dns_ip_kept_when_doh_confirms(self, monkeypatch):
+        """DoH-confirmed IPs are kept even when they match system DNS (#14520).
+
+        The system-DNS IP is often the most reliable path; including it as a
+        fallback lets the IP-rewrite retry recover from transient primary-path
+        failures instead of jumping straight to the hardcoded seed list.
+        """
         self._patch_doh(monkeypatch, {
             "https://dns.google": (200, _doh_answer("149.154.166.110", "149.154.167.220")),
             "https://cloudflare-dns.com": (200, _doh_answer("149.154.166.110")),
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.167.220"]
+        assert ips == ["149.154.166.110", "149.154.167.220"]
 
     @pytest.mark.asyncio
     async def test_doh_results_deduplicated(self, monkeypatch):
@@ -588,15 +612,21 @@ class TestDiscoverFallbackIps:
         assert "149.154.167.220" in ips
 
     @pytest.mark.asyncio
-    async def test_all_doh_ips_same_as_system_dns_uses_seed(self, monkeypatch):
-        """DoH returns only the same blocked IP — seed list is the fallback."""
+    async def test_all_doh_ips_same_as_system_dns_kept(self, monkeypatch):
+        """DoH agrees with system DNS — keep that IP instead of seed list (#14520).
+
+        Previous behavior fell through to ``_SEED_FALLBACK_IPS`` here, but the
+        seed addresses are not routable on every network.  When DoH confirms
+        the system IP, that IP is the best candidate we have and should be
+        used as the fallback target.
+        """
         self._patch_doh(monkeypatch, {
             "https://dns.google": (200, _doh_answer("149.154.166.110")),
             "https://cloudflare-dns.com": (200, _doh_answer("149.154.166.110")),
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
-        assert ips == tnet._SEED_FALLBACK_IPS
+        assert ips == ["149.154.166.110"]
 
     @pytest.mark.asyncio
     async def test_cloudflare_gets_accept_header(self, monkeypatch):

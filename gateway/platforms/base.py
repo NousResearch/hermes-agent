@@ -2960,6 +2960,7 @@ class BasePlatformAdapter(ABC):
             # is processed by the pending-message handler below (#8221/#2483).
             if (
                 response
+                and not getattr(event, "internal", False)
                 and interrupt_event.is_set()
                 and session_key in self._pending_messages
             ):

@@ -5,12 +5,16 @@ Starts a stdio MCP server that lets any MCP client (Claude Code, Cursor, Codex,
 etc.) list conversations, read message history, send messages, poll for live
 events, and manage approval requests across all connected platforms.
 
-Matches OpenClaw's 9-tool MCP channel bridge surface:
+Matches OpenClaw's messaging MCP bridge surface for conversation and event
+access:
   conversations_list, conversation_get, messages_read, attachments_fetch,
-  events_poll, events_wait, messages_send, permissions_list_open,
-  permissions_respond
+  events_poll, events_wait, messages_send
 
 Plus: channels_list (Hermes-specific extra)
+
+Approval-response tools are intentionally not exposed here yet. Hermes'
+gateway approval state is process-local today, and this MCP bridge does not
+have a truthful IPC path for listing or resolving those approvals.
 
 Usage:
     hermes mcp serve
@@ -817,44 +821,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                         })
 
         return json.dumps({"count": len(channels), "channels": channels}, indent=2)
-
-    # -- permissions_list_open ---------------------------------------------
-
-    @mcp.tool()
-    def permissions_list_open() -> str:
-        """List pending approval requests observed during this bridge session.
-
-        Returns exec and plugin approval requests that the bridge has seen
-        since it started. Approvals are live-session only — older approvals
-        from before the bridge connected are not included.
-        """
-        approvals = bridge.list_pending_approvals()
-        return json.dumps({
-            "count": len(approvals),
-            "approvals": approvals,
-        }, indent=2)
-
-    # -- permissions_respond -----------------------------------------------
-
-    @mcp.tool()
-    def permissions_respond(
-        id: str,
-        decision: str,
-    ) -> str:
-        """Respond to a pending approval request.
-
-        Args:
-            id: The approval ID from permissions_list_open
-            decision: One of "allow-once", "allow-always", or "deny"
-        """
-        if decision not in ("allow-once", "allow-always", "deny"):
-            return json.dumps({
-                "error": f"Invalid decision: {decision}. "
-                         f"Must be allow-once, allow-always, or deny"
-            })
-
-        result = bridge.respond_to_approval(id, decision)
-        return json.dumps(result, indent=2)
 
     return mcp
 

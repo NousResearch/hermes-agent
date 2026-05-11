@@ -869,59 +869,8 @@ class TestE2EChannelsList:
         assert result["channels"][0]["target"] == "discord:789"
 
 
-class TestE2EPermissions:
-    def test_list_empty(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "permissions_list_open")
-        assert result["count"] == 0
-        assert result["approvals"] == []
-
-    def test_list_with_approvals(self, mcp_server_e2e, _event_loop):
-        server, bridge = mcp_server_e2e
-        bridge._pending_approvals["a1"] = {
-            "id": "a1", "kind": "exec",
-            "description": "sudo rm -rf /",
-            "session_key": "test",
-            "created_at": "2026-03-29T12:00:00",
-        }
-        result = _run_tool(server, "permissions_list_open")
-        assert result["count"] == 1
-        assert result["approvals"][0]["id"] == "a1"
-
-    def test_respond_allow(self, mcp_server_e2e, _event_loop):
-        server, bridge = mcp_server_e2e
-        bridge._pending_approvals["a1"] = {"id": "a1", "kind": "exec"}
-        result = _run_tool(server, "permissions_respond",
-                          {"id": "a1", "decision": "allow-once"})
-        assert result["resolved"] is True
-        assert result["decision"] == "allow-once"
-        # Should be gone now
-        check = _run_tool(server, "permissions_list_open")
-        assert check["count"] == 0
-
-    def test_respond_deny(self, mcp_server_e2e, _event_loop):
-        server, bridge = mcp_server_e2e
-        bridge._pending_approvals["a2"] = {"id": "a2", "kind": "plugin"}
-        result = _run_tool(server, "permissions_respond",
-                          {"id": "a2", "decision": "deny"})
-        assert result["resolved"] is True
-
-    def test_respond_invalid_decision(self, mcp_server_e2e, _event_loop):
-        server, bridge = mcp_server_e2e
-        bridge._pending_approvals["a3"] = {"id": "a3", "kind": "exec"}
-        result = _run_tool(server, "permissions_respond",
-                          {"id": "a3", "decision": "maybe"})
-        assert "error" in result
-
-    def test_respond_nonexistent(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "permissions_respond",
-                          {"id": "nope", "decision": "deny"})
-        assert "error" in result
-
-
 # ---------------------------------------------------------------------------
-# 4. TOOL LISTING — verify all 10 tools are registered
+# 4. TOOL LISTING — verify the exposed MCP tools match the truthful surface
 # ---------------------------------------------------------------------------
 
 class TestToolRegistration:
@@ -934,7 +883,6 @@ class TestToolRegistration:
             "conversations_list", "conversation_get", "messages_read",
             "attachments_fetch", "events_poll", "events_wait",
             "messages_send", "channels_list",
-            "permissions_list_open", "permissions_respond",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
 

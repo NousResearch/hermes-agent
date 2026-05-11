@@ -182,6 +182,37 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
         api_key="sk-custom",
         config_context_length=1_000_000,
         provider="openrouter",
+        custom_providers=None,
+    )
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=1_000_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_feasibility_check_passes_custom_providers(mock_get_client, mock_ctx_len):
+    """Aux compression feasibility should honor custom_providers context overrides."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.85)
+    agent._custom_providers = [
+        {
+            "provider": "custom-openai",
+            "base_url": "http://custom-endpoint:8080/v1",
+            "models": {"custom/big-model": {"context_length": 1_000_000}},
+        }
+    ]
+    mock_client = MagicMock()
+    mock_client.base_url = "http://custom-endpoint:8080/v1"
+    mock_client.api_key = "sk-custom"
+    mock_get_client.return_value = (mock_client, "custom/big-model")
+
+    agent._emit_status = lambda msg: None
+    agent._check_compression_model_feasibility()
+
+    mock_ctx_len.assert_called_once_with(
+        "custom/big-model",
+        base_url="http://custom-endpoint:8080/v1",
+        api_key="sk-custom",
+        config_context_length=None,
+        provider="openrouter",
+        custom_providers=agent._custom_providers,
     )
 
 
@@ -205,6 +236,7 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
         api_key="sk-test",
         config_context_length=None,
         provider="openrouter",
+        custom_providers=None,
     )
 
 
@@ -258,6 +290,7 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         api_key="sk-custom",
         config_context_length=1_000_000,
         provider="",
+        custom_providers=[],
     )
 
 

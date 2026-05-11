@@ -2165,6 +2165,7 @@ class AIAgent:
 
         # Persist for reuse on switch_model / fallback activation. Must come
         # AFTER the custom_providers branch so per-model overrides aren't lost.
+        self._custom_providers = _custom_providers
         self._config_context_length = _config_context_length
 
         self._ensure_lmstudio_runtime_loaded(_config_context_length)
@@ -3151,6 +3152,7 @@ class AIAgent:
                 # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
                 # are invoked for the correct client, not inherited from the main model.
                 provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
+                custom_providers=getattr(self, "_custom_providers", None),
             )
 
             # Hard floor: the auxiliary compression model must have at least

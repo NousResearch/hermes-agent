@@ -101,6 +101,7 @@ class Platform(Enum):
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
+    MSGRAPH_WEBHOOK = "msgraph_webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
@@ -316,14 +317,32 @@ class PlatformConfig:
         )
 
 
+# Streaming defaults — single source of truth so both StreamingConfig and
+# StreamConsumerConfig agree on the out-of-the-box edit rhythm.  Tuned for
+# Telegram's ~1 edit/s flood envelope: a touch under 1s lets the cadence
+# breathe without bumping into rate limits, and a smaller buffer threshold
+# makes short replies feel near-instant in DMs.
+DEFAULT_STREAMING_EDIT_INTERVAL: float = 0.8
+DEFAULT_STREAMING_BUFFER_THRESHOLD: int = 24
+DEFAULT_STREAMING_CURSOR: str = " ▉"
+
+
 @dataclass
 class StreamingConfig:
     """Configuration for real-time token streaming to messaging platforms."""
     enabled: bool = False
-    transport: str = "edit"       # "edit" (progressive editMessageText) or "off"
-    edit_interval: float = 1.0    # Seconds between message edits (Telegram rate-limits at ~1/s)
-    buffer_threshold: int = 40    # Chars before forcing an edit
-    cursor: str = " ▉"           # Cursor shown during streaming
+    # Transport selection:
+    #   "auto"  — prefer native streaming-draft updates when the platform
+    #             supports them (Telegram sendMessageDraft, Bot API 9.5+);
+    #             fall back to edit-based when not.  Recommended.
+    #   "draft" — explicitly request native drafts; falls back to edit when
+    #             the platform/chat doesn't support them.
+    #   "edit"  — progressive editMessageText only (legacy behaviour).
+    #   "off"   — disable streaming entirely.
+    transport: str = "auto"
+    edit_interval: float = DEFAULT_STREAMING_EDIT_INTERVAL
+    buffer_threshold: int = DEFAULT_STREAMING_BUFFER_THRESHOLD
+    cursor: str = DEFAULT_STREAMING_CURSOR
     # Ported from openclaw/openclaw#72038.  When >0, the final edit for
     # a long-running streamed response is delivered as a fresh message
     # if the original preview has been visible for at least this many
@@ -349,10 +368,14 @@ class StreamingConfig:
             return cls()
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
-            transport=data.get("transport", "edit"),
-            edit_interval=_coerce_float(data.get("edit_interval"), 1.0),
-            buffer_threshold=_coerce_int(data.get("buffer_threshold"), 40),
-            cursor=data.get("cursor", " ▉"),
+            transport=data.get("transport", "auto"),
+            edit_interval=_coerce_float(
+                data.get("edit_interval"), DEFAULT_STREAMING_EDIT_INTERVAL,
+            ),
+            buffer_threshold=_coerce_int(
+                data.get("buffer_threshold"), DEFAULT_STREAMING_BUFFER_THRESHOLD,
+            ),
+            cursor=data.get("cursor", DEFAULT_STREAMING_CURSOR),
             fresh_final_after_seconds=_coerce_float(
                 data.get("fresh_final_after_seconds"), 60.0
             ),
@@ -376,6 +399,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.SMS: lambda cfg: bool(os.getenv("TWILIO_ACCOUNT_SID")),
     Platform.API_SERVER: lambda cfg: True,
     Platform.WEBHOOK: lambda cfg: True,
+    Platform.MSGRAPH_WEBHOOK: lambda cfg: True,
     Platform.FEISHU: lambda cfg: bool(cfg.extra.get("app_id")),
     Platform.WECOM: lambda cfg: bool(cfg.extra.get("bot_id")),
     Platform.WECOM_CALLBACK: lambda cfg: bool(
@@ -764,10 +788,18 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
                 if "allow_from" in platform_cfg:
                     bridged["allow_from"] = platform_cfg["allow_from"]
+                if "allow_admin_from" in platform_cfg:
+                    bridged["allow_admin_from"] = platform_cfg["allow_admin_from"]
+                if "user_allowed_commands" in platform_cfg:
+                    bridged["user_allowed_commands"] = platform_cfg["user_allowed_commands"]
                 if "group_policy" in platform_cfg:
                     bridged["group_policy"] = platform_cfg["group_policy"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
+                if "group_allow_admin_from" in platform_cfg:
+                    bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
+                if "group_user_allowed_commands" in platform_cfg:
+                    bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
                 if plat in (Platform.DISCORD, Platform.SLACK) and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:
@@ -894,6 +926,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["TELEGRAM_REQUIRE_MENTION"] = str(_effective_rm).lower()
                 if "mention_patterns" in telegram_cfg and not os.getenv("TELEGRAM_MENTION_PATTERNS"):
                     os.environ["TELEGRAM_MENTION_PATTERNS"] = json.dumps(telegram_cfg["mention_patterns"])
+                if "guest_mode" in telegram_cfg and not os.getenv("TELEGRAM_GUEST_MODE"):
+                    os.environ["TELEGRAM_GUEST_MODE"] = str(telegram_cfg["guest_mode"]).lower()
                 frc = telegram_cfg.get("free_response_chats")
                 if frc is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_CHATS"):
                     if isinstance(frc, list):
@@ -939,16 +973,17 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(group_allowed_chats, list):
                         group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
                     os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-                if "disable_link_previews" in telegram_cfg:
-                    plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
-                    if not isinstance(plat_data, dict):
-                        plat_data = {}
-                        platforms_data[Platform.TELEGRAM.value] = plat_data
-                    extra = plat_data.setdefault("extra", {})
-                    if not isinstance(extra, dict):
-                        extra = {}
-                        plat_data["extra"] = extra
-                    extra["disable_link_previews"] = telegram_cfg["disable_link_previews"]
+                for _telegram_extra_key in ("guest_mode", "disable_link_previews"):
+                    if _telegram_extra_key in telegram_cfg:
+                        plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
+                        if not isinstance(plat_data, dict):
+                            plat_data = {}
+                            platforms_data[Platform.TELEGRAM.value] = plat_data
+                        extra = plat_data.setdefault("extra", {})
+                        if not isinstance(extra, dict):
+                            extra = {}
+                            plat_data["extra"] = extra
+                        extra[_telegram_extra_key] = telegram_cfg[_telegram_extra_key]
 
             whatsapp_cfg = yaml_cfg.get("whatsapp", {})
             if isinstance(whatsapp_cfg, dict):
@@ -1406,6 +1441,62 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # Microsoft Graph webhook platform
+    msgraph_webhook_enabled = os.getenv("MSGRAPH_WEBHOOK_ENABLED", "").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    msgraph_webhook_port = os.getenv("MSGRAPH_WEBHOOK_PORT")
+    msgraph_webhook_client_state = os.getenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "")
+    msgraph_webhook_resources = os.getenv("MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES", "")
+    msgraph_webhook_allowed_cidrs = os.getenv(
+        "MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS", ""
+    )
+    if (
+        msgraph_webhook_enabled
+        or Platform.MSGRAPH_WEBHOOK in config.platforms
+        or msgraph_webhook_port
+        or msgraph_webhook_client_state
+        or msgraph_webhook_resources
+        or msgraph_webhook_allowed_cidrs
+    ):
+        if Platform.MSGRAPH_WEBHOOK not in config.platforms:
+            config.platforms[Platform.MSGRAPH_WEBHOOK] = PlatformConfig()
+        if msgraph_webhook_enabled:
+            config.platforms[Platform.MSGRAPH_WEBHOOK].enabled = True
+        if msgraph_webhook_port:
+            try:
+                config.platforms[Platform.MSGRAPH_WEBHOOK].extra["port"] = int(
+                    msgraph_webhook_port
+                )
+            except ValueError:
+                pass
+        if msgraph_webhook_client_state:
+            config.platforms[Platform.MSGRAPH_WEBHOOK].extra["client_state"] = (
+                msgraph_webhook_client_state
+            )
+        if msgraph_webhook_resources:
+            resources = [
+                resource.strip()
+                for resource in msgraph_webhook_resources.split(",")
+                if resource.strip()
+            ]
+            if resources:
+                config.platforms[Platform.MSGRAPH_WEBHOOK].extra[
+                    "accepted_resources"
+                ] = resources
+        if msgraph_webhook_allowed_cidrs:
+            cidrs = [
+                cidr.strip()
+                for cidr in msgraph_webhook_allowed_cidrs.split(",")
+                if cidr.strip()
+            ]
+            if cidrs:
+                config.platforms[Platform.MSGRAPH_WEBHOOK].extra[
+                    "allowed_source_cidrs"
+                ] = cidrs
 
     # DingTalk
     dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")

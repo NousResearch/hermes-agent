@@ -45,6 +45,11 @@ def _make_runner(hermes_home=None):
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._failed_platforms = {}
+    # Bypass the destructive-slash confirm gate — this test exercises
+    # update-prompt interception, not the confirm prompt.
+    runner._read_user_config = lambda: {
+        "approvals": {"destructive_slash_confirm": False}
+    }
     return runner
 
 

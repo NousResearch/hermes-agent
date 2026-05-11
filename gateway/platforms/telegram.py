@@ -77,7 +77,6 @@ from gateway.platforms.base import (
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
     utf16_len,
-    _prefix_within_utf16_limit,
 )
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
@@ -180,18 +179,32 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
     if len(headers) < 2:
         return "\n".join(table_block)
 
+    # Detect row-label column: present when data rows have one more cell
+    # than the header row (the row-label column carries no header).
+    first_data_row = _split_markdown_table_row(table_block[2]) if len(table_block) > 2 else []
+    has_row_label_col = len(first_data_row) == len(headers) + 1
+
     rendered_rows: list[str] = []
     for index, row in enumerate(table_block[2:], start=1):
         cells = _split_markdown_table_row(row)
-        if len(cells) < len(headers):
-            cells.extend([""] * (len(headers) - len(cells)))
-        elif len(cells) > len(headers):
-            cells = cells[: len(headers)]
+        if has_row_label_col:
+            # First cell is the row-label (heading); remaining cells align with headers.
+            heading = cells[0] if cells and cells[0] else f"Row {index}"
+            data_cells = cells[1:]
+        else:
+            # No row-label column: use first non-empty cell as heading.
+            heading = next((cell for cell in cells if cell), f"Row {index}")
+            data_cells = cells
 
-        heading = next((cell for cell in cells if cell), f"Row {index}")
+        # Pad or trim data_cells to match headers length.
+        if len(data_cells) < len(headers):
+            data_cells.extend([""] * (len(headers) - len(data_cells)))
+        elif len(data_cells) > len(headers):
+            data_cells = data_cells[: len(headers)]
+
         rendered_rows.append(f"**{heading}**")
         rendered_rows.extend(
-            f"• {header}: {value}" for header, value in zip(headers, cells)
+            f"• {header}: {value}" for header, value in zip(headers, data_cells)
         )
 
     return "\n\n".join(rendered_rows)
@@ -269,6 +282,50 @@ class TelegramAdapter(BasePlatformAdapter):
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
+    # Adaptive text-batch ingress: short messages need a tighter delay so the
+    # first token reaches the agent fast.  Numbers tuned for "feels instant":
+    # ≤320 codepoints (one short paragraph) settles in ~180ms; ≤1024
+    # (a normal paragraph) in ~240ms; longer waits the configured cap.
+    # Always clamped to ``_text_batch_delay_seconds`` so an operator can lower
+    # the cap further via env var.
+    _TEXT_BATCH_FAST_LEN = 320
+    _TEXT_BATCH_FAST_DELAY_S = 0.18
+    _TEXT_BATCH_SHORT_LEN = 1024
+    _TEXT_BATCH_SHORT_DELAY_S = 0.24
+
+    @staticmethod
+    def _env_float_clamped(
+        name: str,
+        default: float,
+        *,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+    ) -> float:
+        """Read a float env var, reject non-finite values, and clamp to bounds.
+
+        Guarantees the returned value is a finite number usable directly in
+        ``asyncio.sleep()`` and similar APIs that reject NaN / Inf.
+        """
+        import math
+
+        raw = os.getenv(name)
+        try:
+            value = float(raw) if raw is not None else float(default)
+        except (TypeError, ValueError):
+            value = float(default)
+        if not math.isfinite(value):
+            value = float(default)
+        if min_value is not None:
+            value = max(value, min_value)
+        if max_value is not None:
+            value = min(value, max_value)
+        return value
+
+    @property
+    def message_len_fn(self):
+        """Telegram measures message length in UTF-16 code units."""
+        return utf16_len
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
@@ -285,9 +342,24 @@ class TelegramAdapter(BasePlatformAdapter):
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
         # Buffer rapid text messages so Telegram client-side splits of long
-        # messages are aggregated into a single MessageEvent.
-        self._text_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", "0.6"))
-        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
+        # messages are aggregated into a single MessageEvent.  Lower defaults
+        # (0.3s / 1.0s instead of 0.6s / 2.0s) let short replies stream
+        # without a noticeable wait — combined with the adaptive fast-path
+        # in ``_calc_text_batch_delay`` below, ≤320-codepoint replies settle
+        # in ~180ms.  All bounds are conservative for Telegram's
+        # ~1 edit/s flood envelope.
+        self._text_batch_delay_seconds = self._env_float_clamped(
+            "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS",
+            0.3,
+            min_value=0.08,
+            max_value=2.0,
+        )
+        self._text_batch_split_delay_seconds = self._env_float_clamped(
+            "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS",
+            1.0,
+            min_value=self._text_batch_delay_seconds,
+            max_value=4.0,
+        )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._polling_error_task: Optional[asyncio.Task] = None
@@ -305,6 +377,30 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Notification mode for message sends.
+        # "important" — only final responses, approvals, and slash confirmations
+        #               trigger notifications; tool progress, streaming, status
+        #               messages are delivered silently via disable_notification.
+        #               This is the default — Telegram users found per-tool-call
+        #               push notifications too noisy.
+        # "all"       — every message triggers a push notification (legacy
+        #               behavior; opt-in via display.platforms.telegram.notifications).
+        self._notifications_mode: str = "important"
+
+    def _notification_kwargs(
+        self, metadata: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Return disable_notification kwargs when the adapter is in silent mode.
+
+        In "important" mode, all message sends are silently delivered
+        (disable_notification=True) unless the caller explicitly requests a
+        notification by setting ``metadata["notify"] = True``.
+        """
+        if getattr(self, "_notifications_mode", "important") != "important":
+            return {}
+        if (metadata or {}).get("notify"):
+            return {}
+        return {"disable_notification": True}
 
     def _is_callback_user_authorized(
         self,
@@ -362,6 +458,63 @@ class TelegramAdapter(BasePlatformAdapter):
         return str(thread_id) if thread_id is not None else None
 
     @classmethod
+    def _metadata_direct_messages_topic_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not metadata:
+            return None
+        topic_id = metadata.get("direct_messages_topic_id") or metadata.get("telegram_direct_messages_topic_id")
+        return str(topic_id) if topic_id is not None else None
+
+    @classmethod
+    def _metadata_reply_to_message_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[int]:
+        if not metadata:
+            return None
+        reply_to = metadata.get("telegram_reply_to_message_id")
+        return int(reply_to) if reply_to is not None else None
+
+    @classmethod
+    def _reply_to_message_id_for_send(
+        cls,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
+        if reply_to:
+            return int(reply_to)
+        if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+            return cls._metadata_reply_to_message_id(metadata)
+        return None
+
+    @classmethod
+    def _thread_kwargs_for_send(
+        cls,
+        chat_id: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+        reply_to_message_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return Telegram send kwargs for forum and direct-message topic routing.
+
+        Supergroup/forum topics use ``message_thread_id``. True Bot API Direct
+        Messages topics can opt in with explicit ``direct_messages_topic_id``
+        metadata. Hermes-created private-chat topic lanes are marked with
+        ``telegram_dm_topic_reply_fallback`` and must send the private topic
+        thread id together with a reply anchor. Live testing showed that either
+        parameter alone can render outside the visible lane.
+        """
+        if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+            if reply_to_message_id is None:
+                reply_to_message_id = cls._metadata_reply_to_message_id(metadata)
+            if reply_to_message_id is None:
+                return {}
+            return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
+        direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
+        if direct_topic_id is not None:
+            return {
+                "message_thread_id": None,
+                "direct_messages_topic_id": int(direct_topic_id),
+            }
+        return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
+
+    @classmethod
     def _message_thread_id_for_send(cls, thread_id: Optional[str]) -> Optional[int]:
         if not thread_id or str(thread_id) == cls._GENERAL_TOPIC_THREAD_ID:
             return None
@@ -383,6 +536,65 @@ class TelegramAdapter(BasePlatformAdapter):
     @staticmethod
     def _is_thread_not_found_error(error: Exception) -> bool:
         return "thread not found" in str(error).lower()
+
+    @staticmethod
+    def _is_bad_request_error(error: Exception) -> bool:
+        name = error.__class__.__name__.lower()
+        if name == "badrequest" or name.endswith("badrequest"):
+            return True
+        try:
+            from telegram.error import BadRequest
+            return isinstance(error, BadRequest)
+        except ImportError:
+            return False
+
+    @classmethod
+    def _should_retry_without_dm_topic_reply_anchor(
+        cls,
+        error: Exception,
+        metadata: Optional[Dict[str, Any]],
+        reply_to_message_id: Optional[int],
+    ) -> bool:
+        return (
+            bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
+            and reply_to_message_id is not None
+            and cls._is_bad_request_error(error)
+            and "message to be replied not found" in str(error).lower()
+        )
+
+    async def _send_with_dm_topic_reply_anchor_retry(
+        self,
+        send_fn: Any,
+        send_kwargs: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]],
+        reply_to_message_id: Optional[int],
+        media_label: str,
+        reset_media: Optional[Any] = None,
+    ) -> Any:
+        """Retry stale private-topic media replies once without the topic anchor."""
+        try:
+            return await send_fn(**send_kwargs)
+        except Exception as send_err:
+            if not self._should_retry_without_dm_topic_reply_anchor(
+                send_err,
+                metadata,
+                reply_to_message_id,
+            ):
+                raise
+            logger.warning(
+                "[%s] Reply target deleted for Telegram %s, "
+                "retrying without reply/topic anchor: %s",
+                self.name,
+                media_label,
+                send_err,
+            )
+            if reset_media is not None:
+                reset_media()
+            retry_kwargs = dict(send_kwargs)
+            retry_kwargs["reply_to_message_id"] = None
+            retry_kwargs.pop("message_thread_id", None)
+            retry_kwargs.pop("direct_messages_topic_id", None)
+            return await send_fn(**retry_kwargs)
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -711,6 +923,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return None
 
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a forum topic for a session handoff.
+
+        Works for DM topics (Bot API 9.4+, requires user to enable Topics
+        in their chat with the bot) and forum supergroups. Returns the
+        ``message_thread_id`` as a string, or ``None`` on failure.
+        """
+        try:
+            chat_id_int = int(parent_chat_id)
+        except (TypeError, ValueError):
+            return None
+        thread_id = await self._create_dm_topic(chat_id_int, name=name)
+        return str(thread_id) if thread_id else None
+
     async def rename_dm_topic(
         self,
         chat_id: int,
@@ -744,7 +974,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             import yaml as _yaml
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 config = _yaml.safe_load(f) or {}
 
             # Navigate to platforms.telegram.extra.dm_topics
@@ -1254,9 +1484,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
             for i, chunk in enumerate(chunks):
-                should_thread = self._should_thread_reply(reply_to, i)
-                reply_to_id = int(reply_to) if should_thread else None
-                effective_thread_id = self._message_thread_id_for_send(thread_id)
+                metadata_reply_to = self._metadata_reply_to_message_id(metadata)
+                reply_to_source = reply_to or (
+                    str(metadata_reply_to)
+                    if metadata and metadata.get("telegram_dm_topic_reply_fallback") and metadata_reply_to is not None else None
+                )
+                if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+                    should_thread = reply_to_source is not None
+                else:
+                    should_thread = self._should_thread_reply(reply_to_source, i)
+                reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
+                thread_kwargs = self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                )
+                effective_thread_id = thread_kwargs.get("message_thread_id")
 
                 msg = None
                 for _send_attempt in range(3):
@@ -1268,8 +1512,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
-                                message_thread_id=effective_thread_id,
+                                **thread_kwargs,
                                 **self._link_preview_kwargs(),
+                                **self._notification_kwargs(metadata),
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -1281,8 +1526,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
-                                    message_thread_id=effective_thread_id,
+                                    **thread_kwargs,
                                     **self._link_preview_kwargs(),
+                                    **self._notification_kwargs(metadata),
                                 )
                             else:
                                 raise
@@ -1302,17 +1548,30 @@ class TelegramAdapter(BasePlatformAdapter):
                                     self.name, effective_thread_id,
                                 )
                                 effective_thread_id = None
+                                thread_kwargs = {"message_thread_id": None}
                                 continue
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
                                 # Original message was deleted before we
-                                # could reply — clear reply target and retry
-                                # so the response is still delivered.
+                                # could reply. For private-topic fallback
+                                # sends, message_thread_id is only valid with
+                                # the reply anchor, so drop both together.
                                 logger.warning(
                                     "[%s] Reply target deleted, retrying without reply_to: %s",
                                     self.name, send_err,
                                 )
                                 reply_to_id = None
+                                if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+                                    thread_kwargs = {}
+                                    effective_thread_id = None
+                                else:
+                                    thread_kwargs = self._thread_kwargs_for_send(
+                                        chat_id,
+                                        thread_id,
+                                        metadata,
+                                        reply_to_message_id=reply_to_id,
+                                    )
+                                    effective_thread_id = thread_kwargs.get("message_thread_id")
                                 continue
                             # Other BadRequest errors are permanent — don't retry
                             raise
@@ -1353,10 +1612,18 @@ class TelegramAdapter(BasePlatformAdapter):
             
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
+            err_str = str(e).lower()
+            # Message too long — content exceeded 4096 chars. Return failure so
+            # stream consumer enters fallback mode and sends the remainder.
+            if "message_too_long" in err_str or "too long" in err_str:
+                logger.debug(
+                    "[%s] send() content too long, falling back to new-message continuation",
+                    self.name,
+                )
+                return SendResult(success=False, error="message_too_long")
             # TimedOut means the request may have reached Telegram —
             # mark as non-retryable so _send_with_retry() doesn't re-send.
             _to = locals().get("_TimedOut")
-            err_str = str(e).lower()
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             return SendResult(success=False, error=str(e), retryable=not is_timeout)
 
@@ -1368,10 +1635,35 @@ class TelegramAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Telegram message."""
+        """Edit a previously sent Telegram message.
+
+        Telegram caps single-message text at 4096 UTF-16 codeunits.  Streaming
+        replies that grow past this limit must NOT be silently truncated and
+        must NOT return failure (the consumer would re-send and create a
+        duplicate).  Instead this method split-and-delivers: edit the
+        existing message with the first chunk and send the rest as
+        continuation messages, returning the final chunk's id so subsequent
+        edits target the most recent visible message.
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        # Pre-flight: if content already exceeds the limit, split-and-deliver
+        # without round-tripping a doomed edit.
+        if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
+            return await self._edit_overflow_split(
+                chat_id, message_id, content, finalize=finalize,
+            )
+
         try:
+            if not finalize:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    text=content,
+                )
+                return SendResult(success=True, message_id=message_id)
+
             formatted = self.format_message(content)
             try:
                 await self._bot.edit_message_text(
@@ -1396,22 +1688,17 @@ class TelegramAdapter(BasePlatformAdapter):
             # "Message is not modified" — content identical, treat as success
             if "not modified" in err_str:
                 return SendResult(success=True, message_id=message_id)
-            # Message too long — content exceeded 4096 chars (e.g. during
-            # streaming).  Truncate and succeed so the stream consumer can
-            # split the overflow into a new message instead of dying.
+            # Reactive split-and-deliver: parse_mode formatting can inflate
+            # the payload past the limit even when the raw text was under
+            # (e.g. MarkdownV2 escapes).  Same fix as the pre-flight path.
             if "message_too_long" in err_str or "too long" in err_str:
-                truncated = _prefix_within_utf16_limit(
-                    content, self.MAX_MESSAGE_LENGTH - 20
-                ) + "…"
-                try:
-                    await self._bot.edit_message_text(
-                        chat_id=int(chat_id),
-                        message_id=int(message_id),
-                        text=truncated,
-                    )
-                except Exception:
-                    pass  # best-effort truncation
-                return SendResult(success=True, message_id=message_id)
+                logger.debug(
+                    "[%s] edit_message overflow (%d UTF-16 > %d), splitting",
+                    self.name, utf16_len(content), self.MAX_MESSAGE_LENGTH,
+                )
+                return await self._edit_overflow_split(
+                    chat_id, message_id, content, finalize=finalize,
+                )
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.
@@ -1447,6 +1734,147 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    async def _edit_overflow_split(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool,
+    ) -> SendResult:
+        """Split an oversized edit across the existing message + continuations.
+
+        Edit the original ``message_id`` with chunk 1 (with the platform's
+        usual ``(1/N)`` suffix preserved), then send the remaining chunks as
+        new messages threaded as replies to the previous chunk so the user
+        sees them grouped.  Returns ``SendResult(success=True,
+        message_id=<last-chunk-id>, continuation_message_ids=(...))`` so the
+        stream consumer can keep editing the most recent visible message
+        and the gateway has full visibility into every message id we put on
+        screen.
+
+        Falls back to ``SendResult(success=False)`` only if even the first-
+        chunk edit fails — that's a real adapter problem, not an overflow.
+        """
+        chunks = self.truncate_message(
+            content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+        )
+        if len(chunks) <= 1:
+            # Defensive: shouldn't happen given the caller's pre-flight, but
+            # if truncate_message returned a single chunk just edit normally.
+            chunks = [content]
+
+        # Step 1 — edit the existing message with the first chunk.
+        first_chunk = chunks[0]
+        try:
+            if finalize:
+                # Use format_message + parse_mode for the final chunk;
+                # mirror edit_message's main happy-path.
+                formatted = self.format_message(first_chunk)
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        text=formatted,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                except Exception as fmt_err:
+                    if "not modified" not in str(fmt_err).lower():
+                        await self._bot.edit_message_text(
+                            chat_id=int(chat_id),
+                            message_id=int(message_id),
+                            text=first_chunk,
+                        )
+            else:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    text=first_chunk,
+                )
+        except Exception as e:
+            err_str = str(e).lower()
+            if "not modified" in err_str:
+                # First chunk identical to current text — fall through to
+                # send continuations.
+                pass
+            else:
+                logger.error(
+                    "[%s] Overflow split: first-chunk edit failed: %s",
+                    self.name, e, exc_info=True,
+                )
+                return SendResult(success=False, error=str(e))
+
+        # Step 2 — send each remaining chunk as a continuation message,
+        # threaded as a reply to the previous so the user sees them as a
+        # contiguous block.  We call self._bot.send_message directly so the
+        # continuation skips ``self.send``'s own pre-chunking pass (chunks
+        # are already correctly sized).  Best-effort MarkdownV2 with plain
+        # fallback, mirroring send().
+        continuation_ids: list[str] = []
+        prev_id = message_id
+        for chunk in chunks[1:]:
+            sent_msg = None
+            for use_markdown in (True, False) if finalize else (False,):
+                try:
+                    text = self.format_message(chunk) if use_markdown else chunk
+                    sent_msg = await self._bot.send_message(
+                        chat_id=int(chat_id),
+                        text=text,
+                        parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
+                        reply_to_message_id=int(prev_id) if prev_id else None,
+                    )
+                    break
+                except Exception as send_err:
+                    if "reply message not found" in str(send_err).lower():
+                        # Drop the reply anchor and try again.
+                        try:
+                            sent_msg = await self._bot.send_message(
+                                chat_id=int(chat_id),
+                                text=chunk,
+                            )
+                            break
+                        except Exception as _retry_err:
+                            logger.warning(
+                                "[%s] Overflow continuation no-reply retry failed: %s",
+                                self.name, _retry_err,
+                            )
+                            sent_msg = None
+                            break
+                    if use_markdown:
+                        # try plain text on next loop iteration
+                        continue
+                    logger.warning(
+                        "[%s] Overflow continuation send failed: %s",
+                        self.name, send_err,
+                    )
+                    sent_msg = None
+                    break
+            if sent_msg is None:
+                # Continuation failed — the user has chunk 1 + however many
+                # continuations succeeded.  Report success with what we got
+                # so the stream consumer knows the edit landed; the
+                # remaining tail is lost on this attempt and the next
+                # streaming tick may retry.
+                logger.warning(
+                    "[%s] Overflow split: stopped at %d/%d chunks delivered",
+                    self.name, 1 + len(continuation_ids), len(chunks),
+                )
+                break
+            new_id = str(getattr(sent_msg, "message_id", "")) or prev_id
+            continuation_ids.append(new_id)
+            prev_id = new_id
+
+        last_id = continuation_ids[-1] if continuation_ids else message_id
+        logger.debug(
+            "[%s] Overflow split delivered %d chunks; last_id=%s",
+            self.name, 1 + len(continuation_ids), last_id,
+        )
+        return SendResult(
+            success=True,
+            message_id=last_id,
+            continuation_message_ids=tuple(continuation_ids),
+        )
+
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a previously sent Telegram message.
 
@@ -1472,6 +1900,109 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return False
 
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Telegram supports sendMessageDraft for private chats only.
+
+        Bot API 9.5 (March 2026) opened ``sendMessageDraft`` to all bots
+        unconditionally for private (DM) chats.  Groups, supergroups, and
+        channels still rely on the edit-based path.
+
+        We additionally require ``self._bot`` to expose ``send_message_draft``
+        (added to python-telegram-bot in 22.6); older PTB installs gracefully
+        fall back to the edit path even on DMs.
+        """
+        if not self._bot or not hasattr(self._bot, "send_message_draft"):
+            return False
+        return (chat_type or "").lower() in ("dm", "private")
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Stream a partial message via Telegram's native sendMessageDraft.
+
+        The Bot API animates the preview when the same ``draft_id`` is reused
+        across consecutive calls in the same chat.  When the response
+        finishes, the caller sends the final text via the normal ``send``
+        path; the draft preview clears naturally on the client (Telegram has
+        no Bot API to "promote" a draft to a real message — the final
+        ``sendMessage`` is what the user receives in their history).
+        """
+        if not self._bot:
+            return SendResult(success=False, error="not_connected")
+        if not hasattr(self._bot, "send_message_draft"):
+            return SendResult(success=False, error="api_unavailable")
+
+        # Trim to the same UTF-16 budget the platform enforces on regular
+        # sends.  Drafts have the same length contract as messages.
+        text = content if len(content) <= self.MAX_MESSAGE_LENGTH else \
+            self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
+
+        kwargs: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "draft_id": int(draft_id),
+            "text": text,
+        }
+        thread_id = self._metadata_thread_id(metadata)
+        if thread_id is not None:
+            kwargs["message_thread_id"] = thread_id
+
+        try:
+            ok = await self._bot.send_message_draft(**kwargs)
+            if ok:
+                # Drafts have no message_id; we report success without one
+                # so the caller knows the animation frame landed.
+                return SendResult(success=True, message_id=None)
+            return SendResult(success=False, error="draft_rejected")
+        except Exception as e:
+            # Most likely: BadRequest because this bot/chat doesn't allow
+            # drafts, or a transient server hiccup.  The caller treats any
+            # failure as "fall back to edit-based for this response".
+            logger.debug(
+                "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
+                self.name, chat_id, draft_id, e,
+            )
+            return SendResult(success=False, error=str(e))
+
+    async def _send_message_with_thread_fallback(self, **kwargs):
+        """Send a Telegram message, retrying once without message_thread_id
+        if Telegram returns 'Message thread not found'.
+
+        Used for control-style sends (approval prompts, model picker,
+        update prompts) that can carry a stale thread_id from a DM
+        reply chain.  The streaming send loop has its own equivalent
+        (PR #3390) at the body of ``send``; this helper applies the
+        same retry pattern to the non-streaming control paths.
+        """
+        if not self._bot:
+            raise RuntimeError("Not connected")
+
+        message_thread_id = kwargs.get("message_thread_id")
+        try:
+            return await self._bot.send_message(**kwargs)
+        except Exception as send_err:
+            if (
+                message_thread_id is not None
+                and self._is_bad_request_error(send_err)
+                and self._is_thread_not_found_error(send_err)
+            ):
+                logger.warning(
+                    "[%s] Thread %s not found for control message, retrying without message_thread_id",
+                    self.name,
+                    message_thread_id,
+                )
+                retry_kwargs = dict(kwargs)
+                retry_kwargs.pop("message_thread_id", None)
+                return await self._bot.send_message(**retry_kwargs)
+            raise
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
@@ -1494,13 +2025,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 ]
             ])
             thread_id = self._metadata_thread_id(metadata)
-            message_thread_id = self._message_thread_id_for_send(thread_id)
-            msg = await self._bot.send_message(
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard,
-                message_thread_id=message_thread_id,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                ),
                 **self._link_preview_kwargs(),
             )
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -1558,11 +2095,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 "reply_markup": keyboard,
                 **self._link_preview_kwargs(),
             }
-            message_thread_id = self._message_thread_id_for_send(thread_id)
-            if message_thread_id is not None:
-                kwargs["message_thread_id"] = message_thread_id
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                )
+            )
 
-            msg = await self._bot.send_message(**kwargs)
+            msg = await self._send_message_with_thread_fallback(**kwargs)
 
             # Store session_key keyed by approval_id for the callback handler
             self._approval_state[approval_id] = session_key
@@ -1603,11 +2147,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 "reply_markup": keyboard,
                 **self._link_preview_kwargs(),
             }
-            message_thread_id = self._message_thread_id_for_send(thread_id)
-            if message_thread_id is not None:
-                kwargs["message_thread_id"] = message_thread_id
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                )
+            )
 
-            msg = await self._bot.send_message(**kwargs)
+            msg = await self._send_message_with_thread_fallback(**kwargs)
             self._slash_confirm_state[confirm_id] = session_key
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -1664,12 +2215,19 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             thread_id = metadata.get("thread_id") if metadata else None
-            msg = await self._bot.send_message(
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard,
-                message_thread_id=int(thread_id) if thread_id else None,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                ),
                 **self._link_preview_kwargs(),
             )
 
@@ -2046,17 +2604,47 @@ class TelegramAdapter(BasePlatformAdapter):
                         session_key, confirm_id, choice,
                     )
                     if result_text and query.message:
-                        # Inherit the prompt message's thread so the reply
-                        # lands in the same supergroup topic / reply chain.
+                        # Inherit the prompt message's topic. Supergroup forums
+                        # use message_thread_id; Telegram private DM-topic lanes
+                        # need both the private topic id and the prompt reply anchor.
                         thread_id = getattr(query.message, "message_thread_id", None)
+                        chat = getattr(query.message, "chat", None)
+                        chat_type = getattr(chat, "type", None)
+                        prompt_message_id = getattr(query.message, "message_id", None)
                         send_kwargs: Dict[str, Any] = {
                             "chat_id": int(query.message.chat_id),
                             "text": result_text,
                             "parse_mode": ParseMode.MARKDOWN,
                             **self._link_preview_kwargs(),
                         }
-                        if thread_id is not None:
-                            send_kwargs["message_thread_id"] = thread_id
+                        chat_type_value = getattr(chat_type, "value", chat_type)
+                        is_private_chat = str(chat_type_value).lower() in {
+                            "private",
+                            str(ChatType.PRIVATE).lower(),
+                            str(getattr(ChatType.PRIVATE, "value", ChatType.PRIVATE)).lower(),
+                        }
+                        if thread_id is not None and is_private_chat and prompt_message_id is not None:
+                            reply_to_id = int(prompt_message_id)
+                            send_kwargs["reply_to_message_id"] = reply_to_id
+                            send_kwargs.update(
+                                self._thread_kwargs_for_send(
+                                    str(query.message.chat_id),
+                                    str(thread_id),
+                                    {
+                                        "thread_id": str(thread_id),
+                                        "telegram_dm_topic_reply_fallback": True,
+                                    },
+                                    reply_to_message_id=reply_to_id,
+                                )
+                            )
+                        elif thread_id is not None:
+                            send_kwargs.update(
+                                self._thread_kwargs_for_send(
+                                    str(query.message.chat_id),
+                                    str(thread_id),
+                                    {"thread_id": str(thread_id)},
+                                )
+                            )
                         await self._bot.send_message(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
@@ -2137,22 +2725,52 @@ class TelegramAdapter(BasePlatformAdapter):
                 # .ogg / .opus files -> send as voice (round playable bubble)
                 if ext in (".ogg", ".opus"):
                     _voice_thread = self._metadata_thread_id(metadata)
-                    msg = await self._bot.send_voice(
-                        chat_id=int(chat_id),
-                        voice=audio_file,
-                        caption=caption[:1024] if caption else None,
-                        reply_to_message_id=int(reply_to) if reply_to else None,
-                        message_thread_id=self._message_thread_id_for_send(_voice_thread),
+                    reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+                    voice_thread_kwargs = self._thread_kwargs_for_send(
+                        chat_id,
+                        _voice_thread,
+                        metadata,
+                        reply_to_message_id=reply_to_id,
+                    )
+                    msg = await self._send_with_dm_topic_reply_anchor_retry(
+                        self._bot.send_voice,
+                        {
+                            "chat_id": int(chat_id),
+                            "voice": audio_file,
+                            "caption": caption[:1024] if caption else None,
+                            "reply_to_message_id": reply_to_id,
+                            **voice_thread_kwargs,
+                            **self._notification_kwargs(metadata),
+                        },
+                        metadata,
+                        reply_to_id,
+                        "voice",
+                        reset_media=lambda: audio_file.seek(0),
                     )
                 elif ext in (".mp3", ".m4a"):
                     # Telegram's Bot API sendAudio only accepts MP3 / M4A.
                     _audio_thread = self._metadata_thread_id(metadata)
-                    msg = await self._bot.send_audio(
-                        chat_id=int(chat_id),
-                        audio=audio_file,
-                        caption=caption[:1024] if caption else None,
-                        reply_to_message_id=int(reply_to) if reply_to else None,
-                        message_thread_id=self._message_thread_id_for_send(_audio_thread),
+                    reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+                    audio_thread_kwargs = self._thread_kwargs_for_send(
+                        chat_id,
+                        _audio_thread,
+                        metadata,
+                        reply_to_message_id=reply_to_id,
+                    )
+                    msg = await self._send_with_dm_topic_reply_anchor_retry(
+                        self._bot.send_audio,
+                        {
+                            "chat_id": int(chat_id),
+                            "audio": audio_file,
+                            "caption": caption[:1024] if caption else None,
+                            "reply_to_message_id": reply_to_id,
+                            **audio_thread_kwargs,
+                            **self._notification_kwargs(metadata),
+                        },
+                        metadata,
+                        reply_to_id,
+                        "audio",
+                        reset_media=lambda: audio_file.seek(0),
                     )
                 else:
                     # Formats Telegram can't play natively (.wav, .flac, ...)
@@ -2172,7 +2790,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            return await super().send_voice(chat_id, audio_path, caption, reply_to)
+            return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
 
     async def send_multiple_images(
         self,
@@ -2227,7 +2845,6 @@ class TelegramAdapter(BasePlatformAdapter):
 
         from urllib.parse import unquote as _unquote
         _thread = self._metadata_thread_id(metadata)
-        _thread_id = self._message_thread_id_for_send(_thread)
 
         # Chunk into groups of 10 (Telegram's album limit)
         CHUNK = 10
@@ -2263,10 +2880,34 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Sending media group of %d photo(s) (chunk %d/%d)",
                     self.name, len(media), chunk_idx + 1, len(chunks),
                 )
-                await self._bot.send_media_group(
-                    chat_id=int(chat_id),
-                    media=media,
-                    message_thread_id=_thread_id,
+                reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+                thread_kwargs = self._thread_kwargs_for_send(
+                    chat_id,
+                    _thread,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                )
+
+                def _reset_opened_files() -> None:
+                    for fh in opened_files:
+                        try:
+                            fh.seek(0)
+                        except Exception:
+                            pass
+
+                await self._send_with_dm_topic_reply_anchor_retry(
+                    self._bot.send_media_group,
+                    {
+                        "chat_id": int(chat_id),
+                        "media": media,
+                        "reply_to_message_id": reply_to_id,
+                        **thread_kwargs,
+                        **self._notification_kwargs(metadata),
+                    },
+                    metadata,
+                    reply_to_id,
+                    "media group",
+                    reset_media=_reset_opened_files,
                 )
             except Exception as e:
                 logger.warning(
@@ -2303,13 +2944,28 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
 
             _thread = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            thread_kwargs = self._thread_kwargs_for_send(
+                chat_id,
+                _thread,
+                metadata,
+                reply_to_message_id=reply_to_id,
+            )
             with open(image_path, "rb") as image_file:
-                msg = await self._bot.send_photo(
-                    chat_id=int(chat_id),
-                    photo=image_file,
-                    caption=caption[:1024] if caption else None,
-                    reply_to_message_id=int(reply_to) if reply_to else None,
-                    message_thread_id=self._message_thread_id_for_send(_thread),
+                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                    self._bot.send_photo,
+                    {
+                        "chat_id": int(chat_id),
+                        "photo": image_file,
+                        "caption": caption[:1024] if caption else None,
+                        "reply_to_message_id": reply_to_id,
+                        **thread_kwargs,
+                        **self._notification_kwargs(metadata),
+                    },
+                    metadata,
+                    reply_to_id,
+                    "photo",
+                    reset_media=lambda: image_file.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -2360,7 +3016,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     doc_err,
                     exc_info=True,
                 )
-                return await super().send_image_file(chat_id, image_path, caption, reply_to)
+                return await super().send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
 
     async def send_document(
         self,
@@ -2382,20 +3038,35 @@ class TelegramAdapter(BasePlatformAdapter):
 
             display_name = file_name or os.path.basename(file_path)
             _thread = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            thread_kwargs = self._thread_kwargs_for_send(
+                chat_id,
+                _thread,
+                metadata,
+                reply_to_message_id=reply_to_id,
+            )
 
             with open(file_path, "rb") as f:
-                msg = await self._bot.send_document(
-                    chat_id=int(chat_id),
-                    document=f,
-                    filename=display_name,
-                    caption=caption[:1024] if caption else None,
-                    reply_to_message_id=int(reply_to) if reply_to else None,
-                    message_thread_id=self._message_thread_id_for_send(_thread),
+                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                    self._bot.send_document,
+                    {
+                        "chat_id": int(chat_id),
+                        "document": f,
+                        "filename": display_name,
+                        "caption": caption[:1024] if caption else None,
+                        "reply_to_message_id": reply_to_id,
+                        **thread_kwargs,
+                        **self._notification_kwargs(metadata),
+                    },
+                    metadata,
+                    reply_to_id,
+                    "document",
+                    reset_media=lambda: f.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send document: {e}")
-            return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
     async def send_video(
         self,
@@ -2415,18 +3086,33 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=self._missing_media_path_error("Video", video_path))
 
             _thread = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            thread_kwargs = self._thread_kwargs_for_send(
+                chat_id,
+                _thread,
+                metadata,
+                reply_to_message_id=reply_to_id,
+            )
             with open(video_path, "rb") as f:
-                msg = await self._bot.send_video(
-                    chat_id=int(chat_id),
-                    video=f,
-                    caption=caption[:1024] if caption else None,
-                    reply_to_message_id=int(reply_to) if reply_to else None,
-                    message_thread_id=self._message_thread_id_for_send(_thread),
+                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                    self._bot.send_video,
+                    {
+                        "chat_id": int(chat_id),
+                        "video": f,
+                        "caption": caption[:1024] if caption else None,
+                        "reply_to_message_id": reply_to_id,
+                        **thread_kwargs,
+                        **self._notification_kwargs(metadata),
+                    },
+                    metadata,
+                    reply_to_id,
+                    "video",
+                    reset_media=lambda: f.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send video: {e}")
-            return await super().send_video(chat_id, video_path, caption, reply_to)
+            return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
 
     async def send_image(
         self,
@@ -2452,12 +3138,26 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             # Telegram can send photos directly from URLs (up to ~5MB)
             _photo_thread = self._metadata_thread_id(metadata)
-            msg = await self._bot.send_photo(
-                chat_id=int(chat_id),
-                photo=image_url,
-                caption=caption[:1024] if caption else None,  # Telegram caption limit
-                reply_to_message_id=int(reply_to) if reply_to else None,
-                message_thread_id=self._message_thread_id_for_send(_photo_thread),
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            photo_thread_kwargs = self._thread_kwargs_for_send(
+                chat_id,
+                _photo_thread,
+                metadata,
+                reply_to_message_id=reply_to_id,
+            )
+            msg = await self._send_with_dm_topic_reply_anchor_retry(
+                self._bot.send_photo,
+                {
+                    "chat_id": int(chat_id),
+                    "photo": image_url,
+                    "caption": caption[:1024] if caption else None,
+                    "reply_to_message_id": reply_to_id,
+                    **photo_thread_kwargs,
+                    **self._notification_kwargs(metadata),
+                },
+                metadata,
+                reply_to_id,
+                "URL photo",
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -2474,13 +3174,26 @@ class TelegramAdapter(BasePlatformAdapter):
                     resp = await client.get(image_url)
                     resp.raise_for_status()
                     image_data = resp.content
-                
-                msg = await self._bot.send_photo(
-                    chat_id=int(chat_id),
-                    photo=image_data,
-                    caption=caption[:1024] if caption else None,
-                    reply_to_message_id=int(reply_to) if reply_to else None,
-                    message_thread_id=self._message_thread_id_for_send(_photo_thread),
+
+                upload_thread_kwargs = self._thread_kwargs_for_send(
+                    chat_id,
+                    _photo_thread,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                )
+                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                    self._bot.send_photo,
+                    {
+                        "chat_id": int(chat_id),
+                        "photo": image_data,
+                        "caption": caption[:1024] if caption else None,
+                        "reply_to_message_id": reply_to_id,
+                        **upload_thread_kwargs,
+                        **self._notification_kwargs(metadata),
+                    },
+                    metadata,
+                    reply_to_id,
+                    "uploaded photo",
                 )
                 return SendResult(success=True, message_id=str(msg.message_id))
             except Exception as e2:
@@ -2491,7 +3204,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
                 # Final fallback: send URL as text
-                return await super().send_image(chat_id, image_url, caption, reply_to)
+                return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
     async def send_animation(
         self,
@@ -2507,12 +3220,26 @@ class TelegramAdapter(BasePlatformAdapter):
         
         try:
             _anim_thread = self._metadata_thread_id(metadata)
-            msg = await self._bot.send_animation(
-                chat_id=int(chat_id),
-                animation=animation_url,
-                caption=caption[:1024] if caption else None,
-                reply_to_message_id=int(reply_to) if reply_to else None,
-                message_thread_id=self._message_thread_id_for_send(_anim_thread),
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            animation_thread_kwargs = self._thread_kwargs_for_send(
+                chat_id,
+                _anim_thread,
+                metadata,
+                reply_to_message_id=reply_to_id,
+            )
+            msg = await self._send_with_dm_topic_reply_anchor_retry(
+                self._bot.send_animation,
+                {
+                    "chat_id": int(chat_id),
+                    "animation": animation_url,
+                    "caption": caption[:1024] if caption else None,
+                    "reply_to_message_id": reply_to_id,
+                    **animation_thread_kwargs,
+                    **self._notification_kwargs(metadata),
+                },
+                metadata,
+                reply_to_id,
+                "animation",
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -2523,13 +3250,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             # Fallback: try as a regular photo
-            return await self.send_image(chat_id, animation_url, caption, reply_to)
+            return await self.send_image(chat_id, animation_url, caption, reply_to, metadata=metadata)
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
         if self._bot:
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
+                # Skip the Bot API call entirely for Hermes-created DM topic
+                # lanes: send_chat_action only accepts message_thread_id, which
+                # Telegram's Bot API 10.0 rejects for these lanes. The send
+                # path uses the reply-anchor fallback instead, but typing has
+                # no equivalent — skipping avoids noisy "thread not found"
+                # debug logs on every typing tick.
+                if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+                    return
                 message_thread_id = self._message_thread_id_for_typing(_typing_thread)
                 # No retry-without-thread fallback here: _message_thread_id_for_typing
                 # already maps the forum General topic to None, so any non-None value
@@ -2767,6 +3502,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
+    def _telegram_guest_mode(self) -> bool:
+        """Return whether non-allowlisted groups may trigger via direct @mention."""
+        configured = self.config.extra.get("guest_mode")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("TELEGRAM_GUEST_MODE", "false").lower() in ("true", "1", "yes", "on")
+
     def _telegram_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
@@ -2778,8 +3522,9 @@ class TelegramAdapter(BasePlatformAdapter):
     def _telegram_allowed_chats(self) -> set[str]:
         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
 
-        When non-empty, group messages from chats NOT in this set are silently
-        ignored — even if the bot is @mentioned.  DMs are never filtered.
+        When non-empty, group messages from chats NOT in this set are
+        silently ignored unless ``guest_mode`` is enabled and the bot is
+        explicitly @mentioned.  DMs are never filtered.
         Empty set means no restriction (fully backward compatible).
         """
         raw = self.config.extra.get("allowed_chats")
@@ -2926,6 +3671,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     return True
         return False
 
+    def _is_guest_mention(self, message: Message) -> bool:
+        """Return True for the narrow guest-mode bypass: explicit bot mention.
+
+        The caller (:meth:`_should_process_message`) has already verified
+        the message is a group chat, so that check is not repeated here.
+        """
+        return self._telegram_guest_mode() and self._message_mentions_bot(message)
+
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
         if not text or not self._bot or not getattr(self._bot, "username", None):
             return text
@@ -2937,16 +3690,18 @@ class TelegramAdapter(BasePlatformAdapter):
         """Apply Telegram group trigger rules.
 
         DMs remain unrestricted. Group/supergroup messages are accepted when:
-        - the chat passes the ``allowed_chats`` whitelist (when set)
+        - the chat passes the ``allowed_chats`` whitelist (when set), or
+          ``guest_mode`` is enabled and the bot is explicitly mentioned
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
 
-        When ``allowed_chats`` is non-empty, it acts as a hard gate — messages
-        from any chat not in the list are ignored regardless of the other
-        rules.  When ``require_mention`` is enabled, slash commands are not given
+        When ``allowed_chats`` is non-empty, it remains a hard gate except for
+        the narrow ``guest_mode`` bypass: group/supergroup messages that
+        explicitly @mention this bot. Replies and regex wake words do not bypass
+        ``allowed_chats``. When ``require_mention`` is enabled, slash commands are not given
         special treatment — they must pass the same mention/reply checks
         as any other group message.  Users can still trigger commands via
         the Telegram bot menu (``/command@botname``) or by explicitly
@@ -2955,14 +3710,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._is_group_chat(message):
             return True
-        # allowed_chats check (whitelist — must pass before other gating).
-        # When set, group messages from chats NOT in this whitelist are
-        # silently ignored, even if @mentioned.  DMs are already excluded above.
-        allowed = self._telegram_allowed_chats()
-        if allowed:
-            chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
-            if chat_id_str not in allowed:
-                return False
+
         thread_id = getattr(message, "message_thread_id", None)
         if thread_id is not None:
             try:
@@ -2970,13 +3718,31 @@ class TelegramAdapter(BasePlatformAdapter):
                     return False
             except (TypeError, ValueError):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
-        if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
+
+        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+
+        # Resolve guest-mode mention bypass once so _message_mentions_bot
+        # is not called redundantly in the normal flow below.
+        guest_mention = self._is_guest_mention(message)
+
+        # allowed_chats check (whitelist). When set, group messages from chats
+        # outside the whitelist are ignored unless guest_mode permits this
+        # exact message as an explicit direct mention. DMs are excluded above.
+        allowed = self._telegram_allowed_chats()
+        if allowed and chat_id_str not in allowed:
+            return guest_mention
+
+        if guest_mention:
+            return True
+        if chat_id_str in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():
             return True
         if self._is_reply_to_bot(message):
             return True
-        if self._message_mentions_bot(message):
+        # When guest_mode is True, _is_guest_mention already called
+        # _message_mentions_bot above — skip the redundant second call.
+        if not self._telegram_guest_mode() and self._message_mentions_bot(message):
             return True
         return self._message_matches_mention_patterns(message)
 
@@ -3096,12 +3862,27 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         current_task = asyncio.current_task()
         try:
-            # Adaptive delay: if the latest chunk is near Telegram's 4096-char
-            # split point, a continuation is almost certain — wait longer.
+            # Adaptive delay tiers:
+            #  - last chunk ≥ _SPLIT_THRESHOLD: a continuation is almost
+            #    certain → wait the longer split delay.
+            #  - total accumulated text ≤ _TEXT_BATCH_FAST_LEN (~320 cp):
+            #    short message → cap delay at _TEXT_BATCH_FAST_DELAY_S
+            #    so the agent sees the text near-instantly.
+            #  - total ≤ _TEXT_BATCH_SHORT_LEN (~1024 cp):
+            #    medium → cap at _TEXT_BATCH_SHORT_DELAY_S.
+            #  - otherwise: use the configured cap.
+            # Tiers compose with operator overrides via the env-var-driven
+            # ``_text_batch_delay_seconds`` (e.g. an operator who sets the
+            # cap below 0.18s gets that lower number on every tier).
             pending = self._pending_text_batches.get(key)
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            total_len = len(getattr(pending, "text", "") or "") if pending else 0
             if last_len >= self._SPLIT_THRESHOLD:
                 delay = self._text_batch_split_delay_seconds
+            elif total_len <= self._TEXT_BATCH_FAST_LEN:
+                delay = min(self._text_batch_delay_seconds, self._TEXT_BATCH_FAST_DELAY_S)
+            elif total_len <= self._TEXT_BATCH_SHORT_LEN:
+                delay = min(self._text_batch_delay_seconds, self._TEXT_BATCH_SHORT_DELAY_S)
             else:
                 delay = self._text_batch_delay_seconds
             await asyncio.sleep(delay)
@@ -3516,7 +4297,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             import yaml as _yaml
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 config = _yaml.safe_load(f) or {}
 
             dm_topics = (
@@ -3620,9 +4401,24 @@ class TelegramAdapter(BasePlatformAdapter):
         elif chat.type == ChatType.CHANNEL:
             chat_type = "channel"
 
-        # Resolve DM topic name and skill binding
+        # Resolve DM topic name and skill binding.
+        # In private chats, only preserve thread ids for real topic messages
+        # (is_topic_message=True).  Telegram puts message_thread_id on every
+        # DM that is a reply, even when the user is just replying to a
+        # previous message in the same DM — that bogus id then routes to a
+        # nonexistent thread and Telegram returns 'Message thread not found'
+        # on send (#3206).
         thread_id_raw = message.message_thread_id
-        thread_id_str = str(thread_id_raw) if thread_id_raw is not None else None
+        is_topic_message = bool(getattr(message, "is_topic_message", False))
+        thread_id_str = None
+        if thread_id_raw is not None:
+            if chat_type == "group":
+                thread_id_str = str(thread_id_raw)
+            elif chat_type == "dm" and is_topic_message:
+                thread_id_str = str(thread_id_raw)
+        # For forum groups without an explicit topic, default to the
+        # General-topic id so the gateway routes back to the General topic
+        # rather than dropping into the bot's main channel (#22423).
         if chat_type == "group" and thread_id_str is None and getattr(chat, "is_forum", False):
             thread_id_str = self._GENERAL_TOPIC_THREAD_ID
         chat_topic = None
@@ -3666,12 +4462,28 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
         )
         
-        # Extract reply context if this message is a reply
+        # Extract reply context if this message is a reply.
+        # Prefer Telegram's native partial quote (message.quote, TextQuote)
+        # so a user replying to a single selected substring of a prior
+        # multi-section message doesn't get the whole replied-to message
+        # injected into the agent's context — which can cause the agent
+        # to act on unrelated actionable-looking text the user didn't
+        # quote (#22619). Fall back to the full replied-to message text
+        # / caption when no native quote is present.
         reply_to_id = None
         reply_to_text = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
-            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+            quote = getattr(message, "quote", None)
+            quote_text = getattr(quote, "text", None) if quote is not None else None
+            if quote_text:
+                reply_to_text = quote_text
+            else:
+                reply_to_text = (
+                    message.reply_to_message.text
+                    or message.reply_to_message.caption
+                    or None
+                )
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt

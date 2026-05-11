@@ -4,6 +4,7 @@ description: SiYuan Note API for searching, reading, creating, and managing bloc
 version: 1.0.0
 author: FEUAZUR
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [SiYuan, Notes, Knowledge Base, PKM, API]

@@ -14,6 +14,7 @@ import contextvars
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 
@@ -360,12 +361,52 @@ def _normalize_deliver_value(deliver) -> str:
     return str(deliver)
 
 
+# Routing intent tokens — resolved at fire time, not create time, so a
+# job created before Telegram was wired up will pick up Telegram once it
+# comes online.  ``all`` expands into the set of connected platforms
+# (those with a configured home chat_id) in _expand_routing_tokens.
+_ROUTING_TOKENS = frozenset({"all"})
+
+
+def _expand_routing_tokens(part: str) -> List[str]:
+    """Expand a routing-intent token to concrete platform names.
+
+    ``all`` expands to every platform in ``_iter_home_target_platforms()``
+    that has a configured home chat_id right now.  Unknown / non-token
+    values pass through unchanged as a single-element list, so the caller
+    can treat every token uniformly.
+    """
+    token = part.lower()
+    if token not in _ROUTING_TOKENS:
+        return [part]
+    expanded: List[str] = []
+    for platform_name in _iter_home_target_platforms():
+        if _get_home_target_chat_id(platform_name):
+            expanded.append(platform_name)
+    return expanded
+
+
 def _resolve_delivery_targets(job: dict) -> List[dict]:
-    """Resolve all concrete auto-delivery targets for a cron job (supports comma-separated deliver)."""
+    """Resolve all concrete auto-delivery targets for a cron job.
+
+    Accepts the legacy comma-separated ``deliver`` string plus the
+    ``all`` routing-intent token, which expands to every platform with
+    a configured home channel.  Tokens may be combined with explicit
+    targets: ``origin,all`` and ``all,telegram:-100:17`` both work.
+    Duplicate (platform, chat_id, thread_id) tuples are collapsed by the
+    existing dedup pass.
+    """
     deliver = _normalize_deliver_value(job.get("deliver", "local"))
     if deliver == "local":
         return []
-    parts = [p.strip() for p in deliver.split(",") if p.strip()]
+
+    raw_parts = [p.strip() for p in deliver.split(",") if p.strip()]
+
+    # Expand routing intents.
+    parts: List[str] = []
+    for raw in raw_parts:
+        parts.extend(_expand_routing_tokens(raw))
+
     seen = set()
     targets = []
     for part in parts:
@@ -714,7 +755,21 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     # choice explicit here keeps the allowed surface small and auditable.
     suffix = path.suffix.lower()
     if suffix in (".sh", ".bash"):
-        argv = ["/bin/bash", str(path)]
+        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
+        # all work.  On native Windows without Git for Windows installed
+        # shutil.which returns None — fall back to a clear error rather
+        # than a FileNotFoundError with a confusing "[WinError 2]"
+        # traceback.
+        _bash = shutil.which("bash") or (
+            "/bin/bash" if os.path.isfile("/bin/bash") else None
+        )
+        if _bash is None:
+            return False, (
+                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
+                "On Windows, install Git for Windows (which ships Git Bash) "
+                "or rewrite the script as Python (.py)."
+            )
+        argv = [_bash, str(path)]
     else:
         argv = [sys.executable, str(path)]
 
@@ -790,7 +845,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
     """
-    prompt = job.get("prompt", "")
+    prompt = str(job.get("prompt") or "")
     skills = job.get("skills")
 
     # Run data-collection script if configured, inject output as context.
@@ -878,6 +933,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []
+    elif isinstance(skills, str):
+        skills = [skills]
 
     skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
@@ -960,7 +1017,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
     job_id = job["id"]
-    job_name = job["name"]
+    job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
@@ -1149,10 +1206,31 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # don't clobber each other's targets (os.environ is process-global).
     from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
 
+    # Cron execution is an internal scheduler context, not a live inbound
+    # gateway message. Do not seed HERMES_SESSION_* contextvars from the
+    # stored ``origin`` (which is delivery routing metadata, not a sender
+    # identity). Several tool consumers branch on these vars during job
+    # execution and would otherwise behave as if a real user from the
+    # origin chat was driving the agent:
+    #   - tools/terminal_tool.py: background-process notification routing
+    #     (notify_on_complete / watch_patterns) reads HERMES_SESSION_PLATFORM
+    #     and HERMES_SESSION_CHAT_ID to populate watcher_platform / chat_id,
+    #     which would route completion notifications to the origin chat
+    #     instead of via HERMES_CRON_AUTO_DELIVER_* below.
+    #   - tools/tts_tool.py: picks Opus vs MP3 based on
+    #     HERMES_SESSION_PLATFORM == "telegram".
+    #   - tools/skills_tool.py + agent/prompt_builder.py: per-platform
+    #     skill-disable lists and the system-prompt cache key both consume
+    #     HERMES_SESSION_PLATFORM.
+    #   - tools/send_message_tool.py: mirror source labelling and the
+    #     send_message gate read HERMES_SESSION_PLATFORM.
+    # Cron output delivery itself reads job["origin"] directly via
+    # _resolve_origin(job) and the HERMES_CRON_AUTO_DELIVER_* vars set
+    # below, so clearing HERMES_SESSION_* here does not affect delivery.
     _ctx_tokens = set_session_vars(
-        platform=origin["platform"] if origin else "",
-        chat_id=str(origin["chat_id"]) if origin else "",
-        chat_name=origin.get("chat_name", "") if origin else "",
+        platform="",
+        chat_id="",
+        chat_name="",
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
@@ -1213,7 +1291,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             import yaml
             _cfg_path = str(_get_hermes_home() / "config.yaml")
             if os.path.exists(_cfg_path):
-                with open(_cfg_path) as _f:
+                with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _cfg = _expand_env_vars(_cfg)
                 _model_cfg = _cfg.get("model", {})
@@ -1361,6 +1439,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
+            openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
@@ -1596,7 +1675,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
     try:
-        lock_fd = open(lock_file, "w")
+        lock_fd = open(lock_file, "w", encoding="utf-8")
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:

@@ -2697,6 +2697,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     await asyncio.sleep(8)
             except asyncio.CancelledError:
                 pass
+            finally:
+                self._typing_tasks.pop(chat_id, None)
 
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
@@ -3688,6 +3690,84 @@ class DiscordAdapter(BasePlatformAdapter):
                     fallback_error,
                 )
                 return None
+
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a Discord thread under a text channel for a handoff.
+
+        Falls back to a seed-message + ``message.create_thread`` path if
+        ``parent.create_thread`` is rejected (some channel types or
+        permission setups). Returns the new thread id as a string, or
+        ``None`` on failure or when the parent isn't a text channel
+        (DMs, voice channels, threads themselves can't host threads).
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return None
+
+        try:
+            parent_id = int(parent_chat_id)
+        except (TypeError, ValueError):
+            return None
+
+        try:
+            parent = self._client.get_channel(parent_id)
+            if parent is None:
+                parent = await self._client.fetch_channel(parent_id)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Handoff thread: cannot resolve parent %s: %s",
+                self.name, parent_chat_id, exc,
+            )
+            return None
+
+        # DMs, voice channels, and existing threads can't host child threads.
+        if isinstance(parent, getattr(discord, "DMChannel", tuple())):
+            logger.info(
+                "[%s] Handoff thread: parent %s is a DM; threads not supported here",
+                self.name, parent_chat_id,
+            )
+            return None
+
+        thread_name = (name or "handoff").strip()[:80] or "handoff"
+        reason = "Hermes session handoff"
+
+        # First try: create a thread directly on the channel.
+        try:
+            create = getattr(parent, "create_thread", None)
+            if create is not None:
+                thread = await create(
+                    name=thread_name,
+                    auto_archive_duration=1440,
+                    reason=reason,
+                )
+                return str(thread.id)
+        except Exception as direct_error:
+            logger.debug(
+                "[%s] Handoff thread: direct create failed (%s); trying seed-message fallback",
+                self.name, direct_error,
+            )
+
+        # Fallback: post a seed message and create the thread from it.
+        try:
+            send = getattr(parent, "send", None)
+            if send is None:
+                return None
+            seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
+            thread = await seed_msg.create_thread(
+                name=thread_name,
+                auto_archive_duration=1440,
+                reason=reason,
+            )
+            return str(thread.id)
+        except Exception as fallback_error:
+            logger.warning(
+                "[%s] Handoff thread: both create paths failed for parent %s: %s",
+                self.name, parent_chat_id, fallback_error,
+            )
+            return None
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,

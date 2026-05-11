@@ -43,12 +43,24 @@ _CRON_THREAT_PATTERNS = [
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
+]
+
+_CRON_SECRET_VAR_RE = r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?'
+_CRON_EXFIL_COMMAND_PATTERNS = [
+    # Tighten exfil detection to obvious leak paths: embedding a secret
+    # directly in the destination URL, sending it in POST/FORM payloads,
+    # or shipping it via Authorization headers to arbitrary hosts. The
+    # only intended allowlist exception today is the bundled GitHub skill
+    # pattern that talks to api.github.com.
+    (rf'curl\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_curl_url"),
+    (rf'wget\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_wget_url"),
+    (rf'curl\s+[^\n]*(?:--data(?:-raw|-binary|-urlencode)?|-d|--form|-F)\s+[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_curl_data"),
+    (rf'wget\s+[^\n]*--post-(?:data|file)=[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_wget_post"),
+    (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
 ]
 
 _CRON_INVISIBLE_CHARS = {
@@ -59,11 +71,25 @@ _CRON_INVISIBLE_CHARS = {
 
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
+    github_auth_header = re.search(
+        rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
+        r'\s+["\']?https://api\.github\.com(?:/|\b)',
+        prompt,
+        re.IGNORECASE,
+    )
+    prompt_to_scan = prompt
+    if github_auth_header:
+        # Allow the bundled GitHub skill fallback shape without opening a
+        # blanket exemption for arbitrary Authorization-header exfiltration.
+        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
     for char in _CRON_INVISIBLE_CHARS:
-        if char in prompt:
+        if char in prompt_to_scan:
             return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
     for pattern, pid in _CRON_THREAT_PATTERNS:
-        if re.search(pattern, prompt, re.IGNORECASE):
+        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
+            return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
+    for pattern, pid in _CRON_EXFIL_COMMAND_PATTERNS:
+        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     return ""
 
@@ -220,18 +246,20 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
 
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = job.get("prompt", "")
+    prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
+    job_id = str(job.get("id") or "unknown")
+    name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
     result = {
-        "job_id": job["id"],
-        "name": job["name"],
+        "job_id": job_id,
+        "name": name,
         "skill": skills[0] if skills else None,
         "skills": skills,
         "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
         "model": job.get("model"),
         "provider": job.get("provider"),
         "base_url": job.get("base_url"),
-        "schedule": job.get("schedule_display"),
+        "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
         "next_run_at": job.get("next_run_at"),
@@ -541,7 +569,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), or platform:chat_id:thread_id for a specific destination. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting."
+                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
             },
             "skills": {
                 "type": "array",

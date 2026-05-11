@@ -1085,7 +1085,9 @@ def _get_env_config() -> Dict[str, Any]:
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
+        "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in ("true", "1", "yes"),
+        "docker_extra_args": _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"),
     }
 
 
@@ -1128,6 +1130,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     volumes = cc.get("docker_volumes", [])
     docker_forward_env = cc.get("docker_forward_env", [])
     docker_env = cc.get("docker_env", {})
+    docker_extra_args = cc.get("docker_extra_args", [])
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -1143,6 +1146,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             forward_env=docker_forward_env,
             env=docker_env,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
+            extra_args=docker_extra_args,
         )
     
     elif env_type == "singularity":
@@ -1791,6 +1795,7 @@ def terminal_tool(
                                 "docker_forward_env": config.get("docker_forward_env", []),
                                 "docker_env": config.get("docker_env", {}),
                                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                                "docker_extra_args": config.get("docker_extra_args", []),
                             }
 
                         local_config = None
@@ -2001,9 +2006,10 @@ def terminal_tool(
             
             while retry_count <= max_retries:
                 try:
-                    execute_kwargs = {"timeout": effective_timeout}
-                    if workdir:
-                        execute_kwargs["cwd"] = workdir
+                    execute_kwargs = {
+                        "timeout": effective_timeout,
+                        "cwd": workdir or cwd,
+                    }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()

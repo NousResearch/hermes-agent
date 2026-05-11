@@ -21,6 +21,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 import signal
 import subprocess
 
@@ -106,12 +107,15 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
         except OSError:
             pass
         return
-    try:
-        os.kill(pid, 0)  # check existence
-        os.kill(pid, signal.SIGTERM)
-        logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+    # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484) — use the
+    # cross-platform existence check before sending a real signal.
+    from gateway.status import _pid_exists
+    if _pid_exists(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
     try:
         pid_file.unlink()
     except OSError:
@@ -151,10 +155,26 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
             raise OSError(details or f"taskkill failed for PID {proc.pid}")
         return
 
-    import signal
-
-    sig = signal.SIGTERM if not force else signal.SIGKILL
-    os.killpg(os.getpgid(proc.pid), sig)
+    import psutil
+    try:
+        parent = psutil.Process(proc.pid)
+        children = parent.children(recursive=True)
+        if force:
+            for child in children:
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            parent.kill()
+        else:
+            for child in children:
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+            parent.terminate()
+    except psutil.NoSuchProcess:
+        return
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -177,10 +197,15 @@ def check_whatsapp_requirements() -> bool:
     
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Check for Node.js
+    # Check for Node.js.  Resolve via shutil.which so we respect PATHEXT
+    # (node.exe vs node) and get a meaningful "not installed" signal
+    # instead of spawning a cmd flash on Windows.
+    _node = shutil.which("node")
+    if not _node:
+        return False
     try:
         result = subprocess.run(
-            ["node", "--version"],
+            [_node, "--version"],
             capture_output=True,
             text=True,
             timeout=5
@@ -464,9 +489,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
             bridge_dir = bridge_path.parent
             if not (bridge_dir / "node_modules").exists():
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
+                # Resolve npm path so Windows can execute the .cmd shim.
+                # shutil.which honours PATHEXT; on POSIX it returns the
+                # plain executable path.
+                _npm_bin = shutil.which("npm") or "npm"
                 try:
                     install_result = subprocess.run(
-                        ["npm", "install", "--silent"],
+                        [_npm_bin, "install", "--silent"],
                         cwd=str(bridge_dir),
                         capture_output=True,
                         text=True,
@@ -516,7 +545,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # messages are preserved for troubleshooting.
             whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
             self._bridge_log = self._session_path.parent / "bridge.log"
-            bridge_log_fh = open(self._bridge_log, "a")
+            bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_log_fh = bridge_log_fh
 
             # Build bridge subprocess environment.
@@ -1160,7 +1189,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             if file_size > MAX_TEXT_INJECT_BYTES:
                                 print(f"[{self.name}] Skipping text injection for {doc_path} ({file_size} bytes > {MAX_TEXT_INJECT_BYTES})", flush=True)
                                 continue
-                            content = Path(doc_path).read_text(errors="replace")
+                            content = Path(doc_path).read_text(encoding="utf-8", errors="replace")
                             fname = Path(doc_path).name
                             # Remove the doc_<hex>_ prefix for display
                             display_name = fname

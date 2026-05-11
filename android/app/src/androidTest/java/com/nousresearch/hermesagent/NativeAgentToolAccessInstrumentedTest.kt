@@ -97,6 +97,7 @@ class NativeAgentToolAccessInstrumentedTest {
             assertTrue(htmlFile.readText(), htmlFile.readText().contains("<canvas id=\"game\""))
             assertEquals(3, server.requests.size)
             assertTrue(server.requests[1].toString(), server.requests[1].toString().contains("hermes-sequential-flappy.html"))
+            assertTrue(server.requests[1].toString(), server.requests[1].toString().contains("android_automation_tool"))
             assertTrue(server.requests[2].toString(), server.requests[2].toString().contains("Started Android intent"))
         } finally {
             server.stop()

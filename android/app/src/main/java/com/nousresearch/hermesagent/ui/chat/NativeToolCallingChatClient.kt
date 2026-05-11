@@ -102,7 +102,7 @@ class NativeToolCallingChatClient(
                 modelName = modelName,
                 sessionId = sessionId,
                 messages = messages,
-                toolSpecs = null,
+                toolSpecs = initialToolSpecs,
                 maxTokens = NATIVE_TOOL_MAX_TOKENS,
             )
             if (followUp.toolCalls.isEmpty()) {
@@ -1091,6 +1091,12 @@ class NativeToolCallingChatClient(
                     "open url",
                     "browse url",
                 ).any { it in lower }
+            ) {
+                add("android_automation_tool")
+            }
+            if (
+                "browser" in lower &&
+                listOf("open", "launch", "show", "view", ".html", "html").any { it in lower }
             ) {
                 add("android_automation_tool")
             }

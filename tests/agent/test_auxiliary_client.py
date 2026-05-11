@@ -2497,6 +2497,25 @@ class TestAnthropicExplicitApiKey:
             "resolve_provider_client must forward explicit_api_key to _try_anthropic()"
         )
 
+    def test_resolve_provider_client_supports_minimax_oauth(self):
+        """MiniMax OAuth should resolve via its runtime credential helper."""
+        fake_client = MagicMock()
+        with patch(
+            "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+            return_value={
+                "provider": "minimax-oauth",
+                "api_key": "oauth-token",
+                "base_url": "https://api.minimax.io/anthropic",
+                "source": "oauth",
+            },
+        ), patch("agent.auxiliary_client.OpenAI", return_value=fake_client) as mock_openai:
+            client, model = resolve_provider_client("minimax-oauth")
+
+        assert client is not None
+        assert model == "MiniMax-M2.7-highspeed"
+        assert mock_openai.call_args.kwargs["api_key"] == "oauth-token"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://api.minimax.io/v1"
+
 
 # ── Auxiliary unhealthy-provider TTL cache (issue #23570) ────────────────
 

@@ -2960,6 +2960,7 @@ def resolve_provider_client(
             PROVIDER_REGISTRY,
             resolve_api_key_provider_credentials,
             resolve_external_process_provider_credentials,
+            resolve_minimax_oauth_runtime_credentials,
         )
     except ImportError:
         logger.debug("hermes_cli.auth not available for provider %s", provider)
@@ -2970,7 +2971,7 @@ def resolve_provider_client(
         logger.warning("resolve_provider_client: unknown provider %r", provider)
         return None, None
 
-    if pconfig.auth_type == "api_key":
+    if pconfig.auth_type in {"api_key", "oauth_minimax"}:
         if provider == "anthropic":
             client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
             if client is None:
@@ -2979,7 +2980,10 @@ def resolve_provider_client(
             final_model = _normalize_resolved_model(model or default_model, provider)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode else (client, final_model))
 
-        creds = resolve_api_key_provider_credentials(provider)
+        if pconfig.auth_type == "oauth_minimax":
+            creds = resolve_minimax_oauth_runtime_credentials()
+        else:
+            creds = resolve_api_key_provider_credentials(provider)
         api_key = str(creds.get("api_key", "")).strip()
         # Honour an explicit api_key override (e.g. from a fallback_model entry
         # or a custom_providers entry) so callers that pass an explicit

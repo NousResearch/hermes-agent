@@ -5986,7 +5986,7 @@ class GatewayRunner:
                         message_type=MessageType.TEXT,
                         source=event.source,
                         message_id=event.message_id,
-                        channel_prompt=event.channel_prompt,
+                        channel_prompt=getattr(event, 'channel_prompt', None),
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
@@ -6013,7 +6013,7 @@ class GatewayRunner:
                             message_type=MessageType.TEXT,
                             source=event.source,
                             message_id=event.message_id,
-                            channel_prompt=event.channel_prompt,
+                            channel_prompt=getattr(event, 'channel_prompt', None),
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -6035,7 +6035,7 @@ class GatewayRunner:
                         message_type=MessageType.TEXT,
                         source=event.source,
                         message_id=event.message_id,
-                        channel_prompt=event.channel_prompt,
+                        channel_prompt=getattr(event, 'channel_prompt', None),
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
@@ -7523,7 +7523,7 @@ class GatewayRunner:
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
-                channel_prompt=event.channel_prompt,
+                channel_prompt=getattr(event, 'channel_prompt', None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -9253,7 +9253,7 @@ class GatewayRunner:
             message_type=MessageType.TEXT,
             source=source,
             raw_message=event.raw_message,
-            channel_prompt=event.channel_prompt,
+            channel_prompt=getattr(event, 'channel_prompt', None),
         )
         
         # Let the normal message handler process it
@@ -9374,7 +9374,7 @@ class GatewayRunner:
                     message_type=MessageType.TEXT,
                     source=event.source,
                     message_id=event.message_id,
-                    channel_prompt=event.channel_prompt,
+                    channel_prompt=getattr(event, 'channel_prompt', None),
                 )
                 self._enqueue_fifo(_quick_key, kickoff_event, adapter)
             except Exception as exc:

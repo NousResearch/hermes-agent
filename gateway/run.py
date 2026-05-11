@@ -4832,6 +4832,13 @@ class GatewayRunner:
                 return None
             return FeishuAdapter(config)
 
+        elif platform == Platform.WPS_XIEZUO:
+            from gateway.platforms.wps_xiezuo import WpsXiezuoAdapter, check_wps_xiezuo_requirements
+            if not check_wps_xiezuo_requirements():
+                logger.warning("WPS Xiezuo: dependencies not installed or WPS_XIEZUO_APP_ID/SECRET not set")
+                return None
+            return WpsXiezuoAdapter(config)
+
         elif platform == Platform.WECOM_CALLBACK:
             from gateway.platforms.wecom_callback import (
                 WecomCallbackAdapter,
@@ -4959,6 +4966,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+            Platform.WPS_XIEZUO: "WPS_XIEZUO_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -4985,11 +4993,13 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+            Platform.WPS_XIEZUO: "WPS_XIEZUO_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         platform_allow_bots_map = {
             Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
+            Platform.WPS_XIEZUO: "WPS_XIEZUO_ALLOW_BOTS",
         }
 
         # Plugin platforms: check the registry for auth env var names
@@ -5170,6 +5180,7 @@ class GatewayRunner:
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
+                Platform.WPS_XIEZUO: "WPS_XIEZUO_ALLOWED_USERS",
             }
             platform_group_env_map = {
                 Platform.TELEGRAM: (
@@ -11661,7 +11672,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.WPS_XIEZUO, Platform.LOCAL,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
@@ -14057,6 +14068,16 @@ class GatewayRunner:
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
+                return
+            # Suppress internal retry/prefill status messages that should
+            # not be shown to end users in chat platforms.
+            _suppressed_prefixes = (
+                "↻ Thinking-only",
+                "⚠️ Empty/",
+                "⚠️ Max retries",
+                "❌ Max retries",
+            )
+            if any(message.startswith(p) for p in _suppressed_prefixes):
                 return
             try:
                 _fut = asyncio.run_coroutine_threadsafe(

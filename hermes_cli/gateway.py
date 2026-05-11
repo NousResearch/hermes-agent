@@ -3648,6 +3648,34 @@ _PLATFORMS = [
              "help": "The App Secret (used for HMAC signing) from your Yuanbao IM Bot."},
         ],
     },
+    {
+        "key": "wps-xiezuo",
+        "label": "WPS Xiezuo",
+        "emoji": "💬",
+        "token_var": "WPS_XIEZUO_APP_ID",
+        "setup_instructions": [
+            "1. Go to https://open.wps.cn/ and create an application",
+            "2. Copy the App ID and App Secret",
+            "3. Enable the bot capability and subscribe to message events",
+            "4. Choose WebSocket (recommended) or Webhook connection mode",
+            "5. IMPORTANT: On the WPS developer dashboard, enable '长连接' (long-connection) delivery mode for WebSocket to work",
+            "6. Add the bot to a group chat or message it directly",
+            "7. Restrict access with WPS_XIEZUO_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "WPS_XIEZUO_APP_ID", "prompt": "App ID", "password": False,
+             "help": "The App ID from your WPS Open Platform application."},
+            {"name": "WPS_XIEZUO_APP_SECRET", "prompt": "App Secret", "password": True,
+             "help": "The App Secret from your WPS Open Platform application."},
+            {"name": "WPS_XIEZUO_CONNECTION_MODE", "prompt": "Connection mode — websocket or webhook (default: websocket)", "password": False,
+             "help": "websocket is recommended unless you specifically need webhook mode."},
+            {"name": "WPS_XIEZUO_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which WPS users can interact with the bot."},
+            {"name": "WPS_XIEZUO_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
+             "help": "Chat ID for scheduled results and notifications."},
+        ],
+    },
 ]
 def _all_platforms() -> list[dict]:
     """Return the full list of platforms for setup menus.

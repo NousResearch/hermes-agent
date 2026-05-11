@@ -1310,6 +1310,33 @@ class WeixinAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[%s] Disconnected", self.name)
 
+    async def _reconnect(self) -> bool:
+        """Attempt to re-establish connection using persisted credentials.
+
+        Called when the iLink session expires (errcode -14 or stale -2).
+        Reloads the token from disk, tears down the old poll session,
+        and creates a fresh one so the next ``getupdates`` succeeds.
+        """
+        logger.info("[%s] attempting reconnect…", self.name)
+        persisted = load_weixin_account(self._hermes_home, self._account_id)
+        if not persisted or not persisted.get("token"):
+            logger.error("[%s] reconnect failed: no persisted credentials for %s",
+                         self.name, _safe_id(self._account_id))
+            return False
+        self._token = str(persisted["token"]).strip()
+        self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
+        # Tear down stale session
+        if self._poll_session and not self._poll_session.closed:
+            await self._poll_session.close()
+        # Fresh session
+        self._poll_session = aiohttp.ClientSession(
+            trust_env=True, connector=_make_ssl_connector(),
+        )
+        self._token_store.restore(self._account_id)
+        logger.info("[%s] reconnected with refreshed credentials (base=%s)",
+                    self.name, self._base_url)
+        return True
+
     async def _poll_loop(self) -> None:
         assert self._poll_session is not None
         sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
@@ -1334,8 +1361,10 @@ class WeixinAdapter(BasePlatformAdapter):
                 if ret not in (0, None) or errcode not in (0, None):
                     if (ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE
                             or _is_stale_session_ret(ret, errcode, response.get("errmsg"))):
-                        logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
-                        await asyncio.sleep(600)
+                        logger.error("[%s] session expired; attempting reconnect", self.name)
+                        if not await self._reconnect():
+                            logger.warning("[%s] reconnect failed; sleeping 60s before retry", self.name)
+                            await asyncio.sleep(60)
                         consecutive_failures = 0
                         continue
                     consecutive_failures += 1
@@ -1634,7 +1663,10 @@ class WeixinAdapter(BasePlatformAdapter):
                             )
                             if attempt >= self._send_chunk_retries:
                                 break
-                            wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
+                            # Exponential backoff with jitter for rate limits
+                            import secrets as _secrets
+                            base_wait = self._send_chunk_retry_delay_seconds * 3
+                            wait = min(base_wait * (2 ** attempt) + _secrets.randbelow(2000) / 1000, 60)
                             logger.warning(
                                 "[%s] rate limited for %s; backing off %.1fs before retry",
                                 self.name, _safe_id(chat_id), wait,
@@ -1723,8 +1755,13 @@ class WeixinAdapter(BasePlatformAdapter):
                     client_id=client_id,
                 )
                 last_message_id = client_id
-                if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
-                    await asyncio.sleep(self._send_chunk_delay_seconds)
+                # Dynamic delay: scale with chunk count to avoid rate limits
+                if idx < len(chunks) - 1:
+                    dynamic_delay = max(
+                        self._send_chunk_delay_seconds,
+                        2.0 + len(chunks) * 0.3,
+                    )
+                    await asyncio.sleep(dynamic_delay)
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)

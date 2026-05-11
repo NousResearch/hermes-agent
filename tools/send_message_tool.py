@@ -30,6 +30,7 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+_WPS_XIEZUO_TARGET_RE = re.compile(r"^\s*((?:(?:chat|user):)?\d+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -344,6 +345,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "wps-xiezuo":
+        match = _WPS_XIEZUO_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -554,6 +559,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+    try:
+        from gateway.platforms.wps_xiezuo import WpsXiezuoAdapter, MAX_MESSAGE_LENGTH as _WPS_MAX
+        _MAX_LENGTHS[Platform.WPS_XIEZUO] = _WPS_MAX
+    except ImportError:
+        pass
 
     # Check plugin registry for max_message_length
     if platform not in _MAX_LENGTHS:
@@ -726,6 +736,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
+        elif platform == Platform.WPS_XIEZUO:
+            result = await _send_wps_xiezuo(pconfig, chat_id, chunk)
         else:
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
@@ -1868,6 +1880,28 @@ async def _send_yuanbao(chat_id, message, media_files=None):
         return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
     except Exception as e:
         return _error(f"Yuanbao send failed: {e}")
+
+
+async def _send_wps_xiezuo(pconfig, chat_id, message):
+    """Send via WPS Xiezuo using the adapter's send pipeline."""
+    try:
+        from gateway.platforms.wps_xiezuo import WpsXiezuoAdapter
+    except ImportError:
+        return _error("WPS Xiezuo adapter module not available.")
+
+    try:
+        adapter = WpsXiezuoAdapter(pconfig)
+        result = await adapter.send(chat_id, message)
+        if not result.success:
+            return _error(f"WPS Xiezuo send failed: {result.error}")
+        return {
+            "success": True,
+            "platform": "wps-xiezuo",
+            "chat_id": chat_id,
+            "message_id": result.message_id or "",
+        }
+    except Exception as e:
+        return _error(f"WPS Xiezuo send failed: {e}")
 
 
 # --- Registry ---

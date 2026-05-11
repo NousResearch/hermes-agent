@@ -579,6 +579,14 @@ PLATFORM_HINTS = {
         "![alt](/path) for local files; local paths are not served that way. "
         "Use MEDIA:/absolute/path instead."
     ),
+    "wps-xiezuo": (
+        "You are in a WPS Xiezuo (WPS365 协作) workspace communicating with your user. "
+        "WPS Xiezuo renders Markdown in messages — bold, italic, code blocks, and "
+        "links are supported. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are uploaded and displayed "
+        "inline, and other files arrive as downloadable attachments."
+    ),
 }
 
 # ---------------------------------------------------------------------------

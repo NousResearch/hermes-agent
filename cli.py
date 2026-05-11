@@ -6832,6 +6832,271 @@ class HermesCLI:
         except Exception as exc:
             print(f"(._.) curator: {exc}")
 
+    @staticmethod
+    def _print_eval_help() -> None:
+        print("Usage:")
+        print("  /eval list")
+        print("  /eval run <suite-or-case>")
+        print("  /eval recent [limit]")
+        print("  /eval show <run_id>")
+
+    @staticmethod
+    def _print_failures_help() -> None:
+        print("Usage:")
+        print("  /failures recent [limit]")
+        print("  /failures top [limit]")
+        print("  /failures show <fingerprint>")
+
+    @staticmethod
+    def _fmt_command_ts(ts) -> str:
+        if not ts:
+            return "—"
+        try:
+            import datetime as _dt
+            return _dt.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return str(ts)[:16]
+
+    def _handle_eval_command(self, cmd: str):
+        """Handle /eval — run and inspect local behavioral evals."""
+        import shlex
+
+        try:
+            parts = shlex.split(cmd)
+        except ValueError as exc:
+            print(f"Usage error: {exc}")
+            self._print_eval_help()
+            return
+
+        args = parts[1:] if parts and parts[0].lstrip("/") == "eval" else parts
+        if not args or args[0] in {"help", "-h", "--help"}:
+            self._print_eval_help()
+            return
+
+        subcommand = args[0]
+        if subcommand == "list":
+            from agent.evals.cases import list_cases, list_suites
+
+            print("Suites:")
+            for suite in list_suites():
+                print(f"  {suite}")
+            print("Cases:")
+            for case in list_cases():
+                name = getattr(case, "name", "")
+                print(f"  {case.id} - {name}")
+            return
+
+        if subcommand == "run":
+            if len(args) < 2:
+                print("Usage: /eval run <suite-or-case>")
+                return
+            target = args[1]
+            from agent.evals.cases import list_suites
+            from agent.evals import runner as eval_runner
+            from agent.evals.storage import EvalStore
+
+            try:
+                if target in list_suites():
+                    summary = eval_runner.run_suite(target)
+                else:
+                    summary = eval_runner.run_single(target)
+            except KeyError:
+                print(f"Unknown suite or case: {target}")
+                return
+            except Exception as exc:
+                print(f"Eval run failed: {exc}")
+                return
+
+            store = None
+            try:
+                store = EvalStore()
+                store.save_run(summary)
+            except Exception as exc:
+                print(f"Warning: eval run could not be saved: {exc}")
+            finally:
+                try:
+                    if store:
+                        store.close()
+                except Exception:
+                    pass
+
+            print(
+                f"Eval run {summary.run_id}: {summary.suite_name} "
+                f"{summary.passed_count}/{summary.case_count} passed, "
+                f"avg={summary.avg_score}"
+            )
+            return
+
+        if subcommand == "recent":
+            limit = 10
+            if len(args) > 1:
+                try:
+                    limit = int(args[1])
+                except ValueError:
+                    print("Usage: /eval recent [limit]")
+                    return
+            from agent.evals.storage import EvalStore
+
+            store = EvalStore()
+            try:
+                rows = store.list_runs(limit=limit)
+            finally:
+                try:
+                    store.close()
+                except Exception:
+                    pass
+            if not rows:
+                print("No eval runs found.")
+                return
+            for row in rows:
+                print(
+                    f"{row.get('id')}  {row.get('suite_name')}  "
+                    f"{row.get('passed_count', 0)}/{row.get('case_count', 0)}  "
+                    f"avg={row.get('avg_score', 0)}  "
+                    f"{self._fmt_command_ts(row.get('created_at'))}"
+                )
+            return
+
+        if subcommand == "show":
+            if len(args) < 2:
+                print("Usage: /eval show <run_id>")
+                return
+            run_id = args[1]
+            from agent.evals.storage import EvalStore
+
+            store = EvalStore()
+            try:
+                run = store.get_run_with_results(run_id)
+            finally:
+                try:
+                    store.close()
+                except Exception:
+                    pass
+            if not run:
+                print(f"Eval run not found: {run_id}")
+                return
+            print(
+                f"Eval run {run.get('id')}: {run.get('suite_name')} "
+                f"{run.get('passed_count', 0)}/{run.get('case_count', 0)} passed, "
+                f"avg={run.get('avg_score', 0)}"
+            )
+            for result in run.get("case_results") or []:
+                status = result.get("status")
+                status_value = getattr(status, "value", status)
+                icon = "✓" if status_value == "passed" else "✗"
+                failure = result.get("failure_summary") or ""
+                suffix = f" — {failure}" if failure else ""
+                print(
+                    f"  {icon} {result.get('case_id')} "
+                    f"score={result.get('total_score', 0)} "
+                    f"{result.get('duration_ms', 0)}ms{suffix}"
+                )
+            return
+
+        self._print_eval_help()
+
+    def _handle_failures_command(self, cmd: str):
+        """Handle /failures — inspect normalized failure-analysis records."""
+        import shlex
+
+        try:
+            parts = shlex.split(cmd)
+        except ValueError as exc:
+            print(f"Usage error: {exc}")
+            self._print_failures_help()
+            return
+
+        args = parts[1:] if parts and parts[0].lstrip("/") == "failures" else parts
+        if not args or args[0] in {"help", "-h", "--help"}:
+            self._print_failures_help()
+            return
+
+        subcommand = args[0]
+        from agent.failure_analysis.storage import FailureStore
+
+        if subcommand == "recent":
+            limit = 20
+            if len(args) > 1:
+                try:
+                    limit = int(args[1])
+                except ValueError:
+                    print("Usage: /failures recent [limit]")
+                    return
+            store = FailureStore()
+            try:
+                rows = store.list_recent(limit=limit)
+            finally:
+                try:
+                    store.close()
+                except Exception:
+                    pass
+            if not rows:
+                print("No failures found.")
+                return
+            for row in rows:
+                kind = f"{row.get('failure_type')}.{row.get('failure_subtype')}"
+                print(
+                    f"{row.get('id')}  {row.get('severity', 'medium')}  "
+                    f"{kind}  {row.get('summary', '')}  "
+                    f"fp={str(row.get('fingerprint', ''))[:16]}"
+                )
+            return
+
+        if subcommand == "top":
+            limit = 10
+            if len(args) > 1:
+                try:
+                    limit = int(args[1])
+                except ValueError:
+                    print("Usage: /failures top [limit]")
+                    return
+            store = FailureStore()
+            try:
+                rows = store.top_fingerprints(limit=limit)
+            finally:
+                try:
+                    store.close()
+                except Exception:
+                    pass
+            if not rows:
+                print("No recurring failures found.")
+                return
+            for row in rows:
+                kind = f"{row.get('failure_type')}.{row.get('failure_subtype')}"
+                print(
+                    f"{row.get('count', 0)}x  {kind}  "
+                    f"fp={row.get('fingerprint')}  {row.get('summary', '')}"
+                )
+            return
+
+        if subcommand == "show":
+            if len(args) < 2:
+                print("Usage: /failures show <fingerprint>")
+                return
+            fingerprint = args[1]
+            store = FailureStore()
+            try:
+                rows = store.get_by_fingerprint(fingerprint)
+            finally:
+                try:
+                    store.close()
+                except Exception:
+                    pass
+            print(f"Fingerprint: {fingerprint}")
+            print(f"Occurrences: {len(rows)}")
+            for row in rows:
+                kind = f"{row.get('failure_type')}.{row.get('failure_subtype')}"
+                print(
+                    f"  {row.get('severity', 'medium')}  {kind}  "
+                    f"{row.get('summary', '')}  "
+                    f"source={row.get('source_surface') or '—'} "
+                    f"eval={row.get('eval_run_id') or '—'} "
+                    f"session={row.get('session_id') or '—'}"
+                )
+            return
+
+        self._print_failures_help()
+
     def _handle_kanban_command(self, cmd: str):
         """Handle the /kanban command — delegate to the shared kanban CLI.
 
@@ -7152,6 +7417,10 @@ class HermesCLI:
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
+        elif canonical == "eval":
+            self._handle_eval_command(cmd_original)
+        elif canonical == "failures":
+            self._handle_failures_command(cmd_original)
         elif canonical == "copy":
             self._handle_copy_command(cmd_original)
         elif canonical == "debug":

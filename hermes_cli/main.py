@@ -9125,6 +9125,16 @@ def cmd_logs(args):
     )
 
 
+def cmd_ops(args):
+    """Operator visibility helpers: tasks, reports, evals, failures."""
+    from hermes_cli.ops import main as ops_main
+
+    ops_args = list(getattr(args, "ops_args", None) or [])
+    if getattr(args, "ops_help", False):
+        ops_args = ["--help", *ops_args]
+    ops_main(ops_args)
+
+
 def _build_provider_choices() -> list[str]:
     """Build the --provider choices list from CANONICAL_PROVIDERS + 'auto'."""
     try:
@@ -9157,7 +9167,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "mcp", "memory", "model",
-        "pairing", "plugins", "profile", "sessions", "setup", "skills",
+        "ops", "pairing", "plugins", "profile", "sessions", "setup", "skills",
         "slack", "status", "tools", "uninstall", "update", "version",
         "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -11571,6 +11581,29 @@ Examples:
         help="List running hermes dashboard processes and exit",
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
+
+    # =========================================================================
+    # ops command
+    # =========================================================================
+    ops_parser = subparsers.add_parser(
+        "ops",
+        help="Operator visibility: tasks, reports, evals, failures",
+        description="Query Hermes task telemetry, reports, eval runs, and failure-analysis records",
+        add_help=False,
+    )
+    ops_parser.add_argument(
+        "-h",
+        "--help",
+        action="store_true",
+        dest="ops_help",
+        help="Show ops help and exit",
+    )
+    ops_parser.add_argument(
+        "ops_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments passed to hermes_cli.ops",
+    )
+    ops_parser.set_defaults(func=cmd_ops)
 
     # =========================================================================
     # logs command

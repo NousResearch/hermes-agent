@@ -218,7 +218,22 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    pinned_at REAL,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id TEXT PRIMARY KEY,
+    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    model_used TEXT,
+    current_step TEXT,
+    started_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    token_usage TEXT,
+    checkpoint_data TEXT,
+    artifacts TEXT,
+    error_info TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -247,6 +262,9 @@ CREATE TABLE IF NOT EXISTS state_meta (
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 """
 
@@ -741,6 +759,145 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    # =========================================================================
+    # Task lifecycle / receipts
+    # =========================================================================
+
+    @staticmethod
+    def _json_or_none(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False)
+
+    @staticmethod
+    def _decode_task_row(row: sqlite3.Row | None) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        data = dict(row)
+        for field in ("token_usage", "checkpoint_data", "artifacts"):
+            raw = data.get(field)
+            if raw in (None, ""):
+                data[field] = [] if field == "artifacts" else None
+                continue
+            if isinstance(raw, (dict, list)):
+                continue
+            try:
+                data[field] = json.loads(raw)
+            except Exception:
+                data[field] = raw
+        if data.get("artifacts") is None:
+            data["artifacts"] = []
+        return data
+
+    def create_task(
+        self,
+        task_id: str,
+        session_id: str | None = None,
+        status: str = "running",
+        model_used: str | None = None,
+        current_step: str | None = None,
+        checkpoint_data: Any = None,
+        token_usage: Any = None,
+        error_info: str | None = None,
+        artifacts: Any = None,
+    ) -> str:
+        """Create or replace a durable task receipt row."""
+        now = time.time()
+        if session_id and not self.get_session(session_id):
+            self._insert_session_row(session_id, "unknown")
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO tasks (
+                       task_id, session_id, status, model_used, current_step,
+                       started_at, updated_at, token_usage, checkpoint_data,
+                       artifacts, error_info
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(task_id) DO UPDATE SET
+                       session_id = excluded.session_id,
+                       status = excluded.status,
+                       model_used = excluded.model_used,
+                       current_step = excluded.current_step,
+                       updated_at = excluded.updated_at,
+                       token_usage = excluded.token_usage,
+                       checkpoint_data = excluded.checkpoint_data,
+                       artifacts = excluded.artifacts,
+                       error_info = excluded.error_info""",
+                (
+                    task_id,
+                    session_id,
+                    status,
+                    model_used,
+                    current_step,
+                    now,
+                    now,
+                    self._json_or_none(token_usage),
+                    self._json_or_none(checkpoint_data),
+                    self._json_or_none(artifacts or []),
+                    error_info,
+                ),
+            )
+        self._execute_write(_do)
+        return task_id
+
+    def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Return a task receipt by ID, decoding JSON payload fields."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        return self._decode_task_row(row)
+
+    def update_task(self, task_id: str, **updates: Any) -> bool:
+        """Update a task receipt. Unknown keys are ignored."""
+        allowed = {
+            "session_id",
+            "status",
+            "model_used",
+            "current_step",
+            "token_usage",
+            "checkpoint_data",
+            "artifacts",
+            "error_info",
+        }
+        fields: list[str] = []
+        values: list[Any] = []
+        for key, value in updates.items():
+            if key not in allowed:
+                continue
+            fields.append(f"{key} = ?")
+            if key in {"token_usage", "checkpoint_data", "artifacts"}:
+                values.append(self._json_or_none(value))
+            else:
+                values.append(value)
+        if not fields:
+            return False
+        fields.append("updated_at = ?")
+        values.append(time.time())
+        values.append(task_id)
+
+        def _do(conn):
+            cursor = conn.execute(
+                f"UPDATE tasks SET {', '.join(fields)} WHERE task_id = ?",
+                values,
+            )
+            return cursor.rowcount > 0
+        return bool(self._execute_write(_do))
+
+    def append_task_artifact(self, task_id: str, artifact: str | Path) -> bool:
+        """Append an artifact path to a task receipt, preserving insertion order."""
+        task = self.get_task(task_id)
+        if not task:
+            return False
+        artifacts = list(task.get("artifacts") or [])
+        artifact_text = str(artifact)
+        if artifact_text not in artifacts:
+            artifacts.append(artifact_text)
+        return self.update_task(task_id, artifacts=artifacts)
+
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""
         def _do(conn):
@@ -1059,6 +1216,52 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
+    def set_session_pinned(self, session_id: str, pinned: bool = True) -> bool:
+        """Pin or unpin a session for dashboard/history retention views."""
+        pinned_at = time.time() if pinned else None
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET pinned_at = ? WHERE id = ?",
+                (pinned_at, session_id),
+            )
+            return cursor.rowcount
+        return bool(self._execute_write(_do))
+
+    def prune_unpinned_historical_sessions(
+        self,
+        keep: int = 5,
+        source: Optional[str] = None,
+        sessions_dir: Optional[Path] = None,
+    ) -> int:
+        """Delete ended, unpinned sessions beyond the newest ``keep`` rows.
+
+        Active sessions and pinned sessions are never removed. Child sessions of
+        deleted rows are orphaned, and task receipts keep existing but have
+        ``session_id`` cleared so the dashboard no longer points at deleted chat
+        history.
+        """
+        keep = max(0, int(keep))
+        where = ["ended_at IS NOT NULL", "pinned_at IS NULL"]
+        params: list[Any] = []
+        if source:
+            where.append("source = ?")
+            params.append(source)
+        where_sql = " AND ".join(where)
+        query = f"""
+            SELECT id FROM sessions
+            WHERE {where_sql}
+            ORDER BY COALESCE(ended_at, started_at) DESC, started_at DESC, id DESC
+        """
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        delete_ids = [row["id"] for row in rows[keep:]]
+        deleted = 0
+        for session_id in delete_ids:
+            if self.delete_session(session_id, sessions_dir=sessions_dir):
+                deleted += 1
+        return deleted
+
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
 
@@ -1166,6 +1369,7 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
+        ended_only: bool = False,
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
     ) -> List[Dict[str, Any]]:
@@ -1216,6 +1420,8 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
+        if ended_only:
+            where_clauses.append("s.ended_at IS NOT NULL")
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -2298,6 +2504,7 @@ class SessionDB:
                 "WHERE parent_session_id = ?",
                 (session_id,),
             )
+            conn.execute("UPDATE tasks SET session_id = NULL WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
@@ -2351,6 +2558,7 @@ class SessionDB:
             )
 
             for sid in session_ids:
+                conn.execute("UPDATE tasks SET session_id = NULL WHERE session_id = ?", (sid,))
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
                 removed_ids.append(sid)

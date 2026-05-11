@@ -136,6 +136,32 @@ def atomic_json_write(
         raise
 
 
+def atomic_text_write(path: Union[str, Path], text: str) -> None:
+    """Write UTF-8 text to a file atomically, preserving symlink targets and mode."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original_mode = _preserve_file_mode(path)
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.stem}_",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        real_path = atomic_replace(tmp_path, path)
+        _restore_file_mode(real_path, original_mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def atomic_yaml_write(
     path: Union[str, Path],
     data: Any,

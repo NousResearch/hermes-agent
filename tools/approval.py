@@ -18,6 +18,7 @@ import time
 import unicodedata
 from typing import Optional
 from hermes_cli.config import cfg_get
+from hermes_logger import hermes_log
 
 from utils import is_truthy_value
 
@@ -399,6 +400,17 @@ _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
 
+
+def reset_state() -> None:
+    """Clear in-memory approval state for isolated tests."""
+    with _lock:
+        _pending.clear()
+        _session_approved.clear()
+        _session_yolo.clear()
+        _permanent_approved.clear()
+        _gateway_queues.clear()
+        _gateway_notify_cbs.clear()
+
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
 # =========================================================================
@@ -486,6 +498,16 @@ def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:
         _pending[session_key] = approval
+    try:
+        hermes_log.approval_requested(
+            task_id=approval.get("task_id") or os.getenv("HERMES_TASK_ID") or "",
+            command=approval.get("command", ""),
+            description=approval.get("description", ""),
+            request_id=os.getenv("HERMES_REQUEST_ID"),
+            session_id=session_key,
+        )
+    except Exception:
+        logger.debug("Failed to log approval request", exc_info=True)
 
 
 def approve_session(session_key: str, pattern_key: str):
@@ -898,6 +920,15 @@ def check_dangerous_command(command: str, env_type: str,
 
     choice = prompt_dangerous_approval(command, description,
                                        approval_callback=approval_callback)
+    try:
+        hermes_log.approval_resolved(
+            task_id=os.getenv("HERMES_TASK_ID") or "",
+            decision=choice,
+            request_id=os.getenv("HERMES_REQUEST_ID"),
+            method="manual",
+        )
+    except Exception:
+        logger.debug("Failed to log approval resolution", exc_info=True)
 
     if choice == "deny":
         return {

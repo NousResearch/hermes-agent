@@ -20,8 +20,9 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
-import json
 import asyncio
+import copy
+import json
 import logging
 import threading
 import time
@@ -261,6 +262,44 @@ _LEGACY_TOOLSET_MAP = {
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 
 
+def _discord_components_schema_enabled() -> bool:
+    """Return True when Discord is configured for live gateway delivery.
+
+    The send_message ``components`` parameter is Discord-only.  Keep it out of
+    schemas for users without an active Discord platform so every model call
+    does not pay a permanent token tax for an unusable feature.
+    """
+    try:
+        from gateway.config import Platform, load_gateway_config
+
+        cfg = load_gateway_config()
+        return Platform.DISCORD in cfg.get_connected_platforms()
+    except Exception:
+        return False
+
+
+def _without_send_message_components_schema(tool_def: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of ``tool_def`` without send_message.components.
+
+    Registry schemas are shallow-copied by ``registry.get_definitions()``, so
+    mutating nested ``parameters.properties`` in place would permanently remove
+    the Discord schema from the registered base schema for the process.
+    """
+    function = dict(tool_def.get("function") or {})
+    parameters = copy.deepcopy(function.get("parameters") or {})
+    properties = parameters.get("properties")
+    if not isinstance(properties, dict) or "components" not in properties:
+        return tool_def
+
+    properties.pop("components", None)
+    required = parameters.get("required")
+    if isinstance(required, list) and "components" in required:
+        parameters["required"] = [item for item in required if item != "components"]
+
+    function["parameters"] = parameters
+    return {**tool_def, "function": function}
+
+
 def _clear_tool_defs_cache() -> None:
     """Drop memoized get_tool_definitions() results. Called when dynamic
     schema dependencies change (e.g. discord capability cache reset,
@@ -307,6 +346,7 @@ def get_tool_definitions(
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
+            _discord_components_schema_enabled(),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -462,25 +502,11 @@ def _compute_tool_definitions(
     # Strip components schema from send_message when Discord is not configured.
     # The components property is Discord-only (buttons, select menus); including
     # it for non-Discord users adds permanent token tax for an unusable feature.
-    if "send_message" in available_tool_names:
-        try:
-            from gateway.config import Platform, load_gateway_config
-            _cfg = load_gateway_config()
-            _discord_connected = Platform.DISCORD in _cfg.get_connected_platforms()
-        except Exception:
-            _discord_connected = False
-        if not _discord_connected:
-            for i, td in enumerate(filtered_tools):
-                if td.get("function", {}).get("name") == "send_message":
-                    props = td["function"]["parameters"].get("properties", {})
-                    if "components" in props:
-                        props.pop("components")
-                        # Also remove from required if present
-                        req = td["function"]["parameters"].get("required", [])
-                        if "components" in req:
-                            req.remove("components")
-                        filtered_tools[i] = td
-                    break
+    if "send_message" in available_tool_names and not _discord_components_schema_enabled():
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") == "send_message":
+                filtered_tools[i] = _without_send_message_components_schema(td)
+                break
 
     if not quiet_mode:
         if filtered_tools:

@@ -76,8 +76,8 @@ class TestCogneeAvailability:
         # cognee package must be importable for is_available to return True
         try:
             import cognee  # noqa: F401
-        except ImportError:
-            pytest.skip("cognee package not installed")
+        except (ImportError, ValueError):
+            pytest.skip("cognee package not available")
         assert provider.is_available() is True
 
     def test_config_schema_contains_expected_keys(self):

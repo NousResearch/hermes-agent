@@ -1112,7 +1112,7 @@ def _ensure_tui_node() -> None:
 
 
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
-    """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR or ui-tui, build when stale)."""
+    """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
     _ensure_tui_node()
 
     def _node_bin(bin: str) -> str:
@@ -1126,23 +1126,31 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             sys.exit(1)
         return path
 
-    # pre-built dist + node_modules (nix / full HERMES_TUI_DIR) skips npm.
+    # Footgun: --dev against a prebuilt bundle that has no source/node_modules.
+    ext_dir = os.environ.get("HERMES_TUI_DIR")
+    if tui_dev and ext_dir:
+        print(
+            f"Error: --dev is incompatible with HERMES_TUI_DIR={ext_dir}\n"
+            f"The prebuilt TUI has no source code to hot-reload.\n"
+            f"Unset HERMES_TUI_DIR (e.g. `unset HERMES_TUI_DIR`) to use --dev from a checkout.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # 1. Prebuilt bundle (nix / packaged release): just run it.
     if not tui_dev:
-        ext_dir = os.environ.get("HERMES_TUI_DIR")
         if ext_dir:
             p = Path(ext_dir)
-            if (p / "dist" / "entry.js").exists() and not _tui_need_npm_install(p):
+            if (p / "dist" / "entry.js").is_file():
                 node = _node_bin("node")
                 return [node, str(p / "dist" / "entry.js")], p
 
-    npm = _node_bin("npm")
+    # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
+    #    --dev flow: npm install if needed, then tsx src/entry.tsx (no build).
     if _tui_need_npm_install(tui_dir):
+        npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
-        # Capture stdout as well as stderr — some npm errors (notably EACCES on a
-        # root-owned node_modules in containers) are emitted on stdout, and a
-        # bare "npm install failed." with no preview defeats debugging.  We keep
-        # the failure-only print path so a successful install stays silent.
         result = subprocess.run(
             [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(tui_dir),
@@ -1160,47 +1168,30 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             sys.exit(1)
 
     if tui_dev:
-        if _hermes_ink_bundle_stale(tui_dir):
-            result = subprocess.run(
-                [npm, "run", "build", "--prefix", "packages/hermes-ink"],
-                cwd=str(tui_dir),
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
-                preview = "\n".join(combined.splitlines()[-30:])
-                print("@hermes/ink build failed.")
-                if preview:
-                    print(preview)
-                sys.exit(1)
         tsx = tui_dir / "node_modules" / ".bin" / "tsx"
         if tsx.exists():
             return [str(tsx), "src/entry.tsx"], tui_dir
+        npm = _node_bin("npm")
         return [npm, "start"], tui_dir
 
-    if _tui_build_needed(tui_dir):
-        result = subprocess.run(
-            [npm, "run", "build"],
-            cwd=str(tui_dir),
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
-            preview = "\n".join(combined.splitlines()[-30:])
-            print("TUI build failed.")
-            if preview:
-                print(preview)
-            sys.exit(1)
-
-    root = _find_bundled_tui(tui_dir)
-    if not root:
-        print("TUI build did not produce dist/entry.js")
+    # Always rebuild — esbuild is fast and this avoids staleness-edge-case bugs.
+    npm = _node_bin("npm")
+    result = subprocess.run(
+        [npm, "run", "build"],
+        cwd=str(tui_dir),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+        preview = "\n".join(combined.splitlines()[-30:])
+        print("TUI build failed.")
+        if preview:
+            print(preview)
         sys.exit(1)
 
     node = _node_bin("node")
-    return [node, str(root / "dist" / "entry.js")], root
+    return [node, str(tui_dir / "dist" / "entry.js")], tui_dir
 
 
 def _normalize_tui_toolsets(toolsets: object) -> list[str]:
@@ -5531,7 +5522,6 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
 def _web_ui_build_needed(web_dir: Path) -> bool:
     """Return True if the web UI dist is missing or stale.
 
-    Mirrors the staleness logic used by ``_tui_build_needed()`` for the TUI.
     The Vite build outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
     outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``.  Uses the Vite
     manifest as the sentinel because it is written last and therefore has the

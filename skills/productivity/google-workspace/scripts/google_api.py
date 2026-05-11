@@ -10,6 +10,8 @@ Usage:
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
+  python google_api.py gmail attachment list MESSAGE_ID
+  python google_api.py gmail attachment get MESSAGE_ID ATTACHMENT_ID --output /path/to/file.pdf
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
@@ -450,6 +452,82 @@ def gmail_modify(args):
     service = build_service("gmail", "v1")
     result = service.users().messages().modify(userId="me", id=args.message_id, body=body).execute()
     print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
+
+
+def _walk_attachments(payload: dict, path: str = "") -> list[dict]:
+    """Recursively collect attachment metadata from a Gmail message payload.
+
+    Returns a list of {attachment_id, filename, mime_type, size_bytes, part_id}
+    for every part whose body has an attachmentId.
+    """
+    found: list[dict] = []
+    part_id = payload.get("partId") or path or "root"
+    body = payload.get("body") if isinstance(payload.get("body"), dict) else None
+    attachment_id = body.get("attachmentId") if body else None
+    if attachment_id:
+        found.append({
+            "attachment_id": attachment_id,
+            "filename": payload.get("filename") or "",
+            "mime_type": payload.get("mimeType") or "",
+            "size_bytes": int(body.get("size") or 0),
+            "part_id": part_id,
+        })
+    parts = payload.get("parts")
+    if isinstance(parts, list):
+        for idx, part in enumerate(parts):
+            child_path = f"{part_id}.{idx}"
+            found.extend(_walk_attachments(part, child_path))
+    return found
+
+
+def gmail_attachment_list(args):
+    if _gws_binary():
+        msg = _run_gws(
+            ["gmail", "users", "messages", "get"],
+            params={"userId": "me", "id": args.message_id, "format": "full"},
+        )
+    else:
+        service = build_service("gmail", "v1")
+        msg = service.users().messages().get(
+            userId="me", id=args.message_id, format="full"
+        ).execute()
+
+    payload = msg.get("payload") if isinstance(msg, dict) else None
+    attachments = _walk_attachments(payload) if isinstance(payload, dict) else []
+    print(json.dumps(attachments, indent=2, ensure_ascii=False))
+
+
+def gmail_attachment_get(args):
+    if _gws_binary():
+        att = _run_gws(
+            ["gmail", "users", "messages", "attachments", "get"],
+            params={
+                "userId": "me",
+                "messageId": args.message_id,
+                "id": args.attachment_id,
+            },
+        )
+    else:
+        service = build_service("gmail", "v1")
+        att = service.users().messages().attachments().get(
+            userId="me", messageId=args.message_id, id=args.attachment_id
+        ).execute()
+
+    data = att.get("data") if isinstance(att, dict) else None
+    if not data:
+        print("ERROR: Attachment payload missing 'data' field.", file=sys.stderr)
+        sys.exit(1)
+
+    raw = base64.urlsafe_b64decode(data)
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(raw)
+
+    print(json.dumps({
+        "status": "saved",
+        "path": str(output_path),
+        "size_bytes": len(raw),
+    }, indent=2))
 
 
 # =========================================================================
@@ -1088,6 +1166,19 @@ def main():
     p.add_argument("--add-labels", default="", help="Comma-separated label IDs to add")
     p.add_argument("--remove-labels", default="", help="Comma-separated label IDs to remove")
     p.set_defaults(func=gmail_modify)
+
+    att = gmail_sub.add_parser("attachment", help="Inspect or download message attachments")
+    att_sub = att.add_subparsers(dest="att_action", required=True)
+
+    p = att_sub.add_parser("list", help="List attachments in a message")
+    p.add_argument("message_id")
+    p.set_defaults(func=gmail_attachment_list)
+
+    p = att_sub.add_parser("get", help="Download a single attachment by ID")
+    p.add_argument("message_id")
+    p.add_argument("attachment_id")
+    p.add_argument("--output", required=True, help="Local output path for attachment bytes")
+    p.set_defaults(func=gmail_attachment_get)
 
     # --- Calendar ---
     cal = sub.add_parser("calendar")

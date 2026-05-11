@@ -1,5 +1,6 @@
 """Tests for Google Workspace gws bridge and CLI wrapper."""
 
+import base64
 import importlib.util
 import json
 import subprocess
@@ -278,3 +279,157 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def test_walk_attachments_finds_nested_parts(api_module):
+    """_walk_attachments surfaces attachments from multi-level multipart payloads."""
+    payload = {
+        "partId": "0",
+        "mimeType": "multipart/mixed",
+        "parts": [
+            {
+                "partId": "0.0",
+                "mimeType": "text/plain",
+                "body": {"size": 12, "data": "aGVsbG8gd29ybGQ="},
+            },
+            {
+                "partId": "0.1",
+                "mimeType": "multipart/related",
+                "parts": [
+                    {
+                        "partId": "0.1.0",
+                        "mimeType": "application/pdf",
+                        "filename": "report.pdf",
+                        "body": {"size": 4096, "attachmentId": "att-1"},
+                    },
+                ],
+            },
+            {
+                "partId": "0.2",
+                "mimeType": "image/png",
+                "filename": "logo.png",
+                "body": {"size": 2048, "attachmentId": "att-2"},
+            },
+        ],
+    }
+
+    found = api_module._walk_attachments(payload)
+
+    assert len(found) == 2
+    assert {a["attachment_id"] for a in found} == {"att-1", "att-2"}
+    pdf = next(a for a in found if a["attachment_id"] == "att-1")
+    assert pdf["filename"] == "report.pdf"
+    assert pdf["mime_type"] == "application/pdf"
+    assert pdf["size_bytes"] == 4096
+    png = next(a for a in found if a["attachment_id"] == "att-2")
+    assert png["filename"] == "logo.png"
+    assert png["size_bytes"] == 2048
+
+
+def test_walk_attachments_empty_when_no_attachments(api_module):
+    """A plain text-only payload returns an empty list."""
+    payload = {
+        "mimeType": "text/plain",
+        "body": {"size": 5, "data": "aGVsbG8="},
+    }
+    assert api_module._walk_attachments(payload) == []
+
+
+def test_api_gmail_attachment_list_uses_messages_get(api_module, capsys):
+    """gmail attachment list reads the full message and surfaces attachments."""
+    payload = {
+        "parts": [
+            {
+                "partId": "1",
+                "mimeType": "application/pdf",
+                "filename": "invoice.pdf",
+                "body": {"size": 1234, "attachmentId": "att-xyz"},
+            },
+        ],
+    }
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout=json.dumps({"payload": payload}), stderr="")
+
+    args = api_module.argparse.Namespace(
+        message_id="msg-1", func=api_module.gmail_attachment_list,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_attachment_list(args)
+
+    cmd = captured["cmd"]
+    assert cmd[0] == "/usr/bin/gws"
+    assert cmd[1:5] == ["gmail", "users", "messages", "get"]
+    params = json.loads(cmd[cmd.index("--params") + 1])
+    assert params["userId"] == "me"
+    assert params["id"] == "msg-1"
+    assert params["format"] == "full"
+
+    out = json.loads(capsys.readouterr().out)
+    assert len(out) == 1
+    assert out[0]["attachment_id"] == "att-xyz"
+    assert out[0]["filename"] == "invoice.pdf"
+    assert out[0]["size_bytes"] == 1234
+
+
+def test_api_gmail_attachment_get_decodes_and_writes(api_module, tmp_path, capsys):
+    """gmail attachment get base64url-decodes the payload and writes it to disk."""
+    raw_bytes = b"%PDF-1.4 fake content\x00\xff"
+    encoded = base64.urlsafe_b64encode(raw_bytes).decode()
+
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout=json.dumps({"size": len(raw_bytes), "data": encoded}), stderr="")
+
+    output = tmp_path / "out" / "doc.pdf"
+    args = api_module.argparse.Namespace(
+        message_id="msg-1",
+        attachment_id="att-xyz",
+        output=str(output),
+        func=api_module.gmail_attachment_get,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_attachment_get(args)
+
+    cmd = captured["cmd"]
+    assert cmd[1:6] == ["gmail", "users", "messages", "attachments", "get"]
+    params = json.loads(cmd[cmd.index("--params") + 1])
+    assert params["userId"] == "me"
+    assert params["messageId"] == "msg-1"
+    assert params["id"] == "att-xyz"
+
+    assert output.read_bytes() == raw_bytes
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "saved"
+    assert out["path"] == str(output)
+    assert out["size_bytes"] == len(raw_bytes)
+
+
+def test_api_gmail_attachment_get_errors_on_missing_data(api_module, tmp_path, capsys):
+    """gmail attachment get surfaces a clear error when the API response has no 'data'."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout=json.dumps({"size": 0}), stderr="")
+
+    output = tmp_path / "doc.pdf"
+    args = api_module.argparse.Namespace(
+        message_id="msg-1",
+        attachment_id="att-xyz",
+        output=str(output),
+        func=api_module.gmail_attachment_get,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        with pytest.raises(SystemExit) as excinfo:
+            api_module.gmail_attachment_get(args)
+
+    assert excinfo.value.code == 1
+    assert not output.exists()

@@ -196,6 +196,13 @@ $GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "T
 $GAPI gmail labels
 $GAPI gmail modify MESSAGE_ID --add-labels LABEL_ID
 $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
+
+# Attachments
+# List attachments in a message (returns JSON with attachment_id, filename, mime_type, size_bytes)
+$GAPI gmail attachment list MESSAGE_ID
+
+# Download a single attachment to a local path
+$GAPI gmail attachment get MESSAGE_ID ATTACHMENT_ID --output /tmp/report.pdf
 ```
 
 ### Calendar

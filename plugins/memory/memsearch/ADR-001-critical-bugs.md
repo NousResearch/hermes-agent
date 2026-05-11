@@ -194,6 +194,57 @@ The plugin trusts the CLI to handle rate limiting. If bulk indexing fails, the u
 
 ---
 
+## Decision 6: Dual-Write Config (JSON + TOML) Retained — Unification Deferred
+
+### Context
+
+The plugin currently writes config to two places:
+1. **`$HERMES_HOME/memsearch_config.json`** — Hermes plugin config (read at init)
+2. **`~/.memsearch/config.toml`** — memsearch CLI native config (read by CLI commands)
+
+A proposed refactor (Task 8) would make JSON the single source of truth and stop writing TOML.
+
+### Decision
+
+**Defer config unification.** Keep the existing dual-write pattern in `save_config()`:
+
+```python
+def save_config(self, values, hermes_home):
+    # Write JSON (Hermes plugin config)
+    (Path(hermes_home) / "memsearch_config.json").write_text(...)
+    # Write TOML (memsearch CLI config)
+    for key, val in values.items():
+        subprocess.run(["memsearch", "config", "set", ...])
+```
+
+**Reasons for deferral:**
+
+1. **No performance gain** — Config I/O is <0.1% of plugin runtime. The bottleneck is embedding API calls and Milvus search, not config writes.
+2. **Breaking change risk** — Users who run `memsearch config set` CLI commands directly would find their changes ignored by the plugin. Existing workflows break silently.
+3. **Migration burden** — Would require a migration script to merge existing TOML configs into JSON, plus documentation updates.
+4. **Works correctly today** — Dual-write has no known bugs. The CLI and plugin stay in sync.
+
+### Consequences
+
+- `save_config()` remains ~30 LOC with dual-write logic
+- If memsearch CLI ever drops TOML config, this decision should be revisited
+- Future cleanup should include a deprecation period (log warnings) before removing TOML sync
+
+---
+
+## Summary Table
+
+| # | Bug | Fix | Invariant |
+|---|-----|-----|-----------|
+| 1 | `~` resolves to sandboxed HOME | `_real_home()` + `_expand_paths()` | Always use absolute paths for `milvus_uri` |
+| 2 | `stats --json-output` unsupported | Parse text with regex | Never pass `--json-output` to `stats` |
+| 3 | Dimension mismatch on provider switch | Document manual reset | Switch provider → backup, reset, re-index |
+| 4 | `GEMINI_API_KEY` rejected | Check both env vars | Both `GOOGLE_` and `GEMINI_` keys are valid |
+| 5 | Gemini 100 req/min rate limit | Trust CLI retry/backoff | Re-run command; dedup handles duplicates |
+| 6 | Dual-write config complexity | **Deferred** — no fix needed | Keep JSON+TOML sync until CLI drops TOML |
+
+---
+
 ## Related
 
 - Plugin source: `plugins/memory/memsearch/__init__.py`

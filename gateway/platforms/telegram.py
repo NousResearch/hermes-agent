@@ -4055,11 +4055,12 @@ class TelegramAdapter(BasePlatformAdapter):
         return cleaned or text
 
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
-        """Apply Telegram group trigger rules.
+        """Apply Telegram group trigger rules and user allowlist.
 
-        DMs remain unrestricted. Group/supergroup messages are accepted when:
-        - the chat passes the ``allowed_chats`` whitelist (when set), or
-          ``guest_mode`` is enabled and the bot is explicitly mentioned
+        DMs and group messages are both subject to TELEGRAM_ALLOWED_USERS
+        allowlist check. The chat also passes the ``allowed_chats`` whitelist
+        (when set), or ``guest_mode`` is enabled and the bot is explicitly
+        mentioned. Group/supergroup messages are additionally accepted when:
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the message replies to the bot
@@ -4076,6 +4077,18 @@ class TelegramAdapter(BasePlatformAdapter):
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
+        # Enforce TELEGRAM_ALLOWED_USERS allowlist for ALL message types
+        # (DMs and groups). Previously only callback actions were gated,
+        # leaving inbound messages unblocked (issue #23778).
+        _user = getattr(message, "from_user", None)
+        _user_id = str(getattr(_user, "id", "")) if _user else ""
+        if not self._is_callback_user_authorized(_user_id):
+            logger.warning(
+                "[%s] Unauthorized user %s — message dropped",
+                self.name, _user_id,
+            )
+            return False
+
         if not self._is_group_chat(message):
             return True
 

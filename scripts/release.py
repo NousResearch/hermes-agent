@@ -977,6 +977,8 @@ AUTHOR_MAP = {
     "hello@dominikh.com": "dmnkhorvath",  # salvage of #23358 (kanban worker send_message)
     "413011+smwbev@users.noreply.github.com": "smwbev",  # salvage of #23659 (aria-label colLabel)
     "58116817+TurgutKural@users.noreply.github.com": "TurgutKural",  # salvage of #23356 (HERMES_HOME inject)
+    "openclaw@agent.local": "29206394",  # PR #22194 salvage (sudo -S brute-force guard, #9590)
+    "freedemon@gmail.com": "fr33d3m0n",  # PR #21128 salvage (sudo stdin/askpass DANGEROUS, #17873 cat 4)
 }
 
 

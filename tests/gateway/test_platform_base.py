@@ -360,6 +360,69 @@ class TestExtractMedia:
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
+    def test_windows_drive_letter_path_with_spaces(self):
+        """Windows drive-letter paths with spaces should not be truncated."""
+        content = "MEDIA:C:\\Users\\Confera\\OneDrive\\My Folder\\report.pdf"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "C:\\Users\\Confera\\OneDrive\\My Folder\\report.pdf"
+        assert cleaned == ""
+
+    def test_windows_drive_letter_path_no_spaces(self):
+        """Windows drive-letter paths without spaces should still work."""
+        content = "MEDIA:C:\\Users\\test\\file.png"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert "C:\\Users\\test\\file.png" == media[0][0]
+
+    def test_gis_extension_kmz(self):
+        """GIS .kmz extension should be recognized in spaced paths."""
+        content = "MEDIA:/home/user/My Folder/coords.kmz"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/home/user/My Folder/coords.kmz"
+
+    def test_gis_extension_geojson(self):
+        """GIS .geojson extension should be recognized."""
+        content = "MEDIA:/data/map.geojson"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/data/map.geojson"
+
+    def test_gis_extension_gpx(self):
+        """GIS .gpx extension should be recognized."""
+        content = "MEDIA:/data/track.gpx"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/data/track.gpx"
+
+    def test_json_extension(self):
+        """JSON extension should be recognized."""
+        content = "MEDIA:/tmp/data.json"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/data.json"
+
+    def test_xml_extension(self):
+        """XML extension should be recognized."""
+        content = "MEDIA:/tmp/data.xml"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/data.xml"
+
+    def test_html_extension(self):
+        """HTML extension should be recognized."""
+        content = "MEDIA:/tmp/page.html"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/page.html"
+
+    def test_windows_spaced_path_with_gis_extension(self):
+        """Windows spaced path with GIS extension should work end-to-end."""
+        content = "MEDIA:C:\\Users\\Foo\\OneDrive\\My Folder\\coords.kmz"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "C:\\Users\\Foo\\OneDrive\\My Folder\\coords.kmz"
 
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio

@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Caveman compression — gates on rust_cave_001 native lib being installed
+    "compress", "preprocess_text", "estimate_tokens",
 ]
 
 
@@ -114,6 +116,16 @@ TOOLSETS = {
             "or keyboard focus. Works with any tool-capable model."
         ),
         "tools": ["computer_use"],
+        "includes": []
+    },
+
+    "caveman": {
+        "description": (
+            "Caveman compression tools for LLM context optimization. "
+            "Reduces token count by removing filler words, normalizing voice, "
+            "and enforcing concise sentence structure. Uses rust-cave-001 native library."
+        ),
+        "tools": ["compress", "preprocess_text", "estimate_tokens"],
         "includes": []
     },
 

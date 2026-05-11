@@ -38,7 +38,7 @@ def test_android_boot_and_chat_paths_guard_local_backend_failures_instead_of_cra
     assert 'client.streamChatCompletion(' in chat_view_model
     assert 'error.message ?: error.javaClass.simpleName' in chat_view_model
 
-    assert "toolSpecs = null" in native_tool_client
+    assert "toolSpecs = initialToolSpecs" in native_tool_client
     assert "followUp.content.ifBlank { toolCompletionReply(latestToolResult) }" in native_tool_client
 
     assert 'internal fun parseStream(' in sse_client
@@ -73,6 +73,7 @@ def test_android_chat_ui_and_native_tool_prompt_stay_compact_on_large_font_phone
     assert 'inferredToolNames(userText: String)' in native_tool_client
     assert '"launch browser"' in native_tool_client
     assert '"browse url"' in native_tool_client
+    assert '"browser" in lower' in native_tool_client
     assert 'create_intent_task: start_activity, open_uri, or send_broadcast' in native_tool_client
     assert 'explicitlyRequestedToolNames(userText)' in native_tool_client
     assert 'formatNativeChatError' in native_tool_client

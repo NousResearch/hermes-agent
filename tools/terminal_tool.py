@@ -139,7 +139,7 @@ def _check_vercel_sandbox_requirements(config: dict[str, Any]) -> bool:
         return False
 
     disk = config.get("container_disk", 51200)
-    if disk not in (0, 51200):
+    if disk not in {0, 51200}:
         logger.error(
             "Vercel Sandbox does not support custom TERMINAL_CONTAINER_DISK=%s. "
             "Use the default shared setting (51200 MB).",
@@ -416,7 +416,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 chars = []
                 while True:
                     c = msvcrt.getwch()
-                    if c in ("\r", "\n"):
+                    if c in {"\r", "\n"}:
                         break
                     if c == "\x03":
                         raise KeyboardInterrupt
@@ -432,7 +432,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 chars = []
                 while True:
                     b = os.read(tty_fd, 1)
-                    if not b or b in (b"\n", b"\r"):
+                    if not b or b in {b"\n", b"\r"}:
                         break
                     chars.append(b)
                 result["password"] = b"".join(chars).decode("utf-8", errors="replace")
@@ -620,6 +620,32 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
     return "".join(out), found
 
 
+def _sudo_nopasswd_works() -> bool:
+    """Return True when local sudo currently works without prompting.
+
+    Only probes for the `local` terminal backend; Docker/SSH/Modal/etc. must
+    not inherit the host's sudo state. Re-probes every call (no process-level
+    cache) so an expired sudo timestamp cannot make a later command silently
+    block waiting for a password.
+    """
+    terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
+    if terminal_env != "local":
+        return False
+
+    try:
+        probe = subprocess.run(
+            ["sudo", "-n", "true"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+        )
+        return probe.returncode == 0
+    except Exception:
+        return False
+
+
 def _rewrite_compound_background(command: str) -> str:
     """Wrap `A && B &` (or `A || B &`) to `A && { B & }` at depth 0.
 
@@ -681,7 +707,7 @@ def _rewrite_compound_background(command: str) -> str:
             continue
 
         # Quoted tokens — consume whole string via the shared tokenizer.
-        if ch in ("'", '"'):
+        if ch in {"'", '"'}:
             _, next_i = _read_shell_token(command, i)
             i = max(next_i, i + 1)
             continue
@@ -833,6 +859,15 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
         else _get_cached_sudo_password()
     )
 
+    # Local hosts with sudoers NOPASSWD should not be forced through the
+    # interactive Hermes password prompt or the sudo -S password-pipe path.
+    # Scoped to the local terminal backend so Docker/SSH/Modal/etc. can't
+    # inherit host sudo state. Re-probes every call (no process-lifetime
+    # cache) so an expired sudo timestamp doesn't make a later command block
+    # silently without Hermes prompting.
+    if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
+        return command, None
+
     if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
@@ -853,6 +888,7 @@ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+import sys
 
 
 # Tool description for LLM
@@ -974,7 +1010,7 @@ def _get_env_config() -> Dict[str, Any]:
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in ("true", "1", "yes")
+    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
@@ -1006,7 +1042,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in ("modal", "docker", "singularity", "daytona", "vercel_sandbox") and cwd:
+    elif env_type in {"modal", "docker", "singularity", "daytona", "vercel_sandbox"} and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1041,16 +1077,18 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_persistent": os.getenv(
             "TERMINAL_SSH_PERSISTENT",
             os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
-        ).lower() in ("true", "1", "yes"),
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in ("true", "1", "yes"),
+        ).lower() in {"true", "1", "yes"},
+        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
         # daytona, and vercel_sandbox -- ignored for local/ssh)
         "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
+        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in ("true", "1", "yes"),
+        "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),
+        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "docker_extra_args": _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"),
     }
 
 
@@ -1093,6 +1131,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     volumes = cc.get("docker_volumes", [])
     docker_forward_env = cc.get("docker_forward_env", [])
     docker_env = cc.get("docker_env", {})
+    docker_extra_args = cc.get("docker_extra_args", [])
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -1108,6 +1147,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             forward_env=docker_forward_env,
             env=docker_env,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
+            extra_args=docker_extra_args,
         )
     
     elif env_type == "singularity":
@@ -1743,7 +1783,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -1756,6 +1796,7 @@ def terminal_tool(
                                 "docker_forward_env": config.get("docker_forward_env", []),
                                 "docker_env": config.get("docker_env", {}),
                                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                                "docker_extra_args": config.get("docker_extra_args", []),
                             }
 
                         local_config = None
@@ -1966,9 +2007,10 @@ def terminal_tool(
             
             while retry_count <= max_retries:
                 try:
-                    execute_kwargs = {"timeout": effective_timeout}
-                    if workdir:
-                        execute_kwargs["cwd"] = workdir
+                    execute_kwargs = {
+                        "timeout": effective_timeout,
+                        "cwd": workdir or cwd,
+                    }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()
@@ -2202,7 +2244,7 @@ if __name__ == "__main__":
 
     if not check_terminal_requirements():
         print("\n❌ Requirements not met. Please check the messages above.")
-        exit(1)
+        sys.exit(1)
 
     print("\n✅ All requirements met!")
     print("\nAvailable Tool:")

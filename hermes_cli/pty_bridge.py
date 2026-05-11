@@ -7,11 +7,14 @@ keystrokes can be fed back in.  The only caller today is the
 
 Design constraints:
 
-* **POSIX-only.**  Hermes Agent supports Windows exclusively via WSL, which
-  exposes a native POSIX PTY via ``openpty(3)``.  Native Windows Python
-  has no PTY; :class:`PtyUnavailableError` is raised with a user-readable
-  install/platform message so the dashboard can render a banner instead of
-  crashing.
+* **POSIX-only.**  This module depends on ``fcntl``, ``termios``, and
+  ``ptyprocess``, none of which exist on native Windows Python.  Native
+  Windows ConPTY is a different API (Windows 10 build 17763+) and would
+  need a separate Windows implementation (``pywinpty``) — that's tracked
+  as a future enhancement.  On native Windows, importing this module
+  raises :class:`ImportError` and the dashboard's ``/chat`` tab shows a
+  WSL-recommended banner instead of crashing.  Every other feature in the
+  dashboard (sessions, jobs, metrics, config editor) works natively.
 * **Zero Node dependency on the server side.**  We use :mod:`ptyprocess`,
   which is a pure-Python wrapper around the OS calls.  The browser talks
   to the same ``hermes --tui`` binary it would launch from the CLI, so
@@ -108,9 +111,14 @@ class PtyBridge:
                     "(or pip install -e '.[pty]')."
                 )
             raise PtyUnavailableError("Pseudo-terminals are unavailable.")
-        # Let caller-supplied env fully override inheritance; if they pass
-        # None we inherit the server's env (same semantics as subprocess).
-        spawn_env = os.environ.copy() if env is None else env
+        # PTY-hosted programs expect TERM to describe the terminal type.
+        # CI often runs without TERM in the parent process, which makes
+        # simple terminal probes like `tput cols` fail before winsize reads.
+        # Preserve explicit caller overrides, but backfill a sensible default
+        # when TERM is missing or blank.
+        spawn_env = (os.environ.copy() if env is None else env.copy())
+        if not spawn_env.get("TERM"):
+            spawn_env["TERM"] = "xterm-256color"
         proc = ptyprocess.PtyProcess.spawn(  # type: ignore[union-attr]
             list(argv),
             cwd=cwd,
@@ -156,7 +164,7 @@ class PtyBridge:
             data = os.read(self._fd, 65536)
         except OSError as exc:
             # EIO on Linux = slave side closed.  EBADF = already closed.
-            if exc.errno in (errno.EIO, errno.EBADF):
+            if exc.errno in {errno.EIO, errno.EBADF}:
                 return None
             raise
         if not data:
@@ -173,7 +181,7 @@ class PtyBridge:
             try:
                 n = os.write(self._fd, view)
             except OSError as exc:
-                if exc.errno in (errno.EIO, errno.EBADF, errno.EPIPE):
+                if exc.errno in {errno.EIO, errno.EBADF, errno.EPIPE}:
                     return
                 raise
             if n <= 0:
@@ -205,7 +213,7 @@ class PtyBridge:
 
         # SIGHUP is the conventional "your terminal went away" signal.
         # We escalate if the child ignores it.
-        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):
+        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
             if not self._proc.isalive():
                 break
             try:

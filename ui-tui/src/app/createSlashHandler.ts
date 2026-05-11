@@ -114,6 +114,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
             }
 
             if (d.type === 'send') {
+              if (d.notice?.trim()) {
+                sys(d.notice)
+              }
               return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: empty message`)
             }
           })

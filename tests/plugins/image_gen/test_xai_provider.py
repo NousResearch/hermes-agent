@@ -172,6 +172,27 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "api_error"
 
+    def test_api_error_preserves_real_response_status(self):
+        import requests as req_lib
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        response = req_lib.Response()
+        response.status_code = 401
+        response._content = json.dumps({"error": {"message": "Invalid API key"}}).encode()
+        response.headers["Content-Type"] = "application/json"
+
+        response.raise_for_status = MagicMock(
+            side_effect=req_lib.HTTPError(response=response)
+        )
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=response):
+            provider = XAIImageGenProvider()
+            result = provider.generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "xAI image generation failed (401): Invalid API key" in result["error"]
+
     def test_timeout(self):
         import requests as req_lib
 
@@ -217,6 +238,28 @@ class TestGenerate:
         headers = call_args.kwargs.get("headers") or call_args[1].get("headers")
         assert "Bearer test-key-12345" in headers["Authorization"]
         assert "Hermes-Agent" in headers["User-Agent"]
+
+    def test_payload_resolution_is_literal_1k_or_2k(self):
+        """Regression: xAI API rejects numeric resolutions ("1024"/"2048") with 422.
+
+        The endpoint expects the literal strings "1k" or "2k". Ensure the wire
+        payload carries that literal — not a numeric mapping. See PR #18678.
+        """
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"url": "https://xai.image/test.png"}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
+            provider = XAIImageGenProvider()
+            provider.generate(prompt="test")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["resolution"] in {"1k", "2k"}, (
+            f"resolution must be the literal '1k' or '2k', got {payload['resolution']!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

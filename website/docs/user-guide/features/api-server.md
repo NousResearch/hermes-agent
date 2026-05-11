@@ -398,14 +398,19 @@ To give multiple users their own isolated Hermes instance (separate config, memo
 hermes profile create alice
 hermes profile create bob
 
-# Configure each profile's API server on a different port
-hermes -p alice config set API_SERVER_ENABLED true
-hermes -p alice config set API_SERVER_PORT 8643
-hermes -p alice config set API_SERVER_KEY alice-secret
+# Configure each profile's API server on a different port. API_SERVER_* are env
+# vars (not config.yaml keys), so write them to each profile's .env:
+cat >> ~/.hermes/profiles/alice/.env <<EOF
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8643
+API_SERVER_KEY=alice-secret
+EOF
 
-hermes -p bob config set API_SERVER_ENABLED true
-hermes -p bob config set API_SERVER_PORT 8644
-hermes -p bob config set API_SERVER_KEY bob-secret
+cat >> ~/.hermes/profiles/bob/.env <<EOF
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8644
+API_SERVER_KEY=bob-secret
+EOF
 
 # Start each profile's gateway
 hermes -p alice gateway &

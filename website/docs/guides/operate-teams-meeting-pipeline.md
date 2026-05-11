@@ -54,21 +54,32 @@ You MUST run `maintain-subscriptions` on a schedule. Pick one of these three opt
 
 #### Option 1: Hermes cron (recommended if you already run the Hermes gateway)
 
-Hermes ships a built-in cron scheduler. Add a script-only cron job that runs every 12 hours (gives 6x headroom against the 72h expiry window):
+Hermes ships a built-in cron scheduler. The `--no-agent` mode runs a script as the job (rather than using an LLM), and `--script` must point at a file under `~/.hermes/scripts/`. First create the script:
 
 ```bash
-hermes cron add \
+mkdir -p ~/.hermes/scripts
+cat > ~/.hermes/scripts/maintain-teams-subscriptions.sh <<'EOF'
+#!/usr/bin/env bash
+exec hermes teams-pipeline maintain-subscriptions
+EOF
+chmod +x ~/.hermes/scripts/maintain-teams-subscriptions.sh
+```
+
+Then register a script-only cron job that runs every 12 hours (gives 6x headroom against the 72h expiry window):
+
+```bash
+hermes cron create "0 */12 * * *" \
   --name "teams-pipeline-maintain-subscriptions" \
-  --schedule "0 */12 * * *" \
-  --script-only \
-  --command "hermes teams-pipeline maintain-subscriptions"
+  --no-agent \
+  --script maintain-teams-subscriptions.sh \
+  --deliver local
 ```
 
 Verify it was registered and inspect the next run time:
 
 ```bash
 hermes cron list
-hermes cron show teams-pipeline-maintain-subscriptions
+hermes cron status        # scheduler status
 ```
 
 #### Option 2: systemd timer (recommended for Linux production deployments)

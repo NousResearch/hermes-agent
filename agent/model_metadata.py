@@ -157,6 +157,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4": 1050000,               # GPT-5.4, GPT-5.4 Pro (1.05M context)
+    # gpt-5.3-codex-spark is Codex-OAuth-only (ChatGPT Pro entitlement) and
+    # uses a smaller 128k window than other gpt-5.x slugs. Listed here as
+    # a defensive override so the longest-substring fallback doesn't match
+    # the generic "gpt-5" entry below (400k) and report the wrong limit if
+    # Spark's context ever needs to be resolved through this path. Real
+    # usage flows through _CODEX_OAUTH_CONTEXT_FALLBACK at line ~1113.
+    "gpt-5.3-codex-spark": 128000,
     "gpt-5.1-chat": 128000,           # Chat variant has 128k context
     "gpt-5": 400000,                  # GPT-5.x base, mini, codex variants (400k)
     "gpt-4.1": 1047576,
@@ -210,8 +217,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
     "kimi": 262144,
-    # Tencent — Hy3 Preview (Hunyuan) with 256K context window
-    "hy3-preview": 256000,
+    # Tencent — Hy3 Preview (Hunyuan) with 256K context window.
+    # OpenRouter live metadata reports 262144 (256 × 1024); align the
+    # static fallback so cache and offline both agree (issue #22268).
+    "hy3-preview": 262144,
     # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
     "nemotron": 131072,
     # Arcee
@@ -234,6 +243,44 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-flash": 262144,
     "zai-org/GLM-5": 202752,
 }
+
+# xAI Grok models that ACCEPT the `reasoning.effort` parameter on
+# api.x.ai. Verified live against /v1/responses 2026-05-10:
+#
+#   ACCEPTS effort:  grok-3-mini, grok-3-mini-fast, grok-4.20-multi-agent-0309,
+#                    grok-4.3
+#   REJECTS effort:  grok-3, grok-4, grok-4-0709, grok-4-fast-(non-)reasoning,
+#                    grok-4-1-fast-(non-)reasoning, grok-4.20-0309-(non-)reasoning,
+#                    grok-code-fast-1
+#
+# REJECTS-side models still reason natively — they just don't expose an
+# effort dial — so callers should send no `reasoning` key at all rather
+# than a default `medium` (which 400s with "Model X does not support
+# parameter reasoningEffort").
+_GROK_EFFORT_CAPABLE_PREFIXES = (
+    "grok-3-mini",
+    "grok-4.20-multi-agent",
+    "grok-4.3",
+)
+
+
+def grok_supports_reasoning_effort(model: str) -> bool:
+    """Return True when an xAI Grok model accepts ``reasoning.effort``.
+
+    Allowlist by substring (matches both bare ``grok-3-mini`` and
+    aggregator-prefixed ``x-ai/grok-3-mini``). Conservative by design:
+    if a future Grok model isn't listed, we send no effort dial rather
+    than 400.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    # Strip common aggregator prefixes (x-ai/, openrouter/x-ai/, xai/, ...)
+    for sep in ("/",):
+        if sep in name:
+            name = name.rsplit(sep, 1)[-1]
+    return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
+
 
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
@@ -1106,6 +1153,12 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.1-codex-max": 272_000,
     "gpt-5.1-codex-mini": 272_000,
     "gpt-5.3-codex": 272_000,
+    # Spark runs on specialised low-latency hardware and exposes a smaller
+    # 128k window than other Codex OAuth slugs. Listed explicitly so the
+    # longest-key-first fallback resolves it correctly — substring match
+    # on "gpt-5.3-codex" otherwise wins and reports 272k. Availability is
+    # gated by ChatGPT Pro entitlement on the Codex backend.
+    "gpt-5.3-codex-spark": 128_000,
     "gpt-5.2-codex": 272_000,
     "gpt-5.4-mini": 272_000,
     "gpt-5.5": 272_000,

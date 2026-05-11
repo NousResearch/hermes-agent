@@ -23,7 +23,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import call_llm, _is_connection_error
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -763,6 +763,33 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
+    def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
+        """Switch from a separate ``summary_model`` back to the main model.
+
+        Centralises the bookkeeping shared by every fallback branch in
+        :meth:`_generate_summary` (model-not-found, timeout, JSON decode,
+        unknown error): record the aux-model failure for ``/usage``-style
+        callers, clear the summary model so the next call uses the main one,
+        and clear the cooldown so the immediate retry can run.
+
+        ``reason`` is a short human-readable phrase ("unavailable",
+        "timed out", "returned invalid JSON", "failed") that is interpolated
+        into the warning log.
+        """
+        self._summary_model_fallen_back = True
+        logging.warning(
+            "Summary model '%s' %s (%s). "
+            "Falling back to main model '%s' for compression.",
+            self.summary_model, reason, e, self.model,
+        )
+        _err_text = str(e).strip() or e.__class__.__name__
+        if len(_err_text) > 220:
+            _err_text = _err_text[:217].rstrip() + "..."
+        self._last_aux_model_failure_error = _err_text
+        self._last_aux_model_failure_model = self.summary_model
+        self.summary_model = ""  # empty = use main model
+        self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
+
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -961,28 +988,52 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 _status in (408, 429, 502, 504)
                 or "timeout" in _err_str
             )
+            # Non-JSON / malformed-body responses from misconfigured providers
+            # or proxies (e.g. an HTML 502 page returned with
+            # ``Content-Type: application/json``) bubble up as
+            # ``json.JSONDecodeError`` from the OpenAI SDK's ``response.json()``,
+            # or as a wrapping ``APIResponseValidationError`` whose message
+            # carries the substring "expecting value".  Treat these like a
+            # transient provider failure: one retry on the main model, then a
+            # short cooldown.  Issue #22244.
+            _is_json_decode = (
+                isinstance(e, json.JSONDecodeError)
+                or "expecting value" in _err_str
+            )
+            # httpcore / httpx streaming premature-close errors surface as
+            # ConnectionError subclasses or plain Exception with characteristic
+            # substrings ("incomplete chunked read", "peer closed connection",
+            # "response ended prematurely", "unexpected eof").  These are
+            # transient network events; treat them like a timeout so we fall
+            # back to the main model instead of entering a 60-second cooldown.
+            # See issue #18458.
+            _is_streaming_closed = _is_connection_error(e)
+            if _is_json_decode and not _is_model_not_found and not _is_timeout:
+                logger.error(
+                    "Context compression failed: auxiliary LLM returned a "
+                    "non-JSON response. provider=%s summary_model=%s "
+                    "main_model=%s base_url=%s err=%s",
+                    self.provider or "auto",
+                    self.summary_model or "(main)",
+                    self.model,
+                    self.base_url or "default",
+                    e,
+                )
             if (
-                (_is_model_not_found or _is_timeout)
+                (_is_model_not_found or _is_timeout or _is_json_decode or _is_streaming_closed)
                 and self.summary_model
                 and self.summary_model != self.model
                 and not getattr(self, "_summary_model_fallen_back", False)
             ):
-                self._summary_model_fallen_back = True
-                logging.warning(
-                    "Summary model '%s' unavailable (%s). "
-                    "Falling back to main model '%s' for compression.",
-                    self.summary_model, e, self.model,
-                )
-                # Record the aux-model failure so callers can warn the user
-                # even if the retry-on-main succeeds — a misconfigured aux
-                # model is something the user needs to fix.
-                _err_text = str(e).strip() or e.__class__.__name__
-                if len(_err_text) > 220:
-                    _err_text = _err_text[:217].rstrip() + "..."
-                self._last_aux_model_failure_error = _err_text
-                self._last_aux_model_failure_model = self.summary_model
-                self.summary_model = ""  # empty = use main model
-                self._summary_failure_cooldown_until = 0.0  # no cooldown
+                if _is_json_decode:
+                    _reason = "returned invalid JSON"
+                elif _is_model_not_found:
+                    _reason = "unavailable"
+                elif _is_streaming_closed:
+                    _reason = "closed stream prematurely"
+                else:
+                    _reason = "timed out"
+                self._fallback_to_main_for_compression(e, _reason)
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)  # retry immediately
 
             # Unknown-error best-effort retry on main model.  Losing N turns of
@@ -999,26 +1050,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 and self.summary_model != self.model
                 and not getattr(self, "_summary_model_fallen_back", False)
             ):
-                self._summary_model_fallen_back = True
-                logging.warning(
-                    "Summary model '%s' failed (%s). "
-                    "Retrying on main model '%s' before giving up.",
-                    self.summary_model, e, self.model,
-                )
-                # Record the aux-model failure (see 404 branch above) — user
-                # should know their configured model is broken even if main
-                # recovers the call.
-                _err_text = str(e).strip() or e.__class__.__name__
-                if len(_err_text) > 220:
-                    _err_text = _err_text[:217].rstrip() + "..."
-                self._last_aux_model_failure_error = _err_text
-                self._last_aux_model_failure_model = self.summary_model
-                self.summary_model = ""  # empty = use main model
-                self._summary_failure_cooldown_until = 0.0
+                self._fallback_to_main_for_compression(e, "failed")
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
-            # Transient errors (timeout, rate limit, network) — shorter cooldown
-            _transient_cooldown = 60
+            # Transient errors (timeout, rate limit, network, JSON decode,
+            # streaming premature-close) — shorter cooldown for JSON decode and
+            # streaming-closed since those conditions can self-resolve quickly.
+            _transient_cooldown = 30 if (_is_json_decode or _is_streaming_closed) else 60
             self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown
             err_text = str(e).strip() or e.__class__.__name__
             if len(err_text) > 220:

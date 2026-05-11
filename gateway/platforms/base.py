@@ -40,6 +40,52 @@ def _platform_name(platform) -> str:
     return str(value or "").lower()
 
 
+def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
+    """Build platform-aware thread metadata for adapter sends.
+
+    Most platforms route threaded sends with a generic ``thread_id`` metadata
+    value. Telegram private-chat topics created through Hermes' DM-topic helper
+    are exposed in updates as ``message_thread_id`` plus a reply anchor, but
+    outbound sends only render in the correct Telegram lane when the adapter
+    supplies both ``message_thread_id`` and ``reply_to_message_id``. Mark those
+    lanes so the Telegram adapter can avoid the known-bad partial routes.
+    """
+    thread_id = getattr(source, "thread_id", None)
+    if thread_id is None:
+        return None
+    metadata = {"thread_id": thread_id}
+    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+        metadata["telegram_dm_topic_reply_fallback"] = True
+        anchor = reply_to_message_id or getattr(source, "message_id", None)
+        if anchor is not None:
+            metadata["telegram_reply_to_message_id"] = str(anchor)
+    return metadata
+
+
+def _reply_anchor_for_event(event) -> str | None:
+    """Return reply_to id for platforms that need reply semantics.
+
+    Telegram forum/supergroup topics should be routed by topic metadata, not by
+    replying to the triggering message. Hermes-created Telegram private-chat
+    topic lanes are different: Bot API sends reject their ``message_thread_id``
+    and do not route with ``direct_messages_topic_id``. Those lanes only remain
+    visible when sent with both the private topic thread id and a reply to the
+    triggering user message.
+    """
+    source = getattr(event, "source", None)
+    platform = _platform_name(getattr(source, "platform", None))
+    thread_id = getattr(source, "thread_id", None)
+    if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
+        # Reply to the triggering user message. Replying to Telegram's earlier
+        # topic seed/anchor can render the bot response outside the active lane.
+        return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
+    if platform == "telegram" and thread_id:
+        return None
+    if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
+        return getattr(event, "reply_to_message_id", None)
+    return getattr(event, "message_id", None)
+
+
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
     """Return True when a media file should use the platform's audio sender.
 
@@ -1266,6 +1312,15 @@ class BasePlatformAdapter(ABC):
         self._typing_paused: set = set()
 
     @property
+    def message_len_fn(self) -> Callable[[str], int]:
+        """Return the length function for measuring message size on this platform.
+
+        Override in adapters whose platform counts characters differently from
+        Python ``len`` (e.g. Telegram counts UTF-16 code units).
+        """
+        return len
+
+    @property
     def has_fatal_error(self) -> bool:
         return self._fatal_error_message is not None
 
@@ -1464,6 +1519,33 @@ class BasePlatformAdapter(ABC):
     # such as DingTalk AI Cards) override this to True (class attribute or
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
+
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a fresh thread under ``parent_chat_id`` for a session handoff.
+
+        Used by the gateway's handoff watcher when transferring a CLI
+        session to a thread-capable platform — the new thread isolates the
+        handed-off conversation from any pre-existing chat in the home
+        channel and gives users a clean per-handoff scrollback.
+
+        Returns the new thread/topic id (as a string) on success, or
+        ``None`` if the platform doesn't support threading or the
+        attempt failed (permissions, topics-mode off, etc.). When ``None``
+        is returned the watcher falls back to using ``parent_chat_id``
+        directly.
+
+        Default implementation returns ``None`` — adapters that support
+        threads override this. See:
+          - Telegram: forum topics in groups, DM topics with bot API 9.4+
+          - Discord:  text-channel threads (1440-min auto-archive)
+          - Slack:    seed-message thread anchoring
+        """
+        return None
+
 
     async def edit_message(
         self,
@@ -1719,7 +1801,7 @@ class BasePlatformAdapter(ABC):
         """
         # Fallback: send URL as text (subclasses override for native images)
         text = f"{caption}\n{image_url}" if caption else image_url
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
     
     async def send_animation(
         self,
@@ -1798,6 +1880,7 @@ class BasePlatformAdapter(ABC):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -1810,7 +1893,7 @@ class BasePlatformAdapter(ABC):
         text = f"🔊 Audio: {audio_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     async def play_tts(
         self,
@@ -1832,6 +1915,7 @@ class BasePlatformAdapter(ABC):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -1843,7 +1927,7 @@ class BasePlatformAdapter(ABC):
         text = f"🎬 Video: {video_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     async def send_document(
         self,
@@ -1852,6 +1936,7 @@ class BasePlatformAdapter(ABC):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -1863,7 +1948,7 @@ class BasePlatformAdapter(ABC):
         text = f"📎 File: {file_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     async def send_image_file(
         self,
@@ -1871,6 +1956,7 @@ class BasePlatformAdapter(ABC):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -1883,7 +1969,7 @@ class BasePlatformAdapter(ABC):
         text = f"🖼️ Image: {image_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
@@ -2558,7 +2644,7 @@ class BasePlatformAdapter(ABC):
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
-        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
         try:
             response = await self._message_handler(event)
@@ -2579,13 +2665,7 @@ class BasePlatformAdapter(ABC):
                 _r = await self._send_with_retry(
                     chat_id=event.source.chat_id,
                     content=_text,
-                    reply_to=(
-                        event.reply_to_message_id
-                        if event.source.platform == Platform.FEISHU
-                        and event.source.thread_id
-                        and event.reply_to_message_id
-                        else event.message_id
-                    ),
+                    reply_to=_reply_anchor_for_event(event),
                     metadata=thread_meta,
                 )
                 if _eph_ttl > 0 and _r.success and _r.message_id:
@@ -2678,20 +2758,14 @@ class BasePlatformAdapter(ABC):
                     self.name, cmd, session_key,
                 )
                 try:
-                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     response = await self._message_handler(event)
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
                     if _text:
                         _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
                             content=_text,
-                            reply_to=(
-                                event.reply_to_message_id
-                                if event.source.platform == Platform.FEISHU
-                                and event.source.thread_id
-                                and event.reply_to_message_id
-                                else event.message_id
-                            ),
+                            reply_to=_reply_anchor_for_event(event),
                             metadata=_thread_meta,
                         )
                         if _eph_ttl > 0 and _r.success and _r.message_id:
@@ -2783,7 +2857,7 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
-        _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
         _keep_typing_kwargs = {"metadata": _thread_metadata}
         try:
             _keep_typing_sig = inspect.signature(self._keep_typing)
@@ -2911,11 +2985,19 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    _reply_anchor = (
-                        event.reply_to_message_id
-                        if event.source.platform == Platform.FEISHU and event.source.thread_id and event.reply_to_message_id
-                        else event.message_id
-                    )
+                    _reply_anchor = _reply_anchor_for_event(event)
+                    # Mark final response messages for notification delivery.
+                    # Platform adapters that support per-message notification
+                    # control (e.g. Telegram's disable_notification) use this
+                    # flag to override silent-mode and ensure the final
+                    # response triggers a push notification.
+                    # Clone to avoid mutating the metadata shared with the
+                    # typing-indicator task (which must remain unmarked).
+                    if _thread_metadata is not None:
+                        _thread_metadata = dict(_thread_metadata)
+                        _thread_metadata["notify"] = True
+                    else:
+                        _thread_metadata = {"notify": True}
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
@@ -3108,7 +3190,7 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(

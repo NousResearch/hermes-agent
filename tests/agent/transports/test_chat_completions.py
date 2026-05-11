@@ -83,6 +83,69 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["provider"] == {"only": ["openai"]}
 
+    def test_openrouter_pareto_min_coding_score(self, transport):
+        """Profile path: model=openrouter/pareto-code + score → plugins block."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="openrouter/pareto-code", messages=msgs,
+            provider_profile=profile,
+            openrouter_min_coding_score=0.65,
+        )
+        assert kw["extra_body"]["plugins"] == [
+            {"id": "pareto-router", "min_coding_score": 0.65}
+        ]
+
+    def test_openrouter_pareto_score_ignored_for_other_models(self, transport):
+        """Score must not be emitted for any model other than openrouter/pareto-code."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="anthropic/claude-sonnet-4.6", messages=msgs,
+            provider_profile=profile,
+            openrouter_min_coding_score=0.65,
+        )
+        assert "plugins" not in (kw.get("extra_body") or {})
+
+    def test_openrouter_pareto_score_omitted_when_unset(self, transport):
+        """No score → no plugins block (router uses its omission default = strongest coder)."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="openrouter/pareto-code", messages=msgs,
+            provider_profile=profile,
+            openrouter_min_coding_score=None,
+        )
+        assert "plugins" not in (kw.get("extra_body") or {})
+
+    def test_openrouter_pareto_score_out_of_range_dropped(self, transport):
+        """Out-of-range scores must be silently dropped, not forwarded."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        for bad in (1.5, -0.1, "not-a-number"):
+            kw = transport.build_kwargs(
+                model="openrouter/pareto-code", messages=msgs,
+                provider_profile=profile,
+                openrouter_min_coding_score=bad,
+            )
+            assert "plugins" not in (kw.get("extra_body") or {}), f"bad={bad!r}"
+
+    def test_openrouter_pareto_legacy_path(self, transport):
+        """Legacy flag path (no profile loaded) must also emit the plugins block."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="openrouter/pareto-code", messages=msgs,
+            is_openrouter=True,
+            openrouter_min_coding_score=0.8,
+        )
+        assert kw["extra_body"]["plugins"] == [
+            {"id": "pareto-router", "min_coding_score": 0.8}
+        ]
+
     def test_nous_tags(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("nous")

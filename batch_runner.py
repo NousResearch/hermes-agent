@@ -337,6 +337,7 @@ def _process_single_prompt(
             providers_ignored=config.get("providers_ignored"),
             providers_order=config.get("providers_order"),
             provider_sort=config.get("provider_sort"),
+            openrouter_min_coding_score=config.get("openrouter_min_coding_score"),
             max_tokens=config.get("max_tokens"),
             reasoning_config=config.get("reasoning_config"),
             prefill_messages=config.get("prefill_messages"),
@@ -546,6 +547,7 @@ class BatchRunner:
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
         provider_sort: str = None,
+        openrouter_min_coding_score: Optional[float] = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -595,6 +597,7 @@ class BatchRunner:
         self.providers_ignored = providers_ignored
         self.providers_order = providers_order
         self.provider_sort = provider_sort
+        self.openrouter_min_coding_score = openrouter_min_coding_score
         self.max_tokens = max_tokens
         self.reasoning_config = reasoning_config
         self.prefill_messages = prefill_messages
@@ -873,6 +876,7 @@ class BatchRunner:
             "providers_ignored": self.providers_ignored,
             "providers_order": self.providers_order,
             "provider_sort": self.provider_sort,
+            "openrouter_min_coding_score": self.openrouter_min_coding_score,
             "max_tokens": self.max_tokens,
             "reasoning_config": self.reasoning_config,
             "prefill_messages": self.prefill_messages,

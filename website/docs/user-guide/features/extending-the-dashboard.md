@@ -681,7 +681,7 @@ Key points:
 - Multiple plugins can claim the same page-scoped slot. They render stacked in registration order.
 - Zero footprint when no plugin registers: the built-in page renders exactly as before.
 
-The bundled `example-dashboard` plugin ships a live demo that injects a banner into `sessions:top` — install it to see the pattern end-to-end.
+A reference plugin (`example-dashboard` in [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/example-dashboard)) ships a live demo that injects a banner into `sessions:top` — install it to see the pattern end-to-end.
 
 ### Slot-only plugins (`tab.hidden`)
 
@@ -818,7 +818,7 @@ If a plugin's script fails to load (404, syntax error, exception during IIFE), t
 
 ## Combined theme + plugin demo
 
-The repo ships `plugins/strike-freedom-cockpit/` as a complete reskin demo. It pairs a theme YAML with a slot-only plugin to produce a cockpit-style HUD without forking the dashboard.
+The [`strike-freedom-cockpit`](https://github.com/NousResearch/hermes-example-plugins/tree/main/strike-freedom-cockpit) plugin (companion repo `hermes-example-plugins`) is a complete reskin demo. It pairs a theme YAML with a slot-only plugin to produce a cockpit-style HUD without forking the dashboard.
 
 **What it demonstrates:**
 
@@ -832,17 +832,19 @@ The repo ships `plugins/strike-freedom-cockpit/` as a complete reskin demo. It p
 **Install:**
 
 ```bash
+git clone https://github.com/NousResearch/hermes-example-plugins.git
+
 # Theme
-cp plugins/strike-freedom-cockpit/theme/strike-freedom.yaml \
+cp hermes-example-plugins/strike-freedom-cockpit/theme/strike-freedom.yaml \
    ~/.hermes/dashboard-themes/
 
 # Plugin
-cp -r plugins/strike-freedom-cockpit ~/.hermes/plugins/
+cp -r hermes-example-plugins/strike-freedom-cockpit ~/.hermes/plugins/
 ```
 
 Open the dashboard, pick **Strike Freedom** from the theme switcher. The cockpit sidebar appears, the crest shows in the header, the tagline replaces the footer. Switch back to **Hermes Teal** and the plugin remains installed but invisible (the `sidebar` slot only renders under the `cockpit` layout variant).
 
-Read the plugin source (`plugins/strike-freedom-cockpit/dashboard/dist/index.js`) to see how it reads CSS vars, guards against older dashboards without slot support, and registers three slots from one bundle.
+Read the plugin source (`strike-freedom-cockpit/dashboard/dist/index.js` in the companion repo) to see how it reads CSS vars, guards against older dashboards without slot support, and registers three slots from one bundle.
 
 ---
 

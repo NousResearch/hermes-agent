@@ -400,6 +400,229 @@ class TestSummaryFallbackToMainModel:
         assert result is None
         assert c._summary_model_fallen_back is True
 
+    def test_json_decode_error_falls_back_to_main_and_succeeds(self):
+        """JSONDecodeError from the OpenAI SDK's ``response.json()`` (raised
+        when a misconfigured proxy returns HTML/plain-text with
+        ``Content-Type: application/json``) should trigger the same
+        retry-on-main path as 404/timeout.  Issue #22244."""
+        import json as _json
+
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        # Simulate the SDK raising a raw JSONDecodeError with a realistic
+        # error message ("Expecting value: line X column Y char Z").
+        err_json = _json.JSONDecodeError(
+            "Expecting value", "<!DOCTYPE html><html>...</html>", 0
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-via-broken-proxy",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_json, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "aux-via-broken-proxy"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model" in result
+        # Aux-model failure recorded so /usage / gateway warnings can surface it
+        assert c._last_aux_model_failure_model == "aux-via-broken-proxy"
+        assert c._last_aux_model_failure_error is not None
+        # The 220-char cap is shared with other fallback branches
+        assert len(c._last_aux_model_failure_error) <= 220
+
+    def test_json_decode_error_substring_match_in_wrapped_exception(self):
+        """When the OpenAI SDK wraps the raw JSONDecodeError inside its own
+        ``APIResponseValidationError`` (or similar), ``isinstance`` no longer
+        matches but the substring "expecting value" still appears in
+        ``str(e)``.  We detect this case by string match and fall back the
+        same way."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        # A plain Exception with the canonical JSON decode error text — what
+        # the SDK's APIResponseValidationError looks like at str() time.
+        err_wrapped = Exception("Expecting value: line 1 column 1 (char 0)")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_wrapped, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert result is not None
+        assert "summary via main model" in result
+
+    def test_json_decode_error_on_main_uses_short_cooldown(self):
+        """When already on the main model (no separate summary_model, or
+        fallback already happened), a JSONDecodeError should set the short
+        30s cooldown, not the default 60s — provider bodies tend to
+        recover quickly when an upstream proxy comes back online."""
+        import json as _json
+
+        err_json = _json.JSONDecodeError("Expecting value", "<html/>", 0)
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                # No summary_model_override → already on main, no fallback path.
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err_json,
+        ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+
+        assert result is None
+        # Short JSON-decode cooldown is 30s, not the default 60s.
+        assert c._summary_failure_cooldown_until == 1030.0
+
+
+class TestStreamingClosedFallback:
+    """httpcore / httpx streaming premature-close errors must be classified the
+    same as timeouts so the compressor retries on the main model instead of
+    entering a 60-second cooldown.  Issue #18458.
+
+    ``_is_connection_error`` is patched here because the test venv may not
+    have ``openai`` installed (the real function does ``from openai import ...``
+    inside its body).  We test the *wiring* — that `_generate_summary` calls
+    ``_is_connection_error`` and acts on its result — not the classifier itself
+    (that's covered in ``test_auxiliary_client.py::TestIsConnectionError``).
+    """
+
+    def _msgs(self):
+        return [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+    def test_incomplete_chunked_read_falls_back_to_main(self):
+        """``httpcore.RemoteProtocolError: incomplete chunked read`` triggers
+        the retry-on-main path when ``_is_connection_error`` returns True."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        err = Exception("RemoteProtocolError: incomplete chunked read")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-stream-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err, mock_ok],
+        ) as mock_call, patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ):
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "aux-stream-model"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model" in result
+
+    def test_peer_closed_connection_falls_back_to_main(self):
+        """``peer closed connection`` triggers the retry-on-main path."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary ok"
+
+        err = Exception("peer closed connection without sending complete message body")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err, mock_ok],
+        ) as mock_call, patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ):
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert result is not None
+
+    def test_streaming_closed_on_main_uses_short_cooldown(self):
+        """When already on the main model, a streaming-closed error should use
+        the 30s cooldown, not the default 60s — these errors are transient."""
+        err = Exception("RemoteProtocolError: response ended prematurely")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                # No summary_model_override → no fallback path.
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err,
+        ), patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+
+        assert result is None
+        # Streaming-closed should use the 30s short cooldown.
+        assert c._summary_failure_cooldown_until == 1030.0
+
+    def test_non_streaming_unknown_error_still_uses_long_cooldown(self):
+        """Unclassified errors should retain the 60s default cooldown to
+        prevent hammering a broken provider."""
+        err = Exception("Internal Server Error: something unexpected happened")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err,
+        ), patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=False,
+        ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+
+        assert result is None
+        assert c._summary_failure_cooldown_until == 1060.0
+
 
 class TestAuxModelFallbackSurfacedToCallers:
     """When summary_model fails but retry-on-main succeeds, compress() must

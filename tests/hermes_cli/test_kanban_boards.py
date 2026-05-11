@@ -258,6 +258,37 @@ class TestBoardCRUD:
         kb.remove_board("pinned")
         assert kb.get_current_board() == "default"
 
+    @pytest.mark.parametrize("archive", [True, False])
+    def test_remove_clears_init_cache_for_recreated_db(self, fresh_home, archive):
+        # Regression for #23833: poll loops that call connect(board=slug) right
+        # after remove_board() recreate an empty kanban.db at the same path
+        # (connect() does mkdir(exist_ok=True)). If _INITIALIZED_PATHS still
+        # contains the resolved path, the CREATE TABLE pass is skipped and
+        # downstream readers hit `no such table: task_events`.
+        kb.create_board("recycle")
+        # First connect populates _INITIALIZED_PATHS for this DB.
+        with kb.connect(board="recycle") as conn:
+            kb.create_task(conn, title="t1", assignee="dev")
+        db_path = kb.board_dir("recycle") / "kanban.db"
+        assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
+
+        kb.remove_board("recycle", archive=archive)
+        # remove_board must drop the cache entry so a re-create through
+        # connect() gets a fresh schema-init pass.
+        assert str(db_path.resolve()) not in kb._INITIALIZED_PATHS
+
+        # Simulate the event-stream poll: re-open the same slug. connect()
+        # recreates the directory + empty .db; the schema must be re-applied.
+        with kb.connect(board="recycle") as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        assert "task_events" in tables
+        assert "tasks" in tables
+
     def test_rename_updates_metadata(self, fresh_home):
         kb.create_board("slug-immutable")
         kb.write_board_metadata("slug-immutable", name="New Display Name")

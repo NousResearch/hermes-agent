@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 from tools.environments.local import (
     LocalEnvironment,
+    _msys_to_windows_path,
     _resolve_safe_cwd,
 )
 
@@ -185,3 +186,62 @@ class TestUpdateCwdRejectsMissingPaths:
         env._update_cwd({"output": "", "returncode": 0})
 
         assert env.cwd == str(new_dir)
+
+
+# ---------------------------------------------------------------------------
+# MSYS / Git Bash path normalizer (#23846) — pure-function unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestMsysToWindowsPath:
+    """Unit tests for the MSYS2 / Git Bash path normalizer.
+
+    All tests force ``_IS_WINDOWS=True`` so they run on every CI host.  A
+    final section verifies the platform short-circuit (no-op off Windows).
+    """
+
+    def test_converts_lowercase_drive(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _msys_to_windows_path("/c/Users/user") == "C:\\Users\\user"
+
+    def test_converts_uppercase_drive(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _msys_to_windows_path("/D/Projects/hermes") == "D:\\Projects\\hermes"
+
+    def test_converts_drive_root(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _msys_to_windows_path("/c/") == "C:\\"
+
+    def test_converts_nested_path_with_spaces(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert (
+            _msys_to_windows_path("/c/Users/My Name/repo")
+            == "C:\\Users\\My Name\\repo"
+        )
+
+    def test_already_native_windows_path_unchanged(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert (
+            _msys_to_windows_path("C:\\Users\\user") == "C:\\Users\\user"
+        )
+
+    def test_posix_path_without_drive_prefix_unchanged(self, monkeypatch):
+        """``/etc/foo`` and ``/usr/bin`` are NOT drive-letter MSYS paths."""
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _msys_to_windows_path("/etc/foo") == "/etc/foo"
+        assert _msys_to_windows_path("/usr/bin/python") == "/usr/bin/python"
+
+    def test_multi_letter_pseudo_drive_unchanged(self, monkeypatch):
+        """``/abc/...`` is not a Windows drive — must NOT be rewritten."""
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _msys_to_windows_path("/abc/d/file") == "/abc/d/file"
+
+    def test_empty_string_unchanged(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _msys_to_windows_path("") == ""
+
+    def test_non_windows_host_is_noop(self, monkeypatch):
+        """On Linux/macOS, ``/c/...`` is a legitimate POSIX path — preserve it."""
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", False)
+        assert _msys_to_windows_path("/c/Users/user") == "/c/Users/user"
+        assert _msys_to_windows_path("/d/anything") == "/d/anything"

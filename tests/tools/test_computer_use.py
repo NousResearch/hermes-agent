@@ -593,6 +593,150 @@ class TestRunAgentMultimodalHelpers:
 
 
 # ---------------------------------------------------------------------------
+# capture_after app= passthrough (fix: side-effect window capture scoping)
+# ---------------------------------------------------------------------------
+
+class TestCaptureAfterAppPassthrough:
+    """capture_after=True must re-capture the *same app* that was targeted,
+    not whatever window happens to be frontmost after the action fires.
+
+    Regression: before the fix, _maybe_follow_capture always called
+    backend.capture(mode="som") with no app= — so a click that opened a new
+    Safari window (e.g. "Browse UTM Gallery" launching Safari) would cause the
+    follow-up capture to snap the newly-raised Safari window rather than the
+    app the agent was driving (UTM).
+    """
+
+    def _make_recording_backend(self, *, capture_return=None):
+        """Return a fake backend that records every call made to it."""
+        from tools.computer_use.backend import ActionResult, CaptureResult
+
+        if capture_return is None:
+            capture_return = CaptureResult(
+                mode="som", width=800, height=600, png_b64=None,
+                elements=[], app="", window_title="", png_bytes_len=0,
+            )
+
+        class RecordingBackend:
+            def __init__(self):
+                self.capture_calls: list = []  # list of (mode, app) tuples
+                self.action_calls: list = []
+
+            def start(self): pass
+            def stop(self): pass
+            def is_available(self): return True
+
+            def capture(self, mode="som", app=None):
+                self.capture_calls.append((mode, app))
+                return capture_return
+
+            def click(self, **kw):
+                self.action_calls.append(("click", kw))
+                return ActionResult(ok=True, action="click", message="ok")
+
+            def drag(self, **kw):
+                self.action_calls.append(("drag", kw))
+                return ActionResult(ok=True, action="drag", message="ok")
+
+            def scroll(self, **kw):
+                self.action_calls.append(("scroll", kw))
+                return ActionResult(ok=True, action="scroll", message="ok")
+
+            def type_text(self, text):
+                self.action_calls.append(("type_text", {"text": text}))
+                return ActionResult(ok=True, action="type_text", message="ok")
+
+            def key(self, keys):
+                self.action_calls.append(("key", {"keys": keys}))
+                return ActionResult(ok=True, action="key", message="ok")
+
+            def set_value(self, value, element=None):
+                self.action_calls.append(("set_value", {"value": value, "element": element}))
+                return ActionResult(ok=True, action="set_value", message="ok")
+
+            def list_apps(self): return []
+
+            def focus_app(self, app, raise_window=False):
+                self.action_calls.append(("focus_app", {"app": app}))
+                return ActionResult(ok=True, action="focus_app", message="ok")
+
+        return RecordingBackend()
+
+    @pytest.mark.parametrize("action,extra_args", [
+        ("click",       {"element": 1}),
+        ("double_click",{"element": 1}),
+        ("right_click", {"element": 1}),
+        ("middle_click",{"element": 1}),
+        ("drag",        {"from_element": 1, "to_element": 2}),
+        ("scroll",      {"direction": "down", "amount": 3}),
+        ("type",        {"text": "hello"}),
+        ("key",         {"keys": "cmd+s"}),
+    ])
+    def test_capture_after_passes_app_to_follow_up_capture(self, action, extra_args):
+        """After any action with capture_after=True, the follow-up capture
+        must be scoped to the same app= that was passed to the action."""
+        from tools.computer_use import tool as cu_tool
+
+        backend = self._make_recording_backend()
+        cu_tool.reset_backend_for_tests()
+
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            args = {"action": action, "capture_after": True, "app": "UTM", **extra_args}
+            cu_tool.handle_computer_use(args)
+
+        # The follow-up capture (second call, since dispatch doesn't capture first)
+        # must have app="UTM", not app=None.
+        assert backend.capture_calls, "expected at least one capture call"
+        followup_mode, followup_app = backend.capture_calls[-1]
+        assert followup_app == "UTM", (
+            f"{action} with capture_after=True captured app={followup_app!r} "
+            f"instead of 'UTM' — the app= was dropped before the follow-up capture"
+        )
+
+    def test_capture_after_without_app_does_not_filter(self):
+        """When no app= is specified the follow-up capture should pass app=None
+        (i.e. capture whatever is frontmost — the original behaviour for
+        actions that don't target a specific app)."""
+        from tools.computer_use import tool as cu_tool
+
+        backend = self._make_recording_backend()
+        cu_tool.reset_backend_for_tests()
+
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            cu_tool.handle_computer_use({"action": "click", "element": 1, "capture_after": True})
+
+        _, followup_app = backend.capture_calls[-1]
+        assert followup_app is None
+
+    def test_focus_app_capture_after_passes_app(self):
+        """focus_app's capture_after must also pass app= through."""
+        from tools.computer_use import tool as cu_tool
+
+        backend = self._make_recording_backend()
+        cu_tool.reset_backend_for_tests()
+
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            cu_tool.handle_computer_use(
+                {"action": "focus_app", "app": "Safari", "capture_after": True}
+            )
+
+        _, followup_app = backend.capture_calls[-1]
+        assert followup_app == "Safari"
+
+    def test_capture_after_false_never_calls_capture(self):
+        """With capture_after=False (default) no follow-up capture should fire."""
+        from tools.computer_use import tool as cu_tool
+
+        backend = self._make_recording_backend()
+        cu_tool.reset_backend_for_tests()
+
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            cu_tool.handle_computer_use({"action": "click", "element": 1})
+
+        assert not backend.capture_calls, "unexpected capture call with capture_after=False"
+
+
+# ---------------------------------------------------------------------------
 # Universality: does the schema work without Anthropic?
 # ---------------------------------------------------------------------------
 

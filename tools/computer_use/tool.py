@@ -333,7 +333,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=app)
 
     if action in ("click", "double_click", "right_click", "middle_click"):
         button = args.get("button")
@@ -354,7 +354,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "drag":
         res = backend.drag(
@@ -365,7 +365,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "scroll":
         coord = args.get("coordinate") or (None, None)
@@ -377,22 +377,22 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "type":
         res = backend.type_text(args.get("text", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "key":
         res = backend.key(args.get("keys", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "set_value":
         value = args.get("value")
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
         res = backend.set_value(value=str(value), element=args.get("element"))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     return json.dumps({"error": f"unknown action {action!r}"})
 
@@ -453,11 +453,12 @@ def _capture_response(cap: CaptureResult) -> Any:
 
 def _maybe_follow_capture(
     backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+    app: Optional[str] = None,
 ) -> Any:
     if not do_capture:
         return _text_response(res)
     try:
-        cap = backend.capture(mode="som")
+        cap = backend.capture(mode="som", app=app)
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)

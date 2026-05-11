@@ -64,6 +64,12 @@ web/public/ds-assets/
 .release_notes.md
 mini-swe-agent/
 
+# Claude Code session data (settings.local.json contains session history and tool allowlists)
+.claude/
+
+# Local test/diagnostic reports (may contain system info or token patterns)
+*-test-report.md
+
 # Nix
 .direnv/
 .nix-stamps/

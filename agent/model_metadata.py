@@ -51,6 +51,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "qwen-oauth",
     "xiaomi",
     "arcee",
+    "fireworks",
     "gmi",
     "tencent-tokenhub",
     "custom", "local",
@@ -63,6 +64,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "mimo", "xiaomi-mimo",
     "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
+    "fireworks-ai", "fw",
     "gmi-cloud", "gmicloud",
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
@@ -183,6 +185,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     # below remains as a 128K fallback for older / unknown DeepSeek model
     # ids (e.g. via custom endpoints).
     # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
+    # Fireworks-prefixed model paths (accounts/fireworks/models/<model>)
+    # are explicit entries so the fallback resolves correctly when
+    # models.dev is unavailable.  Sorted before the bare names so the
+    # longest-key-first loop finds the most specific match first.
+    "accounts/fireworks/models/deepseek-v4-pro": 1_000_000,
+    "accounts/fireworks/models/deepseek-v4-flash": 1_000_000,
     "deepseek-v4-pro": 1_000_000,
     "deepseek-v4-flash": 1_000_000,
     "deepseek-chat": 1_000_000,

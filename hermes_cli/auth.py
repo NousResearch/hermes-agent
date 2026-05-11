@@ -255,6 +255,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("GMI_API_KEY",),
         base_url_env_var="GMI_BASE_URL",
     ),
+    "fireworks": ProviderConfig(
+        id="fireworks",
+        name="Fireworks AI",
+        auth_type="api_key",
+        inference_base_url="https://api.fireworks.ai/inference/v1",
+        api_key_env_vars=("FIREWORKS_API_KEY",),
+        base_url_env_var="FIREWORKS_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",
@@ -1368,6 +1376,7 @@ def resolve_provider(
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
         "arcee-ai": "arcee", "arceeai": "arcee",
+        "fireworks-ai": "fireworks", "fw": "fireworks",
         "gmi-cloud": "gmi", "gmicloud": "gmi",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",

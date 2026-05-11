@@ -179,6 +179,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "fireworks": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("FIREWORKS_API_KEY",),
+        base_url_override="https://api.fireworks.ai/inference/v1",
+        base_url_env_var="FIREWORKS_BASE_URL",
+    ),
     "gmi": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("GMI_API_KEY",),
@@ -328,6 +334,10 @@ ALIASES: Dict[str, str] = {
     # arcee
     "arcee-ai": "arcee",
     "arceeai": "arcee",
+
+    # fireworks
+    "fireworks-ai": "fireworks",
+    "fw": "fireworks",
 
     # gmi
     "gmi-cloud": "gmi",

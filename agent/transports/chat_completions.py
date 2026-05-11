@@ -348,6 +348,16 @@ class ChatCompletionsTransport(ProviderTransport):
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
             }
 
+        # DeepSeek thinking extra_body (direct-provider and named custom endpoints)
+        if not is_kimi and (model_lower.startswith("deepseek") or "/deepseek" in model_lower):
+            _ds_thinking_enabled = True
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    _ds_thinking_enabled = False
+            extra_body["thinking"] = {
+                "type": "enabled" if _ds_thinking_enabled else "disabled",
+            }
+
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,
         # so skip emitting extra_body.reasoning for it.
         if params.get("supports_reasoning", False) and not params.get("is_lmstudio", False):
@@ -486,6 +496,20 @@ class ChatCompletionsTransport(ProviderTransport):
         # Profile's reasoning/thinking extra_body entries
         if extra_body_from_profile:
             extra_body.update(extra_body_from_profile)
+
+        # DeepSeek thinking extra_body for profiles serving DeepSeek models
+        _profile_model_lower = (model or "").lower()
+        if (
+            (_profile_model_lower.startswith("deepseek") or "/deepseek" in _profile_model_lower)
+            and "thinking" not in extra_body
+        ):
+            _ds_thinking_enabled = True
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    _ds_thinking_enabled = False
+            extra_body["thinking"] = {
+                "type": "enabled" if _ds_thinking_enabled else "disabled",
+            }
 
         # Merge any pre-built extra_body additions from the caller
         additions = params.get("extra_body_additions")

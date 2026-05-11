@@ -900,6 +900,14 @@ class AsyncCodexAuxiliaryClient:
         self.chat = _AsyncCodexChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+        # Mirror the sync wrapper's _real_client so cache eviction by leaf
+        # OpenAI client (e.g. _close_client_on_timeout in #23482) drops
+        # this async entry too. Without this, sync and async cache entries
+        # diverge on poisoning: the sync entry is evicted but the async
+        # entry keeps reusing the closed transport, failing every
+        # subsequent async aux call with 'Connection error' until the
+        # gateway restarts.
+        self._real_client = sync_wrapper._real_client
 
 
 class _AnthropicCompletionsAdapter:
@@ -1035,6 +1043,9 @@ class AsyncAnthropicAuxiliaryClient:
         self.chat = _AsyncAnthropicChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+        # See AsyncCodexAuxiliaryClient: mirror _real_client so cache
+        # eviction on a poisoned underlying client also drops this entry.
+        self._real_client = sync_wrapper._real_client
 
 
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
@@ -2108,9 +2119,13 @@ def _evict_cached_client_instance(target: Any) -> bool:
     transport after a timeout, broken streaming session, etc.) so the next
     auxiliary call rebuilds rather than reusing the dead instance.
 
-    Walks ``CodexAuxiliaryClient`` wrappers via their ``_real_client`` so a
-    timeout that closes the underlying ``OpenAI`` client also evicts the
-    Codex shim that exposed it.
+    Walks both sync and async wrappers (``CodexAuxiliaryClient``,
+    ``AnthropicAuxiliaryClient``, ``AsyncCodexAuxiliaryClient``, etc.) via
+    their ``_real_client`` attribute so a timeout that closes the underlying
+    ``OpenAI`` (or native provider) client evicts every cached shim that
+    exposed it. Async wrappers must mirror their sync sibling's
+    ``_real_client`` for this to work — otherwise the sync entry is evicted
+    but the async entry survives and keeps reusing the dead transport.
 
     Returns True when at least one entry was evicted.
     """

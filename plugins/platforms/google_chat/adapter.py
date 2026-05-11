@@ -46,27 +46,75 @@ import re
 from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-try:
-    import httplib2
-    from google.cloud import pubsub_v1
-    from google.api_core import exceptions as gax_exceptions
-    from google.oauth2 import service_account
-    from google_auth_httplib2 import AuthorizedHttp
-    from googleapiclient.discovery import build as build_service
-    from googleapiclient.errors import HttpError
-    from googleapiclient.http import MediaFileUpload
+# Heavy google-cloud + googleapiclient imports are deferred to first
+# adapter use. Importing them eagerly here added ~110ms wall and ~33MB
+# RSS to *every* CLI invocation (the plugin loader imports this module at
+# ``model_tools`` import time, so ``hermes status``, ``hermes chat``, etc.
+# all paid the cost even though they never instantiate the adapter).
+#
+# All names below are module globals that ``_load_google_modules()``
+# rebinds on first call. The ``HttpError = Exception`` placeholder is
+# important: ``except HttpError as exc:`` clauses elsewhere in this
+# module bind the *current* module-global at try/except evaluation time,
+# so as long as ``_load_google_modules()`` runs before any such
+# ``try`` block executes (which it does — ``__init__`` calls it), the
+# rebound real ``googleapiclient.errors.HttpError`` is what actually
+# matches at runtime.
+GOOGLE_CHAT_AVAILABLE: bool = False
+httplib2: Any = None  # type: ignore
+pubsub_v1: Any = None  # type: ignore
+gax_exceptions: Any = None  # type: ignore
+service_account: Any = None  # type: ignore
+AuthorizedHttp: Any = None  # type: ignore
+build_service: Any = None  # type: ignore
+HttpError: Any = Exception  # type: ignore
+MediaFileUpload: Any = None  # type: ignore
 
+_google_modules_loaded: bool = False
+
+
+def _load_google_modules() -> bool:
+    """Lazily import the heavy google-cloud + googleapiclient stack.
+
+    Idempotent. Returns True if the optional deps are installed and
+    were successfully imported, False otherwise. On success, mutates
+    the module globals so existing code using ``pubsub_v1``,
+    ``service_account``, ``HttpError``, etc. transparently uses the
+    real classes.
+
+    Why deferred: the import chain pulls in google.cloud.pubsub_v1,
+    googleapiclient, grpc, and friends — about 33MB RSS and 110ms wall
+    on a fresh interpreter. Plugin discovery imports this module on
+    every CLI invocation, even ones that never touch a gateway.
+    """
+    global GOOGLE_CHAT_AVAILABLE, _google_modules_loaded
+    global httplib2, pubsub_v1, gax_exceptions, service_account
+    global AuthorizedHttp, build_service, HttpError, MediaFileUpload
+    if _google_modules_loaded:
+        return GOOGLE_CHAT_AVAILABLE
+    _google_modules_loaded = True
+    try:
+        import httplib2 as _httplib2
+        from google.cloud import pubsub_v1 as _pubsub_v1
+        from google.api_core import exceptions as _gax_exceptions
+        from google.oauth2 import service_account as _service_account
+        from google_auth_httplib2 import AuthorizedHttp as _AuthorizedHttp
+        from googleapiclient.discovery import build as _build_service
+        from googleapiclient.errors import HttpError as _HttpError
+        from googleapiclient.http import MediaFileUpload as _MediaFileUpload
+    except ImportError:
+        GOOGLE_CHAT_AVAILABLE = False
+        return False
+    httplib2 = _httplib2
+    pubsub_v1 = _pubsub_v1
+    gax_exceptions = _gax_exceptions
+    service_account = _service_account
+    AuthorizedHttp = _AuthorizedHttp
+    build_service = _build_service
+    HttpError = _HttpError
+    MediaFileUpload = _MediaFileUpload
     GOOGLE_CHAT_AVAILABLE = True
-except ImportError:
-    GOOGLE_CHAT_AVAILABLE = False
-    httplib2 = None  # type: ignore
-    pubsub_v1 = None  # type: ignore
-    gax_exceptions = None  # type: ignore
-    service_account = None  # type: ignore
-    AuthorizedHttp = None  # type: ignore
-    build_service = None  # type: ignore
-    HttpError = Exception  # type: ignore
-    MediaFileUpload = None  # type: ignore
+    return True
 
 from gateway.config import Platform, PlatformConfig
 
@@ -181,8 +229,14 @@ _TYPING_CONSUMED_SENTINEL = "<consumed>"
 
 
 def check_google_chat_requirements() -> bool:
-    """Check if Google Chat optional dependencies are installed."""
-    return GOOGLE_CHAT_AVAILABLE
+    """Check if Google Chat optional dependencies are installed.
+
+    Triggers the lazy import of the google-cloud + googleapiclient stack
+    on first call. Subsequent calls hit the cached result. This is the
+    canonical "are the deps available" probe used by the plugin registry
+    and the adapter's own startup gate.
+    """
+    return _load_google_modules()
 
 
 # Hostnames we trust to host Google Chat attachment download URIs. Anything
@@ -400,6 +454,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # attribute to ``gateway.config.Platform`` — bundled platform plugins
         # are looked up by value, not attribute (matches Teams, IRC).
         super().__init__(config, Platform("google_chat"))
+        # Trigger the deferred google-cloud + googleapiclient import here so
+        # that any code path which constructs the adapter and then calls
+        # methods directly (notably the test suite, which builds an adapter
+        # and invokes ``_send_file`` / ``_create_message`` / etc. without
+        # going through ``connect()``) sees real classes for ``MediaFileUpload``,
+        # ``service_account``, ``HttpError``, and friends. The module-level
+        # globals were previously eager-imported; making this lazy saved
+        # ~110ms / ~33MB on every CLI invocation. Idempotent — pays the cost
+        # exactly once per process.
+        _load_google_modules()
         self._subscriber: Optional[Any] = None
         self._chat_api: Optional[Any] = None
         # User-authed Chat API client built lazily from the OAuth refresh
@@ -685,7 +749,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     async def connect(self) -> bool:
         """Validate config, authenticate, start Pub/Sub pull, resolve bot id."""
-        if not GOOGLE_CHAT_AVAILABLE:
+        # First call into the heavy google-cloud stack — trigger the lazy
+        # import. ``_load_google_modules()`` is idempotent and rebinds the
+        # module globals (``pubsub_v1``, ``service_account``, ``HttpError``,
+        # …) used throughout this file. Anything that runs *before* this
+        # call would see the placeholders, so connect() is the natural
+        # gate.
+        if not _load_google_modules():
             self._set_fatal_error(
                 code="missing_deps",
                 message="google-cloud-pubsub / google-api-python-client not installed",
@@ -1010,13 +1080,30 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 + (sender_email or "unknown").replace("@", "_at_").replace(".", "_")
             )
             text = envelope.get("text", "") or ""
+            # Honor the relay's declared sender_type when present so the
+            # downstream BOT self-filter (sender_type == "BOT") fires for
+            # bot-originated messages forwarded by the relay. Hardcoding
+            # "HUMAN" here meant the bot would re-process its own replies
+            # if the relay forwarded them, and allowed a relay envelope to
+            # impersonate any allowlisted user without ever being marked
+            # as a bot. Default to "HUMAN" for backward compatibility when
+            # the relay does not provide the field.
+            #
+            # Operator contract: the relay MUST forward sender.type from
+            # the upstream Chat event as ``sender_type``. Relays that
+            # forward bot replies as HUMAN (or omit the field) cannot be
+            # distinguished from genuine humans here.
+            sender_type_raw = (envelope.get("sender_type") or "HUMAN")
+            sender_type = str(sender_type_raw).strip().upper() or "HUMAN"
+            if sender_type not in {"HUMAN", "BOT"}:
+                sender_type = "HUMAN"
             msg: Dict[str, Any] = {
                 "name": envelope.get("message_name", "") or "",
                 "sender": {
                     "name": sender_name_surrogate,
                     "email": sender_email,
                     "displayName": sender_display,
-                    "type": "HUMAN",
+                    "type": sender_type,
                 },
                 "text": text,
                 "argumentText": text,
@@ -2936,15 +3023,14 @@ def interactive_setup() -> None:
     prompt for env vars, persist them to ``~/.hermes/.env`` so the next
     gateway restart picks them up.
     """
-    from hermes_cli.config import (
-        get_env_value,
-        save_env_value,
-        prompt,
-        prompt_yes_no,
+    from hermes_cli.cli_output import (
         print_info,
         print_success,
         print_warning,
+        prompt,
+        prompt_yes_no,
     )
+    from hermes_cli.config import get_env_value, save_env_value
 
     existing_sub = get_env_value("GOOGLE_CHAT_SUBSCRIPTION_NAME")
     if existing_sub:
@@ -3020,6 +3106,165 @@ def interactive_setup() -> None:
     print_info("Restart the gateway: hermes gateway restart")
 
 
+# Strict resource-name pattern.  ``spaces/<id>`` and ``users/<id>`` must
+# only contain Google Chat's documented character set; anything else
+# means a tampered chat_id trying to break out of the REST URL path
+# (path traversal, ``?`` query injection, ``#`` fragment truncation).
+_GCHAT_CHAT_ID_RE = re.compile(r"^(?:spaces|users)/[A-Za-z0-9_-]+$")
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[List[str]] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """POST a single Google Chat message via the REST API without the SDK.
+
+    Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
+    runner is not in this process (e.g. ``hermes cron`` running as a
+    separate process from ``hermes gateway``).  Without this hook,
+    ``deliver=google_chat`` cron jobs fail with ``No live adapter for
+    platform``.
+
+    Configuration: requires service-account credentials via
+    ``GOOGLE_CHAT_SERVICE_ACCOUNT_JSON``, ``GOOGLE_APPLICATION_CREDENTIALS``,
+    or Application Default Credentials, and a space resource name as
+    ``chat_id`` (e.g. ``spaces/AAAA-BBBB`` or ``users/<id>``).
+
+    Security: ``chat_id`` is validated against the documented Google Chat
+    resource-name character set before substitution into the REST URL so
+    a tampered value cannot path-traverse or query-inject.
+
+    ``media_files`` and ``force_document`` are accepted for signature
+    parity but are not implemented for the standalone path; messages with
+    attachments send as text-only.  The live adapter handles attachments.
+    """
+    if not chat_id:
+        return {"error": "Google Chat standalone send: chat_id (space resource) is required"}
+    if not _GCHAT_CHAT_ID_RE.match(chat_id):
+        return {"error": (
+            f"Google Chat standalone send: chat_id {chat_id!r} must match "
+            f"'spaces/<id>' or 'users/<id>' with only [A-Za-z0-9_-] in the id"
+        )}
+    if thread_id is not None and not re.match(r"^spaces/[A-Za-z0-9_-]+/threads/[A-Za-z0-9_-]+$", thread_id):
+        return {"error": (
+            f"Google Chat standalone send: thread_id {thread_id!r} must match "
+            f"'spaces/<id>/threads/<id>'"
+        )}
+
+    extra = getattr(pconfig, "extra", {}) or {}
+    sa_value = (
+        extra.get("service_account_json")
+        or os.getenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    )
+
+    if service_account is None:
+        return {"error": "Google Chat standalone send: google-auth not installed"}
+
+    try:
+        from google.auth.transport.requests import Request as _GoogleAuthRequest
+    except Exception as e:
+        return {"error": f"Google Chat standalone send: google-auth import failed: {e}"}
+
+    try:
+        if sa_value:
+            stripped = sa_value.lstrip()
+            if stripped.startswith("{"):
+                try:
+                    info = json.loads(sa_value)
+                except json.JSONDecodeError as exc:
+                    return {"error": f"Google Chat standalone send: inline SA JSON is invalid: {exc}"}
+                creds = service_account.Credentials.from_service_account_info(info, scopes=_CHAT_SCOPES)
+            else:
+                if not os.path.exists(sa_value):
+                    return {"error": f"Google Chat standalone send: SA JSON file not found at {sa_value}"}
+                try:
+                    with open(sa_value, "r", encoding="utf-8") as fh:
+                        info = json.load(fh)
+                except json.JSONDecodeError as exc:
+                    return {"error": f"Google Chat standalone send: SA JSON file is invalid: {exc}"}
+                creds = service_account.Credentials.from_service_account_info(info, scopes=_CHAT_SCOPES)
+        else:
+            try:
+                import google.auth as _google_auth
+            except ImportError:
+                return {"error": (
+                    "Google Chat standalone send: no SA credentials configured "
+                    "and google-auth is not installed for ADC fallback"
+                )}
+            try:
+                creds, _project = _google_auth.default(scopes=_CHAT_SCOPES)
+            except Exception as exc:
+                return {"error": (
+                    f"Google Chat standalone send: no SA credentials configured "
+                    f"and Application Default Credentials are unavailable: {exc}"
+                )}
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        return {"error": f"Google Chat standalone send: credential load failed: {e}"}
+
+    # Bound the synchronous urllib3-backed token refresh so a hung Google
+    # STS endpoint cannot stall the cron scheduler indefinitely.
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(creds.refresh, _GoogleAuthRequest()),
+            timeout=10.0,
+        )
+    except asyncio.TimeoutError:
+        return {"error": "Google Chat standalone send: token refresh timed out"}
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        return {"error": f"Google Chat standalone send: token refresh failed: {e}"}
+
+    token = getattr(creds, "token", None)
+    if not token:
+        return {"error": "Google Chat standalone send: refreshed credentials have no token"}
+
+    body: Dict[str, Any] = {"text": message}
+    if thread_id:
+        body["thread"] = {"name": thread_id}
+
+    url = f"https://chat.googleapis.com/v1/{chat_id}/messages"
+    try:
+        import aiohttp as _aiohttp
+    except ImportError:
+        return {"error": "Google Chat standalone send: aiohttp not installed"}
+
+    try:
+        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=30.0)) as session:
+            async with session.post(
+                url,
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+            ) as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    return {"error": (
+                        f"Google Chat standalone send: API returned "
+                        f"{resp.status}: {text[:300]}"
+                    )}
+                payload = await resp.json()
+        return {
+            "success": True,
+            "message_id": payload.get("name"),
+        }
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.debug("Google Chat standalone send raised", exc_info=True)
+        return {"error": f"Google Chat standalone send failed: {e}"}
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup.
 
@@ -3053,6 +3298,10 @@ def register(ctx) -> None:
         # cron jobs route to the configured home space without editing
         # cron/scheduler.py's hardcoded sets.
         cron_deliver_env_var="GOOGLE_CHAT_HOME_CHANNEL",
+        # Out-of-process cron delivery via the Chat REST API.  Without this
+        # hook, deliver=google_chat cron jobs fail with "No live adapter"
+        # when cron runs separately from the gateway.
+        standalone_sender_fn=_standalone_send,
         # Auth env vars for _is_user_authorized() integration.
         allowed_users_env="GOOGLE_CHAT_ALLOWED_USERS",
         allow_all_env="GOOGLE_CHAT_ALLOW_ALL_USERS",

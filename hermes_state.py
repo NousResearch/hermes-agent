@@ -35,6 +35,153 @@ DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 11
 
+# ---------------------------------------------------------------------------
+# WAL-compatibility fallback
+# ---------------------------------------------------------------------------
+# SQLite's WAL mode requires shared-memory (mmap) coordination and fcntl
+# byte-range locks that don't reliably work on network filesystems (NFS,
+# SMB/CIFS, some FUSE mounts, WSL1).  Upstream documents this explicitly:
+# https://www.sqlite.org/wal.html#sometimes_queries_return_sqlite_busy_in_wal_mode
+#
+# On those filesystems ``PRAGMA journal_mode=WAL`` raises
+# ``sqlite3.OperationalError: locking protocol`` (SQLITE_PROTOCOL).  If we
+# propagate that, every feature backed by state.db / kanban.db breaks
+# silently — /resume, /title, /history, /branch, kanban dispatcher, etc.
+#
+# Instead, fall back to ``journal_mode=DELETE`` (the pre-WAL default) which
+# works on NFS.  Concurrency drops — concurrent readers are blocked during
+# a write — but the feature works.
+_WAL_INCOMPAT_MARKERS = (
+    "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
+    "not authorized",         # Some FUSE mounts block WAL pragma outright
+    "disk i/o error",         # Flaky network FS during WAL setup
+)
+
+# Last SessionDB() init error, per-process.  Surfaced in /resume and
+# related slash-command error strings so users know WHY the DB is
+# unavailable instead of getting a bare "Session database not available."
+# Only SessionDB.__init__ writes to this; kanban_db.connect() failures
+# do not update it (by design — kanban failures are reported via their
+# own caller's error handling, not via /resume-style slash commands).
+_last_init_error: Optional[str] = None
+_last_init_error_lock = threading.Lock()
+
+# Paths for which we've already logged a WAL-fallback WARNING.  Without
+# this, kanban_db.connect() (called on every kanban operation — see
+# hermes_cli/kanban_db.py for ~30 call sites) would re-log the same
+# filesystem-incompat warning on every connection, filling errors.log.
+_wal_fallback_warned_paths: set[str] = set()
+_wal_fallback_warned_lock = threading.Lock()
+
+
+def _set_last_init_error(msg: Optional[str]) -> None:
+    """Record (or clear) the most recent state.db init failure.
+
+    Thread-safe via _last_init_error_lock.  Callers pass a message to
+    record a failure or None to clear.  SessionDB.__init__ only calls
+    this to SET on failure — it deliberately does NOT clear on success,
+    because in a multi-threaded caller (e.g. gateway / web_server per-
+    request SessionDB() instantiation), a concurrent successful open
+    racing past a different thread's failure would erase the cause
+    string that thread's /resume handler is about to format.  Explicit
+    clears (e.g. test fixtures) are still supported by passing None.
+    """
+    global _last_init_error
+    with _last_init_error_lock:
+        _last_init_error = msg
+
+
+def get_last_init_error() -> Optional[str]:
+    """Return the most recent state.db init failure, if any.
+
+    Slash-command handlers (``/resume``, ``/title``, ``/history``, ``/branch``)
+    call this to surface the underlying cause in their error messages when
+    ``_session_db is None``.  Returns ``None`` if SessionDB initialized
+    successfully (or hasn't been attempted).
+    """
+    return _last_init_error
+
+
+def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
+    """Format a user-facing 'session DB unavailable' message with cause.
+
+    When ``SessionDB()`` init fails, callers set ``_session_db = None`` and
+    several slash commands (/resume, /title, /history, /branch) previously
+    responded with a bare ``"Session database not available."`` — no
+    indication of WHY.  This helper includes the captured cause (typically
+    ``"locking protocol"`` from NFS/SMB) and points users at the known
+    culprit so they can fix it themselves.
+
+    Example output:
+        Session database not available: locking protocol (state.db may be
+        on NFS/SMB — see https://www.sqlite.org/wal.html).
+    """
+    cause = get_last_init_error()
+    if not cause:
+        return f"{prefix}."
+    hint = ""
+    if any(marker in cause.lower() for marker in _WAL_INCOMPAT_MARKERS):
+        hint = " (state.db may be on NFS/SMB/FUSE — see https://www.sqlite.org/wal.html)"
+    return f"{prefix}: {cause}{hint}."
+
+
+def apply_wal_with_fallback(
+    conn: sqlite3.Connection,
+    *,
+    db_label: str = "state.db",
+) -> str:
+    """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
+
+    Returns the journal mode actually set (``"wal"`` or ``"delete"``).
+
+    On WAL-incompatible filesystems (NFS, SMB, some FUSE), SQLite raises
+    ``OperationalError("locking protocol")`` when setting WAL.  We fall
+    back to DELETE mode — the pre-WAL default, which works on NFS — and
+    log one WARNING explaining why.
+
+    The WARNING is deduplicated per ``db_label``: repeated connections
+    to the same underlying DB (e.g. kanban_db.connect() which is called
+    on every kanban operation) log once per process, not once per call.
+    Different db_labels log independently, so state.db and kanban.db
+    each get one warning on the same NFS mount.
+
+    Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
+    both databases get identical fallback behavior.
+    """
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        return "wal"
+    except sqlite3.OperationalError as exc:
+        msg = str(exc).lower()
+        if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
+            # Unrelated OperationalError — don't silently swallow.
+            raise
+        _log_wal_fallback_once(db_label, exc)
+        conn.execute("PRAGMA journal_mode=DELETE")
+        return "delete"
+
+
+def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
+    """Log a single WARNING per (process, db_label) about WAL fallback.
+
+    Without this dedup, NFS users running kanban (which opens a fresh
+    connection on every operation — see hermes_cli/kanban_db.py) would
+    fill errors.log with hundreds of identical warnings per hour.
+    """
+    with _wal_fallback_warned_lock:
+        if db_label in _wal_fallback_warned_paths:
+            return
+        _wal_fallback_warned_paths.add(db_label)
+    logger.warning(
+        "%s: WAL journal_mode unsupported on this filesystem (%s) — "
+        "falling back to journal_mode=DELETE (slower rollback-journal "
+        "mode; reduces concurrency but works on NFS/SMB/FUSE). See "
+        "https://www.sqlite.org/wal.html for details. This warning "
+        "fires once per process per database.",
+        db_label,
+        exc,
+    )
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -68,6 +215,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     pricing_version TEXT,
     title TEXT,
     api_call_count INTEGER DEFAULT 0,
+    handoff_state TEXT,
+    handoff_platform TEXT,
+    handoff_error TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -185,23 +335,40 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
-        self._conn = sqlite3.connect(
-            str(self.db_path),
-            check_same_thread=False,
-            # Short timeout — application-level retry with random jitter
-            # handles contention instead of sitting in SQLite's internal
-            # busy handler for up to 30s.
-            timeout=1.0,
-            # Autocommit mode: Python's default isolation_level="" auto-starts
-            # transactions on DML, which conflicts with our explicit
-            # BEGIN IMMEDIATE.  None = we manage transactions ourselves.
-            isolation_level=None,
-        )
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            self._conn = sqlite3.connect(
+                str(self.db_path),
+                check_same_thread=False,
+                # Short timeout — application-level retry with random jitter
+                # handles contention instead of sitting in SQLite's internal
+                # busy handler for up to 30s.
+                timeout=1.0,
+                # Autocommit mode: Python's default isolation_level=""
+                # auto-starts transactions on DML, which conflicts with our
+                # explicit BEGIN IMMEDIATE.  None = we manage transactions
+                # ourselves.
+                isolation_level=None,
+            )
+            self._conn.row_factory = sqlite3.Row
+            apply_wal_with_fallback(self._conn, db_label="state.db")
+            self._conn.execute("PRAGMA foreign_keys=ON")
 
-        self._init_schema()
+            self._init_schema()
+        except Exception as exc:
+            # Capture the cause so /resume and friends can surface WHY the
+            # session DB is unavailable instead of a bare "Session database
+            # not available."  Callers that catch this exception keep their
+            # existing ``self._session_db = None`` degradation path.
+            #
+            # Note: we deliberately do NOT clear _last_init_error on the
+            # success path (no else branch).  In multi-threaded callers
+            # (gateway, web_server per-request SessionDB()), a concurrent
+            # successful open racing past this failure would erase the
+            # cause that another thread's /resume is about to format.
+            # Tests that need to reset the state can call
+            # ``hermes_state._set_last_init_error(None)`` explicitly.
+            _set_last_init_error(f"{type(exc).__name__}: {exc}")
+            raise
 
     # ── Core write helper ──
 
@@ -1794,7 +1961,19 @@ class SessionDB:
             raw_query = query.strip('"').strip()
             cjk_count = self._count_cjk(raw_query)
 
-            if cjk_count >= 3:
+            # Per-token CJK length check (#20494): trigram needs >=3 CJK chars
+            # per token. A query like "广西 OR 桂林 OR 漓江" has cjk_count=6
+            # (>=3) but each individual token is only 2 chars — trigram returns 0.
+            # Route to LIKE when any non-operator CJK token is <3 CJK chars.
+            _tokens_for_check = [
+                t for t in raw_query.split()
+                if t.upper() not in ("AND", "OR", "NOT") and self._contains_cjk(t)
+            ]
+            _any_short_cjk = any(
+                self._count_cjk(t) < 3 for t in _tokens_for_check
+            )
+
+            if cjk_count >= 3 and not _any_short_cjk:
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
                 # operators (AND, OR, NOT) for multi-term queries.
@@ -1845,11 +2024,24 @@ class SessionDB:
                     else:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
             else:
-                # Short CJK query (1-2 chars) — trigram needs ≥3 CJK chars.
-                # Fall back to LIKE substring search.
-                escaped = raw_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                like_where = ["(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"]
-                like_params: list = [f"%{escaped}%", f"%{escaped}%", f"%{escaped}%"]
+                # Short / mixed CJK query: trigram cannot match tokens with
+                # <3 CJK chars. Fall back to LIKE substring search.
+                # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
+                # build one LIKE condition per non-operator token so each term
+                # is matched independently (#20494).
+                non_op_tokens = [
+                    t for t in raw_query.split()
+                    if t.upper() not in ("AND", "OR", "NOT")
+                ] or [raw_query]
+                token_clauses = []
+                like_params: list = []
+                for tok in non_op_tokens:
+                    esc = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    token_clauses.append(
+                        "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
+                    )
+                    like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
+                like_where = [f"({' OR '.join(token_clauses)})"]
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)
@@ -1873,8 +2065,8 @@ class SessionDB:
                     LIMIT ? OFFSET ?
                 """
                 like_params.extend([limit, offset])
-                # instr() parameter goes first in the bound list
-                like_params = [raw_query] + like_params
+                # instr() for snippet uses first search token
+                like_params = [non_op_tokens[0]] + like_params
                 with self._lock:
                     like_cursor = self._conn.execute(like_sql, like_params)
                     matches = [dict(row) for row in like_cursor.fetchall()]
@@ -2671,4 +2863,104 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
+
+    # ── Handoff (cross-platform session transfer) ──────────────────────────
+    #
+    # State machine:
+    #   None       — no handoff in flight
+    #   "pending"  — CLI requested handoff, gateway hasn't picked it up yet
+    #   "running"  — gateway is processing (session switch + synthetic turn)
+    #   "completed"— gateway successfully delivered the synthetic turn
+    #   "failed"   — gateway hit an error; reason in handoff_error
+    #
+    # The CLI writes "pending" then poll-waits for terminal state. The gateway
+    # watcher transitions pending→running→{completed,failed}.
+
+    def request_handoff(self, session_id: str, platform: str) -> bool:
+        """Mark a session as pending handoff to the given platform.
+
+        Returns True if the row was found and not already in flight; False if
+        the session is already in a non-terminal handoff state.
+        """
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions "
+                "SET handoff_state = 'pending', "
+                "    handoff_platform = ?, "
+                "    handoff_error = NULL "
+                "WHERE id = ? AND (handoff_state IS NULL "
+                "                  OR handoff_state IN ('completed', 'failed'))",
+                (platform, session_id),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def get_handoff_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Read the current handoff state for a session.
+
+        Returns ``{"state", "platform", "error"}`` or None if the session has
+        no handoff record.
+        """
+        try:
+            cur = self._conn.execute(
+                "SELECT handoff_state, handoff_platform, handoff_error "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "state": row["handoff_state"],
+                "platform": row["handoff_platform"],
+                "error": row["handoff_error"],
+            }
+        except Exception:
+            return None
+
+    def list_pending_handoffs(self) -> List[Dict[str, Any]]:
+        """Return all sessions in handoff_state='pending', oldest first.
+
+        Used by the gateway's handoff watcher.
+        """
+        try:
+            cur = self._conn.execute(
+                "SELECT * FROM sessions "
+                "WHERE handoff_state = 'pending' "
+                "ORDER BY started_at ASC"
+            )
+            return [dict(r) for r in cur.fetchall()]
+        except Exception:
+            return []
+
+    def claim_handoff(self, session_id: str) -> bool:
+        """Atomically transition pending → running. Returns True if claimed."""
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions SET handoff_state = 'running' "
+                "WHERE id = ? AND handoff_state = 'pending'",
+                (session_id,),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def complete_handoff(self, session_id: str) -> None:
+        """Mark a handoff as completed."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET handoff_state = 'completed', "
+                "handoff_error = NULL WHERE id = ?",
+                (session_id,),
+            )
+        self._execute_write(_do)
+
+    def fail_handoff(self, session_id: str, error: str) -> None:
+        """Mark a handoff as failed and record the reason."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET handoff_state = 'failed', "
+                "handoff_error = ? WHERE id = ?",
+                (error[:500], session_id),
+            )
+        self._execute_write(_do)
 

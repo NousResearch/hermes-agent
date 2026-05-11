@@ -81,6 +81,20 @@ if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
     cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
 fi
 
+# auth.json: bootstrap from env on first boot only.  Used by orchestrators
+# (e.g. provisioning a Hermes VPS from an account-management service) that
+# need to seed the OAuth refresh credential non-interactively, instead of
+# walking the user through `hermes setup` + the device-flow login dance.
+# Subsequent token rotations write back to the same file, which lives on a
+# persistent volume — so this env var is consumed exactly once at first
+# boot.  The `[ ! -f ... ]` guard is critical: without it, a container
+# restart would clobber a rotated refresh token with the now-stale value
+# the orchestrator originally seeded.
+if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "$HERMES_AUTH_JSON_BOOTSTRAP" ]; then
+    printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
+    chmod 600 "$HERMES_HOME/auth.json"
+fi
+
 # Sync bundled skills (manifest-based so user edits are preserved)
 if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"

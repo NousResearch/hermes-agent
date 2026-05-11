@@ -570,6 +570,130 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Task has been in ``ready`` status for too long without any worker
+    claiming it.
+
+    Threshold: cfg["stranded_threshold_seconds"] (default 1800 = 30 min).
+
+    Catches every "task waiting for a worker that never comes" case
+    without caring WHY:
+
+    * Operator typo'd the assignee — no profile or external worker matches.
+    * Profile was deleted, leaving its tasks stranded.
+    * External worker pool (Codex CLI, Claude Code lane, custom daemon)
+      is down, hung, or wasn't started.
+    * Dispatcher is misconfigured (wrong board, wrong HERMES_HOME).
+
+    Pre-rule, all of these silently rotted in ``skipped_nonspawnable`` —
+    the dispatcher correctly skipped them (good — no respawn loop) but
+    nobody surfaced the fact that operator-actionable work was
+    accumulating. The rule fires when a ready task's promoted-to-ready
+    timestamp is older than the threshold AND the assignee is non-empty
+    (truly unassigned tasks have their own ``skipped_unassigned`` signal
+    on the dispatcher and a different operator response).
+
+    The signal is age-based on purpose: it's identity-agnostic, so it
+    works for Hermes profiles, registered lanes, external workers, and
+    typos uniformly. No registry to curate, no per-board allowlist.
+    """
+    threshold_seconds = float(
+        cfg.get("stranded_threshold_seconds", 30 * 60)
+    )
+    status = _task_field(task, "status")
+    if status != "ready":
+        return []
+    # Skip tasks with a live claim — they're being worked on, even if
+    # the worker hasn't reported progress yet (run-level liveness
+    # extends the claim TTL; we don't want to second-guess that here).
+    if _task_field(task, "claim_lock"):
+        return []
+    assignee = _task_field(task, "assignee") or ""
+    if not assignee.strip():
+        # Unassigned tasks: the dispatcher's ``skipped_unassigned`` is
+        # already the right signal. A separate diagnostic here would
+        # double-flag the same condition.
+        return []
+
+    # Find the most recent event that put this task into ready.
+    # ``created`` covers tasks born ready; ``promoted`` covers parent-
+    # done auto-promotion; ``reclaimed`` covers TTL/crash recovery;
+    # ``unblocked`` covers human-driven resumes.
+    READY_TRANSITION_KINDS = {
+        "created", "promoted", "reclaimed", "unblocked",
+    }
+    last_ready_ts = 0
+    for ev in events:
+        if _event_kind(ev) in READY_TRANSITION_KINDS:
+            t = _event_ts(ev)
+            if t > last_ready_ts:
+                last_ready_ts = t
+
+    # Fallback: if no qualifying event exists (very old task or events
+    # truncated), fall back to ``created_at`` on the task row. Better
+    # to occasionally over-flag an ancient task than miss a stranded one.
+    if last_ready_ts == 0:
+        last_ready_ts = int(_task_field(task, "created_at", default=0) or 0)
+    if last_ready_ts == 0:
+        return []
+
+    age_seconds = now - last_ready_ts
+    if age_seconds < threshold_seconds:
+        return []
+
+    # Format the age in the largest sensible unit.
+    if age_seconds >= 3600:
+        age_str = f"{age_seconds / 3600:.1f}h"
+    else:
+        age_str = f"{int(age_seconds / 60)}m"
+
+    # Severity escalates with age. Below 2x threshold = warning;
+    # 2x – 6x = error; beyond 6x = critical (something is clearly
+    # broken, not just slow).
+    if age_seconds >= threshold_seconds * 6:
+        severity = "critical"
+    elif age_seconds >= threshold_seconds * 2:
+        severity = "error"
+    else:
+        severity = "warning"
+
+    actions = [
+        DiagnosticAction(
+            kind="reassign",
+            label="Reassign to a different worker",
+            payload={"current_assignee": assignee},
+        ),
+        DiagnosticAction(
+            kind="cli_hint",
+            label="Check dispatcher status",
+            payload={"command": "hermes kanban diagnostics"},
+        ),
+    ]
+
+    return [Diagnostic(
+        kind="stranded_in_ready",
+        severity=severity,
+        title=f"Ready for {age_str} with no worker",
+        detail=(
+            f"This task has been ready for {age_str} but nothing has "
+            f"claimed it. Common causes: assignee {assignee!r} is "
+            f"misspelled, the profile was deleted, or the external "
+            f"worker pool for this lane is down. Confirm the assignee "
+            f"is correct and that a worker is actually polling for it."
+        ),
+        actions=actions,
+        first_seen_at=last_ready_ts,
+        last_seen_at=last_ready_ts,
+        count=1,
+        data={
+            "ready_since": last_ready_ts,
+            "age_seconds": int(age_seconds),
+            "assignee": assignee,
+            "threshold_seconds": int(threshold_seconds),
+        },
+    )]
+
+
 # Registry — order matters: rules higher on the list render first when
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
@@ -578,6 +702,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_stuck_in_blocked,
+    _rule_stranded_in_ready,
 ]
 
 
@@ -589,6 +714,7 @@ DIAGNOSTIC_KINDS = (
     "repeated_failures",
     "repeated_crashes",
     "stuck_in_blocked",
+    "stranded_in_ready",
 )
 
 
@@ -598,6 +724,10 @@ DEFAULT_CONFIG = {
     "spawn_failure_threshold": 3,
     "crash_threshold": 2,
     "blocked_stale_hours": 24,
+    # Stranded-task threshold. 30 min by default — below that, the
+    # signal is dominated by tasks that are about to be claimed on the
+    # next dispatcher tick (default 60s) and would just be noise.
+    "stranded_threshold_seconds": 30 * 60,
 }
 
 

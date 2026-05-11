@@ -5,6 +5,7 @@ version: 1.0.0
 author: Orchestra Research
 license: MIT
 dependencies: [modal>=0.64.0]
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Infrastructure, Serverless, GPU, Cloud, Deployment, Modal]

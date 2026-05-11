@@ -566,6 +566,10 @@ class DiscordAdapter(BasePlatformAdapter):
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
 
+        # ── Daimon access control ──
+        self._daimon = None  # Initialized in connect() after config is loaded
+        self._daimon_banned: set = set()
+
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
@@ -620,6 +624,23 @@ class DiscordAdapter(BasePlatformAdapter):
                     int(rid.strip()) for rid in roles_env.split(",")
                     if rid.strip().isdigit()
                 }
+
+            # ── Daimon session manager ──
+            try:
+                from gateway.daimon.discord_hooks import DaimonDiscordHooks
+                _gw_cfg = {}
+                try:
+                    from gateway.run import _load_gateway_config
+                    _gw_cfg = _load_gateway_config()
+                except Exception:
+                    pass
+                self._daimon = DaimonDiscordHooks(_gw_cfg)
+                if self._daimon.active:
+                    logger.info("[Discord] Daimon active: access control enabled")
+            except ImportError:
+                pass
+            except Exception as e:
+                logger.debug("[Discord] Daimon init skipped: %s", e)
 
             # Set up intents.
             # Message Content is required for normal text replies.
@@ -680,6 +701,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
+
+                # Recover Daimon thread ownership from Discord API
+                if adapter_self._daimon and adapter_self._daimon.active:
+                    try:
+                        _recovered = await adapter_self._daimon.recover_thread_ownership(adapter_self._client)
+                        if _recovered:
+                            logger.info("[Discord] Daimon: recovered %d thread ownerships", _recovered)
+                    except Exception as e:
+                        logger.debug("[Discord] Daimon thread recovery failed: %s", e)
 
                 if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
                     adapter_self._post_connect_task.cancel()
@@ -820,6 +850,14 @@ class DiscordAdapter(BasePlatformAdapter):
             # Register slash commands
             if self._slash_commands:
                 self._register_slash_commands()
+
+            # ── Daimon: clean up sessions on thread archive ──
+            @self._client.event
+            async def on_thread_update(before, after):
+                """Release Daimon session when thread is archived."""
+                if adapter_self._daimon and adapter_self._daimon.active:
+                    if getattr(after, "archived", False) and not getattr(before, "archived", False):
+                        adapter_self._daimon.on_thread_closed(str(after.id))
 
             # Start the bot in background
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
@@ -3404,6 +3442,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            role_ids=[str(r.id) for r in interaction.user.roles] if hasattr(interaction.user, 'roles') else None,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -3486,6 +3525,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            role_ids=[str(r.id) for r in interaction.user.roles] if hasattr(interaction.user, 'roles') else None,
         )
 
         _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
@@ -4134,6 +4174,25 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
+        # ── Daimon: thread-creator filter + ban check + dedup ──
+        if self._daimon and self._daimon.active:
+            if self._daimon.is_banned(str(message.author.id)):
+                return
+            if is_thread and thread_id:
+                # Idempotency: skip duplicate messages (Discord can deliver twice)
+                if self._daimon.is_duplicate_trigger(thread_id, str(message.id)):
+                    return
+                _author_role_ids = [str(r.id) for r in message.author.roles] if hasattr(message.author, 'roles') else None
+                _allowed, _denial_reason = self._daimon.should_process_in_thread(str(message.author.id), thread_id, role_ids=_author_role_ids)
+                if not _allowed:
+                    if _denial_reason:
+                        try:
+                            _thread_chan = message.channel
+                            await _thread_chan.send(_denial_reason)
+                        except Exception:
+                            pass
+                    return
+
         is_voice_linked_channel = False
 
         # Save mention-stripped text before auto-threading since create_thread()
@@ -4184,11 +4243,33 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
+            # EXCEPTION: When Daimon is active, always require @mention (punctuation-based windowing).
             in_bot_thread = is_thread and thread_id in self._threads
+            _daimon_active = self._daimon and self._daimon.active
 
-            if require_mention and not is_free_channel and not in_bot_thread:
+            if require_mention and not is_free_channel and not (in_bot_thread and not _daimon_active):
                 if self._client.user not in message.mentions and not mention_prefix:
-                    return
+                    # Slash commands (starting with /) bypass the windowing buffer —
+                    # they're system commands, not agent queries. Let them through
+                    # to the slash dispatch path below.
+                    _raw_content = (message.content or "").strip()
+                    if _raw_content.startswith("/"):
+                        pass  # fall through to normal dispatch
+                    elif _daimon_active and in_bot_thread and is_thread and thread_id:
+                        # When Daimon is active in a tracked thread, buffer the message silently
+                        _content = message.content or ""
+                        if _content.strip():
+                            self._daimon.buffer_message(
+                                thread_id,
+                                author_name=message.author.display_name,
+                                author_id=str(message.author.id),
+                                content=_content,
+                                has_attachments=bool(message.attachments),
+                                message_id=str(message.id),
+                            )
+                        return
+                    else:
+                        return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -4208,6 +4289,29 @@ class DiscordAdapter(BasePlatformAdapter):
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
+                    # Register Daimon thread ownership + enforce session limits
+                    if self._daimon and self._daimon.active:
+                        _daimon_result = self._daimon.on_thread_created(
+                            thread_id, str(message.author.id), {}
+                        )
+                        if not _daimon_result.allowed:
+                            _deny_msg = _daimon_result.denial_reason or (
+                                f"⏳ You're #{_daimon_result.queue_position} in queue."
+                                if _daimon_result.queue_position > 0
+                                else "Session limit reached."
+                            )
+                            try:
+                                await thread.send(_deny_msg)
+                            except Exception:
+                                pass
+                            # Remove thread from participation tracker so subsequent
+                            # messages require @mention again (denied session shouldn't
+                            # get free-response treatment).
+                            try:
+                                self._threads._tracked.discard(thread_id)
+                            except (AttributeError, TypeError):
+                                pass
+                            return  # Stop processing — session denied
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -4267,6 +4371,7 @@ class DiscordAdapter(BasePlatformAdapter):
             guild_id=str(guild.id) if guild else None,
             parent_chat_id=parent_channel_id,
             message_id=str(message.id),
+            role_ids=[str(r.id) for r in message.author.roles] if hasattr(message.author, 'roles') else None,
         )
 
         # Build media URLs -- download image attachments to local cache so the
@@ -4360,6 +4465,63 @@ class DiscordAdapter(BasePlatformAdapter):
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+
+        # For forum posts: prepend the thread title as context so the agent
+        # knows what the support request is about even if the user just says "@daimon help"
+        # Skip context prepending for slash commands — they need raw text for dispatch.
+        _is_slash_command = normalized_content.strip().startswith("/")
+        if is_thread and self._is_forum_parent(getattr(message.channel, "parent", None)) and not _is_slash_command:
+            _thread_title = getattr(message.channel, "name", None)
+            _context_parts = []
+            if _thread_title and _thread_title.strip():
+                _context_parts.append(f"[Forum post: {_thread_title}]")
+
+            # Punctuation-based windowing: flush buffered messages as context.
+            # If Daimon is active, use the window buffer. Otherwise fall back to
+            # the API-based history fetch for first-time interactions.
+            _daimon_active = self._daimon and self._daimon.active
+            if _daimon_active and thread_id:
+                _window_context = self._daimon.flush_window(thread_id)
+                if _window_context:
+                    _context_parts.append(_window_context.rstrip())
+                elif thread_id not in self._threads:
+                    # First mention after gateway restart — buffer was empty,
+                    # fall back to Discord API to fetch recent messages
+                    try:
+                        _prior_msgs = []
+                        async for msg in message.channel.history(limit=50, before=message):
+                            if msg.author != self._client.user:
+                                _author = msg.author.display_name
+                                _content = msg.content.strip()
+                                if _content:
+                                    _prior_msgs.append(f"{_author}: {_content}")
+                        if _prior_msgs:
+                            _prior_msgs.reverse()
+                            _context_parts.append("[Messages since last response]")
+                            _context_parts.extend(_prior_msgs)
+                            _context_parts.append("[Current request:]")
+                    except Exception as _e:
+                        logger.debug("[Discord] Failed to fetch thread history: %s", _e)
+            elif thread_id and thread_id not in self._threads:
+                # Non-Daimon: original behavior — fetch 20 prior messages on first mention
+                try:
+                    _prior_msgs = []
+                    async for msg in message.channel.history(limit=20, before=message):
+                        if msg.author != self._client.user:
+                            _author = msg.author.display_name
+                            _content = msg.content.strip()
+                            if _content:
+                                _prior_msgs.append(f"{_author}: {_content}")
+                    if _prior_msgs:
+                        _prior_msgs.reverse()
+                        _context_parts.append("[Thread history]")
+                        _context_parts.extend(_prior_msgs)
+                        _context_parts.append("[End of history — user is now asking you:]")
+                except Exception as _e:
+                    logger.debug("[Discord] Failed to fetch thread history: %s", _e)
+
+            if _context_parts:
+                event_text = "\n".join(_context_parts) + "\n\n" + event_text
 
         # Defense-in-depth: prevent empty user messages from entering session
         # (can happen when user sends @mention-only with no other text)

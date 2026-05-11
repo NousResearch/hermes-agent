@@ -1,0 +1,11 @@
+[Unit]
+Description=Sync hermes-agent repo inside Daimon sandbox
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec daimon-sandbox bash -c "cd /opt/hermes-agent && git fetch origin main && git reset --hard origin/main && uv sync --extra dev --extra messaging 2>&1 | tail -5"
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal

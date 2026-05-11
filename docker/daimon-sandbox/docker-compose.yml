@@ -1,0 +1,70 @@
+services:
+  daimon-sandbox:
+    build:
+      context: .
+      target: agent
+    container_name: daimon-sandbox
+    restart: unless-stopped
+
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # Resources
+    mem_limit: 8g
+    cpus: "2.0"
+
+    # Network (custom bridge, private nets blocked via iptables)
+    networks:
+      - daimon-net
+
+    volumes:
+      - /home/daimon/github/hermes-agent:/opt/hermes-agent:ro
+      - /home/daimon/projects/triage/db:/opt/triage/db:ro
+      - /home/daimon/projects/triage/scripts:/opt/triage/scripts:ro
+      - /home/daimon/projects/triage/hermes-agent.git:/opt/triage/hermes-agent.git:ro
+    environment:
+      TRIAGE_HOME: /opt/triage
+
+  daimon-github-broker:
+    build:
+      context: .
+      target: broker
+    container_name: daimon-github-broker
+    restart: unless-stopped
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+
+    mem_limit: 512m
+    cpus: "0.5"
+
+    networks:
+      - daimon-net
+
+    # GitHub token: bind-mounted as root:root 600 from host.
+    # The untrusted agent container never receives this mount.
+    # GH_TOKEN_PATH is intentionally required: do not fall back to a checkout-local
+    # file because bind mounts preserve host ownership and permissions.
+    #
+    # Setup on host (once, as root):
+    #   mkdir -p /home/daimon/.hermes/profiles/daimon/secrets
+    #   echo "github_pat_..." > /home/daimon/.hermes/profiles/daimon/secrets/gh_token
+    #   chmod 600 /home/daimon/.hermes/profiles/daimon/secrets/gh_token
+    #   chown root:root /home/daimon/.hermes/profiles/daimon/secrets/gh_token
+    volumes:
+      - ${GH_TOKEN_PATH:?GH_TOKEN_PATH must be set to an absolute host path for the root-owned 0600 GitHub token}:/run/secrets/gh_token:ro
+
+
+networks:
+  daimon-net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "true"

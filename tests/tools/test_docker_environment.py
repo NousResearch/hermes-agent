@@ -155,6 +155,19 @@ def test_auto_mount_disabled_by_default(monkeypatch, tmp_path):
     assert f"{project_dir}:/workspace" not in run_args_str
 
 
+def test_named_network_adds_docker_network_arg(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(network="daimon-sandbox_daimon-net")
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+    assert "--network" in run_args
+    assert run_args[run_args.index("--network") + 1] == "daimon-sandbox_daimon-net"
+
+
 def test_auto_mount_skipped_when_workspace_already_mounted(monkeypatch, tmp_path):
     """Explicit user volumes for /workspace should take precedence over cwd mount."""
     project_dir = tmp_path / "my-project"

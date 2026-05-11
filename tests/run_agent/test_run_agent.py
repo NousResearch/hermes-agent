@@ -2093,6 +2093,23 @@ class TestConcurrentToolExecution:
             )
             assert result == "result"
 
+    def test_invoke_tool_daimon_gate_counts_once_for_registry_tool(self, agent):
+        """Daimon limits should be consumed by run_agent, not again in model_tools."""
+        from gateway.daimon.tool_gate import register_limiter, unregister_limiter
+        from gateway.daimon.tool_limiter import ToolLimiter
+
+        register_limiter("task-1", ToolLimiter({"web_search": 1}))
+        try:
+            with patch("model_tools.registry.dispatch", return_value='{"ok": true}') as mock_dispatch:
+                first = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
+                second = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
+
+            assert json.loads(first) == {"ok": True}
+            assert "limit reached" in json.loads(second)["error"]
+            assert mock_dispatch.call_count == 1
+        finally:
+            unregister_limiter("task-1")
+
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
@@ -2107,6 +2124,28 @@ class TestConcurrentToolExecution:
 
         assert starts == [("c1", "web_search", {"query": "hello"})]
         assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
+
+    def test_sequential_daimon_gate_blocks_before_dispatch(self, agent):
+        """Sequential tool dispatch should respect Daimon limits inside run_agent."""
+        from gateway.daimon.tool_gate import register_limiter, unregister_limiter
+        from gateway.daimon.tool_limiter import ToolLimiter
+
+        tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        starts = []
+        agent.tool_start_callback = lambda *args: starts.append(args)
+
+        register_limiter("task-1", ToolLimiter({"web_search": 0}))
+        try:
+            with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+                agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+        finally:
+            unregister_limiter("task-1")
+
+        assert starts == []
+        assert len(messages) == 1
+        assert "disabled" in json.loads(messages[0]["content"])["error"]
 
     def test_concurrent_tool_callbacks_fire_for_each_tool(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1")

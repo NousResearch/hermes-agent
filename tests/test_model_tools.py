@@ -112,6 +112,25 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_daimon_gate_is_not_enforced_in_model_tools(self):
+        """Daimon limits live in run_agent so registry dispatch is not double-counted."""
+        from gateway.daimon.tool_gate import register_limiter, unregister_limiter
+        from gateway.daimon.tool_limiter import ToolLimiter
+
+        register_limiter("t1", ToolLimiter({"web_search": 0}))
+        try:
+            with patch("model_tools.registry.dispatch", return_value='{"ok":true}'):
+                result = handle_function_call(
+                    "web_search",
+                    {"q": "test"},
+                    task_id="t1",
+                    skip_pre_tool_call_hook=True,
+                )
+        finally:
+            unregister_limiter("t1")
+
+        assert json.loads(result) == {"ok": True}
+
 
 # =========================================================================
 # Agent loop tools

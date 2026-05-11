@@ -169,6 +169,8 @@ def test_save_config_set_supports_critical_bridged_keys():
     required = {
         "docker_run_as_host_user",
         "docker_mount_cwd_to_workspace",
+        "docker_network",
+        "docker_exec_user",
         "backend",
         "docker_image",
         "container_cpu",
@@ -224,3 +226,19 @@ def test_docker_env_is_bridged_everywhere():
     assert "docker_env" in _gateway_env_map_keys()
     assert "docker_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
+
+
+def test_docker_network_is_bridged_everywhere():
+    """Daimon sidecar access depends on Docker backend containers joining the
+    compose network where daimon-github-broker is addressable."""
+    assert "docker_network" in _cli_env_map_keys()
+    assert "docker_network" in _gateway_env_map_keys()
+    assert "docker_network" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_NETWORK" in _terminal_tool_env_var_names()
+
+
+def test_docker_exec_user_is_bridged_everywhere():
+    assert "docker_exec_user" in _cli_env_map_keys()
+    assert "docker_exec_user" in _gateway_env_map_keys()
+    assert "docker_exec_user" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_EXEC_USER" in _terminal_tool_env_var_names()

@@ -10264,6 +10264,18 @@ class AIAgent:
             parent_agent=self,
         )
 
+    def _check_daimon_tool_gate(self, function_name: str, effective_task_id: str) -> Optional[str]:
+        """Return a Daimon limiter denial message, or None when allowed."""
+        try:
+            from gateway.daimon.tool_gate import check_tool_call
+        except ImportError:
+            return None
+
+        gate_key = effective_task_id or getattr(self, "session_id", None) or ""
+        if not gate_key:
+            return None
+        return check_tool_call(gate_key, function_name)
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
@@ -10285,6 +10297,10 @@ class AIAgent:
                 pass
         if block_message is not None:
             return json.dumps({"error": block_message}, ensure_ascii=False)
+
+        daimon_denial = self._check_daimon_tool_gate(function_name, effective_task_id)
+        if daimon_denial:
+            return json.dumps({"error": daimon_denial}, ensure_ascii=False)
 
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
@@ -10824,7 +10840,15 @@ class AIAgent:
                 if not guardrail_decision.allows_execution:
                     _guardrail_block_decision = guardrail_decision
 
-            _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+            _daimon_denial: Optional[str] = None
+            if _block_msg is None and _guardrail_block_decision is None:
+                _daimon_denial = self._check_daimon_tool_gate(function_name, effective_task_id)
+
+            _execution_blocked = (
+                _block_msg is not None
+                or _guardrail_block_decision is not None
+                or _daimon_denial is not None
+            )
 
             if _execution_blocked:
                 # Tool blocked by plugin or guardrail policy — skip counters,
@@ -10907,6 +10931,9 @@ class AIAgent:
                 # Tool blocked by tool-loop guardrail — synthesize exactly one
                 # tool result for the original tool_call_id without executing.
                 function_result = self._guardrail_block_result(_guardrail_block_decision)
+                tool_duration = 0.0
+            elif _daimon_denial is not None:
+                function_result = json.dumps({"error": _daimon_denial}, ensure_ascii=False)
                 tool_duration = 0.0
             elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool

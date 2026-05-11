@@ -461,8 +461,10 @@ if _config_path.exists():
                 "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
                 "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
                 "docker_env": "TERMINAL_DOCKER_ENV",
+                "docker_network": "TERMINAL_DOCKER_NETWORK",
                 "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
                 "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+                "docker_exec_user": "TERMINAL_DOCKER_EXEC_USER",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }
@@ -6391,6 +6393,9 @@ class GatewayRunner:
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
 
+        if canonical == "daimon":
+            return await self._handle_daimon_command(event)
+
         if canonical == "retry":
             return await self._handle_retry_command(event)
         
@@ -9213,6 +9218,41 @@ class GatewayRunner:
 
         available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
         return t("gateway.personality.unknown", name=args, available=available)
+
+    async def _handle_daimon_command(self, event: MessageEvent) -> str:
+        """Handle /daimon — admin controls for the Daimon Discord bot."""
+        from gateway.config import Platform
+
+        # Admin authorization check
+        adapter = self.adapters.get(Platform.DISCORD) if hasattr(self, "adapters") else None
+        daimon_hooks = getattr(adapter, "_daimon", None) if adapter else None
+
+        if daimon_hooks and daimon_hooks.active:
+            from gateway.daimon.tier import resolve_tier
+            tier = resolve_tier(event.source.user_id, daimon_hooks.manager.config)
+            if not tier.is_admin:
+                return "⛔ This command is admin-only."
+
+        text = (event.text or "").strip()
+        # Strip leading "/daimon"
+        for prefix in ("/daimon ", "/daimon"):
+            if text.lower().startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+
+        parts = text.split(None, 1)
+        subcommand = parts[0] if parts else "status"
+        args = parts[1] if len(parts) > 1 else ""
+
+        # Get the Discord adapter's Daimon hooks
+        adapter = self.adapters.get(Platform.DISCORD) if hasattr(self, "adapters") else None
+        daimon_hooks = getattr(adapter, "_daimon", None) if adapter else None
+
+        if not daimon_hooks or not daimon_hooks.active:
+            return "Daimon is not active (no admin_users configured)."
+
+        result = daimon_hooks.handle_admin_command(subcommand, args)
+        return result.message
 
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
@@ -14212,6 +14252,21 @@ class GatewayRunner:
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
+        # ── Daimon tier detection (Discord) — pre-compute, apply inside run_sync ──
+        _daimon_overrides = None
+        try:
+            from gateway.daimon.gateway_hooks import get_agent_overrides, apply_overrides, setup_tool_gate, teardown_tool_gate, redact_output
+            if source.user_id:
+                _daimon_overrides = get_agent_overrides(user_config, source.user_id, platform_key, role_ids=source.role_ids)
+                # Silent ignore: tier=None means user should not trigger the bot
+                if _daimon_overrides and _daimon_overrides.tier is None:
+                    logger.debug("Daimon: silently ignoring user %s (no matching role)", source.user_id)
+                    return
+        except ImportError:
+            pass
+        except Exception as _daimon_err:
+            logger.debug("Daimon override error (non-fatal): %s", _daimon_err)
+
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
             display_config = {}
@@ -14718,6 +14773,7 @@ class GatewayRunner:
             # triggering an UnboundLocalError on the earlier read at
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
+            nonlocal disabled_toolsets
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -14763,6 +14819,27 @@ class GatewayRunner:
                 }
 
             pr = self._provider_routing
+
+            # ── Daimon tier overrides (apply inside run_sync where model/max_iterations exist) ──
+            if _daimon_overrides:
+                try:
+                    _applied = apply_overrides(
+                        _daimon_overrides,
+                        model=model,
+                        max_iterations=max_iterations,
+                        disabled_toolsets=disabled_toolsets,
+                        source=source,
+                    )
+                    model = _applied["model"]
+                    max_iterations = _applied["max_iterations"]
+                    disabled_toolsets = _applied["disabled_toolsets"]
+                    if _applied.get("ephemeral_system_prompt"):
+                        combined_ephemeral = _applied["ephemeral_system_prompt"]
+                    if _daimon_overrides.tier and not _daimon_overrides.tier.is_admin:
+                        setup_tool_gate(session_id, user_config)
+                except Exception as _e:
+                    logger.debug("Daimon apply_overrides failed: %s", _e)
+
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source,
                 session_key=session_key,
@@ -15279,6 +15356,12 @@ class GatewayRunner:
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
+                # ── Daimon tool gate cleanup ──
+                if _daimon_overrides and _daimon_overrides.tier and not _daimon_overrides.tier.is_admin:
+                    try:
+                        teardown_tool_gate(session_id)
+                    except Exception:
+                        pass
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done
@@ -15287,6 +15370,23 @@ class GatewayRunner:
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
+
+            # ── Daimon output redaction (user sessions only) ──
+            if final_response and _daimon_overrides and _daimon_overrides.tier and not _daimon_overrides.tier.is_admin:
+                try:
+                    final_response = redact_output(final_response)
+                except Exception:
+                    pass
+
+            # ── Daimon turn counter: increment on successful response ──
+            if final_response and _daimon_overrides and _daimon_overrides.tier and not _daimon_overrides.tier.is_admin:
+                try:
+                    from gateway.daimon.gateway_hooks import increment_thread_turn
+                    _thread_id = source.thread_id
+                    if _thread_id:
+                        increment_thread_turn(_thread_id)
+                except (ImportError, Exception):
+                    pass
 
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0

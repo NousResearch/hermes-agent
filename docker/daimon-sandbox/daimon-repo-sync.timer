@@ -1,0 +1,10 @@
+[Unit]
+Description=Sync hermes-agent repo every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

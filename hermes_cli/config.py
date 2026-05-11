@@ -534,6 +534,10 @@ DEFAULT_CONFIG = {
         # For gateway MEDIA delivery, write inside Docker to /output/... and emit
         # the host-visible path in MEDIA:, not the container path.
         "docker_volumes": [],
+        # Optional Docker network name for spawned Docker backend containers.
+        # Daimon uses this to attach per-session containers to the sidecar
+        # broker network (for example, daimon-sandbox_daimon-net).
+        "docker_network": None,
         # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
         # Default off because passing host directories into a sandbox weakens isolation.
         "docker_mount_cwd_to_workspace": False,
@@ -547,6 +551,8 @@ DEFAULT_CONFIG = {
         # When on, SETUID/SETGID caps are omitted from the container since
         # no privilege drop is needed.
         "docker_run_as_host_user": False,
+        # Optional user for docker exec commands, e.g. "1000:1000" or "agent".
+        "docker_exec_user": None,
         # Persistent shell — keep a long-lived bash shell across execute() calls
         # so cwd/env vars/shell variables survive between commands.
         # Enabled by default for non-local backends (SSH); local is always opt-in
@@ -4837,6 +4843,7 @@ def set_config_value(key: str, value: str):
         "terminal.backend": "TERMINAL_ENV",
         "terminal.modal_mode": "TERMINAL_MODAL_MODE",
         "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
+        "terminal.docker_network": "TERMINAL_DOCKER_NETWORK",
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
@@ -4844,6 +4851,7 @@ def set_config_value(key: str, value: str):
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "terminal.docker_env": "TERMINAL_DOCKER_ENV",
+        "terminal.docker_exec_user": "TERMINAL_DOCKER_EXEC_USER",
         # terminal.cwd intentionally excluded — CLI resolves at runtime,
         # gateway bridges it in gateway/run.py. Persisting to .env causes
         # stale values to poison child processes.

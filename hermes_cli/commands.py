@@ -184,6 +184,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
+    CommandDef("daimon", "Admin controls for Daimon Discord bot (restart, status, kill, ban)",
+               "Tools & Skills", args_hint="<subcommand> [args]",
+               subcommands=("restart", "status", "kill", "ban", "limits"),
+               gateway_only=True),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

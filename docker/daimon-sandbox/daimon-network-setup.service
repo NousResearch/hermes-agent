@@ -1,0 +1,14 @@
+[Unit]
+Description=Apply Daimon network isolation rules
+After=docker.service
+Requires=docker.service
+# Re-trigger when the container starts
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/daimon/docker/daimon-sandbox/network-setup.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

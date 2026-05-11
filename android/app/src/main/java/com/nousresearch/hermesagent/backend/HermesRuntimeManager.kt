@@ -81,7 +81,8 @@ object HermesRuntimeManager {
             selectedLocalBackend == BackendKind.NONE &&
             currentState.started &&
             currentState.error == null &&
-            !currentState.baseUrl.isNullOrBlank()
+            !currentState.baseUrl.isNullOrBlank() &&
+            !currentState.apiKey.isNullOrBlank()
         ) {
             return currentState
         }

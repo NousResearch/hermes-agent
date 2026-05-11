@@ -2,7 +2,6 @@ package com.nousresearch.hermesagent.auth
 
 import android.content.Context
 import com.chaquo.python.Python
-import com.chaquo.python.android.AndroidPlatform
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
 import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
@@ -24,9 +23,7 @@ object AuthRuntimeApplier {
         val runtimeConfigBaseUrl = ProviderPresets.runtimeConfigBaseUrl(session.runtimeProvider, resolvedBaseUrl)
         val resolvedModel = session.model.ifBlank { preset?.modelHint.orEmpty() }
 
-        if (!Python.isStarted()) {
-            Python.start(AndroidPlatform(appContext))
-        }
+        HermesRuntimeManager.ensurePythonStarted(appContext)
         val python = Python.getInstance()
         python.getModule("hermes_android.auth_bridge").callAttr(
             "write_provider_auth_bundle",

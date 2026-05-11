@@ -41,7 +41,10 @@ class MainActivity : ComponentActivity() {
 
     private fun handleAuthCallback(intent: Intent?) {
         val session = AuthSessionStore(applicationContext).consumeAuthCallback(intent?.data ?: return) ?: return
-        AuthRuntimeApplier.apply(applicationContext, session)
+        lifecycleScope.launch(Dispatchers.IO) {
+            AuthRuntimeApplier.apply(applicationContext, session)
+            DeviceStateWriter.write(applicationContext)
+        }
     }
 
     private fun handleShortcutIntent(intent: Intent?) {

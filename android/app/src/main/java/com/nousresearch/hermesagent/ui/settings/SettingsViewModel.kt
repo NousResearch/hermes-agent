@@ -8,7 +8,6 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.chaquo.python.Python
-import com.chaquo.python.android.AndroidPlatform
 import com.nousresearch.hermesagent.backend.BackendKind
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
 import com.nousresearch.hermesagent.backend.OnDeviceBackendManager
@@ -38,6 +37,12 @@ data class SettingsUiState(
     val languageTag: String = AppLanguage.ENGLISH.tag,
     val onDeviceSummary: String = "Remote provider mode",
     val status: String = "",
+)
+
+private data class SettingsSaveResult(
+    val apiKey: String,
+    val onDeviceSummary: String,
+    val statusMessage: String,
 )
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
@@ -317,71 +322,84 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun save() {
         val snapshot = _uiState.value
         viewModelScope.launch {
-            val existingSettings = settingsStore.load()
-            val updatedSettings = AppSettings(
-                provider = snapshot.provider,
-                baseUrl = snapshot.baseUrl,
-                model = snapshot.model,
-                corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
-                dataSaverMode = snapshot.dataSaverMode,
-                onDeviceBackend = snapshot.onDeviceBackend,
-                languageTag = snapshot.languageTag,
-            )
-            settingsStore.save(updatedSettings)
+            _uiState.update { it.copy(status = "Saving settings and restarting Hermes runtime...") }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val existingSettings = settingsStore.load()
+                    val updatedSettings = AppSettings(
+                        provider = snapshot.provider,
+                        baseUrl = snapshot.baseUrl,
+                        model = snapshot.model,
+                        corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
+                        dataSaverMode = snapshot.dataSaverMode,
+                        onDeviceBackend = snapshot.onDeviceBackend,
+                        languageTag = snapshot.languageTag,
+                    )
+                    settingsStore.save(updatedSettings)
 
-            val app = getApplication<Application>()
-            val localBackendStatus = OnDeviceBackendManager.ensureConfigured(app, snapshot.onDeviceBackend)
-            val backendKind = BackendKind.fromPersistedValue(snapshot.onDeviceBackend)
+                    val app = getApplication<Application>()
+                    val localBackendStatus = OnDeviceBackendManager.ensureConfigured(app, snapshot.onDeviceBackend)
+                    val backendKind = BackendKind.fromPersistedValue(snapshot.onDeviceBackend)
 
-            if (!Python.isStarted()) {
-                Python.start(AndroidPlatform(app))
-            }
-            val useLocalBackend = localBackendStatus.started
-            val effectiveProvider = if (useLocalBackend) "custom" else snapshot.provider
-            val effectiveModel = if (useLocalBackend) localBackendStatus.modelName else snapshot.model
-            val effectiveBaseUrl = if (useLocalBackend) {
-                localBackendStatus.baseUrl
-            } else {
-                ProviderPresets.runtimeConfigBaseUrl(snapshot.provider, snapshot.baseUrl)
-            }
-            Python.getInstance().getModule("hermes_android.config_bridge").callAttr(
-                "write_runtime_config",
-                effectiveProvider,
-                effectiveModel,
-                effectiveBaseUrl,
-            )
-            val parsedCredential = ProviderPresets.parseCredentialInput(snapshot.provider, snapshot.apiKey)
-            val providerApiKey = parsedCredential.apiKey
-            val preservedBlankCredential = providerApiKey.isBlank() && snapshot.provider != "custom"
-            if (providerApiKey.isNotBlank()) {
-                secretsStore.saveApiKey(snapshot.provider, providerApiKey)
-                Python.getInstance().getModule("hermes_android.auth_bridge").callAttr(
-                    "write_provider_api_key",
-                    snapshot.provider,
-                    providerApiKey,
-                )
-            }
-            HermesRuntimeManager.stop()
-            HermesRuntimeManager.ensureStarted(app)
-            _uiState.update {
-                val backendSummary = if (localBackendStatus.started) {
-                    "${localBackendStatus.backendKind.persistedValue} ready · ${localBackendStatus.modelName}"
-                } else {
-                    OnDeviceBackendManager.preferredDownloadSummary(app, snapshot.onDeviceBackend)
+                    HermesRuntimeManager.ensurePythonStarted(app)
+                    val useLocalBackend = localBackendStatus.started
+                    val effectiveProvider = if (useLocalBackend) "custom" else snapshot.provider
+                    val effectiveModel = if (useLocalBackend) localBackendStatus.modelName else snapshot.model
+                    val effectiveBaseUrl = if (useLocalBackend) {
+                        localBackendStatus.baseUrl
+                    } else {
+                        ProviderPresets.runtimeConfigBaseUrl(snapshot.provider, snapshot.baseUrl)
+                    }
+                    Python.getInstance().getModule("hermes_android.config_bridge").callAttr(
+                        "write_runtime_config",
+                        effectiveProvider,
+                        effectiveModel,
+                        effectiveBaseUrl,
+                    )
+                    val parsedCredential = ProviderPresets.parseCredentialInput(snapshot.provider, snapshot.apiKey)
+                    val providerApiKey = parsedCredential.apiKey
+                    val preservedBlankCredential = providerApiKey.isBlank() && snapshot.provider != "custom"
+                    if (providerApiKey.isNotBlank()) {
+                        secretsStore.saveApiKey(snapshot.provider, providerApiKey)
+                        Python.getInstance().getModule("hermes_android.auth_bridge").callAttr(
+                            "write_provider_api_key",
+                            snapshot.provider,
+                            providerApiKey,
+                        )
+                    }
+                    HermesRuntimeManager.stop()
+                    HermesRuntimeManager.ensureStarted(app)
+                    val backendSummary = if (localBackendStatus.started) {
+                        "${localBackendStatus.backendKind.persistedValue} ready · ${localBackendStatus.modelName}"
+                    } else {
+                        OnDeviceBackendManager.preferredDownloadSummary(app, snapshot.onDeviceBackend)
+                    }
+                    val statusMessage = when {
+                        useLocalBackend -> "On-device backend ready and Hermes runtime restarted"
+                        backendKind != BackendKind.NONE -> "${localBackendStatus.statusMessage}. Hermes stayed on your saved remote provider."
+                        parsedCredential.importedFromEnvLine -> "Settings saved, imported ${parsedCredential.sourceLabel} into secure storage, and backend restarted"
+                        snapshot.dataSaverMode -> "Settings saved. Data saver mode now keeps heavy downloads on Wi-Fi / unmetered networks."
+                        preservedBlankCredential -> "Settings saved and backend restarted. Blank API key field left existing Hermes credentials untouched."
+                        else -> "Settings saved and backend restarted"
+                    }
+                    SettingsSaveResult(
+                        apiKey = providerApiKey,
+                        onDeviceSummary = backendSummary,
+                        statusMessage = statusMessage,
+                    )
                 }
-                val statusMessage = when {
-                    useLocalBackend -> "On-device backend ready and Hermes runtime restarted"
-                    backendKind != BackendKind.NONE -> "${localBackendStatus.statusMessage}. Hermes stayed on your saved remote provider."
-                    parsedCredential.importedFromEnvLine -> "Settings saved, imported ${parsedCredential.sourceLabel} into secure storage, and backend restarted"
-                    snapshot.dataSaverMode -> "Settings saved. Data saver mode now keeps heavy downloads on Wi‑Fi / unmetered networks."
-                    preservedBlankCredential -> "Settings saved and backend restarted. Blank API key field left existing Hermes credentials untouched."
-                    else -> "Settings saved and backend restarted"
+            }.onSuccess { result ->
+                _uiState.update {
+                    it.copy(
+                        onDeviceSummary = result.onDeviceSummary,
+                        apiKey = result.apiKey.ifBlank { it.apiKey },
+                        status = result.statusMessage,
+                    )
                 }
-                it.copy(
-                    onDeviceSummary = backendSummary,
-                    apiKey = providerApiKey.ifBlank { it.apiKey },
-                    status = statusMessage,
-                )
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(status = "Settings save failed (${error::class.java.simpleName}).")
+                }
             }
         }
     }

@@ -37,14 +37,19 @@ object HermesExternalBrowserLauncher {
             )
         }
         val appContext = context.applicationContext
+        val directIntent = createBrowserIntent(appContext, uri)
+        runCatching {
+            appContext.startActivity(directIntent)
+            BrowserLaunchResult(success = true)
+        }.onSuccess { result ->
+            return result
+        }
+
         return runCatching {
             appContext.startActivity(createChooserIntent(appContext, uri, title))
             BrowserLaunchResult(success = true)
-        }.getOrElse { error ->
-            BrowserLaunchResult(
-                success = false,
-                errorName = error::class.java.simpleName,
-            )
+        }.getOrElse { chooserError ->
+            BrowserLaunchResult(success = false, errorName = chooserError::class.java.simpleName)
         }
     }
 

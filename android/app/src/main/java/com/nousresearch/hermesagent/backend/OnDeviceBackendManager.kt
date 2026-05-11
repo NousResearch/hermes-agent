@@ -1,6 +1,8 @@
 package com.nousresearch.hermesagent.backend
 
 import android.content.Context
+import android.os.Looper
+import android.os.Process
 import com.nousresearch.hermesagent.data.LocalModelDownloadRecord
 import com.nousresearch.hermesagent.data.LocalModelDownloadStore
 import com.nousresearch.hermesagent.models.HermesModelDownloadManager
@@ -45,19 +47,21 @@ object OnDeviceBackendManager {
 
     @Synchronized
     fun ensureConfigured(context: Context, backendValue: String): LocalBackendStatus {
-        return when (BackendKind.fromPersistedValue(backendValue)) {
-            BackendKind.NONE -> {
-                stopAll()
-                currentStatus = LocalBackendStatus(
-                    backendKind = BackendKind.NONE,
-                    started = false,
-                    statusMessage = "Remote provider mode",
-                )
-                currentStatus
+        return withBackgroundPriorityIfNeeded {
+            when (BackendKind.fromPersistedValue(backendValue)) {
+                BackendKind.NONE -> {
+                    stopAll()
+                    currentStatus = LocalBackendStatus(
+                        backendKind = BackendKind.NONE,
+                        started = false,
+                        statusMessage = "Remote provider mode",
+                    )
+                    currentStatus
+                }
+                BackendKind.LLAMA_CPP -> ensureLlamaCpp(context)
+                BackendKind.LITERT_LM -> ensureLiteRtLm(context)
+                BackendKind.AICORE -> ensureAICore(context)
             }
-            BackendKind.LLAMA_CPP -> ensureLlamaCpp(context)
-            BackendKind.LITERT_LM -> ensureLiteRtLm(context)
-            BackendKind.AICORE -> ensureAICore(context)
         }
     }
 
@@ -294,6 +298,21 @@ object OnDeviceBackendManager {
         return listOf(title, repoOrUrl, filePath, destinationFileName, destinationPath)
             .joinToString(" ")
             .lowercase(Locale.US)
+    }
+
+    private inline fun <T> withBackgroundPriorityIfNeeded(block: () -> T): T {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return block()
+        }
+        val tid = Process.myTid()
+        val previousPriority = runCatching { Process.getThreadPriority(tid) }
+            .getOrDefault(Process.THREAD_PRIORITY_DEFAULT)
+        runCatching { Process.setThreadPriority(tid, Process.THREAD_PRIORITY_BACKGROUND) }
+        return try {
+            block()
+        } finally {
+            runCatching { Process.setThreadPriority(tid, previousPriority) }
+        }
     }
 
     private fun incompatiblePreferredDownloadStatus(

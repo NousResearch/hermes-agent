@@ -2035,12 +2035,39 @@ class TestVisionAutoSkipsKimiCoding:
         assert client is fake_kimi_client
         gcc_mock.assert_called_once()
 
+    def test_ollama_cloud_skips_to_aggregator_chain(self, monkeypatch):
+        """Ollama Cloud should fall through to the aggregator chain for vision."""
+        fake_or_client = MagicMock(name="openrouter_client")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "ollama-cloud",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model", lambda: "glm-5.1:cloud",
+        )
+        rpc_mock = MagicMock(side_effect=AssertionError(
+            "resolve_provider_client should NOT be called for ollama-cloud"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client", rpc_mock,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            lambda p, m=None: (fake_or_client, "gemini")
+            if p == "openrouter"
+            else (None, None),
+        )
+
+        provider, client, _ = resolve_vision_provider_client()
+        assert provider == "openrouter"
+        assert client is fake_or_client
+
     def test_skip_set_covers_exactly_known_entries(self):
         """Guard against accidental widening of the skip list."""
         from agent.auxiliary_client import _PROVIDERS_WITHOUT_VISION
         assert _PROVIDERS_WITHOUT_VISION == frozenset({
             "kimi-coding",
             "kimi-coding-cn",
+            "ollama-cloud",
         })
 
 

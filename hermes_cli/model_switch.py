@@ -1079,6 +1079,7 @@ def list_authenticated_providers(
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
+        get_curated_nous_model_ids,
     )
 
     results: List[dict] = []
@@ -1160,9 +1161,12 @@ def list_authenticated_providers(
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" shares OpenRouter's curated list if not separately defined
-    if "nous" not in curated:
-        curated["nous"] = curated["openrouter"]
+    # "nous" pulls from the remote model-catalog manifest published at
+    # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
+    # newly added Portal models surface in the /model picker without
+    # requiring a Hermes release. Falls back to the in-repo
+    # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
+    curated["nous"] = get_curated_nous_model_ids()
     # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models

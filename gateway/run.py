@@ -8235,7 +8235,7 @@ class GatewayRunner:
 
         if not canonical_cmd:
             return None
-        policy = _policy_for_source(self.config, source)
+        policy = _policy_for_source(getattr(self, "config", {}), source)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None
         logger.info(
@@ -10074,7 +10074,21 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            thread_metadata = getattr(
+                self,
+                "_thread_metadata_for_source",
+                lambda source, reply_to_message_id=None: GatewayRunner._thread_metadata_for_source(
+                    None,
+                    source,
+                    reply_to_message_id,
+                ),
+            )
+            reply_anchor_for_event = getattr(
+                self,
+                "_reply_anchor_for_event",
+                lambda _event: None,
+            )
+            _thread_meta = thread_metadata(event.source, reply_anchor_for_event(event))
 
             from gateway.platforms.base import should_send_media_as_audio
 

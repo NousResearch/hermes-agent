@@ -419,7 +419,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                 except Exception:
                     pass
 
-            if not _found_via_proc:
+            if not _found_via_proc or not pids:
                 result = subprocess.run(
                     ["ps", "-A", "eww", "-o", "pid=,command="],
                     capture_output=True,

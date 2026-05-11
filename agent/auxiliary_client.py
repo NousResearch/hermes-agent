@@ -3748,7 +3748,21 @@ def _get_cached_client(
         # can detect stale entries later.
         bound_loop = current_loop
         with _client_cache_lock:
-            if cache_key not in _client_cache:
+            existing = _client_cache.get(cache_key)
+            if existing is not None:
+                existing_client, _existing_default, existing_loop = existing
+                existing_loop_ok = not async_mode or (
+                    existing_loop is not None
+                    and existing_loop is bound_loop
+                    and not existing_loop.is_closed()
+                )
+                if existing_loop_ok:
+                    client, default_model, _ = existing
+                else:
+                    _force_close_async_httpx(existing_client)
+                    del _client_cache[cache_key]
+                    existing = None
+            if existing is None:
                 # Safety belt: if the cache has grown beyond the max, evict
                 # the oldest entries (FIFO — dict preserves insertion order).
                 while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
@@ -3756,8 +3770,6 @@ def _get_cached_client(
                     _force_close_async_httpx(evict_entry[0])
                     del _client_cache[evict_key]
                 _client_cache[cache_key] = (client, default_model, bound_loop)
-            else:
-                client, default_model, _ = _client_cache[cache_key]
     return client, model or default_model
 
 

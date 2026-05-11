@@ -4,6 +4,7 @@ import { Typography } from "@/components/NouiTypography";
 import { useI18n } from "@/i18n/context";
 import { LOCALE_META } from "@/i18n";
 import type { Locale } from "@/i18n";
+import { cn } from "@/lib/utils";
 
 /**
  * Language picker — shows the current language's flag + endonym, opens a
@@ -12,8 +13,12 @@ import type { Locale } from "@/i18n";
  *
  * Replaces the older two-state EN↔ZH toggle now that we ship 16 locales
  * (en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu).
+ *
+ * When mounted at the bottom of a container (e.g. the sidebar rail), pass
+ * `dropUp` so the menu opens above the trigger instead of clipping below
+ * the viewport.
  */
-export function LanguageSwitcher() {
+export function LanguageSwitcher({ dropUp = false }: LanguageSwitcherProps) {
   const { locale, setLocale, t } = useI18n();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -69,7 +74,10 @@ export function LanguageSwitcher() {
         <div
           role="listbox"
           aria-label={t.language.switchTo}
-          className="absolute right-0 top-full mt-1 z-50 min-w-[10rem] rounded-md border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto"
+          className={cn(
+            "absolute z-50 min-w-[10rem] rounded-md border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
+            dropUp ? "left-0 bottom-full mb-1" : "right-0 top-full mt-1",
+          )}
         >
           {allLocales.map(([code, meta]) => {
             const selected = code === locale;
@@ -97,4 +105,8 @@ export function LanguageSwitcher() {
       )}
     </div>
   );
+}
+
+interface LanguageSwitcherProps {
+  dropUp?: boolean;
 }

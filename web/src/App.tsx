@@ -558,7 +558,7 @@ export default function App() {
               <div className="flex min-w-0 items-center gap-2">
                 <PluginSlot name="header-right" />
                 <ThemeSwitcher dropUp />
-                <LanguageSwitcher />
+                <LanguageSwitcher dropUp />
               </div>
             </div>
 

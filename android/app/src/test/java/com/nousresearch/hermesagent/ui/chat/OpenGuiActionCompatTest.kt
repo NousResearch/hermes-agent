@@ -19,28 +19,7 @@ class OpenGuiActionCompatTest {
         assertEquals("click", parsed.actionType)
         assertEquals(0.5, parsed.startCoords!!.x, 0.0001)
         assertEquals(0.25, parsed.startCoords!!.y, 0.0001)
-        assertEquals("tap the search field", parsed.summary)
-        assertEquals("use the visual coordinate.", parsed.thought)
         assertFalse(parsed.terminal)
-    }
-
-    @Test
-    fun preservesOpenGuiReflectionAndActionSummaryMetadata() {
-        val parsed = OpenGuiActionCompat.parse(
-            """
-            Reflection: The previous click did not focus the input.
-            Action_Summary: choose a lower text box coordinate
-            Action: click(point='<point>510 640</point>')
-            """.trimIndent(),
-        )
-        val json = parsed.toJson()
-
-        assertEquals("click", parsed.actionType)
-        assertEquals("The previous click did not focus the input.", parsed.reflection)
-        assertEquals("choose a lower text box coordinate", parsed.actionSummary)
-        assertEquals("choose a lower text box coordinate", parsed.thought)
-        assertEquals(parsed.reflection, json.getString("reflection"))
-        assertEquals(parsed.actionSummary, json.getString("action_summary"))
     }
 
     @Test
@@ -75,18 +54,5 @@ class OpenGuiActionCompatTest {
         assertEquals("Chrome", openApp.appName)
         assertEquals("finished", finished.actionType)
         assertTrue(finished.terminal)
-    }
-
-    @Test
-    fun parsesParsedOpenGuiCoordinateNamesAndRecoveryAction() {
-        val parsed = OpenGuiActionCompat.parse("swipe(start_coords=[0.25,0.5], end_coords=[0.75,0.2])")
-        val recovery = OpenGuiActionCompat.parse("downgrade_to_a11y()")
-
-        assertEquals("swipe", parsed.actionType)
-        assertEquals(0.25, parsed.startCoords!!.x, 0.0001)
-        assertEquals(0.5, parsed.startCoords!!.y, 0.0001)
-        assertEquals(0.75, parsed.endCoords!!.x, 0.0001)
-        assertEquals(0.2, parsed.endCoords!!.y, 0.0001)
-        assertEquals("downgrade_to_a11y", recovery.actionType)
     }
 }

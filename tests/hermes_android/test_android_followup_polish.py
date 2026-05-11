@@ -342,6 +342,9 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     chat_client = (
         REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt"
     ).read_text(encoding="utf-8")
+    opengui_parser = (
+        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/OpenGuiActionCompat.kt"
+    ).read_text(encoding="utf-8")
     app_bridge = (
         REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAppControlBridge.kt"
     ).read_text(encoding="utf-8")
@@ -384,12 +387,15 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
         '"scroll_right"',
         '"type"',
         '"type_text"',
+        '"parse_opengui_action"',
+        '"opengui_action"',
         '"press_home"',
         '"press_back"',
     ]:
         assert action in chat_client
 
     for argument in [
+        '"raw_action"',
         '"x"',
         '"y"',
         '"x1"',
@@ -410,12 +416,21 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     assert 'hasCoordinateGestureArguments' in chat_client
     assert 'executeAndroidSelectorAction' in chat_client
     assert 'coordinate_arguments' in chat_client
+    assert 'opengui_action_arguments' in chat_client
     assert 'normalized_coordinate_support' in chat_client
     assert 'screen_width' in chat_client
     assert 'HermesAppControlBridge.launchApp' in chat_client
     assert 'fun launchApp(context: Context, packageName: String, appName: String)' in app_bridge
     assert 'queryIntentActivities(launcherIntent, 0)' in app_bridge
     assert 'launch_app app_name matched multiple launcher apps; pass package_name' in app_bridge
+    assert 'object OpenGuiActionCompat' in opengui_parser
+    assert 'click(start_box=' in chat_client
+    assert 'need_login' in opengui_parser
+    assert 'asset_risk' in opengui_parser
+    assert 'delete_confirm' in opengui_parser
+    assert '<bbox>' in opengui_parser
+    assert '<point>' in opengui_parser
+    assert 'update_working_memory' in opengui_parser
 
     automation_bridge = (
         REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAutomationBridge.kt"

@@ -332,16 +332,25 @@ class NativeToolCallingChatClient(
     }
 
     private fun executeAndroidUiTool(toolCall: ToolCall): String {
-        val action = listOf("action", "operation", "name")
+        val rawAction = listOf("action", "operation", "name")
             .firstNotNullOfOrNull { key -> toolCall.arguments.optString(key).takeIf { it.isNotBlank() } }
             ?.trim()
-            ?.lowercase()
             .orEmpty()
+        val action = rawAction.lowercase()
         return when (action.ifBlank { "status" }) {
             "status", "read_status" -> androidUiStatusJson()
             "snapshot", "screen_snapshot", "read_screen" -> HermesAccessibilityUiBridge.snapshotJson(
                 limit = toolCall.arguments.optInt("limit", DEFAULT_UI_SNAPSHOT_LIMIT),
             )
+            "parse_opengui_action",
+            "parse_open_gui_action",
+            "parse_gui_action" -> executeOpenGuiActionTool(toolCall, parseOnly = true)
+            "opengui_action",
+            "open_gui_action",
+            "gui_action",
+            "vlm_action",
+            "execute_opengui_action",
+            "execute_gui_action" -> executeOpenGuiActionTool(toolCall, parseOnly = false)
             "tap",
             "tap_at",
             "coordinate_tap",
@@ -396,12 +405,184 @@ class NativeToolCallingChatClient(
                 appName = stringArgument(toolCall.arguments, "app_name", "appName", "application_name", "label").orEmpty(),
             ).toString()
             "open_accessibility_settings" -> HermesSystemControlBridge.performActionJson("open_accessibility_settings")
+            else -> if (rawAction.looksLikeOpenGuiAction()) {
+                executeOpenGuiActionTool(toolCall, parseOnly = false, fallbackRawAction = rawAction)
+            } else {
+                JSONObject()
+                    .put("success", false)
+                    .put("error", "Unsupported Android UI action: $action")
+                    .put("available_ui_actions", JSONArray(ANDROID_UI_ACTIONS))
+                    .toString()
+            }
+        }
+    }
+
+    private fun executeOpenGuiActionTool(
+        toolCall: ToolCall,
+        parseOnly: Boolean,
+        fallbackRawAction: String = "",
+    ): String {
+        val rawAction = stringArgument(
+            toolCall.arguments,
+            "raw_action",
+            "action_text",
+            "prediction",
+            "vlm_prediction",
+            "open_gui_action",
+            "opengui_action",
+        )
+            ?: fallbackRawAction.takeIf { it.isNotBlank() }
+            ?: return JSONObject()
+                .put("success", false)
+                .put("error", "OpenGUI action compatibility requires raw_action, action_text, prediction, or a function-call action string")
+                .put("available_ui_actions", JSONArray(ANDROID_UI_ACTIONS))
+                .toString()
+
+        val parsed = runCatching { OpenGuiActionCompat.parse(rawAction) }.getOrElse { error ->
+            return JSONObject()
+                .put("success", false)
+                .put("error", error.message ?: error.javaClass.simpleName)
+                .put("opengui_action_compat", true)
+                .put("raw_action", rawAction)
+                .toString()
+        }
+        if (parseOnly) {
+            return JSONObject()
+                .put("success", true)
+                .put("opengui_action_compat", true)
+                .put("parse_only", true)
+                .put("parsed_action", parsed.toJson())
+                .toString()
+        }
+
+        val result = when (parsed.actionType) {
+            "click" -> executeParsedOpenGuiTap(parsed, "tap")
+            "long_press" -> executeParsedOpenGuiTap(parsed, "long_press")
+            "swipe" -> executeParsedOpenGuiSwipe(parsed)
+            "scroll" -> executeParsedOpenGuiScroll(parsed)
+            "type" -> HermesAccessibilityUiBridge.performTextInputJson(
+                value = parsed.content,
+                textContains = "",
+                contentDescriptionContains = "",
+                viewId = "",
+                packageName = "",
+                className = "",
+                index = 0,
+            )
+            "open_app" -> HermesAppControlBridge.launchApp(
+                context = appContext,
+                packageName = parsed.packageName,
+                appName = parsed.appName,
+            ).toString()
+            "press_back" -> HermesAccessibilityUiBridge.performGlobalActionJson("back")
+            "press_home" -> HermesAccessibilityUiBridge.performGlobalActionJson("home")
+            "wait" -> executeParsedOpenGuiWait(parsed)
+            "finished" -> JSONObject()
+                .put("success", true)
+                .put("action", "finished")
+                .put("terminal", true)
+                .put("message", "OpenGUI action marked the mobile task finished.")
+                .toString()
+            "call_user" -> JSONObject()
+                .put("success", true)
+                .put("action", "call_user")
+                .put("requires_user_intervention", true)
+                .put("message", parsed.content.ifBlank { "OpenGUI action requested user intervention." })
+                .toString()
+            "request_visual",
+            "update_working_memory",
+            "get_working_memory" -> JSONObject()
+                .put("success", true)
+                .put("action", parsed.actionType)
+                .put("message", "Parsed OpenGUI text-side action; no Android UI gesture was needed.")
+                .toString()
             else -> JSONObject()
                 .put("success", false)
-                .put("error", "Unsupported Android UI action: $action")
+                .put("error", "Unsupported parsed OpenGUI action type: ${parsed.actionType}")
                 .put("available_ui_actions", JSONArray(ANDROID_UI_ACTIONS))
                 .toString()
         }
+        return attachOpenGuiParsedAction(result, parsed)
+    }
+
+    private fun executeParsedOpenGuiTap(parsed: ParsedOpenGuiAction, action: String): String {
+        val point = parsed.startCoords
+            ?: return JSONObject()
+                .put("success", false)
+                .put("error", "Parsed OpenGUI $action action did not include start_box, point, x/y, or equivalent coordinates")
+                .toString()
+        return HermesAccessibilityUiBridge.performCoordinateGestureJson(
+            action = action,
+            x = point.x,
+            y = point.y,
+            x1 = null,
+            y1 = null,
+            x2 = null,
+            y2 = null,
+            durationMs = parsed.durationMs ?: 0L,
+            coordinateSpace = "normalized",
+        )
+    }
+
+    private fun executeParsedOpenGuiSwipe(parsed: ParsedOpenGuiAction): String {
+        val start = parsed.startCoords
+            ?: return JSONObject()
+                .put("success", false)
+                .put("error", "Parsed OpenGUI swipe action did not include start coordinates")
+                .toString()
+        val end = parsed.endCoords
+            ?: return JSONObject()
+                .put("success", false)
+                .put("error", "Parsed OpenGUI swipe action did not include end coordinates")
+                .toString()
+        return HermesAccessibilityUiBridge.performCoordinateGestureJson(
+            action = "swipe",
+            x = null,
+            y = null,
+            x1 = start.x,
+            y1 = start.y,
+            x2 = end.x,
+            y2 = end.y,
+            durationMs = parsed.durationMs ?: 0L,
+            coordinateSpace = "normalized",
+        )
+    }
+
+    private fun executeParsedOpenGuiScroll(parsed: ParsedOpenGuiAction): String {
+        val start = parsed.startCoords
+        return HermesAccessibilityUiBridge.performScrollGestureJson(
+            direction = parsed.direction,
+            x = start?.x,
+            y = start?.y,
+            distancePx = null,
+            durationMs = parsed.durationMs ?: 0L,
+            coordinateSpace = if (start != null) "normalized" else "",
+        )
+    }
+
+    private fun executeParsedOpenGuiWait(parsed: ParsedOpenGuiAction): String {
+        val duration = (parsed.durationMs ?: 1_000L).coerceIn(0L, 5_000L)
+        if (duration > 0L) {
+            Thread.sleep(duration)
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("action", "wait")
+            .put("duration_ms", duration)
+            .put("message", "Waited for $duration ms.")
+            .toString()
+    }
+
+    private fun attachOpenGuiParsedAction(result: String, parsed: ParsedOpenGuiAction): String {
+        val json = runCatching { JSONObject(result) }.getOrElse {
+            JSONObject()
+                .put("success", false)
+                .put("raw_result", result)
+        }
+        return json
+            .put("opengui_action_compat", true)
+            .put("parsed_action", parsed.toJson())
+            .toString()
     }
 
     private fun executeAndroidCoordinateGesture(toolCall: ToolCall, action: String): String {
@@ -465,6 +646,7 @@ class NativeToolCallingChatClient(
             .put("available_ui_actions", JSONArray(ANDROID_UI_ACTIONS))
             .put("selection_arguments", JSONArray(UI_SELECTOR_ARGUMENTS))
             .put("coordinate_arguments", JSONArray(UI_COORDINATE_ARGUMENTS))
+            .put("opengui_action_arguments", JSONArray(OPEN_GUI_ACTION_ARGUMENTS))
             .put("active_package", HermesAccessibilityController.currentForegroundPackageName())
             .put("current_app_name", HermesAccessibilityController.currentForegroundPackageName())
             .put("normalized_coordinate_support", true)
@@ -506,11 +688,18 @@ class NativeToolCallingChatClient(
         }
     }
 
+    private fun String.looksLikeOpenGuiAction(): Boolean {
+        return contains('(') &&
+            contains(')') &&
+            Regex("""^[A-Za-z_][A-Za-z0-9_]*\s*\(""").containsMatchIn(trim())
+    }
+
     private fun systemMessage(toolsEnabled: Boolean): JSONObject {
         val content = if (toolsEnabled) {
             "You are Hermes running inside the native Android app. " +
                 "Use tools when work requires real files, shell commands, Android UI, Android settings, Shizuku/Sui, or saved Tasker-style automation. " +
                 "Use terminal_tool for shell commands and inspection, file_write_tool for exact text file creation, android_ui_tool for visible-screen selectors and coordinate gestures, android_system_tool for device/settings/Shizuku operations, and android_automation_tool for saved tasks, triggers, notifications, variables, widgets, and Tasker/Locale plugin actions. " +
+                "If a planner emits OpenGUI-style raw GUI actions such as click(start_box=...), pass that text to android_ui_tool action=parse_opengui_action or action=opengui_action. " +
                 "When the user asks to write or replace multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
                 "Ask for or report missing Android permissions instead of pretending protected settings changed. Keep replies brief and report real tool results."
         } else {
@@ -570,7 +759,8 @@ class NativeToolCallingChatClient(
                     name = "android_ui_tool",
                     description = "Inspect or control the visible Android UI through Hermes accessibility.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, snapshot, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, open_app, launch_app, back, home, press_back, press_home, recents, notifications, quick_settings, open_accessibility_settings."))
+                        .put("action", stringProp("status, snapshot, parse_opengui_action, opengui_action, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, open_app, launch_app, back, home, press_back, press_home, recents, notifications, quick_settings, open_accessibility_settings."))
+                        .put("raw_action", stringProp("OpenGUI-style VLM action text for parse_opengui_action or opengui_action, such as Action: click(start_box='<point>500 250</point>')."))
                         .put("text_contains", stringProp("Visible text selector."))
                         .put("content_description_contains", stringProp("Accessibility description selector."))
                         .put("view_id", stringProp("Android view id selector."))
@@ -1650,7 +1840,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_ui_tool")
                             .put(
                                 "description",
-                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots, selector-based click/type/scroll/focus, OpenGUI-style scroll/type/press/open-app aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
+                                "Inspect or control the visible Android UI through the user-enabled Hermes accessibility service. Supports status, screen snapshots, selector-based click/type/scroll/focus, OpenGUI-style raw VLM action parsing/execution, scroll/type/press/open-app aliases, coordinate tap/long-press/swipe gestures, and global Back/Home/Recents/notifications/quick-settings actions.",
                             )
                             .put(
                                 "parameters",
@@ -1663,7 +1853,13 @@ class NativeToolCallingChatClient(
                                                 "action",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "status, snapshot, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, open_app, launch_app, back, home, press_back, press_home, recents, notifications, quick_settings, or open_accessibility_settings."),
+                                                    .put("description", "status, snapshot, parse_opengui_action, opengui_action, click, long_click, focus, set_text, type, scroll_forward, scroll_backward, scroll, scroll_up, scroll_down, scroll_left, scroll_right, tap, long_press, swipe, open_app, launch_app, back, home, press_back, press_home, recents, notifications, quick_settings, or open_accessibility_settings."),
+                                            )
+                                            .put(
+                                                "raw_action",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "OpenGUI-style VLM action text for parse_opengui_action or opengui_action, such as Action: click(start_box='<point>500 250</point>')."),
                                             )
                                             .put(
                                                 "text_contains",
@@ -2008,6 +2204,11 @@ class NativeToolCallingChatClient(
         private val ANDROID_UI_ACTIONS = listOf(
             "status",
             "snapshot",
+            "parse_opengui_action",
+            "opengui_action",
+            "open_gui_action",
+            "gui_action",
+            "vlm_action",
             "click",
             "long_click",
             "focus",
@@ -2033,6 +2234,14 @@ class NativeToolCallingChatClient(
             "notifications",
             "quick_settings",
             "open_accessibility_settings",
+        )
+        private val OPEN_GUI_ACTION_ARGUMENTS = listOf(
+            "raw_action",
+            "action_text",
+            "prediction",
+            "vlm_prediction",
+            "open_gui_action",
+            "opengui_action",
         )
         private val UI_SELECTOR_ARGUMENTS = listOf(
             "text_contains",

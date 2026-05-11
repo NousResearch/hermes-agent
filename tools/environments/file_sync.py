@@ -289,7 +289,10 @@ class FileSyncManager:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             self._sync_back_impl()
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
             lock_fd.close()
 
     def _sync_back_impl(self) -> None:

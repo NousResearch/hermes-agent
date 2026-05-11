@@ -226,7 +226,10 @@ def _credentials_lock(timeout_seconds: float = LOCK_TIMEOUT_SECONDS):
                 try:
                     import fcntl
 
-                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass
                 except ImportError:
                     try:
                         import msvcrt  # type: ignore[import-not-found]

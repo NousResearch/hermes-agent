@@ -458,7 +458,12 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                result = await adapter.send(chat_id=chat_id, content=chunk)
+                result = await adapter.send(
+                    chat_id=chat_id,
+                    content=chunk,
+                    media_files=media_files,
+                    force_document=force_document,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:

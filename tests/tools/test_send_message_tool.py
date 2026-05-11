@@ -2229,3 +2229,35 @@ class TestSendViaAdapterStandaloneFallback:
         assert result["success"] is True
         assert result["message_id"] == "abc-123"
         assert result["extra_field"] == "preserved"
+
+    @pytest.mark.asyncio
+    async def test_live_adapter_forwards_media_kwargs(self, monkeypatch):
+        """Live in-process adapters receive media_files and force_document."""
+        from tools.send_message_tool import _send_via_adapter
+
+        send_mock = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="live-42", error=None)
+        )
+        runner = SimpleNamespace(
+            adapters={_FakePlatform("qqbot"): SimpleNamespace(send=send_mock)}
+        )
+        platform = next(iter(runner.adapters))
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        result = await _send_via_adapter(
+            platform,
+            SimpleNamespace(extra={}),
+            "chat-1",
+            "hello",
+            media_files=[("/tmp/report.pdf", False)],
+            force_document=True,
+        )
+
+        assert result == {"success": True, "message_id": "live-42"}
+        send_mock.assert_awaited_once_with(
+            chat_id="chat-1",
+            content="hello",
+            media_files=[("/tmp/report.pdf", False)],
+            force_document=True,
+        )

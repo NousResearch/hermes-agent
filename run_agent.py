@@ -2707,6 +2707,146 @@ class AIAgent:
             old_model, old_provider, new_model, new_provider,
         )
 
+    @staticmethod
+    def _collect_pre_llm_hook_result(result: Any) -> tuple[str | None, dict]:
+        """Normalize one ``pre_llm_call`` hook result.
+
+        Backward compatible behavior is preserved: strings and ``context``
+        entries become ephemeral user-message context. New runtime override
+        keys are collected separately so the caller can apply them before the
+        LLM request is built.
+        """
+        if isinstance(result, str):
+            text = result.strip()
+            return (result if text else None), {}
+
+        if not isinstance(result, dict):
+            return None, {}
+
+        context = str(result["context"]) if result.get("context") else None
+        override: dict[str, Any] = {}
+
+        nested = result.get("runtime_override")
+        if isinstance(nested, dict):
+            override.update(nested)
+
+        allowed_direct = {
+            "model",
+            "provider",
+            "base_url",
+            "api_key",
+            "api_mode",
+            "system_prompt",
+            "restore_main",
+        }
+        for key in allowed_direct:
+            if key in result:
+                override[key] = result[key]
+
+        return context, override
+
+    def _apply_pre_llm_runtime_override(
+        self,
+        runtime_override: dict,
+        active_system_prompt: str | None,
+    ) -> str | None:
+        """Apply runtime overrides returned by ``pre_llm_call`` hooks.
+
+        This is intentionally additive: hooks that only return context keep the
+        old behavior. Model/provider overrides reuse ``switch_model()`` so the
+        normal client rebuild, API mode detection, prompt-cache policy, and
+        context-compressor updates stay centralized.
+        """
+        if not isinstance(runtime_override, dict) or not runtime_override:
+            return active_system_prompt
+
+        if not hasattr(self, "_pre_llm_base_runtime"):
+            self._pre_llm_base_runtime = {
+                "model": getattr(self, "model", ""),
+                "provider": getattr(self, "provider", ""),
+                "base_url": getattr(self, "base_url", ""),
+                "api_key": getattr(self, "api_key", ""),
+                "api_mode": getattr(self, "api_mode", ""),
+            }
+
+        try:
+            if runtime_override.get("restore_main"):
+                base = getattr(self, "_pre_llm_base_runtime", {}) or {}
+                base_model = base.get("model")
+                base_provider = base.get("provider")
+                if base_model and base_provider:
+                    self.switch_model(
+                        base_model,
+                        base_provider,
+                        api_key=base.get("api_key", ""),
+                        base_url=base.get("base_url", ""),
+                        api_mode=base.get("api_mode", ""),
+                    )
+                    logger.info(
+                        "pre_llm_call runtime override restored main provider=%s model=%s",
+                        getattr(self, "provider", ""),
+                        getattr(self, "model", ""),
+                    )
+            else:
+                model = runtime_override.get("model")
+                provider = runtime_override.get("provider")
+                base_url = runtime_override.get("base_url") or ""
+                api_key = runtime_override.get("api_key") or ""
+                api_mode = runtime_override.get("api_mode") or ""
+
+                if model or provider or base_url or api_key or api_mode:
+                    target_model = str(model or getattr(self, "model", ""))
+                    target_provider = str(provider or getattr(self, "provider", "") or "auto")
+                    resolved_model = target_model
+                    resolved_api_key = str(api_key or "")
+                    resolved_base_url = str(base_url or "")
+                    resolved_api_mode = str(api_mode or "")
+
+                    try:
+                        from agent.auxiliary_client import resolve_provider_client
+
+                        resolved_client, resolved_client_model = resolve_provider_client(
+                            target_provider,
+                            model=target_model,
+                            raw_codex=True,
+                            explicit_base_url=resolved_base_url or None,
+                            explicit_api_key=resolved_api_key or None,
+                            api_mode=resolved_api_mode or None,
+                            main_runtime=getattr(self, "_primary_runtime", None),
+                        )
+                        if resolved_client is not None:
+                            resolved_model = str(resolved_client_model or target_model)
+                            resolved_api_key = str(getattr(resolved_client, "api_key", "") or resolved_api_key)
+                            resolved_base_url = str(getattr(resolved_client, "base_url", "") or resolved_base_url).rstrip("/")
+                    except Exception as exc:
+                        logger.debug("pre_llm_call provider resolution skipped: %s", exc)
+
+                    self.switch_model(
+                        resolved_model,
+                        target_provider,
+                        api_key=resolved_api_key,
+                        base_url=resolved_base_url,
+                        api_mode=resolved_api_mode,
+                    )
+                    logger.info(
+                        "pre_llm_call runtime override applied provider=%s model=%s api_mode=%s",
+                        getattr(self, "provider", ""),
+                        getattr(self, "model", ""),
+                        getattr(self, "api_mode", ""),
+                    )
+        except Exception as exc:
+            logger.warning("pre_llm_call runtime override failed: %s", exc)
+
+        system_prompt = runtime_override.get("system_prompt")
+        if system_prompt:
+            overlay = str(system_prompt).strip()
+            if overlay:
+                active_system_prompt = (
+                    ((active_system_prompt or "") + "\n\n" + overlay).strip()
+                )
+
+        return active_system_prompt
+
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
 
@@ -11775,15 +11915,15 @@ class AIAgent:
                         break  # Under threshold
 
         # Plugin hook: pre_llm_call
-        # Fired once per turn before the tool-calling loop.  Plugins can
+        # Fired once per turn before the tool-calling loop. Plugins can
         # return a dict with a ``context`` key (or a plain string) whose
         # value is appended to the current turn's user message.
         #
-        # Context is ALWAYS injected into the user message, never the
-        # system prompt.  This preserves the prompt cache prefix — the
-        # system prompt stays identical across turns so cached tokens
-        # are reused.  The system prompt is Hermes's territory; plugins
-        # contribute context alongside the user's input.
+        # Plugins may also return runtime overrides via
+        # ``{"runtime_override": {...}}`` (or direct model/provider keys)
+        # to switch model/provider/client settings before the LLM request is
+        # built. Context injection stays ephemeral and system prompt overlays
+        # are request-scoped by modifying ``active_system_prompt`` for this turn.
         #
         # All injected context is ephemeral (not persisted to session DB).
         _plugin_user_context = ""
@@ -11800,13 +11940,20 @@ class AIAgent:
                 sender_id=getattr(self, "_user_id", None) or "",
             )
             _ctx_parts: list[str] = []
+            _runtime_override: dict[str, Any] = {}
             for r in _pre_results:
-                if isinstance(r, dict) and r.get("context"):
-                    _ctx_parts.append(str(r["context"]))
-                elif isinstance(r, str) and r.strip():
-                    _ctx_parts.append(r)
+                _context, _override = self._collect_pre_llm_hook_result(r)
+                if _context:
+                    _ctx_parts.append(_context)
+                if _override:
+                    _runtime_override.update(_override)
             if _ctx_parts:
                 _plugin_user_context = "\n\n".join(_ctx_parts)
+            if _runtime_override:
+                active_system_prompt = self._apply_pre_llm_runtime_override(
+                    _runtime_override,
+                    active_system_prompt,
+                )
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
 

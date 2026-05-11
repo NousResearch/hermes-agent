@@ -367,7 +367,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** or apply runtime model/provider/system-prompt overrides before the LLM call. All other hooks are fire-and-forget observers.
 
 ### Quick reference
 
@@ -375,7 +375,7 @@ def register(ctx):
 |------|-----------|---------|
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
-| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
+| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context, or `{"runtime_override": {...}}` to override model/provider/system prompt |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
@@ -503,7 +503,7 @@ def register(ctx):
 
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. This hook can inject context into the current turn's user message and can apply runtime overrides before the LLM request is built.
 
 **Callback signature:**
 
@@ -525,6 +525,16 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 
 **Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection.
 
+A callback may also return runtime overrides either under `"runtime_override"` or as direct keys. Supported override keys are:
+
+- `"provider"`: target provider name, for example `"openrouter"`
+- `"model"`: target model identifier
+- `"base_url"`, `"api_key"`, `"api_mode"`: optional transport overrides
+- `"system_prompt"`: request-scoped system-prompt overlay appended to the active system prompt
+- `"restore_main"`: restore the session's original main runtime after a previous override
+
+If multiple plugins return overrides, later plugin results win for duplicate keys. Model/provider overrides use the same runtime switching path as `/model`; return `restore_main` when a router wants to move back to the original main runtime.
+
 ```python
 # Inject context
 return {"context": "Recalled memories:\n- User likes Python\n- Working on hermes-agent"}
@@ -534,9 +544,21 @@ return "Recalled memories:\n- User likes Python"
 
 # No injection
 return None
+
+# Route this turn to a specialist model
+return {
+    "runtime_override": {
+        "provider": "openrouter",
+        "model": "openrouter/example-specialist",
+        "system_prompt": "Use the specialist rubric for this turn.",
+    }
+}
+
+# Restore the original main runtime on a later turn
+return {"runtime_override": {"restore_main": True}}
 ```
 
-**Where context is injected:** Always the **user message**, never the system prompt. This preserves the prompt cache — the system prompt stays identical across turns, so cached tokens are reused. The system prompt is Hermes's territory (model guidance, tool enforcement, personality, skills). Plugins contribute context alongside the user's input.
+**Where context is injected:** Always the **user message**, never the system prompt. This preserves the prompt cache — the system prompt stays identical across turns, so cached tokens are reused. Plugin-provided `"system_prompt"` is treated as an explicit request-scoped overlay for plugins that need model-routing or specialist behavior.
 
 All injected context is **ephemeral** — added at API call time only. The original user message in the conversation history is never mutated, and nothing is persisted to the session database.
 

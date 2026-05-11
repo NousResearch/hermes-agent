@@ -707,6 +707,22 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] Socket Mode connected (%d workspace(s))",
                 len(self._team_clients),
             )
+            # Warn operators that open-channel auth is active so the risk is visible in logs.
+            _allow_on_ch = self._slack_allow_all_users_on_channel()
+            if _allow_on_ch:
+                if "*" in _allow_on_ch:
+                    logger.warning(
+                        "[Slack] SECURITY: allow_all_users_on_channel is set to ALL channels. "
+                        "Any workspace member in any channel where the bot is present can send commands. "
+                        "Restrict this to specific channel IDs unless you intend open access."
+                    )
+                else:
+                    logger.warning(
+                        "[Slack] SECURITY: allow_all_users_on_channel is active for %d channel(s): %s. "
+                        "Any workspace member in these channels can send commands without being in SLACK_ALLOWED_USERS.",
+                        len(_allow_on_ch),
+                        ", ".join(sorted(_allow_on_ch)),
+                    )
             return True
 
         except Exception as e:  # pragma: no cover - defensive logging
@@ -3083,3 +3099,30 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+    def _slack_allow_all_users_on_channel(self) -> set:
+        """Return channel IDs where any workspace member may interact.
+
+        When a message arrives from a channel in this set the per-user
+        SLACK_ALLOWED_USERS / GATEWAY_ALLOWED_USERS check is bypassed.
+
+        Config key  : platforms.slack.allow_all_users_on_channel
+        Env var     : SLACK_ALLOW_ALL_USERS_ON_CHANNEL
+
+        Accepts a comma-separated list of Slack channel IDs *or* the
+        string ``"true"`` / ``"1"`` / ``"yes"`` to match every channel
+        (equivalent to SLACK_ALLOW_ALL_USERS but scoped to channels only).
+
+        Empty / unset → feature disabled (default, safe).
+        """
+        raw = self.config.extra.get("allow_all_users_on_channel")
+        if raw is None:
+            raw = os.getenv("SLACK_ALLOW_ALL_USERS_ON_CHANNEL", "")
+        if isinstance(raw, bool):
+            return {"*"} if raw else set()
+        s = str(raw).strip()
+        if not s:
+            return set()
+        if s.lower() in ("true", "1", "yes"):
+            return {"*"}
+        return {part.strip() for part in s.split(",") if part.strip()}

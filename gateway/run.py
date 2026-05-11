@@ -5330,10 +5330,10 @@ class GatewayRunner:
         Check if a user is authorized to use the bot.
         
         Checks in order:
-        1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
-        2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
-        3. DM pairing approved list
-        4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
+        1. Config-level allow_all_users (config.yaml) or GATEWAY_ALLOW_ALL_USERS env var
+        2. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
+        3. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
+        4. DM pairing approved list
         5. Default: deny
         """
         # Home Assistant events are system-generated (state changes), not
@@ -5347,6 +5347,17 @@ class GatewayRunner:
         user_id = source.user_id
         if not user_id:
             return False
+
+        # Config-level allow-all: config.yaml allow_all_users: true (or
+        # GATEWAY_ALLOW_ALL_USERS env var) — skip all allowlist checks.
+        try:
+            _gw_cfg = self.config
+            if getattr(_gw_cfg, "allow_all_users", False):
+                return True
+        except Exception:
+            pass
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes"):
+            return True
 
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
@@ -5416,6 +5427,20 @@ class GatewayRunner:
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in ("true", "1", "yes"):
             return True
+
+        # Slack channel-level allow-all: if SLACK_ALLOW_ALL_USERS_ON_CHANNEL lists
+        # the channel (or is set to "*"), bypass per-user checks for this message.
+        # Guard: only applies when the bot is in a proper channel (chat_id starts
+        # with "C") — DMs (chat_id starts with "D") are never affected.
+        if source.platform == Platform.SLACK and source.chat_id and source.chat_id.startswith("C"):
+            try:
+                slack_adapter = self.adapters.get(Platform.SLACK)
+                if slack_adapter is not None:
+                    allow_on_channel = slack_adapter._slack_allow_all_users_on_channel()
+                    if allow_on_channel and ("*" in allow_on_channel or source.chat_id in allow_on_channel):
+                        return True
+            except Exception:
+                pass  # defensive — fall through to normal allowlist check
 
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)

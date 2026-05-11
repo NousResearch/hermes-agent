@@ -1195,12 +1195,28 @@ DEFAULT_CONFIG = {
     # Empty string means use server-local time.
     "timezone": "",
 
+    # Allow all users to interact with the bot (true/false).
+    # When true, the per-user GATEWAY_ALLOWED_USERS / SLACK_ALLOWED_USERS
+    # allowlist checks are bypassed and every message is accepted.
+    # When false (default), the standard allowlist logic applies.
+    # WARNING: setting this to true on a publicly visible channel grants
+    # unrestricted access to anyone who can reach the bot.
+    "allow_all_users": False,
+
     # Slack platform settings (gateway mode)
     "slack": {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "channel_prompts": {},         # Per-channel ephemeral system prompts
+        # Comma-separated Slack channel IDs (or "true" for all channels).
+        # When a message arrives from a listed channel, the per-user
+        # SLACK_ALLOWED_USERS check is bypassed — any workspace member
+        # already in that channel can interact with the bot.
+        # WARNING: enabling this on large public channels grants broad access;
+        # use with care if Hermes can execute sensitive operations.
+        # Env-var equivalent: SLACK_ALLOW_ALL_USERS_ON_CHANNEL
+        "allow_all_users_on_channel": "",
     },
 
     # Discord platform settings (gateway mode)

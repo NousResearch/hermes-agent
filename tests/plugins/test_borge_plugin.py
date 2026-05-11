@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 def test_borge_agent_init():
     from borge.agent import BorgeAgent
-    agent = BorgeAgent(hermes_agent=None)
+    agent = BorgeAgent(agent_backend=None)
     assert agent is not None
     assert agent.emotion is not None
     assert agent.beliefs is not None
@@ -20,14 +20,14 @@ def test_borge_agent_init():
 
 def test_pre_turn_returns_string():
     from borge.agent import BorgeAgent
-    agent = BorgeAgent(hermes_agent=None)
+    agent = BorgeAgent(agent_backend=None)
     ctx = agent.pre_turn("hello, can you help me?", [])
     assert isinstance(ctx, str)
 
 
 def test_pre_turn_increments_turn_count():
     from borge.agent import BorgeAgent
-    agent = BorgeAgent(hermes_agent=None)
+    agent = BorgeAgent(agent_backend=None)
     agent.pre_turn("first", [])
     agent.pre_turn("second", [{"role": "user", "content": "first"}])
     assert agent._turn_count == 2
@@ -35,13 +35,13 @@ def test_pre_turn_increments_turn_count():
 
 def test_post_tool_updates_value_satisfaction():
     from borge.agent import BorgeAgent
-    agent = BorgeAgent(hermes_agent=None)
+    agent = BorgeAgent(agent_backend=None)
     agent.post_tool("bash", "File created successfully.")
 
 
 def test_on_session_start_resets_state():
     from borge.agent import BorgeAgent
-    agent = BorgeAgent(hermes_agent=None)
+    agent = BorgeAgent(agent_backend=None)
     agent.pre_turn("first turn", [])
     assert agent._turn_count == 1
     agent.on_session_start()
@@ -51,14 +51,14 @@ def test_on_session_start_resets_state():
 
 def test_on_session_end_does_not_raise():
     from borge.agent import BorgeAgent
-    agent = BorgeAgent(hermes_agent=None)
+    agent = BorgeAgent(agent_backend=None)
     agent.pre_turn("let's build something", [])
     agent.on_session_end(session_id="test-session", messages=[])
 
 
 def test_score_tool_candidates_returns_candidates():
     from borge.agent import BorgeAgent
-    agent = BorgeAgent(hermes_agent=None)
+    agent = BorgeAgent(agent_backend=None)
     candidates = [
         {"name": "bash", "description": "Run shell commands"},
         {"name": "read_file", "description": "Read file contents"},
@@ -75,7 +75,7 @@ def test_skill_health_report_returns_dict():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
     try:
-        agent = BorgeAgent(hermes_agent=None, db_path=db_path)
+        agent = BorgeAgent(agent_backend=None, db_path=db_path)
         report = agent.skill_health_report()
         assert "prune_candidates" in report
         assert "generalise_candidates" in report

@@ -21,7 +21,10 @@ import queue
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
+from gateway.platforms.base import _custom_unit_to_cp
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -92,6 +95,7 @@ class GatewayStreamConsumer:
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
         on_new_message: Optional[callable] = None,
+        initial_reply_to_id: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
@@ -105,6 +109,7 @@ class GatewayStreamConsumer:
         # the content, not edit the old bubble above it.
         # Called with no arguments. Exceptions are swallowed.
         self._on_new_message = on_new_message
+        self._initial_reply_to_id = initial_reply_to_id
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
@@ -299,9 +304,18 @@ class GatewayStreamConsumer:
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
-        # Platform message length limit — leave room for cursor + formatting
+        # Platform message length limit — leave room for cursor + formatting.
+        # Use the adapter's length function (e.g. utf16_len for Telegram) so
+        # overflow detection matches what the platform actually enforces.
+        # Gate on isinstance(BasePlatformAdapter) so test MagicMocks (whose
+        # auto-attributes return mock objects, not callables) fall back to len.
+        _len_fn: "Callable[[str], int]" = (
+            self.adapter.message_len_fn
+            if isinstance(self.adapter, _BasePlatformAdapter)
+            else len
+        )
         _raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
-        _safe_limit = max(500, _raw_limit - len(self.cfg.cursor) - 100)
+        _safe_limit = max(500, _raw_limit - _len_fn(self.cfg.cursor) - 100)
 
         try:
             while True:
@@ -343,6 +357,10 @@ class GatewayStreamConsumer:
                     should_edit = should_edit or (
                         (elapsed >= self._current_edit_interval
                             and self._accumulated)
+                        # buffer_threshold is intentionally codepoint-based:
+                        # it's a debounce heuristic ("send updates roughly
+                        # every N visible characters"), not a platform-limit
+                        # check. _len_fn is reserved for overflow detection.
                         or len(self._accumulated) >= self.cfg.buffer_threshold
                     )
 
@@ -351,7 +369,7 @@ class GatewayStreamConsumer:
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
                     if (
-                        len(self._accumulated) > _safe_limit
+                        _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is None
                     ):
                         # No existing message to edit (first message or after a
@@ -360,15 +378,23 @@ class GatewayStreamConsumer:
                         # proper word/code-fence boundaries and chunk
                         # indicators like "(1/2)".
                         chunks = self.adapter.truncate_message(
-                            self._accumulated, _safe_limit
+                            self._accumulated, _safe_limit, len_fn=_len_fn,
                         )
+                        chunks_delivered = False
+                        reply_to = self._message_id or self._initial_reply_to_id
                         for chunk in chunks:
-                            await self._send_new_chunk(chunk, self._message_id)
+                            new_id = await self._send_new_chunk(chunk, reply_to)
+                            if new_id is not None and new_id != reply_to:
+                                chunks_delivered = True
                         self._accumulated = ""
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
                         if got_done:
-                            self._final_response_sent = self._already_sent
+                            # Only claim final delivery if THESE chunks actually
+                            # landed.  ``_already_sent`` may be True from prior
+                            # tool-progress edits or fallback-mode promotion (#10748)
+                            # — that doesn't mean the final answer reached the user.
+                            self._final_response_sent = chunks_delivered
                             return
                         if got_segment_break:
                             self._message_id = None
@@ -379,11 +405,14 @@ class GatewayStreamConsumer:
                     # Existing message: edit it with the first chunk, then
                     # start a new message for the overflow remainder.
                     while (
-                        len(self._accumulated) > _safe_limit
+                        _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is not None
                         and self._edit_supported
                     ):
-                        split_at = self._accumulated.rfind("\n", 0, _safe_limit)
+                        _cp_budget = _custom_unit_to_cp(
+                            self._accumulated, _safe_limit, _len_fn,
+                        )
+                        split_at = self._accumulated.rfind("\n", 0, _cp_budget)
                         if split_at < _safe_limit // 2:
                             split_at = _safe_limit
                         chunk = self._accumulated[:split_at]
@@ -411,7 +440,7 @@ class GatewayStreamConsumer:
                     # path below so we don't finalize here for it.
                     current_update_visible = await self._send_or_edit(
                         display_text,
-                        finalize=got_segment_break,
+                        finalize=(got_done or got_segment_break),
                     )
                     self._last_edit_time = time.monotonic()
 
@@ -574,14 +603,18 @@ class GatewayStreamConsumer:
         return final_text
 
     @staticmethod
-    def _split_text_chunks(text: str, limit: int) -> list[str]:
+    def _split_text_chunks(
+        text: str, limit: int,
+        len_fn: "Callable[[str], int]" = len,
+    ) -> list[str]:
         """Split text into reasonably sized chunks for fallback sends."""
-        if len(text) <= limit:
+        if len_fn(text) <= limit:
             return [text]
         chunks: list[str] = []
         remaining = text
-        while len(remaining) > limit:
-            split_at = remaining.rfind("\n", 0, limit)
+        while len_fn(remaining) > limit:
+            _cp_budget = _custom_unit_to_cp(remaining, limit, len_fn)
+            split_at = remaining.rfind("\n", 0, _cp_budget)
             if split_at < limit // 2:
                 split_at = limit
             chunks.append(remaining[:split_at])
@@ -637,9 +670,15 @@ class GatewayStreamConsumer:
                 return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
+        _len_fn: "Callable[[str], int]" = (
+            self.adapter.message_len_fn
+            if isinstance(self.adapter, _BasePlatformAdapter)
+            else len
+        )
         safe_limit = max(500, raw_limit - 100)
-        chunks = self._split_text_chunks(continuation, safe_limit)
+        chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
 
+        stale_message_id = self._message_id  # partial message to clean up
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False
@@ -686,6 +725,22 @@ class GatewayStreamConsumer:
             # Each fallback chunk is a fresh platform message — notify
             # so any stale tool-progress bubble gets closed off.
             self._notify_new_message()
+
+        # Remove the frozen partial message so the user only sees the
+        # complete fallback response.  Best-effort — if the platform doesn't
+        # implement ``delete_message``, the delete fails (flood control still
+        # active, bot lacks permission, message too old to delete), the
+        # partial remains but at least the full answer was delivered.
+        if stale_message_id and stale_message_id != last_message_id:
+            delete_fn = getattr(self.adapter, "delete_message", None)
+            if delete_fn is not None:
+                try:
+                    await delete_fn(self.chat_id, stale_message_id)
+                except Exception as e:
+                    logger.debug(
+                        "Fallback partial cleanup failed (%s): %s",
+                        stale_message_id, e,
+                    )
 
         self._message_id = last_message_id
         self._already_sent = True
@@ -979,10 +1034,12 @@ class GatewayStreamConsumer:
                     # The final response will be sent by the fallback path.
                     return False
             else:
-                # First message — send new
+                # First message — send new, threaded to the original user message
+                # so it lands in the correct topic/thread.
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
+                    reply_to=self._initial_reply_to_id,
                     metadata=self.metadata,
                 )
                 if result.success:

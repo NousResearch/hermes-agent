@@ -568,6 +568,57 @@ def test_notify_cursor_advances(kanban_home):
         conn.close()
 
 
+def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
+    conn1 = kb.connect()
+    conn2 = kb.connect()
+    try:
+        tid = kb.create_task(conn1, title="x", assignee="w")
+        kb.add_notify_sub(conn1, task_id=tid, platform="telegram", chat_id="123")
+        kb.complete_task(conn1, tid, result="ok")
+
+        old_cursor, claimed_cursor, events = kb.claim_unseen_events_for_sub(
+            conn1,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["completed", "blocked"],
+        )
+        assert old_cursor == 0
+        assert claimed_cursor > old_cursor
+        assert [ev.kind for ev in events] == ["completed"]
+
+        # A concurrent notifier instance sees the advanced cursor and cannot
+        # claim/send the same event range.
+        _, _, duplicate_events = kb.claim_unseen_events_for_sub(
+            conn2,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["completed", "blocked"],
+        )
+        assert duplicate_events == []
+
+        assert kb.rewind_notify_cursor(
+            conn1,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            claimed_cursor=claimed_cursor,
+            old_cursor=old_cursor,
+        ) is True
+        _, retried_events = kb.unseen_events_for_sub(
+            conn2,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["completed", "blocked"],
+        )
+        assert [ev.kind for ev in retried_events] == ["completed"]
+    finally:
+        conn1.close()
+        conn2.close()
+
+
 # ---------------------------------------------------------------------------
 # GC + retention
 # ---------------------------------------------------------------------------
@@ -2507,6 +2558,27 @@ def test_build_worker_context_caps_prior_attempts(kanban_home):
         conn.close()
 
 
+def test_build_worker_context_renders_author_with_safe_framing(kanban_home):
+    """Author rendering wraps the operator-controlled author in code fences
+    + "comment from worker" prefix so a misleading HERMES_PROFILE name
+    (e.g. "hermes-system", "operator") can't be misread as a system
+    directive above the comment body. Defense-in-depth — see #22452."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="t", assignee="worker")
+        kb.add_comment(conn, tid, author="hermes-system", body="some note")
+        ctx = kb.build_worker_context(conn, tid)
+
+        # No bold-author rendering anywhere in the context.
+        assert "**hermes-system**" not in ctx
+        # Explicit provenance prefix is present.
+        assert "comment from worker `hermes-system` at " in ctx
+        # The body still renders.
+        assert "some note" in ctx
+    finally:
+        conn.close()
+
+
 def test_build_worker_context_caps_comments(kanban_home):
     """Same cap for comments — comment-storm tasks stay bounded."""
     conn = kb.connect()
@@ -2516,10 +2588,15 @@ def test_build_worker_context_caps_comments(kanban_home):
             kb.add_comment(conn, tid, author=f"u{i % 3}", body=f"comment {i}")
         ctx = kb.build_worker_context(conn, tid)
         # Only _CTX_MAX_COMMENTS most-recent shown in full
-        comment_count = ctx.count("**u")
-        # 3 distinct authors u0/u1/u2 so the count is trickier; use the
-        # "comment N" body text to count.
-        body_count = sum(1 for line in ctx.splitlines() if line.startswith("comment "))
+        # Count by body text since author rendering uses code-fenced
+        # "comment from worker `<author>` at <ts>:" framing (#22452).
+        # Comment bodies are "comment 0".."comment 99" so we need to
+        # match the body specifically (digit suffix), not the author
+        # provenance line (which also starts with "comment ").
+        import re
+        body_count = sum(
+            1 for line in ctx.splitlines() if re.fullmatch(r"comment \d+", line)
+        )
         assert body_count == kb._CTX_MAX_COMMENTS, (
             f"expected {kb._CTX_MAX_COMMENTS} comments shown, got {body_count}"
         )
@@ -2661,6 +2738,48 @@ def test_create_task_skills_rejects_comma_embedded(kanban_home):
                 assignee="x",
                 skills=["a,b"],
             )
+    finally:
+        conn.close()
+
+
+def test_create_task_skills_rejects_toolset_names(kanban_home):
+    """Toolset names belong in profile config, not per-task skills."""
+    conn = kb.connect()
+    try:
+        with pytest.raises(ValueError, match="toolset name"):
+            kb.create_task(
+                conn,
+                title="bad toolset skill",
+                assignee="x",
+                skills=["web", "translation"],
+            )
+    finally:
+        conn.close()
+
+
+def test_create_task_skills_lists_all_toolset_typos(kanban_home):
+    """When several toolset names are passed, the error names every one.
+
+    Agents that confuse skills with toolsets usually pass several at once
+    (``skills=["web", "browser", "terminal"]``). Listing only the first
+    mistake forces serial fix-then-retry; listing all of them lets the
+    caller correct in one round-trip.
+    """
+    conn = kb.connect()
+    try:
+        with pytest.raises(ValueError) as exc_info:
+            kb.create_task(
+                conn,
+                title="three bad",
+                assignee="x",
+                skills=["web", "browser", "terminal"],
+            )
+        msg = str(exc_info.value)
+        assert "'web'" in msg
+        assert "'browser'" in msg
+        assert "'terminal'" in msg
+        # Plural noun form when multiple toolsets are flagged.
+        assert "are toolset names" in msg
     finally:
         conn.close()
 
@@ -3416,6 +3535,76 @@ def test_complete_accepts_cross_worker_card_when_linked_as_child(kanban_home):
         ).fetchone()
         payload = _json.loads(row["payload"])
         assert other in payload.get("verified_cards", [])
+    finally:
+        conn.close()
+
+
+def test_complete_can_retry_after_phantom_rejection(kanban_home):
+    """A worker that hits the hallucinated-card gate must be able to
+    retry kanban_complete on the same task — both with a corrected
+    created_cards list and with an empty list (the documented escape
+    hatch). Regression test for #22923, where workers were believed to
+    be unrecoverable after the first rejection.
+    """
+    conn = kb.connect()
+    try:
+        # Two parallel completing tasks so we can exercise both retry
+        # shapes without status interference.
+        parent_a = kb.create_task(conn, title="retry-empty", assignee="alice")
+        kb.claim_task(conn, parent_a)
+        parent_b = kb.create_task(conn, title="retry-corrected", assignee="alice")
+        kb.claim_task(conn, parent_b)
+        real = kb.create_task(
+            conn, title="real-child", assignee="x", created_by="alice",
+        )
+
+        # First attempt: phantom in the list rejects, task stays running.
+        with pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(
+                conn, parent_a,
+                summary="oops",
+                created_cards=["t_phantomdeadbeef"],
+            )
+        assert kb.get_task(conn, parent_a).status == "running"
+
+        # Retry with [] (escape hatch): gate is skipped, completion lands.
+        ok = kb.complete_task(
+            conn, parent_a,
+            summary="retry without claims",
+            created_cards=[],
+        )
+        assert ok is True
+        assert kb.get_task(conn, parent_a).status == "done"
+
+        # Same flow on parent_b, but recover via a corrected list rather
+        # than the empty escape hatch.
+        with pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(
+                conn, parent_b,
+                summary="oops",
+                created_cards=[real, "t_anotherphantom"],
+            )
+        assert kb.get_task(conn, parent_b).status == "running"
+
+        ok = kb.complete_task(
+            conn, parent_b,
+            summary="retry with corrected list",
+            created_cards=[real],
+        )
+        assert ok is True
+        assert kb.get_task(conn, parent_b).status == "done"
+
+        # Both audit events landed; the eventual completion event is
+        # also present on each task.
+        for parent in (parent_a, parent_b):
+            kinds = [
+                r["kind"] for r in conn.execute(
+                    "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                    (parent,),
+                )
+            ]
+            assert kinds.count("completion_blocked_hallucination") == 1
+            assert kinds.count("completed") == 1
     finally:
         conn.close()
 

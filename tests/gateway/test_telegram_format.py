@@ -7,6 +7,7 @@ or corrupt user-visible content.
 
 import re
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -757,3 +758,109 @@ class TestEditMessageStreamingSafety:
             "message_id": 456,
             "text": "final **bold**",
         }
+
+# =========================================================================
+# Telegram guest mention gating
+# =========================================================================
+
+
+def _guest_test_adapter(*, guest_mode=True, require_mention=True, allowed_chats=None):
+    config = PlatformConfig(
+        enabled=True,
+        token="fake-token",
+        extra={
+            "guest_mode": guest_mode,
+            "require_mention": require_mention,
+            "allowed_chats": allowed_chats or ["-100200"],
+        },
+    )
+    adapter = object.__new__(TelegramAdapter)
+    adapter.config = config
+    adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
+    adapter._mention_patterns = adapter._compile_mention_patterns()
+    return adapter
+
+
+def _guest_group_message(text, *, chat_id=-100201, entities=None, reply_to_bot=False):
+    reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999)) if reply_to_bot else None
+    return SimpleNamespace(
+        text=text,
+        caption=None,
+        entities=entities or [],
+        caption_entities=[],
+        message_thread_id=None,
+        chat=SimpleNamespace(id=chat_id, type="group"),
+        from_user=SimpleNamespace(id=111),
+        reply_to_message=reply_to_message,
+    )
+
+
+def _guest_mention_entity(text, mention="@hermes_bot"):
+    return SimpleNamespace(type="mention", offset=text.index(mention), length=len(mention))
+
+
+class TestTelegramGuestMentionGating:
+    def test_guest_mode_allows_explicit_mention_outside_allowed_chats(self):
+        adapter = _guest_test_adapter(guest_mode=True, allowed_chats=["-100200"])
+        text = "please help @hermes_bot"
+        message = _guest_group_message(
+            text,
+            chat_id=-100201,
+            entities=[_guest_mention_entity(text)],
+        )
+
+        assert adapter._should_process_message(message) is True
+
+    def test_guest_mode_does_not_allow_reply_outside_allowed_chats(self):
+        adapter = _guest_test_adapter(guest_mode=True, allowed_chats=["-100200"])
+        message = _guest_group_message("replying without mention", chat_id=-100201, reply_to_bot=True)
+
+        assert adapter._should_process_message(message) is False
+
+    def test_guest_mode_disabled_keeps_allowed_chats_as_hard_gate_for_mentions(self):
+        adapter = _guest_test_adapter(guest_mode=False, allowed_chats=["-100200"])
+        text = "please help @hermes_bot"
+        message = _guest_group_message(
+            text,
+            chat_id=-100201,
+            entities=[_guest_mention_entity(text)],
+        )
+
+        assert adapter._should_process_message(message) is False
+
+    def test_guest_mode_allows_bot_command_entity_outside_allowed_chats(self):
+        """``/cmd@botname`` is a ``bot_command`` entity, not ``mention``."""
+        adapter = _guest_test_adapter(guest_mode=True, allowed_chats=["-100200"])
+        text = "/status@hermes_bot"
+        message = _guest_group_message(
+            text,
+            chat_id=-100201,
+            entities=[SimpleNamespace(type="bot_command", offset=0, length=len(text))],
+        )
+
+        assert adapter._should_process_message(message) is True
+
+    def test_guest_mode_allows_text_mention_entity_outside_allowed_chats(self):
+        """MessageEntity(type=text_mention) tags a user by ID — recognised as mention."""
+        adapter = _guest_test_adapter(guest_mode=True, allowed_chats=["-100200"])
+        message = _guest_group_message(
+            "hey there",
+            chat_id=-100201,
+            entities=[SimpleNamespace(type="text_mention", offset=0, length=3, user=SimpleNamespace(id=999))],
+        )
+
+        assert adapter._should_process_message(message) is True
+
+    def test_guest_mode_allows_mention_in_caption_outside_allowed_chats(self):
+        """Media caption @mention should bypass allowed_chats via guest_mode."""
+        adapter = _guest_test_adapter(guest_mode=True, allowed_chats=["-100200"])
+        text = "look @hermes_bot"
+        message = _guest_group_message(
+            text="",
+            chat_id=-100201,
+            entities=[],
+        )
+        message.caption = text
+        message.caption_entities = [_guest_mention_entity(text)]
+
+        assert adapter._should_process_message(message) is True

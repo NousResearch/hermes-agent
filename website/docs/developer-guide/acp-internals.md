@@ -76,9 +76,8 @@ The manager is thread-safe and supports:
 Bridged callbacks:
 
 - `tool_progress_callback`
-- `thinking_callback`
+- `thinking_callback` (currently set to `None` in the ACP bridge — reasoning is forwarded through `step_callback` instead)
 - `step_callback`
-- `message_callback`
 
 Because `AIAgent` runs in a worker thread while ACP I/O lives on the main event loop, the bridge uses:
 

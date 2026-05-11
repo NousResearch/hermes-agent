@@ -1817,6 +1817,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
             agent, "provider_require_parameters", False
         ),
         "provider_data_collection": getattr(agent, "provider_data_collection", None),
+        "openrouter_min_coding_score": getattr(agent, "openrouter_min_coding_score", None),
         "session_id": task_id,
         "reasoning_config": getattr(agent, "reasoning_config", None)
         or _load_reasoning_config(),
@@ -3250,6 +3251,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             decision = goal_mgr.evaluate_after_turn(
                                 raw,
                                 user_initiated=True,
+                                messages=list(session.get("history") or []),
                             )
                             verdict_msg = decision.get("message") or ""
                             if verdict_msg:

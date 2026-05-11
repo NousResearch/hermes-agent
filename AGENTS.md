@@ -540,10 +540,14 @@ Full authoring guide: `website/docs/developer-guide/model-provider-plugin.md`.
 
 ### Dashboard / context-engine / image-gen plugin directories
 
-`plugins/context_engine/`, `plugins/image_gen/`, `plugins/example-dashboard/`,
-etc. follow the same pattern (ABC + orchestrator + per-plugin directory).
-Context engines plug into `agent/context_engine.py`; image-gen providers
-into `agent/image_gen_provider.py`.
+`plugins/context_engine/`, `plugins/image_gen/`, etc. follow the same
+pattern (ABC + orchestrator + per-plugin directory). Context engines
+plug into `agent/context_engine.py`; image-gen providers into
+`agent/image_gen_provider.py`. Reference / docs-companion plugins
+(`example-dashboard`, `strike-freedom-cockpit`, `plugin-llm-example`,
+`plugin-llm-async-example`) live in the
+[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
+companion repo, not in this tree.
 
 ---
 

@@ -5,24 +5,14 @@ thundering-herd retry spikes when multiple sessions hit the same
 rate-limited provider concurrently.
 """
 
-import os
 import random
 import threading
 import time
 
+from gateway.platforms._timeout_utils import env_float
 
-def _env_float(name: str, default: float) -> float:
-    val = os.environ.get(name)
-    if val is not None:
-        try:
-            return float(val)
-        except ValueError:
-            pass
-    return default
-
-
-_RETRY_BASE_DELAY = _env_float("HERMES_RETRY_BASE_DELAY", 5.0)
-_RETRY_MAX_DELAY = _env_float("HERMES_RETRY_MAX_DELAY", 120.0)
+_RETRY_BASE_DELAY = env_float("HERMES_RETRY_BASE_DELAY", 5.0)
+_RETRY_MAX_DELAY = env_float("HERMES_RETRY_MAX_DELAY", 120.0)
 
 # Monotonic counter for jitter seed uniqueness within the same process.
 # Protected by a lock to avoid race conditions in concurrent retry paths

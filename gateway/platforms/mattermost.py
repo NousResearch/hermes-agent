@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms._timeout_utils import env_float
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -49,19 +50,8 @@ _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
 
-
-def _env_float(name: str, default: float) -> float:
-    """Read a float from an environment variable, with fallback."""
-    val = os.environ.get(name)
-    if val is not None:
-        try:
-            return float(val)
-        except ValueError:
-            pass
-    return default
-
-_MATTERMOST_HTTP_TIMEOUT = _env_float("HERMES_MATTERMOST_HTTP_TIMEOUT", 30.0)
-_MATTERMOST_UPLOAD_TIMEOUT = _env_float("HERMES_MATTERMOST_UPLOAD_TIMEOUT", 60.0)
+_MATTERMOST_HTTP_TIMEOUT = env_float("HERMES_MATTERMOST_HTTP_TIMEOUT", 30.0)
+_MATTERMOST_UPLOAD_TIMEOUT = env_float("HERMES_MATTERMOST_UPLOAD_TIMEOUT", 60.0)
 
 
 def check_mattermost_requirements() -> bool:

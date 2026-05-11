@@ -27,25 +27,14 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
+from gateway.platforms._timeout_utils import env_float
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
 
-
-def _env_float(name: str, default: float) -> float:
-    """Read a float from an environment variable, with fallback."""
-    val = os.environ.get(name)
-    if val is not None:
-        try:
-            return float(val)
-        except ValueError:
-            pass
-    return default
-
-
-_WHATSAPP_HTTP_TIMEOUT = _env_float("HERMES_WHATSAPP_HTTP_TIMEOUT", 30.0)
-_WHATSAPP_MEDIA_TIMEOUT = _env_float("HERMES_WHATSAPP_MEDIA_TIMEOUT", 120.0)
-_WHATSAPP_HEALTH_TIMEOUT = _env_float("HERMES_WHATSAPP_HEALTH_TIMEOUT", 2.0)
+_WHATSAPP_HTTP_TIMEOUT = env_float("HERMES_WHATSAPP_HTTP_TIMEOUT", 30.0)
+_WHATSAPP_MEDIA_TIMEOUT = env_float("HERMES_WHATSAPP_MEDIA_TIMEOUT", 120.0)
+_WHATSAPP_HEALTH_TIMEOUT = env_float("HERMES_WHATSAPP_HEALTH_TIMEOUT", 2.0)
 
 
 def _kill_port_process(port: int) -> None:

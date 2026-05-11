@@ -12,31 +12,20 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-import os
 import socket
 from typing import Iterable, Optional
 
 import httpx
 
+from gateway.platforms._timeout_utils import env_float
+
 logger = logging.getLogger(__name__)
-
-
-def _env_float(name: str, default: float) -> float:
-    """Read a float from an environment variable, with fallback."""
-    val = os.environ.get(name)
-    if val is not None:
-        try:
-            return float(val)
-        except ValueError:
-            pass
-    return default
-
 
 _TELEGRAM_API_HOST = "api.telegram.org"
 
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
-_DOH_TIMEOUT = _env_float("HERMES_TELEGRAM_DOH_TIMEOUT", 4.0)  # seconds — bounded so connect() isn't noticeably delayed
+_DOH_TIMEOUT = env_float("HERMES_TELEGRAM_DOH_TIMEOUT", 4.0)  # seconds — bounded so connect() isn't noticeably delayed
 
 _DOH_PROVIDERS: list[dict] = [
     {

@@ -27,6 +27,7 @@ from urllib.parse import quote, unquote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms._timeout_utils import env_float
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -52,20 +53,9 @@ SSE_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
 HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
 
-
-def _env_float(name: str, default: float) -> float:
-    """Read a float from an environment variable, with fallback."""
-    val = os.environ.get(name)
-    if val is not None:
-        try:
-            return float(val)
-        except ValueError:
-            pass
-    return default
-
-_SIGNAL_HTTP_TIMEOUT = _env_float("HERMES_SIGNAL_HTTP_TIMEOUT", 30.0)
-_SIGNAL_POLL_TIMEOUT = _env_float("HERMES_SIGNAL_POLL_TIMEOUT", 10.0)
-_SIGNAL_HEALTH_TIMEOUT = _env_float("HERMES_SIGNAL_HEALTH_TIMEOUT", 10.0)
+_SIGNAL_HTTP_TIMEOUT = env_float("HERMES_SIGNAL_HTTP_TIMEOUT", 30.0)
+_SIGNAL_POLL_TIMEOUT = env_float("HERMES_SIGNAL_POLL_TIMEOUT", 10.0)
+_SIGNAL_HEALTH_TIMEOUT = env_float("HERMES_SIGNAL_HEALTH_TIMEOUT", 10.0)
 
 
 # ---------------------------------------------------------------------------

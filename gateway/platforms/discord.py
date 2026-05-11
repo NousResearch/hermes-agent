@@ -20,23 +20,13 @@ import time
 from collections import defaultdict
 from typing import Callable, Dict, Optional, Any
 
+from gateway.platforms._timeout_utils import env_float
+
 logger = logging.getLogger(__name__)
 
-
-def _env_float(name: str, default: float) -> float:
-    """Read a float from an environment variable, with fallback."""
-    val = os.environ.get(name)
-    if val is not None:
-        try:
-            return float(val)
-        except ValueError:
-            pass
-    return default
-
-
-_DISCORD_APPROVAL_TIMEOUT = _env_float("HERMES_DISCORD_APPROVAL_TIMEOUT", 300.0)
-_DISCORD_MODEL_PICKER_TIMEOUT = _env_float("HERMES_DISCORD_MODEL_PICKER_TIMEOUT", 120.0)
-_DISCORD_CONNECT_TIMEOUT = _env_float("HERMES_DISCORD_CONNECT_TIMEOUT", 30.0)
+_DISCORD_APPROVAL_TIMEOUT = env_float("HERMES_DISCORD_APPROVAL_TIMEOUT", 300.0)
+_DISCORD_MODEL_PICKER_TIMEOUT = env_float("HERMES_DISCORD_MODEL_PICKER_TIMEOUT", 120.0)
+_DISCORD_CONNECT_TIMEOUT = env_float("HERMES_DISCORD_CONNECT_TIMEOUT", 30.0)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}

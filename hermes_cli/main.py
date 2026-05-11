@@ -1724,6 +1724,8 @@ def cmd_setup(args):
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
     _require_tty("model")
+    if bool(getattr(args, "refresh", False)):
+        _clear_model_catalog_cache()
     select_provider_and_model(args=args)
 
 
@@ -1763,6 +1765,7 @@ def select_provider_and_model(args=None):
     from hermes_cli.providers import resolve_provider_full
 
     config = load_config()
+    force_model_catalog_refresh = bool(getattr(args, "refresh", False))
     current_model = config.get("model")
     if isinstance(current_model, dict):
         current_model = current_model.get("default", "")
@@ -1973,7 +1976,12 @@ def select_provider_and_model(args=None):
     elif selected_provider == "ai-gateway":
         _model_flow_ai_gateway(config, current_model)
     elif selected_provider == "nous":
-        _model_flow_nous(config, current_model, args=args)
+        _model_flow_nous(
+            config,
+            current_model,
+            args=args,
+            force_catalog_refresh=force_model_catalog_refresh,
+        )
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "qwen-oauth":
@@ -2584,7 +2592,13 @@ def _model_flow_ai_gateway(config, current_model=""):
         print("No change.")
 
 
-def _model_flow_nous(config, current_model="", args=None):
+def _model_flow_nous(
+    config,
+    current_model="",
+    args=None,
+    *,
+    force_catalog_refresh: bool = False,
+):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_provider_auth_state,
@@ -2646,7 +2660,7 @@ def _model_flow_nous(config, current_model="", args=None):
         partition_nous_models_by_tier,
     )
 
-    model_ids = get_curated_nous_model_ids()
+    model_ids = get_curated_nous_model_ids(force_refresh=force_catalog_refresh)
     if not model_ids:
         print("No curated models available for Nous Portal.")
         return
@@ -6109,6 +6123,8 @@ def _update_via_zip(args):
     except Exception:
         pass
 
+    _invalidate_update_cache()
+
     print()
     print("✓ Update complete!")
     try:
@@ -6547,13 +6563,26 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("    Your local repo is updated, but your fork on GitHub may be behind.")
 
 
+def _clear_model_catalog_cache() -> None:
+    """Clear hosted model-catalog caches using the resolved Hermes home."""
+    try:
+        from hermes_cli.model_catalog import clear_disk_cache
+
+        clear_disk_cache()
+    except Exception as exc:
+        logger.debug("Model catalog cache invalidation failed: %s", exc)
+
+
 def _invalidate_update_cache():
     """Delete the update-check cache for ALL profiles so no banner
-    reports a stale "commits behind" count after a successful update.
+    reports a stale "commits behind" count after a successful update, and
+    drop the hosted model catalog cache so ``hermes model`` sees the newly
+    bundled/remote catalog after ``hermes update``.
 
     The git repo is shared across profiles — when one profile runs
     ``hermes update``, every profile is now current.
     """
+    _clear_model_catalog_cache()
     homes = []
     # Default profile home (Docker-aware — uses /opt/data in Docker)
     from hermes_constants import get_default_hermes_root
@@ -6571,6 +6600,12 @@ def _invalidate_update_cache():
             cache_file = home / ".update_check"
             if cache_file.exists():
                 cache_file.unlink()
+        except Exception:
+            pass
+        try:
+            model_catalog_cache = home / "cache" / "model_catalog.json"
+            if model_catalog_cache.exists():
+                model_catalog_cache.unlink()
         except Exception:
             pass
 
@@ -9368,6 +9403,11 @@ def main():
         "--insecure",
         action="store_true",
         help="Disable TLS verification for Nous login (testing only)",
+    )
+    model_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Clear cached remote model catalogs and fetch fresh picker data",
     )
     model_parser.set_defaults(func=cmd_model)
 

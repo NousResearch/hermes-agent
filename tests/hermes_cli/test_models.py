@@ -59,6 +59,19 @@ class TestOpenRouterModels:
 
 
 class TestFetchOpenRouterModels:
+    def test_force_refresh_reaches_remote_manifest_catalog(self, monkeypatch):
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch(
+            "hermes_cli.model_catalog.get_curated_openrouter_models",
+            return_value=[("openrouter/test-model", "")],
+        ) as curated, patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            side_effect=OSError("offline"),
+        ):
+            fetch_openrouter_models(force_refresh=True)
+
+        curated.assert_called_once_with(force_refresh=True)
+
     def test_live_fetch_recomputes_free_tags(self, monkeypatch):
         class _Resp:
             def __enter__(self):
@@ -167,6 +180,20 @@ class TestFetchOpenRouterModels:
         ids = [mid for mid, _ in models]
         assert "anthropic/claude-opus-4.6" in ids
         assert "qwen/qwen3.6-plus" in ids
+
+
+class TestNousCuratedModelIds:
+    def test_force_refresh_reaches_remote_manifest_catalog(self):
+        from hermes_cli.models import get_curated_nous_model_ids
+
+        with patch(
+            "hermes_cli.model_catalog.get_curated_nous_models",
+            return_value=["nous/test-model"],
+        ) as curated:
+            result = get_curated_nous_model_ids(force_refresh=True)
+
+        assert result == ["nous/test-model"]
+        curated.assert_called_once_with(force_refresh=True)
 
 
 class TestOpenRouterToolSupportHelper:

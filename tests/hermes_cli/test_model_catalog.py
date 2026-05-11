@@ -149,9 +149,35 @@ class TestFetchFailure:
         # Now wipe in-process cache and simulate network failure on refetch.
         model_catalog.reset_cache()
         with patch.object(model_catalog, "_fetch_manifest", return_value=None):
-            result = model_catalog.get_catalog(force_refresh=True)
+            result = model_catalog.get_catalog()
 
         assert result == manifest
+
+    def test_force_refresh_failure_ignores_stale_disk_cache(self, isolated_home):
+        from hermes_cli import model_catalog
+
+        manifest = _valid_manifest()
+        cache = model_catalog._cache_path()
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache, "w") as fh:
+            json.dump(manifest, fh)
+
+        model_catalog.reset_cache()
+        with patch.object(model_catalog, "_fetch_manifest", return_value=None):
+            result = model_catalog.get_catalog(force_refresh=True)
+
+        assert result == {}
+
+    def test_clear_disk_cache_uses_resolved_hermes_home(self, isolated_home):
+        from hermes_cli import model_catalog
+
+        cache = model_catalog._cache_path()
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(_valid_manifest()))
+
+        assert cache.exists()
+        model_catalog.clear_disk_cache()
+        assert not cache.exists()
 
     def test_fetch_failure_falls_back_to_stale_cache(self, isolated_home):
         from hermes_cli import model_catalog
@@ -185,6 +211,18 @@ class TestCuratedAccessors:
             ("openrouter/elephant-alpha", "free"),
         ]
 
+    def test_openrouter_force_refresh_reaches_catalog_fetch(self, isolated_home):
+        from hermes_cli import model_catalog
+        manifest = _valid_manifest()
+
+        with patch.object(
+            model_catalog, "_fetch_manifest", return_value=manifest
+        ) as fetch:
+            model_catalog.get_curated_openrouter_models(force_refresh=True)
+            model_catalog.get_curated_openrouter_models(force_refresh=True)
+
+        assert fetch.call_count == 2
+
     def test_nous_returns_ids(self, isolated_home):
         from hermes_cli import model_catalog
         with patch.object(
@@ -192,6 +230,18 @@ class TestCuratedAccessors:
         ):
             result = model_catalog.get_curated_nous_models()
         assert result == ["anthropic/claude-opus-4.7", "moonshotai/kimi-k2.6"]
+
+    def test_nous_force_refresh_reaches_catalog_fetch(self, isolated_home):
+        from hermes_cli import model_catalog
+        manifest = _valid_manifest()
+
+        with patch.object(
+            model_catalog, "_fetch_manifest", return_value=manifest
+        ) as fetch:
+            model_catalog.get_curated_nous_models(force_refresh=True)
+            model_catalog.get_curated_nous_models(force_refresh=True)
+
+        assert fetch.call_count == 2
 
     def test_openrouter_returns_none_when_catalog_empty(self, isolated_home):
         from hermes_cli import model_catalog

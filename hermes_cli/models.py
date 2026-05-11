@@ -975,7 +975,7 @@ def fetch_openrouter_models(
     # free pricing) is applied on top either way.
     try:
         from hermes_cli.model_catalog import get_curated_openrouter_models
-        remote = get_curated_openrouter_models()
+        remote = get_curated_openrouter_models(force_refresh=force_refresh)
     except Exception:
         remote = None
     fallback = list(remote) if remote else list(OPENROUTER_MODELS)
@@ -1031,17 +1031,18 @@ def model_ids(*, force_refresh: bool = False) -> list[str]:
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
 
 
-def get_curated_nous_model_ids() -> list[str]:
+def get_curated_nous_model_ids(*, force_refresh: bool = False) -> list[str]:
     """Return the curated Nous Portal model-id list.
 
     Prefers the remotely-hosted catalog manifest (published under
     ``website/static/api/model-catalog.json``); falls back to the in-repo
     snapshot in ``_PROVIDER_MODELS["nous"]`` when the manifest is
-    unreachable. Always returns a list (never None).
+    unreachable. Pass ``force_refresh=True`` to bypass the catalog TTL. Always
+    returns a list (never None).
     """
     try:
         from hermes_cli.model_catalog import get_curated_nous_models
-        remote = get_curated_nous_models()
+        remote = get_curated_nous_models(force_refresh=force_refresh)
     except Exception:
         remote = None
     if remote:

@@ -121,12 +121,16 @@ def test_invalidate_update_cache_clears_all_profiles(tmp_path):
     default_home = tmp_path / ".hermes"
     default_home.mkdir()
     (default_home / ".update_check").write_text('{"ts":1,"behind":50}')
+    (default_home / "cache").mkdir()
+    (default_home / "cache" / "model_catalog.json").write_text('{"version":1}')
 
     profiles_root = default_home / "profiles"
     for name in ("ops", "dev"):
         p = profiles_root / name
         p.mkdir(parents=True)
         (p / ".update_check").write_text('{"ts":1,"behind":50}')
+        (p / "cache").mkdir()
+        (p / "cache" / "model_catalog.json").write_text('{"version":1}')
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(default_home)}):
@@ -136,6 +140,9 @@ def test_invalidate_update_cache_clears_all_profiles(tmp_path):
     assert not (default_home / ".update_check").exists(), "default profile cache not cleared"
     assert not (profiles_root / "ops" / ".update_check").exists(), "ops profile cache not cleared"
     assert not (profiles_root / "dev" / ".update_check").exists(), "dev profile cache not cleared"
+    assert not (default_home / "cache" / "model_catalog.json").exists()
+    assert not (profiles_root / "ops" / "cache" / "model_catalog.json").exists()
+    assert not (profiles_root / "dev" / "cache" / "model_catalog.json").exists()
 
 
 def test_invalidate_update_cache_no_profiles_dir(tmp_path):
@@ -145,9 +152,12 @@ def test_invalidate_update_cache_no_profiles_dir(tmp_path):
     default_home = tmp_path / ".hermes"
     default_home.mkdir()
     (default_home / ".update_check").write_text('{"ts":1,"behind":5}')
+    (default_home / "cache").mkdir()
+    (default_home / "cache" / "model_catalog.json").write_text('{"version":1}')
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(default_home)}):
         _invalidate_update_cache()
 
     assert not (default_home / ".update_check").exists()
+    assert not (default_home / "cache" / "model_catalog.json").exists()

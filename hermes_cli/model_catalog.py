@@ -11,7 +11,9 @@ Pipeline
    - Checks in-process cache (invalidated by TTL).
    - Reads disk cache at ``~/.hermes/cache/model_catalog.json``.
    - Fetches the master URL if disk cache is stale or missing.
-   - On any fetch failure, keeps using the stale cache (or empty dict).
+   - On ordinary fetch failure, keeps using the stale cache (or empty dict).
+   - On explicit force-refresh failure, returns empty so callers fall back to
+     the bundled snapshot instead of reusing the stale disk cache.
 
 2. ``get_curated_openrouter_models()`` / ``get_curated_nous_models()`` —
    thin accessors returning the shapes existing callers expect. Each
@@ -234,7 +236,9 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
         _catalog_cache_source_mtime = disk_mtime
         return disk_data
 
-    # Need to (re)fetch. If it fails, fall back to any stale disk copy.
+    # Need to (re)fetch. Ordinary offline use can keep a stale disk copy; an
+    # explicit force-refresh must not resurrect the same stale catalog the user
+    # is trying to bypass.
     fetched = _fetch_manifest(cfg["url"], DEFAULT_FETCH_TIMEOUT)
     if fetched is not None:
         _write_disk_cache(fetched)
@@ -247,7 +251,7 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
         _catalog_cache_source_mtime = now
         return fetched
 
-    if disk_data is not None:
+    if not force_refresh and disk_data is not None:
         _catalog_cache = disk_data
         _catalog_cache_source_mtime = disk_mtime
         return disk_data
@@ -272,7 +276,11 @@ def _fetch_provider_override(provider: str) -> dict[str, Any] | None:
     return _fetch_manifest(override_url.strip(), DEFAULT_FETCH_TIMEOUT)
 
 
-def _get_provider_block(provider: str) -> dict[str, Any] | None:
+def _get_provider_block(
+    provider: str,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, Any] | None:
     """Return the provider's manifest block, respecting per-provider overrides."""
     override = _fetch_provider_override(provider)
     if override is not None:
@@ -280,20 +288,23 @@ def _get_provider_block(provider: str) -> dict[str, Any] | None:
         if isinstance(block, dict):
             return block
 
-    catalog = get_catalog()
+    catalog = get_catalog(force_refresh=force_refresh)
     if not catalog:
         return None
     block = catalog.get("providers", {}).get(provider)
     return block if isinstance(block, dict) else None
 
 
-def get_curated_openrouter_models() -> list[tuple[str, str]] | None:
+def get_curated_openrouter_models(
+    *,
+    force_refresh: bool = False,
+) -> list[tuple[str, str]] | None:
     """Return OpenRouter's curated ``[(id, description), ...]`` from the manifest.
 
     Returns ``None`` when the manifest is unavailable, so callers can fall
     back to their hardcoded list.
     """
-    block = _get_provider_block("openrouter")
+    block = _get_provider_block("openrouter", force_refresh=force_refresh)
     if not block:
         return None
     out: list[tuple[str, str]] = []
@@ -306,12 +317,15 @@ def get_curated_openrouter_models() -> list[tuple[str, str]] | None:
     return out or None
 
 
-def get_curated_nous_models() -> list[str] | None:
+def get_curated_nous_models(
+    *,
+    force_refresh: bool = False,
+) -> list[str] | None:
     """Return Nous Portal's curated list of model ids from the manifest.
 
     Returns ``None`` when the manifest is unavailable.
     """
-    block = _get_provider_block("nous")
+    block = _get_provider_block("nous", force_refresh=force_refresh)
     if not block:
         return None
     out: list[str] = []
@@ -327,3 +341,17 @@ def reset_cache() -> None:
     global _catalog_cache, _catalog_cache_source_mtime
     _catalog_cache = None
     _catalog_cache_source_mtime = 0.0
+
+
+def clear_disk_cache() -> None:
+    """Clear the in-process and disk model-catalog cache.
+
+    Uses ``get_hermes_home()`` via ``_cache_path()`` so Windows AppData,
+    custom ``HERMES_HOME``, Docker, and profile homes all resolve through the
+    same runtime path as normal catalog reads.
+    """
+    reset_cache()
+    try:
+        _cache_path().unlink(missing_ok=True)
+    except OSError as exc:
+        logger.info("model catalog cache delete failed: %s", exc)

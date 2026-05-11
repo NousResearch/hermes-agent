@@ -763,6 +763,59 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
+    def _build_extractive_fallback_summary(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        *,
+        n_dropped: int,
+    ) -> str:
+        """Create a deterministic fallback summary when the LLM summary fails.
+
+        The old fallback was an opaque placeholder saying that N messages were
+        removed.  That is honest but operationally weak: an interrupted/timeout
+        compression destroys the middle of the session even though we still have
+        those messages in memory at fallback-construction time.  Preserve a
+        compact, redacted extract instead so continuity degrades gracefully.
+        """
+        err_text = redact_sensitive_text(
+            (self._last_summary_error or "unknown summary-generation error").strip()
+        )
+        if len(err_text) > 220:
+            err_text = err_text[:217].rstrip() + "..."
+
+        serialized = self._serialize_for_summary(turns_to_summarize).strip()
+        # Bound the deterministic fallback independently of the failed LLM call:
+        # enough to retain useful breadcrumbs, small enough to actually reduce
+        # context pressure.  Keep both the beginning and the most recent compacted
+        # source because either can contain decisions/state needed after resume.
+        summary_budget_tokens = self._compute_summary_budget(turns_to_summarize)
+        char_budget = min(24_000, max(4_000, int(summary_budget_tokens * _CHARS_PER_TOKEN * 0.75)))
+        if len(serialized) > char_budget:
+            marker = (
+                "\n\n...[extractive fallback truncated to stay within the "
+                "compression budget; most recent compacted source follows]...\n\n"
+            )
+            head_chars = max(1_200, int(char_budget * 0.35))
+            tail_chars = max(1_200, char_budget - head_chars - len(marker))
+            serialized = serialized[:head_chars].rstrip() + marker + serialized[-tail_chars:].lstrip()
+
+        if not serialized:
+            serialized = "[No textual source content was available in the compacted region.]"
+
+        return (
+            f"{SUMMARY_PREFIX}\n"
+            "## Active Task\n"
+            "Not inferred by the fallback summarizer. Use the latest user message "
+            "after this summary as the active task.\n\n"
+            "## Critical Context\n"
+            f"Summary generation was unavailable ({err_text}). {n_dropped} "
+            "historical message(s) were compacted using an Extractive fallback "
+            "instead of an LLM-written summary, so treat the snippets below as "
+            "source breadcrumbs rather than a complete synthesis.\n\n"
+            "## Extractive fallback source snippets\n"
+            f"{serialized}"
+        )
+
     def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
         """Switch from a separate ``summary_model`` back to the main model.
 
@@ -1458,20 +1511,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     )
             compressed.append(msg)
 
-        # If LLM summary failed, insert a static fallback so the model
-        # knows context was lost rather than silently dropping everything.
+        # If LLM summary failed, insert a deterministic extractive fallback so
+        # the model gets concrete breadcrumbs from the compacted region instead
+        # of an opaque placeholder.  This keeps compression safe under transient
+        # Codex stream interrupts/timeouts while still reducing context pressure.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting static fallback context marker")
+                logger.warning("Summary generation failed — inserting extractive fallback context summary")
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
-            summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} message(s) were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"messages contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
+            summary = self._build_extractive_fallback_summary(
+                turns_to_summarize,
+                n_dropped=n_dropped,
             )
 
         _merge_summary_into_tail = False

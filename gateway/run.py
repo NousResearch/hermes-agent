@@ -7420,10 +7420,12 @@ class GatewayRunner:
                                         _warn_msg = (
                                             "⚠️ Context compression summary failed "
                                             f"({_err}). {_dropped} historical message(s) "
-                                            "were removed and replaced with a placeholder. "
-                                            "Earlier context is no longer recoverable. "
-                                            "Consider /reset for a clean session, or check "
-                                            "your auxiliary.compression model configuration."
+                                            "were compacted with a deterministic extractive "
+                                            "fallback instead of an LLM-written summary. "
+                                            "Context quality may degrade, but source snippets "
+                                            "were preserved where possible. Consider /reset for "
+                                            "a clean session, or check your auxiliary.compression "
+                                            "model configuration."
                                         )
                                         try:
                                             _adapter = self.adapters.get(source.platform)

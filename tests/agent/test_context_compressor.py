@@ -744,10 +744,17 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert c._last_summary_dropped_count > 0
         assert c._last_summary_error is not None
         # Result must still be well-formed (fallback summary present).
-        assert any(
-            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+        fallback_contents = [
+            m.get("content", "")
             for m in result
-        )
+            if isinstance(m.get("content"), str)
+            and "Summary generation was unavailable" in m["content"]
+        ]
+        assert fallback_contents
+        # The fallback must preserve some extractive source context instead of
+        # replacing the whole compressed region with an opaque placeholder.
+        assert "Extractive fallback" in fallback_contents[0]
+        assert "msg 3" in fallback_contents[0]
 
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()

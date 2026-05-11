@@ -2094,7 +2094,7 @@ class TestCodexAuxiliaryAdapterTimeout:
                 return False
 
             def __iter__(self):
-                for _ in range(5):
+                for _ in range(50):
                     time.sleep(0.03)
                     yield SimpleNamespace(type="response.in_progress")
 
@@ -2121,7 +2121,8 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        elapsed = time.monotonic() - started
+        assert elapsed < 0.5, f"timeout should interrupt the stream early, got {elapsed:.3f}s"
 
 
 # ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ class StreamingMixin:
     model, etc.) and are designed to be mixed into the AIAgent class.
     """
 
+    @staticmethod
     def _stream_diag_init() -> Dict[str, Any]:
         """Return a fresh per-attempt diagnostic dict.
 

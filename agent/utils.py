@@ -68,6 +68,11 @@ __all__ = [
     "_OPENAI_CLS_CACHE",
     "_set_interrupt",
     "_codex_derive_responses_function_call_id",
+    "base_url_host_matches",
+    "base_url_hostname",
+    "atomic_json_write",
+    "env_var_enabled",
+    "normalize_proxy_url",
     "logger",
 ]
 

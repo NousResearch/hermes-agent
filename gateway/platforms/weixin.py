@@ -414,17 +414,14 @@ async def _get_updates(
     sync_buf: str,
     timeout_ms: int,
 ) -> Dict[str, Any]:
-    try:
-        return await _api_post(
-            session,
-            base_url=base_url,
-            endpoint=EP_GET_UPDATES,
-            payload={"get_updates_buf": sync_buf},
-            token=token,
-            timeout_ms=timeout_ms,
-        )
-    except asyncio.TimeoutError:
-        return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}
+    return await _api_post(
+        session,
+        base_url=base_url,
+        endpoint=EP_GET_UPDATES,
+        payload={"get_updates_buf": sync_buf},
+        token=token,
+        timeout_ms=timeout_ms,
+    )
 
 
 async def _send_message(

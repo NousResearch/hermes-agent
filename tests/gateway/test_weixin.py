@@ -883,3 +883,22 @@ class TestWeixinContentDedup:
         assert adapter.handle_message.await_count == 0
         # is_duplicate should only be called for message_id, never for content
         assert all("content:" not in str(call) for call in adapter._dedup.is_duplicate.call_args_list)
+
+
+class TestWeixinTimeoutHandling:
+    """Regression test for Issue #23523: _get_updates should not swallow asyncio.TimeoutError."""
+    
+    @patch.object(weixin, "_api_post", new_callable=AsyncMock)
+    def test_get_updates_propagates_timeout_error(self, api_post_mock):
+        """_get_updates should raise asyncio.TimeoutError, not return empty success."""
+        api_post_mock.side_effect = asyncio.TimeoutError()
+        
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(weixin._get_updates(
+                session=None,
+                base_url="https://example.com",
+                token="test-token",
+                sync_buf="",
+                timeout_ms=35000,
+            ))
+

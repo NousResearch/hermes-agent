@@ -55,11 +55,14 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_AVAILABLE = True
 
-# The 7 tools allowed inside the sandbox. The intersection of this list
+# Tools allowed inside the sandbox. The intersection of this list
 # and the session's enabled tools determines which stubs are generated.
 SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_search",
     "web_extract",
+    "web_extract_find",
+    "browser_snapshot",
+    "browser_find",
     "read_file",
     "write_file",
     "search_files",
@@ -190,9 +193,27 @@ _TOOL_STUBS = {
     ),
     "web_extract": (
         "web_extract",
-        "urls: list",
-        '"""Extract content from URLs. Returns dict with results list of {url, title, content, error}."""',
-        '{"urls": urls}',
+        "urls: list, chunk_index: int = 0",
+        '"""Extract one source chunk from URLs. Returns dict with results including chunk_count and next_chunk."""',
+        '{"urls": urls, "chunk_index": chunk_index}',
+    ),
+    "web_extract_find": (
+        "web_extract_find",
+        "query: str, urls: list = None, max_results: int = 10, case_sensitive: bool = False, regex: bool = False, include_context: bool = True",
+        '"""Search cached web_extract source chunks. Returns matches and suggested web_extract follow-ups."""',
+        '{"query": query, "urls": urls, "max_results": max_results, "case_sensitive": case_sensitive, "regex": regex, "include_context": include_context}',
+    ),
+    "browser_snapshot": (
+        "browser_snapshot",
+        "full: bool = False, chunk_index: int = 0",
+        '"""Return one cached/accessibility snapshot chunk. Requires browser_navigate first."""',
+        '{"full": full, "chunk_index": chunk_index}',
+    ),
+    "browser_find": (
+        "browser_find",
+        "query: str, max_results: int = 10, case_sensitive: bool = False, regex: bool = False, include_context: bool = True",
+        '"""Search cached full browser snapshot chunks. Returns matches and suggested browser_snapshot follow-ups."""',
+        '{"query": query, "max_results": max_results, "case_sensitive": case_sensitive, "regex": regex, "include_context": include_context}',
     ),
     "read_file": (
         "read_file",
@@ -1650,8 +1671,17 @@ _TOOL_DOC_LINES = [
      "  web_search(query: str, limit: int = 5) -> dict\n"
      "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
     ("web_extract",
-     "  web_extract(urls: list[str]) -> dict\n"
-     "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown"),
+     "  web_extract(urls: list[str], chunk_index: int = 0) -> dict\n"
+     "    Returns one source chunk per URL with chunk_count/next_chunk metadata."),
+    ("web_extract_find",
+     "  web_extract_find(query: str, urls: list[str] | None = None, max_results: int = 10, case_sensitive: bool = False, regex: bool = False, include_context: bool = True) -> dict\n"
+     "    Searches cached web_extract source chunks and suggests web_extract follow-ups."),
+    ("browser_snapshot",
+     "  browser_snapshot(full: bool = False, chunk_index: int = 0) -> dict\n"
+     "    Returns one browser snapshot source chunk with chunk_count/next_chunk metadata."),
+    ("browser_find",
+     "  browser_find(query: str, max_results: int = 10, case_sensitive: bool = False, regex: bool = False, include_context: bool = True) -> dict\n"
+     "    Searches cached full browser snapshot source chunks and suggests browser_snapshot follow-ups."),
     ("read_file",
      "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),

@@ -28,10 +28,19 @@ class TestBrowserSecretExfil:
         parsed = json.loads(result)
         assert parsed["success"] is False
 
-    def test_allows_normal_url(self):
-        """Normal URLs pass the secret check (may fail for other reasons)."""
-        from tools.browser_tool import browser_navigate
-        result = browser_navigate("https://github.com/NousResearch/hermes-agent")
+    def test_allows_normal_url(self, monkeypatch):
+        """Normal URLs pass the secret check without starting a real browser."""
+        from tools import browser_tool
+
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(browser_tool, "_get_session_info", lambda task_id: {"_first_nav": False})
+        monkeypatch.setattr(
+            browser_tool,
+            "_run_browser_command",
+            lambda *args, **kwargs: {"success": False, "error": "browser unavailable"},
+        )
+
+        result = browser_tool.browser_navigate("https://github.com/NousResearch/hermes-agent")
         parsed = json.loads(result)
         # Should NOT be blocked by secret detection
         assert "API key or token" not in parsed.get("error", "")

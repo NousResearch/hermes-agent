@@ -68,8 +68,8 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     if not end_match:
         return frontmatter, body
 
-    yaml_content = content[3 : end_match.start() + 3]
-    body = content[end_match.end() + 3 :]
+    yaml_content = content[3 : end_match.start()]
+    body = content[end_match.end() :]
 
     try:
         parsed = yaml_load(yaml_content)
@@ -294,10 +294,10 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     if not isinstance(hermes, dict):
         hermes = {}
     return {
-        "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
-        "requires_toolsets": hermes.get("requires_toolsets", []),
-        "fallback_for_tools": hermes.get("fallback_for_tools", []),
-        "requires_tools": hermes.get("requires_tools", []),
+        "fallback_for_toolsets": hermes.get("fallback_for_toolsets") or [],
+        "requires_toolsets": hermes.get("requires_toolsets") or [],
+        "fallback_for_tools": hermes.get("fallback_for_tools") or [],
+        "requires_tools": hermes.get("requires_tools") or [],
     }
 
 

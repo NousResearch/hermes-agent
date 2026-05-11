@@ -2337,7 +2337,7 @@ class SessionDB:
                     "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
                     (cutoff,),
                 )
-            session_ids = set(row["id"] for row in cursor.fetchall())
+            session_ids = {row["id"] for row in cursor.fetchall()}
 
             if not session_ids:
                 return 0

@@ -60,7 +60,6 @@ def _make_mock_client():
         entities=None,
         tags=None,
         update_mode=None,
-        retain_async=None,
     ):
         return SimpleNamespace(ok=True)
 
@@ -77,7 +76,7 @@ def _make_mock_client():
     client.areflect = AsyncMock(
         return_value=SimpleNamespace(text="Synthesized answer")
     )
-    client.aretain_batch = AsyncMock()
+    client.aretain_batch = AsyncMock(return_value=SimpleNamespace(ok=True))
     client.aclose = AsyncMock()
     return client
 
@@ -519,14 +518,23 @@ class TestToolHandlers:
             "hindsight_retain", {"content": "user likes dark mode"}
         ))
         assert result["result"] == "Memory stored successfully."
+        provider._client.aretain.assert_not_called()
         provider._client.aretain_batch.assert_called_once()
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
         assert call_kwargs["bank_id"] == "test-bank"
+        assert call_kwargs["items"][0]["content"] == "user likes dark mode"
+        assert call_kwargs["retain_async"] is True
         item = call_kwargs["items"][0]
-        assert item["content"] == "user likes dark mode"
         # bank_id/retain_async are call-level args, never item keys.
         assert "bank_id" not in item
         assert "retain_async" not in item
+
+    def test_retain_tool_respects_sync_config(self, provider_with_config):
+        p = provider_with_config(retain_async=False)
+        p.handle_tool_call("hindsight_retain", {"content": "sync retain"})
+        p._client.aretain.assert_not_called()
+        call_kwargs = p._client.aretain_batch.call_args.kwargs
+        assert call_kwargs["retain_async"] is False
 
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])

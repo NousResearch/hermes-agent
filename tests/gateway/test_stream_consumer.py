@@ -939,6 +939,56 @@ class TestFinalResponseDeliveryGuard:
         assert consumer._final_response_sent is True
 
 
+class TestEditOverflowSplitAndDeliver:
+    """When edit_message split-and-delivers an oversized payload across the
+    original message + N continuations (Telegram >4096 UTF-16), the consumer
+    must update _message_id to the latest continuation, reset _last_sent_text,
+    and fire on_new_message so subsequent tool-progress bubbles linearize
+    below the new visible message."""
+
+    @pytest.mark.asyncio
+    async def test_consumer_advances_message_id_on_split_and_deliver(self):
+        adapter = MagicMock()
+        # Simulate edit_message split-and-deliver: success=True with the
+        # final continuation's id and a populated continuation_message_ids
+        # tuple (the new SendResult contract).
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True,
+            message_id="msg_continuation_2",
+            continuation_message_ids=("msg_continuation_1", "msg_continuation_2"),
+        ))
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_initial"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_999", config)
+
+        # Track on_new_message firings.
+        new_msg_count = [0]
+        consumer._on_new_message = lambda: new_msg_count.__setitem__(0, new_msg_count[0] + 1)
+
+        # Seed the consumer as if a first send succeeded already.
+        consumer._message_id = "msg_initial"
+        consumer._last_sent_text = "old"
+        consumer._already_sent = True
+
+        # Drive an edit that the adapter "split and delivers".
+        ok = await consumer._send_or_edit("new full text after overflow")
+
+        assert ok is True
+        # Consumer advanced to the latest continuation id.
+        assert consumer._message_id == "msg_continuation_2"
+        # Skip-if-same cache reset so the next edit doesn't false-positive.
+        assert consumer._last_sent_text == ""
+        # on_new_message fired so the tool-progress bubble breaks below
+        # the new continuation (per the openclaw #32535 lesson).
+        assert new_msg_count[0] == 1
+
+
 class TestInterimCommentaryMessages:
     @pytest.mark.asyncio
     async def test_commentary_message_stays_separate_from_final_stream(self):

@@ -14318,6 +14318,33 @@ class AIAgent:
 
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         messages.append(assistant_msg)
+
+                        # ── Autolycus P6: ContextWriter — пишем turn в raw-wiki ──
+                        try:
+                            from plugins.memory.context_writer import ContextWriter
+                            if not hasattr(self, '_context_writer'):
+                                self._context_writer = ContextWriter()
+                            # Извлекаем последний user-сообщение (без system prompt)
+                            user_msg = ""
+                            for m in reversed(messages[:-1]):
+                                if m.get("role") == "user" and "\nUser:\n" not in m.get("content", ""):
+                                    user_msg = m.get("content", "")[:1000]
+                                    break
+                            assistant_content = assistant_msg.get("content", "")[:2000]
+                            tools_data = []
+                            for tc in assistant_message.tool_calls:
+                                tools_data.append({"name": tc.function.name})
+                            self._context_writer.sync_turn(
+                                session_id=self.session_id or "default",
+                                turn_number=getattr(self, '_turn_counter', 0),
+                                user_msg=user_msg,
+                                assistant_msg=assistant_content,
+                                tools=tools_data,
+                            )
+                            self._turn_counter = getattr(self, '_turn_counter', 0) + 1
+                        except Exception:
+                            pass  # ContextWriter не должен ломать agent loop
+
                         for tc in assistant_message.tool_calls:
                             if tc.function.name not in self.valid_tool_names:
                                 content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"

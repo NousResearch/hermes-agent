@@ -1720,7 +1720,10 @@ def list_authenticated_providers(
             results.append({
                 "slug": slug,
                 "name": grp["name"],
-                "is_current": slug == current_provider,
+                "is_current": slug == current_provider or (
+                    bool(current_base_url)
+                    and _grp_url_norm == current_base_url.strip().rstrip("/").lower()
+                ),
                 "is_user_defined": True,
                 "models": grp["models"],
                 "total_models": len(grp["models"]),

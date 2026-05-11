@@ -107,7 +107,7 @@ Check:
 | Broad video compatibility | MP4 container, H.264 video, AAC audio |
 | Small video preview | MP4, H.264, lower resolution/CRF |
 | Audio attachment | MP3 or M4A |
-| Voice-style audio | OGG/Opus when the platform supports voice bubbles |
+| Voice-message audio | OGG container, Opus audio |
 | Animated preview | GIF for short loops, MP4 for smaller size |
 | Image preview | JPG for photos, PNG for screenshots/diagrams |
 | Documents | Leave as original document type unless platform rejects it |
@@ -180,6 +180,15 @@ ffmpeg -y -i input.mp3 \
 
 Use for voice notes, podcasts, meeting clips, and generated TTS that is too loud
 or quiet.
+
+### Convert WAV/MP3 to OGG Opus for Voice Messages
+
+```bash
+ffmpeg -y -i input.wav -c:a libopus -b:a 32k -vbr on output.ogg
+```
+
+Use this for spoken voice notes and Telegram-style voice bubbles. For music,
+prefer MP3/M4A or use a higher Opus bitrate.
 
 ### Create a Thumbnail
 

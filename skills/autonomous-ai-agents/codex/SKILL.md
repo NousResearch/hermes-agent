@@ -97,7 +97,11 @@ terminal(command="codex --yolo exec 'Fix issue #99: <description>. Commit when d
 # Monitor
 process(action="list")
 
-# After completion, push and create PRs
+# After completion, verify the target repo is the right home, then push/create PRs.
+# Do not PR Revenue Lab, Aligned Insights, private strategy, sample deliverables,
+# or private Linear business tickets to public infrastructure repos. In repos that
+# include it, run scripts/check_private_deliverable_public_repo.py before gh pr create.
+terminal(command="cd /tmp/issue-78 && python3 scripts/check_private_deliverable_public_repo.py --text 'fix issue #78' || exit 1")
 terminal(command="cd /tmp/issue-78 && git push -u origin fix/issue-78")
 terminal(command="gh pr create --repo user/repo --head fix/issue-78 --title 'fix: ...' --body '...'")
 

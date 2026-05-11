@@ -103,6 +103,21 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `chore`, `perf`
 
 ## 3. Pushing and Creating a PR
 
+### Public-repo private-deliverable guardrail
+
+Before opening a PR, confirm the target repository is the right home for the work. Do **not** put Ryan/private business artifacts in public infrastructure repos. Revenue Lab, Aligned Insights, private Life Church strategy, sample deliverables, and private Linear business tickets belong in Ryan's private workspace/local vault or a dedicated private repo, not in public repos such as `NousResearch/hermes-agent`.
+
+Run the bundled pre-PR sanity check from the repo root when the branch may contain business/private deliverables:
+
+```bash
+python3 scripts/check_private_deliverable_public_repo.py \
+  --text "$(git log -1 --pretty=%B)" \
+  --text "${PR_TITLE:-}" \
+  --text "${PR_BODY:-}"
+```
+
+If it blocks, stop and reroute the work instead of creating the PR. The corrected local home for RAN-1381 sample artifacts is `/Users/cogginsryan/Documents/Revenue Lab/sample-deliverables/RAN-1381/`.
+
 ### Push the Branch (same either way)
 
 ```bash

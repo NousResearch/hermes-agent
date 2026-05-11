@@ -72,6 +72,21 @@ Each team has its own named states (e.g., "In Progress" is type `started`). To c
 
 **Priority values:** 0 = None, 1 = Urgent, 2 = High, 3 = Medium, 4 = Low
 
+## Private/business artifact routing guardrail
+
+Linear can describe private business work that should not become a public GitHub PR. Before routing a Linear issue into coding/PR automation, check whether the deliverable mentions Revenue Lab, Aligned Insights, private Life Church strategy, sample deliverables, private business strategy, or private Linear business tickets. Those artifacts must go to Ryan's private workspace/local vault or a dedicated private repo, not public infrastructure/tooling repos such as `NousResearch/hermes-agent`.
+
+If a coding branch may contain those artifacts and the target repo includes the bundled guard script, run this before `gh pr create`:
+
+```bash
+python3 scripts/check_private_deliverable_public_repo.py \
+  --text "$LINEAR_ISSUE_ID $LINEAR_ISSUE_TITLE" \
+  --text "${PR_TITLE:-}" \
+  --text "${PR_BODY:-}"
+```
+
+If the check blocks, stop and reroute the artifact instead of opening the PR. The corrected local home for RAN-1381 sample deliverables is `/Users/cogginsryan/Documents/Revenue Lab/sample-deliverables/RAN-1381/`.
+
 ## Common Queries
 
 ### Get current user

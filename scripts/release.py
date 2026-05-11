@@ -65,6 +65,8 @@ AUTHOR_MAP = {
     "aubrey@freeman-wisco.com": "Freeman-Consulting",
     "don.rhm@gmail.com": "rahimsais",
     "40222899+rahimsais@users.noreply.github.com": "rahimsais",
+    "alfred@Alfreds-Mac-mini.local": "NivOO5",
+    "231191380+NivOO5@users.noreply.github.com": "NivOO5",
     "ra2157218@gmail.com": "Abd0r",
     "abdielv@proton.me": "AJV20",
     "mason@growagainorchids.com": "masonjames",

@@ -5,9 +5,24 @@ thundering-herd retry spikes when multiple sessions hit the same
 rate-limited provider concurrently.
 """
 
+import os
 import random
 import threading
 import time
+
+
+def _env_float(name: str, default: float) -> float:
+    val = os.environ.get(name)
+    if val is not None:
+        try:
+            return float(val)
+        except ValueError:
+            pass
+    return default
+
+
+_RETRY_BASE_DELAY = _env_float("HERMES_RETRY_BASE_DELAY", 5.0)
+_RETRY_MAX_DELAY = _env_float("HERMES_RETRY_MAX_DELAY", 120.0)
 
 # Monotonic counter for jitter seed uniqueness within the same process.
 # Protected by a lock to avoid race conditions in concurrent retry paths
@@ -19,8 +34,8 @@ _jitter_lock = threading.Lock()
 def jittered_backoff(
     attempt: int,
     *,
-    base_delay: float = 5.0,
-    max_delay: float = 120.0,
+    base_delay: float | None = None,
+    max_delay: float | None = None,
     jitter_ratio: float = 0.5,
 ) -> float:
     """Compute a jittered exponential backoff delay.
@@ -38,6 +53,11 @@ def jittered_backoff(
     The jitter decorrelates concurrent retries so multiple sessions
     hitting the same provider don't all retry at the same instant.
     """
+    if base_delay is None:
+        base_delay = _RETRY_BASE_DELAY
+    if max_delay is None:
+        max_delay = _RETRY_MAX_DELAY
+
     global _jitter_counter
     with _jitter_lock:
         _jitter_counter += 1

@@ -30,3 +30,19 @@ class TestSignalTimeouts:
         os.environ.pop("HERMES_SIGNAL_HEALTH_TIMEOUT", None)
         from gateway.platforms.signal import _SIGNAL_HEALTH_TIMEOUT
         assert _SIGNAL_HEALTH_TIMEOUT == 10.0
+
+
+class TestRetryBackoff:
+    def test_default_base_delay(self):
+        os.environ.pop("HERMES_RETRY_BASE_DELAY", None)
+        import importlib
+        import agent.retry_utils as ru
+        importlib.reload(ru)
+        assert ru._RETRY_BASE_DELAY == 5.0
+
+    def test_default_max_delay(self):
+        os.environ.pop("HERMES_RETRY_MAX_DELAY", None)
+        import importlib
+        import agent.retry_utils as ru
+        importlib.reload(ru)
+        assert ru._RETRY_MAX_DELAY == 120.0

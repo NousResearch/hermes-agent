@@ -44,12 +44,20 @@ from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
-# /usage; we still import it at module top in the gateway because test
-# patches (tests/gateway/test_usage_command.py) target
+# /usage and /account. It stays at module top because tests patch
 # `gateway.run.fetch_account_usage` as a module-level attribute. The
 # gateway is a long-running daemon, so its boot cost matters less than
 # preserving the established test-patch surface.
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from agent.account_usage import (
+    active_provider_account_index,
+    fetch_account_usage,
+    fetch_provider_account_usages,
+    list_account_provider_choices,
+    render_account_usage_lines,
+    render_provider_account_usage_lines,
+    safe_display_text,
+    select_provider_account,
+)
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 
@@ -6413,6 +6421,9 @@ class GatewayRunner:
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
+        if canonical == "account":
+            return await self._handle_account_command(event)
+
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
@@ -11694,6 +11705,467 @@ class GatewayRunner:
         if account_lines:
             return "\n".join(account_lines)
         return t("gateway.usage.no_data")
+
+
+    async def _handle_account_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /account -- choose a provider, then show every account in it."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        # Try running agent first (mid-turn), then cached agent (between turns)
+        agent = self._running_agents.get(session_key)
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    cached = _cache.get(session_key)
+                    if cached:
+                        agent = cached[0]
+
+        active_provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+
+        if not active_provider and getattr(self, "_session_db", None) is not None:
+            try:
+                _entry = self.session_store.get_or_create_session(source)
+                persisted = self._session_db.get_session(_entry.session_id) or {}
+            except Exception:
+                persisted = {}
+            active_provider = active_provider or persisted.get("billing_provider")
+
+        try:
+            raw_args = event.get_command_args().strip()
+        except Exception:
+            raw_args = ""
+        provider_choices = [
+            {
+                "slug": choice.slug,
+                "name": choice.name,
+                "account_count": choice.account_count,
+                "is_current": choice.is_current,
+            }
+            for choice in list_account_provider_choices(active_provider=active_provider)
+        ]
+        providers = [choice["slug"] for choice in provider_choices]
+        selected_provider = ""
+        account_target = ""
+        tokens = raw_args.split() if raw_args else []
+        if tokens:
+            first_arg = tokens[0].strip().lower()
+            remaining_args = tokens[1:]
+            if first_arg.isdigit() and providers and len(providers) > 1:
+                idx = int(first_arg)
+                if 1 <= idx <= len(providers):
+                    selected_provider = providers[idx - 1]
+                else:
+                    selected_provider = first_arg
+            elif first_arg in providers:
+                selected_provider = first_arg
+            elif len(providers) == 1:
+                selected_provider = providers[0]
+                account_target = first_arg
+            else:
+                selected_provider = first_arg
+            if remaining_args:
+                account_target = remaining_args[0].strip()
+        elif provider_choices:
+            adapter = getattr(self, "adapters", {}).get(source.platform)
+            has_picker = (
+                adapter is not None
+                and getattr(type(adapter), "send_account_picker", None) is not None
+            )
+            if has_picker:
+                _agent = agent
+
+                def _active_pool_for(provider_slug: str):
+                    if not _agent or _agent is _AGENT_PENDING_SENTINEL:
+                        return None
+                    agent_provider = str(getattr(_agent, "provider", "") or "").strip().lower()
+                    if agent_provider != str(provider_slug or "").strip().lower():
+                        return None
+                    return getattr(_agent, "_credential_pool", None)
+
+                async def _on_account_provider_selected(_chat_id: str, provider_slug: str):
+                    results = await asyncio.to_thread(fetch_provider_account_usages, provider_slug)
+                    active_pool = _active_pool_for(provider_slug)
+                    active_index = active_provider_account_index(provider_slug, pool=active_pool)
+                    return results, active_index
+
+                async def _on_account_selected(_chat_id: str, provider_slug: str, account_target: str) -> str:
+                    active_pool = _active_pool_for(provider_slug)
+                    selected_index, selected_entry, select_error = await asyncio.to_thread(
+                        select_provider_account,
+                        provider_slug,
+                        account_target,
+                        pool=active_pool,
+                    )
+                    if select_error:
+                        return f"Could not switch account: {select_error}"
+                    if selected_entry is not None and active_pool is not None and _agent and hasattr(_agent, "_swap_credential"):
+                        try:
+                            _agent._swap_credential(selected_entry)
+                        except Exception as exc:
+                            return f"Selected account, but could not apply it to this running session: {type(exc).__name__}"
+                    active_index = active_provider_account_index(provider_slug, pool=active_pool)
+                    if active_index is None and selected_index is not None:
+                        active_index = selected_index
+                    try:
+                        account_results = await asyncio.to_thread(fetch_provider_account_usages, provider_slug)
+                    except Exception:
+                        account_results = []
+                    label = safe_display_text(
+                        getattr(selected_entry, "label", None) or getattr(selected_entry, "id", None) or account_target,
+                        fallback="account",
+                        max_len=80,
+                        markdown=True,
+                    )
+                    lines = [f"✅ Switched account: {label}", ""]
+                    followup = await self._account_model_followup(source, session_key, provider_slug, adapter)
+                    if followup:
+                        lines.extend([followup, ""])
+                    account_lines = render_provider_account_usage_lines(
+                        provider_slug,
+                        account_results,
+                        markdown=True,
+                        active_index=active_index,
+                        select_hint=f"/account {provider_slug} <number>",
+                    )
+                    lines.extend(account_lines or [f"(no account usage data available for {provider_slug})"])
+                    return "\n".join(lines)
+
+                metadata = {"thread_id": source.thread_id} if source.thread_id else None
+                picker_result = await adapter.send_account_picker(
+                    chat_id=source.chat_id,
+                    providers=provider_choices,
+                    current_provider=active_provider or "",
+                    session_key=session_key,
+                    on_provider_selected=_on_account_provider_selected,
+                    on_account_selected=_on_account_selected,
+                    metadata=metadata,
+                )
+                if picker_result.success:
+                    return None
+
+            lines = [
+                "🔐 **Hermes Account Picker**",
+                "Select a credential provider:",
+                "",
+            ]
+            for idx, provider_data in enumerate(provider_choices, start=1):
+                count = provider_data.get("account_count", 0)
+                plural = "s" if count != 1 else ""
+                marker = " — current" if provider_data.get("is_current") else ""
+                name = safe_display_text(provider_data.get("name") or provider_data.get("slug"), fallback="Provider", markdown=True)
+                slug = safe_display_text(provider_data.get("slug"), fallback="provider", markdown=True)
+                lines.append(f"[{idx}] **{name}** · {count} account{plural}{marker}")
+                lines.append(f"    `/account {slug}`")
+            lines.append("")
+            lines.append("Tip: send `/account <provider> <number>` to switch directly.")
+            return "\n".join(lines)
+
+        if not selected_provider:
+            return "No account providers found. Add credentials with `hermes auth add` first."
+
+        active_pool = None
+        if agent and agent is not _AGENT_PENDING_SENTINEL:
+            agent_provider = str(getattr(agent, "provider", "") or "").strip().lower()
+            if agent_provider == selected_provider:
+                active_pool = getattr(agent, "_credential_pool", None)
+
+        switched_line = ""
+        model_followup_line = ""
+        selected_index: Optional[int] = None
+        if account_target:
+            selected_index, selected_entry, select_error = await asyncio.to_thread(
+                select_provider_account,
+                selected_provider,
+                account_target,
+                pool=active_pool,
+            )
+            if select_error:
+                return f"Could not switch account: {select_error}"
+            if selected_entry is not None and active_pool is not None and agent and hasattr(agent, "_swap_credential"):
+                try:
+                    agent._swap_credential(selected_entry)
+                except Exception as exc:
+                    return f"Selected account, but could not apply it to this running session: {type(exc).__name__}"
+            label = safe_display_text(
+                getattr(selected_entry, "label", None) or getattr(selected_entry, "id", None) or account_target,
+                fallback="account",
+                max_len=80,
+                markdown=True,
+            )
+            switched_line = f"✅ Switched account: {label}"
+            adapter_for_followup = getattr(self, "adapters", {}).get(source.platform)
+            model_followup_line = await self._account_model_followup(
+                source,
+                session_key,
+                selected_provider,
+                adapter_for_followup,
+            )
+
+        active_index = active_provider_account_index(selected_provider, pool=active_pool)
+        if active_index is None and selected_index is not None:
+            active_index = selected_index
+
+        try:
+            account_results = await asyncio.to_thread(
+                fetch_provider_account_usages,
+                selected_provider,
+            )
+        except Exception:
+            account_results = []
+        account_lines = render_provider_account_usage_lines(
+            selected_provider,
+            account_results,
+            markdown=True,
+            active_index=active_index,
+            select_hint=f"/account {selected_provider} <number>",
+        )
+
+        lines: list[str] = []
+        if switched_line:
+            lines.append(switched_line)
+            lines.append("")
+        if model_followup_line:
+            lines.append(model_followup_line)
+            lines.append("")
+        if account_lines:
+            lines.extend(account_lines)
+        else:
+            lines.append(f"(no account usage data available for {selected_provider})")
+
+        # Preserve the recent API-call rate-limit hint for the active account.
+        if agent and hasattr(agent, "get_rate_limit_state"):
+            rl_state = agent.get_rate_limit_state()
+            if rl_state and getattr(rl_state, "has_data", False) is True:
+                from agent.rate_limit_tracker import format_rate_limit_compact
+                lines.append("")
+                lines.append(f"⏱️ **Active-session rate limits:** {format_rate_limit_compact(rl_state)}")
+
+        return "\n".join(lines) if lines else "No account data available."
+
+    def _gateway_model_switch_context(self, source: Any, session_key: str) -> dict:
+        """Return current model/provider context for account→model follow-up flows."""
+        current_model = ""
+        current_provider = "openrouter"
+        current_base_url = ""
+        current_api_key = ""
+        user_provs = None
+        custom_provs = None
+        try:
+            cfg = _load_gateway_config()
+            model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+            if isinstance(model_cfg, dict):
+                current_model = model_cfg.get("default", "")
+                current_provider = model_cfg.get("provider", current_provider)
+                current_base_url = model_cfg.get("base_url", "")
+            if isinstance(cfg, dict):
+                user_provs = cfg.get("providers")
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers
+                    custom_provs = get_compatible_custom_providers(cfg)
+                except Exception:
+                    custom_provs = cfg.get("custom_providers")
+        except Exception:
+            pass
+        try:
+            override = getattr(self, "_session_model_overrides", {}).get(session_key, {})
+        except Exception:
+            override = {}
+        if override:
+            current_model = override.get("model", current_model)
+            current_provider = override.get("provider", current_provider)
+            current_base_url = override.get("base_url", current_base_url)
+            current_api_key = override.get("api_key", current_api_key)
+        return {
+            "current_model": current_model,
+            "current_provider": current_provider,
+            "current_base_url": current_base_url,
+            "current_api_key": current_api_key,
+            "user_providers": user_provs,
+            "custom_providers": custom_provs,
+        }
+
+    def _apply_gateway_model_switch_result(self, session_key: str, current_model: str, result: Any) -> None:
+        """Apply a ModelSwitchResult to gateway cache/overrides."""
+        cached_entry = None
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache_lock and _cache is not None:
+            with _cache_lock:
+                cached_entry = _cache.get(session_key)
+        elif _cache is not None:
+            cached_entry = _cache.get(session_key)
+        if cached_entry and cached_entry[0] is not None:
+            try:
+                cached_entry[0].switch_model(
+                    new_model=result.new_model,
+                    new_provider=result.target_provider,
+                    api_key=result.api_key,
+                    base_url=result.base_url,
+                    api_mode=result.api_mode,
+                )
+            except Exception as exc:
+                logger.warning("Account follow-up model switch failed for cached agent: %s", exc)
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+        self._pending_model_notes[session_key] = (
+            f"[Note: model was just switched from {current_model} to {result.new_model} "
+            f"via {result.provider_label or result.target_provider}. "
+            f"Adjust your self-identification accordingly.]"
+        )
+        if not hasattr(self, "_session_model_overrides"):
+            self._session_model_overrides = {}
+        self._session_model_overrides[session_key] = {
+            "model": result.new_model,
+            "provider": result.target_provider,
+            "api_key": result.api_key,
+            "base_url": result.base_url,
+            "api_mode": result.api_mode,
+        }
+        try:
+            self._evict_cached_agent(session_key)
+        except Exception:
+            pass
+
+    async def _account_model_followup(
+        self,
+        source: Any,
+        session_key: str,
+        provider_slug: str,
+        adapter: Any = None,
+    ) -> str:
+        """After account selection, keep the model if valid or ask for a compatible one."""
+        provider_slug = str(provider_slug or "").strip().lower()
+        if not provider_slug:
+            return ""
+        ctx = self._gateway_model_switch_context(source, session_key)
+        current_model = ctx["current_model"]
+        current_provider = str(ctx["current_provider"] or "").strip().lower()
+        if provider_slug == current_provider:
+            return ""
+
+        try:
+            from hermes_cli.model_switch import switch_model, list_authenticated_providers
+            from hermes_cli.providers import get_label
+        except Exception:
+            return f"⚙ Account provider changed to `{provider_slug}`. Use `/model` to choose a compatible model."
+
+        if current_model:
+            try:
+                result = switch_model(
+                    raw_input=current_model,
+                    current_provider=ctx["current_provider"] or "",
+                    current_model=current_model,
+                    current_base_url=ctx["current_base_url"] or "",
+                    current_api_key=ctx["current_api_key"] or "",
+                    is_global=False,
+                    explicit_provider=provider_slug,
+                    user_providers=ctx["user_providers"],
+                    custom_providers=ctx["custom_providers"],
+                )
+            except Exception:
+                result = None
+            if result is not None and result.success:
+                self._apply_gateway_model_switch_result(session_key, current_model, result)
+                return (
+                    f"⚙ Current model `{result.new_model}` is available on "
+                    f"{result.provider_label or result.target_provider}; continuing with it."
+                )
+
+        try:
+            providers = list_authenticated_providers(
+                current_provider=provider_slug,
+                current_base_url=ctx["current_base_url"] or "",
+                current_model=current_model or "",
+                user_providers=ctx["user_providers"],
+                custom_providers=ctx["custom_providers"],
+                max_models=50,
+            )
+        except Exception:
+            providers = []
+        provider_data = next(
+            (p for p in providers if str(p.get("slug", "")).lower() == provider_slug),
+            None,
+        )
+        if provider_data is None:
+            try:
+                from hermes_cli.models import provider_model_ids
+                models = provider_model_ids(provider_slug)[:50]
+            except Exception:
+                models = []
+            provider_data = {
+                "slug": provider_slug,
+                "name": get_label(provider_slug),
+                "is_current": True,
+                "models": models,
+                "total_models": len(models),
+                "source": "fallback",
+            }
+            providers = [provider_data]
+
+        has_picker = (
+            adapter is not None
+            and getattr(type(adapter), "send_model_picker", None) is not None
+            and bool(provider_data.get("models"))
+        )
+        if has_picker:
+            async def _on_model_selected(_chat_id: str, model_id: str, selected_provider: str) -> str:
+                result = switch_model(
+                    raw_input=model_id,
+                    current_provider=ctx["current_provider"] or "",
+                    current_model=current_model or "",
+                    current_base_url=ctx["current_base_url"] or "",
+                    current_api_key=ctx["current_api_key"] or "",
+                    is_global=False,
+                    explicit_provider=selected_provider,
+                    user_providers=ctx["user_providers"],
+                    custom_providers=ctx["custom_providers"],
+                )
+                if not result.success:
+                    return f"Error: {result.error_message}"
+                self._apply_gateway_model_switch_result(session_key, current_model, result)
+                return (
+                    f"Model switched to `{result.new_model}`\n"
+                    f"Provider: {result.provider_label or result.target_provider}\n"
+                    "_(session only — use `/model <name> --global` to persist)_"
+                )
+
+            metadata = {"initial_provider": provider_slug}
+            if source.thread_id:
+                metadata["thread_id"] = source.thread_id
+            try:
+                picker_result = await adapter.send_model_picker(
+                    chat_id=source.chat_id,
+                    providers=providers,
+                    current_model=current_model or "unknown",
+                    current_provider=provider_slug,
+                    session_key=session_key,
+                    on_model_selected=_on_model_selected,
+                    metadata=metadata,
+                )
+            except Exception:
+                picker_result = None
+            if picker_result is not None and getattr(picker_result, "success", False):
+                return (
+                    f"⚙ Current model `{current_model or 'unknown'}` is not available on `{provider_slug}`.\n"
+                    "I opened the model picker so you can choose a compatible model."
+                )
+
+        models = provider_data.get("models", []) or []
+        if models:
+            preview = ", ".join(f"`{m}`" for m in models[:5])
+            more = f" (+{len(models) - 5} more)" if len(models) > 5 else ""
+            return (
+                f"⚙ Current model `{current_model or 'unknown'}` is not available on `{provider_slug}`.\n"
+                f"Choose a compatible model with `/model <name> --provider {provider_slug}`.\n"
+                f"Suggested: {preview}{more}"
+            )
+        return (
+            f"⚙ Current model `{current_model or 'unknown'}` is not available on `{provider_slug}`.\n"
+            f"Use `/model --provider {provider_slug}` or `/model` to choose a compatible model."
+        )
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""

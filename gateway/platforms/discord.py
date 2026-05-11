@@ -3921,6 +3921,38 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception:
                 provider_label = current_provider
 
+            initial_provider = (metadata or {}).get("initial_provider")
+            if initial_provider:
+                provider = next(
+                    (p for p in providers if p.get("slug") == initial_provider),
+                    None,
+                )
+                if provider:
+                    view = ModelPickerView(
+                        providers=providers,
+                        current_model=current_model,
+                        current_provider=current_provider,
+                        session_key=session_key,
+                        on_model_selected=on_model_selected,
+                        allowed_user_ids=self._allowed_user_ids,
+                        allowed_role_ids=self._allowed_role_ids,
+                    )
+                    view._selected_provider = initial_provider
+                    view._build_model_select(initial_provider)
+                    total = provider.get("total_models", len(provider.get("models", [])))
+                    shown = min(len(provider.get("models", [])), 25)
+                    extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
+                    embed = discord.Embed(
+                        title="⚙ Model Configuration",
+                        description=(
+                            f"Provider: **{provider.get('name', initial_provider)}**\n"
+                            f"Select a model:{extra}"
+                        ),
+                        color=discord.Color.blue(),
+                    )
+                    msg = await channel.send(embed=embed, view=view)
+                    return SendResult(success=True, message_id=str(msg.id))
+
             embed = discord.Embed(
                 title="⚙ Model Configuration",
                 description=(
@@ -3946,6 +3978,55 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except Exception as e:
             logger.warning("[%s] send_model_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_account_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_provider: str,
+        session_key: str,
+        on_provider_selected,
+        on_account_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive select-menu account/API-key picker."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            embed = discord.Embed(
+                title="🔐 Hermes Account Picker",
+                description=(
+                    f"Current provider: `{current_provider or 'unknown'}`\n\n"
+                    "Select a credential provider:"
+                ),
+                color=discord.Color.gold(),
+            )
+
+            view = AccountPickerView(
+                providers=providers,
+                current_provider=current_provider,
+                session_key=session_key,
+                on_provider_selected=on_provider_selected,
+                on_account_selected=on_account_selected,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+
+            msg = await channel.send(embed=embed, view=view)
+            return SendResult(success=True, message_id=str(msg.id))
+
+        except Exception as e:
+            logger.warning("[%s] send_account_picker failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
     def _get_parent_channel_id(self, channel: Any) -> Optional[str]:
@@ -5067,6 +5148,301 @@ if DISCORD_AVAILABLE:
                 embed=discord.Embed(
                     title="⚙ Model Configuration",
                     description="Model selection cancelled.",
+                    color=discord.Color.greyple(),
+                ),
+                view=self,
+            )
+
+        async def on_timeout(self):
+            self.resolved = True
+            self.clear_items()
+
+
+    class AccountPickerView(discord.ui.View):
+        """Interactive select-menu view for account/API-key switching.
+
+        Mirrors ``ModelPickerView``: provider dropdown → account dropdown,
+        then persists the selected credential through the gateway callback.
+        """
+
+        def __init__(
+            self,
+            providers: list,
+            current_provider: str,
+            session_key: str,
+            on_provider_selected,
+            on_account_selected,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=120)
+            self.providers = providers
+            self.current_provider = current_provider
+            self.session_key = session_key
+            self.on_provider_selected = on_provider_selected
+            self.on_account_selected = on_account_selected
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+            self._selected_provider: str = ""
+            self._selected_provider_name: str = ""
+            self._account_results: list = []
+            self._active_index: Optional[int] = None
+
+            self._build_provider_select()
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
+
+        def _provider_name(self, provider_slug: str) -> str:
+            provider = next(
+                (p for p in self.providers if p.get("slug") == provider_slug), None
+            )
+            return provider.get("name", provider_slug) if provider else provider_slug
+
+        def _build_provider_select(self):
+            self.clear_items()
+            options = []
+            for p in self.providers[:25]:
+                count = p.get("account_count", 0)
+                plural = "s" if count != 1 else ""
+                desc = "current provider" if p.get("is_current") else f"{count} account{plural}"
+                try:
+                    from agent.account_usage import safe_display_text
+                    provider_name = safe_display_text(p.get("name", p.get("slug", "Provider")), fallback="Provider", max_len=84)
+                    provider_value = safe_display_text(p.get("slug", ""), fallback="provider", max_len=100)
+                except Exception:
+                    provider_name = str(p.get("name", p.get("slug", "Provider")))[:84]
+                    provider_value = str(p.get("slug", ""))[:100]
+                options.append(
+                    discord.SelectOption(
+                        label=f"{provider_name} ({count})"[:100],
+                        value=provider_value,
+                        description=desc[:100],
+                    )
+                )
+            if not options:
+                return
+
+            select = discord.ui.Select(
+                placeholder="Choose a credential provider...",
+                options=options,
+                custom_id="account_provider_select",
+            )
+            select.callback = self._on_provider_selected
+            self.add_item(select)
+
+            cancel_btn = discord.ui.Button(
+                label="Cancel", style=discord.ButtonStyle.red, custom_id="account_cancel"
+            )
+            cancel_btn.callback = self._on_cancel
+            self.add_item(cancel_btn)
+
+        @staticmethod
+        def _account_option_parts(result: Any, active: bool = False) -> tuple[str, str]:
+            try:
+                from agent.account_usage import discord_account_option_parts
+
+                return discord_account_option_parts(result, active=active)
+            except Exception:
+                label = getattr(result, "label", None) or f"account-{getattr(result, 'index', '?')}"
+                status = getattr(result, "status", None) or "unknown"
+                prefix = "✓ " if active else ""
+                return f"{prefix}{label} · {status}"[:100], str(status)[:100]
+
+        def _build_account_select(self):
+            self.clear_items()
+            options = []
+            for result in self._account_results[:25]:
+                idx = getattr(result, "index", len(options) + 1)
+                active = self._active_index is not None and idx == self._active_index
+                label, desc = self._account_option_parts(result, active=active)
+                options.append(
+                    discord.SelectOption(
+                        label=label,
+                        value=str(idx),
+                        description=desc,
+                    )
+                )
+            if options:
+                select = discord.ui.Select(
+                    placeholder=f"Choose an account from {self._selected_provider_name or self._selected_provider}...",
+                    options=options,
+                    custom_id="account_account_select",
+                )
+                select.callback = self._on_account_selected
+                self.add_item(select)
+
+            back_btn = discord.ui.Button(
+                label="◀ Back", style=discord.ButtonStyle.grey, custom_id="account_back"
+            )
+            back_btn.callback = self._on_back
+            self.add_item(back_btn)
+
+            cancel_btn = discord.ui.Button(
+                label="Cancel", style=discord.ButtonStyle.red, custom_id="account_cancel2"
+            )
+            cancel_btn.callback = self._on_cancel
+            self.add_item(cancel_btn)
+
+        async def _on_provider_selected(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+
+            provider_slug = interaction.data["values"][0]
+            self._selected_provider = provider_slug
+            self._selected_provider_name = self._provider_name(provider_slug)
+
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="🔐 Loading Accounts",
+                    description=(
+                        f"✦ Fetching account limits for **{self._selected_provider_name}**...\n"
+                        "`◇◇◆◇◇◇◇◇◇◇◇◇◇◇`\n"
+                        "Preparing the account selection screen."
+                    ),
+                    color=discord.Color.gold(),
+                ),
+                view=None,
+            )
+
+            try:
+                account_results, active_index = await self.on_provider_selected(
+                    str(interaction.channel_id), provider_slug
+                )
+            except Exception as exc:
+                await interaction.edit_original_response(
+                    embed=discord.Embed(
+                        title="🔐 Account Picker",
+                        description=f"Could not load accounts: {exc}",
+                        color=discord.Color.red(),
+                    ),
+                    view=None,
+                )
+                return
+
+            self._account_results = account_results or []
+            self._active_index = active_index
+            self._build_account_select()
+
+            total = len(self._account_results)
+            shown = min(total, 25)
+            extra = f"\n*{total - shown} more available — type `/account {provider_slug} <number>` directly*" if total > shown else ""
+            if total:
+                try:
+                    from agent.account_usage import render_provider_account_usage_lines, safe_display_text
+
+                    detail_lines = render_provider_account_usage_lines(
+                        provider_slug,
+                        self._account_results,
+                        active_index=active_index,
+                        select_hint=f"/account {provider_slug} <number>",
+                    )
+                    detail = "\n".join(
+                        safe_display_text(line, fallback="", max_len=260)
+                        for line in detail_lines[:35]
+                    )
+                    desc = f"Provider: **{safe_display_text(self._selected_provider_name, fallback=provider_slug, max_len=80)}**\nSelect an account/API key:{extra}\n\n{detail}"
+                except Exception:
+                    desc = f"Provider: **{self._selected_provider_name}**\nSelect an account/API key:{extra}"
+            else:
+                desc = f"Provider: **{self._selected_provider_name}**\nNo accounts were found for this provider."
+            if len(desc) > 4096:
+                desc = desc[:4093] + "..."
+
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="🔐 Hermes Account Picker",
+                    description=desc,
+                    color=discord.Color.gold(),
+                ),
+                view=self,
+            )
+
+        async def _on_account_selected(self, interaction: discord.Interaction):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "Already resolved~", ephemeral=True
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+
+            self.resolved = True
+            account_index = interaction.data["values"][0]
+            self.clear_items()
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="🔐 Switching Account",
+                    description=f"Switching **{self._selected_provider_name or self._selected_provider}** account `{account_index}`...",
+                    color=discord.Color.gold(),
+                ),
+                view=None,
+            )
+
+            try:
+                result_text = await self.on_account_selected(
+                    str(interaction.channel_id),
+                    self._selected_provider,
+                    account_index,
+                )
+            except Exception as exc:
+                result_text = f"Error switching account: {exc}"
+
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="🔐 Account Switched",
+                    description=result_text,
+                    color=discord.Color.green(),
+                ),
+                view=None,
+            )
+
+        async def _on_back(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+
+            self._selected_provider = ""
+            self._selected_provider_name = ""
+            self._account_results = []
+            self._active_index = None
+            self._build_provider_select()
+
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="🔐 Hermes Account Picker",
+                    description=(
+                        f"Current provider: `{self.current_provider or 'unknown'}`\n\n"
+                        "Select a credential provider:"
+                    ),
+                    color=discord.Color.gold(),
+                ),
+                view=self,
+            )
+
+        async def _on_cancel(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+            self.resolved = True
+            self.clear_items()
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="🔐 Hermes Account Picker",
+                    description="Account selection cancelled.",
                     color=discord.Color.greyple(),
                 ),
                 view=self,

@@ -2559,6 +2559,7 @@ class HermesCLI:
         self._approval_deadline = 0
         self._approval_lock = threading.Lock()
         self._model_picker_state = None
+        self._account_picker_state = None
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
@@ -3028,7 +3029,7 @@ class HermesCLI:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
-        if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
+        if not self._status_bar_visible or getattr(self, '_model_picker_state', None) or getattr(self, '_account_picker_state', None):
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
@@ -6079,6 +6080,305 @@ class HermesCLI:
         self._restore_modal_input_snapshot()
         self._invalidate(min_interval=0.0)
 
+    def _open_account_picker(self, providers, current_provider: Optional[str] = None) -> None:
+        """Open prompt_toolkit-native /account picker modal."""
+        self._capture_modal_input_snapshot()
+        default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
+        self._account_picker_state = {
+            "stage": "provider",
+            "providers": providers,
+            "selected": default_idx,
+            "current_provider": current_provider or "unknown",
+        }
+        self._invalidate(min_interval=0.0)
+
+    def _close_account_picker(self) -> None:
+        self._account_picker_state = None
+        self._restore_modal_input_snapshot()
+        self._invalidate(min_interval=0.0)
+
+    def _active_account_pool_for_provider(self, provider: str):
+        agent = self.agent
+        if not agent:
+            return None
+        agent_provider = str(getattr(agent, "provider", "") or "").strip().lower()
+        if agent_provider != str(provider or "").strip().lower():
+            return None
+        return getattr(agent, "_credential_pool", None)
+
+    def _fetch_account_results_for_picker(self, provider: str):
+        from agent.account_usage import fetch_provider_account_usages
+
+        try:
+            return fetch_provider_account_usages(provider, timeout=20.0)
+        except Exception:
+            return []
+
+    def _begin_account_provider_loading(self, provider_data: dict) -> None:
+        """Switch /account picker into a non-blocking Hermes loading state."""
+        state = self._account_picker_state
+        if not state:
+            return
+        provider_slug = provider_data.get("slug", "")
+        state.update({
+            "stage": "loading",
+            "provider_data": provider_data,
+            "loading_provider": provider_slug,
+            "loading_frame": 0,
+            "selected": 0,
+        })
+        state.pop("_scroll_offset", None)
+        self._invalidate(min_interval=0.0)
+
+        def _spinner_loop():
+            while True:
+                time.sleep(0.12)
+                cur = self._account_picker_state
+                if not cur or cur.get("stage") != "loading" or cur.get("loading_provider") != provider_slug:
+                    return
+                cur["loading_frame"] = int(cur.get("loading_frame", 0)) + 1
+                self._invalidate(min_interval=0.0)
+
+        def _worker():
+            account_results = self._fetch_account_results_for_picker(provider_slug)
+            active_pool = self._active_account_pool_for_provider(provider_slug)
+            try:
+                from agent.account_usage import active_provider_account_index
+                active_index = active_provider_account_index(provider_slug, pool=active_pool)
+            except Exception:
+                active_index = None
+            cur = self._account_picker_state
+            if not cur or cur.get("stage") != "loading" or cur.get("loading_provider") != provider_slug:
+                return
+            cur.update({
+                "stage": "account",
+                "provider_data": provider_data,
+                "account_results": account_results,
+                "active_index": active_index,
+                "selected": max(0, min(len(account_results), (active_index or 1) - 1)),
+            })
+            cur.pop("loading_provider", None)
+            cur.pop("_scroll_offset", None)
+            self._invalidate(min_interval=0.0)
+
+        threading.Thread(target=_spinner_loop, daemon=True).start()
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _load_model_switch_context(self):
+        user_provs = None
+        custom_provs = None
+        try:
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            cfg = load_config()
+            user_provs = cfg.get("providers")
+            custom_provs = get_compatible_custom_providers(cfg)
+        except Exception:
+            pass
+        return user_provs, custom_provs
+
+    def _provider_model_picker_data(self, provider_slug: str, *, max_models: int = 50):
+        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.providers import get_label
+
+        user_provs, custom_provs = self._load_model_switch_context()
+        try:
+            providers = list_authenticated_providers(
+                current_provider=provider_slug,
+                current_base_url=self.base_url or "",
+                current_model=self.model or "",
+                user_providers=user_provs,
+                custom_providers=custom_provs,
+                max_models=max_models,
+            )
+        except Exception:
+            providers = []
+        provider_data = next(
+            (p for p in providers if str(p.get("slug", "")).lower() == str(provider_slug or "").lower()),
+            None,
+        )
+        if provider_data is None:
+            try:
+                from hermes_cli.models import provider_model_ids
+                models = provider_model_ids(provider_slug)[:max_models]
+            except Exception:
+                models = []
+            provider_data = {
+                "slug": provider_slug,
+                "name": get_label(provider_slug),
+                "is_current": True,
+                "is_user_defined": False,
+                "models": models,
+                "total_models": len(models),
+                "source": "fallback",
+            }
+            providers = [provider_data]
+        return providers, provider_data, user_provs, custom_provs
+
+    def _open_model_picker_for_account_provider(self, provider_slug: str, *, reason: str = "") -> bool:
+        providers, provider_data, user_provs, custom_provs = self._provider_model_picker_data(provider_slug)
+        model_list = provider_data.get("models", []) or []
+        if not model_list:
+            try:
+                from hermes_cli.models import provider_model_ids
+                model_list = provider_model_ids(provider_slug)[:50]
+            except Exception:
+                model_list = []
+        if not getattr(self, "_app", None):
+            if model_list:
+                preview = ", ".join(model_list[:5])
+                more = f" (+{len(model_list) - 5} more)" if len(model_list) > 5 else ""
+                _cprint(f"    Suggested models: {preview}{more}")
+                _cprint(f"    Run /model <name> --provider {provider_slug} to continue.")
+            else:
+                _cprint(f"    Run /model --provider {provider_slug} to choose a compatible model.")
+            return False
+        self._capture_modal_input_snapshot()
+        self._model_picker_state = {
+            "stage": "model",
+            "providers": providers,
+            "provider_data": provider_data,
+            "model_list": model_list,
+            "selected": 0,
+            "current_model": self.model or "unknown",
+            "current_provider": self.provider or "unknown",
+            "user_provs": user_provs,
+            "custom_provs": custom_provs,
+            "hint_override": reason or "Current model is not available on this account provider — choose a model.",
+        }
+        self._invalidate(min_interval=0.0)
+        return True
+
+    def _account_provider_model_followup(self, provider: str) -> bool:
+        """Keep the current model on a newly selected provider or ask for a model."""
+        provider_norm = str(provider or "").strip().lower()
+        current_provider = str(self.provider or "").strip().lower()
+        if not provider_norm or provider_norm == current_provider:
+            return False
+        current_model = self.model or ""
+        user_provs, custom_provs = self._load_model_switch_context()
+        if current_model:
+            try:
+                from hermes_cli.model_switch import switch_model
+                result = switch_model(
+                    raw_input=current_model,
+                    current_provider=self.provider or "",
+                    current_model=current_model,
+                    current_base_url=self.base_url or "",
+                    current_api_key=self.api_key or "",
+                    is_global=False,
+                    explicit_provider=provider_norm,
+                    user_providers=user_provs,
+                    custom_providers=custom_provs,
+                )
+            except Exception:
+                result = None
+            if result is not None and result.success:
+                _cprint(f"  ⚙ Current model is available on {provider_norm}; keeping it active.")
+                self._apply_model_switch_result(result, persist_global=False)
+                return False
+        _cprint(
+            f"  ⚙ Current model `{current_model or 'unknown'}` is not available on {provider_norm}."
+        )
+        _cprint("    Choose a model for this account provider.")
+        return self._open_model_picker_for_account_provider(
+            provider_norm,
+            reason=f"Account provider switched to {provider_norm}; choose a compatible model.",
+        )
+
+    def _apply_account_switch(self, provider: str, target: str, *, active_pool=None) -> Optional[int]:
+        from agent.account_usage import select_provider_account
+
+        selected_index, selected_entry, select_error = select_provider_account(
+            provider,
+            target,
+            pool=active_pool,
+        )
+        if select_error:
+            _cprint(f"  ✗ Could not switch account: {select_error}")
+            return None
+        agent = self.agent
+        if selected_entry is not None and active_pool is not None and agent and hasattr(agent, "_swap_credential"):
+            try:
+                agent._swap_credential(selected_entry)
+            except Exception as exc:
+                _cprint(f"  ⚠ Selected account, but could not apply it to this running session: {type(exc).__name__}")
+                return None
+        label = getattr(selected_entry, "label", None) or getattr(selected_entry, "id", None) or target
+        _cprint(f"  ✓ Account switched: {label}")
+        _cprint(f"    Provider: {provider}")
+        _cprint("    Persisted as active credential for future usage")
+        return selected_index
+
+    def _print_account_results(self, provider: str, account_results, active_index=None) -> None:
+        from agent.account_usage import render_provider_account_usage_lines
+
+        account_lines = render_provider_account_usage_lines(
+            provider,
+            account_results,
+            active_index=active_index,
+            select_hint=f"/account {provider} <number>",
+        )
+        print()
+        if account_lines:
+            for line in account_lines:
+                print(f" {line}" if line else "")
+        else:
+            print(f" (no account usage data available for {provider})")
+
+    def _handle_account_picker_selection(self) -> None:
+        state = self._account_picker_state
+        if not state:
+            return
+        selected = state.get("selected", 0)
+        stage = state.get("stage", "provider")
+        if stage == "provider":
+            providers = state.get("providers") or []
+            if selected >= len(providers):
+                self._close_account_picker()
+                return
+            provider_data = providers[selected]
+            self._begin_account_provider_loading(provider_data)
+            return
+
+        if stage == "loading":
+            self._invalidate(min_interval=0.0)
+            return
+
+        provider_data = state.get("provider_data") or {}
+        provider_slug = provider_data.get("slug", "")
+        account_results = state.get("account_results") or []
+        back_idx = len(account_results)
+        cancel_idx = len(account_results) + 1
+        if selected == back_idx:
+            providers = state.get("providers") or []
+            state["stage"] = "provider"
+            state["selected"] = next((i for i, p in enumerate(providers) if p.get("slug") == provider_slug), 0)
+            state.pop("_scroll_offset", None)
+            self._invalidate(min_interval=0.0)
+            return
+        if selected >= cancel_idx:
+            self._close_account_picker()
+            return
+        if selected < len(account_results):
+            active_pool = self._active_account_pool_for_provider(provider_slug)
+            target = str(account_results[selected].index)
+            switched_index = self._apply_account_switch(provider_slug, target, active_pool=active_pool)
+            self._close_account_picker()
+            opened_model_picker = False
+            if switched_index is not None:
+                opened_model_picker = self._account_provider_model_followup(provider_slug)
+            if not opened_model_picker:
+                refreshed_results = self._fetch_account_results_for_picker(provider_slug)
+                refreshed_active = None
+                try:
+                    from agent.account_usage import active_provider_account_index
+                    refreshed_active = active_provider_account_index(provider_slug, pool=active_pool)
+                except Exception:
+                    refreshed_active = None
+                self._print_account_results(provider_slug, refreshed_results, active_index=refreshed_active or switched_index)
+            return
+        self._close_account_picker()
+
     @staticmethod
     def _compute_model_picker_viewport(
         selected: int,
@@ -6433,6 +6733,18 @@ class HermesCLI:
             base = text.split(None, 1)[0].lower().lstrip('/')
             cmd = resolve_command(base)
             return bool(cmd and cmd.name == "model")
+        except Exception:
+            return False
+
+    def _should_handle_account_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /account should open its prompt_toolkit picker inline."""
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name == "account")
         except Exception:
             return False
 
@@ -7158,6 +7470,8 @@ class HermesCLI:
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
+        elif canonical == "account":
+            self._show_account(cmd_original)
         elif canonical == "insights":
             self._show_insights(cmd_original)
         elif canonical == "copy":
@@ -8558,6 +8872,148 @@ class HermesCLI:
             # into stream-retry events, credential rotations, etc.
             # Console quietness is enforced by hermes_logging not
             # installing a console StreamHandler in non-verbose mode.
+
+    def _show_account(self, cmd_original: str = ""):
+        """Select an account/API key in a provider credential pool."""
+        agent = self.agent
+        active_provider = None
+        if agent:
+            active_provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
+        else:
+            active_provider = getattr(self, "provider", None)
+
+        raw_args = ""
+        if cmd_original:
+            parts = str(cmd_original).split(maxsplit=1)
+            raw_args = parts[1].strip() if len(parts) > 1 else ""
+
+        from agent.account_usage import (
+            account_choice_label,
+            active_provider_account_index,
+            list_account_provider_choices,
+        )
+
+        provider_choices = [
+            {
+                "slug": choice.slug,
+                "name": choice.name,
+                "account_count": choice.account_count,
+                "is_current": choice.is_current,
+            }
+            for choice in list_account_provider_choices(active_provider=active_provider)
+        ]
+        providers = [choice["slug"] for choice in provider_choices]
+        selected_provider = ""
+        account_target = ""
+        tokens = raw_args.split() if raw_args else []
+
+        if not tokens:
+            if not provider_choices:
+                print("No account providers found. Add credentials with `hermes auth add` first.")
+                return
+            if getattr(self, "_app", None):
+                self._open_account_picker(provider_choices, current_provider=active_provider)
+                return
+            choices = []
+            default_idx = 0
+            for idx, provider_data in enumerate(provider_choices):
+                count = provider_data.get("account_count", 0)
+                plural = "s" if count != 1 else ""
+                marker = "  ← current" if provider_data.get("is_current") else ""
+                if marker:
+                    default_idx = idx
+                choices.append(f"{provider_data.get('name', provider_data['slug'])} ({count} account{plural}){marker}")
+            choices.append("Cancel")
+            picked = self._run_curses_picker("🔐 Account Picker — Select Provider", choices, default_index=default_idx)
+            if picked is None or picked >= len(provider_choices):
+                print("  /account cancelled.")
+                return
+            selected_provider = provider_choices[picked]["slug"]
+        else:
+            first_arg = tokens[0].strip().lower()
+            remaining_args = tokens[1:]
+            if first_arg.isdigit() and providers and len(providers) > 1:
+                idx = int(first_arg)
+                if 1 <= idx <= len(providers):
+                    selected_provider = providers[idx - 1]
+                else:
+                    selected_provider = first_arg
+            elif first_arg in providers:
+                selected_provider = first_arg
+            elif len(providers) == 1:
+                selected_provider = providers[0]
+                account_target = first_arg
+            else:
+                selected_provider = first_arg
+            if remaining_args:
+                account_target = remaining_args[0].strip()
+
+        if not selected_provider:
+            print("No account providers found. Add credentials with `hermes auth add` first.")
+            return
+
+        active_pool = self._active_account_pool_for_provider(selected_provider)
+
+        if account_target:
+            switched_index = self._apply_account_switch(selected_provider, account_target, active_pool=active_pool)
+            opened_model_picker = False
+            if switched_index is not None:
+                opened_model_picker = self._account_provider_model_followup(selected_provider)
+            if not opened_model_picker:
+                account_results = self._fetch_account_results_for_picker(selected_provider)
+                active_index = active_provider_account_index(selected_provider, pool=active_pool) or switched_index
+                self._print_account_results(selected_provider, account_results, active_index=active_index)
+        else:
+            if getattr(self, "_app", None):
+                provider_data = next(
+                    (choice for choice in provider_choices if choice.get("slug") == selected_provider),
+                    {
+                        "slug": selected_provider,
+                        "name": selected_provider,
+                        "account_count": 0,
+                        "is_current": selected_provider == str(active_provider or "").strip().lower(),
+                    },
+                )
+                self._capture_modal_input_snapshot()
+                self._account_picker_state = {
+                    "stage": "loading",
+                    "providers": provider_choices,
+                    "provider_data": provider_data,
+                    "loading_provider": selected_provider,
+                    "loading_frame": 0,
+                    "selected": 0,
+                    "current_provider": active_provider or "unknown",
+                }
+                self._begin_account_provider_loading(provider_data)
+                return
+            account_results = self._fetch_account_results_for_picker(selected_provider)
+            active_index = active_provider_account_index(selected_provider, pool=active_pool)
+            self._print_account_results(selected_provider, account_results, active_index=active_index)
+            if account_results:
+                choices = [
+                    account_choice_label(result, active=(active_index is not None and result.index == active_index))
+                    for result in account_results
+                ]
+                choices.append("← Back / cancel")
+                default_idx = min(len(choices) - 1, max(0, (active_index or 1) - 1))
+                picked = self._run_curses_picker("🔐 Account Picker — Select Account", choices, default_index=default_idx)
+                if picked is not None and picked < len(account_results):
+                    target = str(account_results[picked].index)
+                    switched_index = self._apply_account_switch(selected_provider, target, active_pool=active_pool)
+                    if switched_index is not None:
+                        opened_model_picker = self._account_provider_model_followup(selected_provider)
+                        if not opened_model_picker:
+                            refreshed_results = self._fetch_account_results_for_picker(selected_provider)
+                            refreshed_active = active_provider_account_index(selected_provider, pool=active_pool) or switched_index
+                            self._print_account_results(selected_provider, refreshed_results, active_index=refreshed_active)
+
+        if agent and hasattr(agent, "get_rate_limit_state"):
+            rl_state = agent.get_rate_limit_state()
+            if rl_state and getattr(rl_state, "has_data", False) is True:
+                from agent.rate_limit_tracker import format_rate_limit_display
+                print()
+                print(format_rate_limit_display(rl_state))
+
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""
@@ -10765,6 +11221,7 @@ class HermesCLI:
         approval_widget,
         clarify_widget,
         model_picker_widget=None,
+        account_picker_widget=None,
         spinner_widget=None,
         spacer,
         status_bar,
@@ -10789,6 +11246,7 @@ class HermesCLI:
                 approval_widget,
                 clarify_widget,
                 model_picker_widget,
+                account_picker_widget,
                 spinner_widget,
                 spacer,
                 *self._get_extra_tui_widgets(),
@@ -11051,6 +11509,13 @@ class HermesCLI:
                 event.app.invalidate()
                 return
 
+            # --- /account picker modal ---
+            if self._account_picker_state:
+                self._handle_account_picker_selection()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
             # --- Clarify freetext mode: user typed their own answer ---
             if self._clarify_freetext and self._clarify_state:
                 text = event.app.current_buffer.text.strip()
@@ -11081,9 +11546,9 @@ class HermesCLI:
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
-                # Handle /model directly on the UI thread so interactive pickers
-                # can safely use prompt_toolkit terminal handoff helpers.
-                if self._should_handle_model_command_inline(text, has_images=has_images):
+                # Handle /model and /account directly on the UI thread so interactive pickers
+                # can safely update the prompt_toolkit modal state.
+                if self._should_handle_model_command_inline(text, has_images=has_images) or self._should_handle_account_command_inline(text, has_images=has_images):
                     if not self.process_command(text):
                         self._should_exit = True
                         if event.app.is_running:
@@ -11326,6 +11791,34 @@ class HermesCLI:
             event.app.current_buffer.reset()
             event.app.invalidate()
 
+        # --- /account picker: arrow-key navigation ---
+        @kb.add('up', filter=Condition(lambda: bool(self._account_picker_state)))
+        def account_picker_up(event):
+            if self._account_picker_state:
+                self._account_picker_state["selected"] = max(0, self._account_picker_state.get("selected", 0) - 1)
+                event.app.invalidate()
+
+        @kb.add('down', filter=Condition(lambda: bool(self._account_picker_state)))
+        def account_picker_down(event):
+            state = self._account_picker_state
+            if not state:
+                return
+            if state.get("stage") == "provider":
+                max_idx = len(state.get("providers") or [])
+            elif state.get("stage") == "loading":
+                max_idx = 0
+            else:
+                max_idx = len(state.get("account_results") or []) + 1
+            state["selected"] = min(max_idx, state.get("selected", 0) + 1)
+            event.app.invalidate()
+
+        @kb.add('escape', filter=Condition(lambda: bool(self._account_picker_state)), eager=True)
+        def account_picker_escape(event):
+            """ESC closes the /account picker."""
+            self._close_account_picker()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+
         # Number keys for quick approval selection (1-9, 0 for 10th item)
         def _make_approval_number_handler(idx):
             def handler(event):
@@ -11345,7 +11838,7 @@ class HermesCLI:
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state and not self._model_picker_state and not self._account_picker_state
         )
 
         @kb.add('up', filter=_normal_input)
@@ -11424,6 +11917,13 @@ class HermesCLI:
             # Cancel /model picker
             if self._model_picker_state:
                 self._close_model_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # Cancel /account picker
+            if self._account_picker_state:
+                self._close_account_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -12343,6 +12843,8 @@ class HermesCLI:
                     hint = f"Select a model ({len(model_list)} available)"
                 else:
                     hint = "No models listed for this provider. Use Back or Cancel."
+                if state.get("hint_override"):
+                    hint = state.get("hint_override")
 
             box_width = _panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
             inner_text_width = max(8, box_width - 6)
@@ -12385,6 +12887,93 @@ class HermesCLI:
                 wrap_lines=True,
             ),
             filter=Condition(lambda: cli_ref._model_picker_state is not None),
+        )
+
+        # --- /account picker: display widget ---
+        def _get_account_picker_display():
+            state = cli_ref._account_picker_state
+            if not state:
+                return []
+            stage = state.get("stage", "provider")
+            if stage == "provider":
+                title = "🔐 Account Picker — Select Provider"
+                choices = []
+                _providers = state.get("providers")
+                for p in _providers if isinstance(_providers, list) else []:
+                    count = p.get("account_count", 0)
+                    plural = "s" if count != 1 else ""
+                    label = f"{p.get('name', p.get('slug', 'Provider'))} ({count} account{plural})"
+                    if p.get("is_current"):
+                        label += "  ← current"
+                    choices.append(label)
+                choices.append("Cancel")
+                hint = f"Current provider: {state.get('current_provider', 'unknown')}"
+            elif stage == "loading":
+                provider_data = state.get("provider_data") or {}
+                pname = provider_data.get('name', provider_data.get('slug', 'Provider'))
+                title = f"🔐 Account Picker — {pname}"
+                frame = int(state.get("loading_frame", 0))
+                sigils = ["✦", "✧", "◆", "◇", "✶", "✷"]
+                bar_width = 14
+                head = frame % bar_width
+                bar = "".join("◆" if i == head else "◇" for i in range(bar_width))
+                hint = f"{sigils[frame % len(sigils)]} Fetching account limits and remaining quota..."
+                choices = [
+                    f"Hermes credential scanner  {bar}",
+                    "Preparing account selection screen — one moment.",
+                ]
+            else:
+                from agent.account_usage import account_choice_label
+
+                provider_data = state.get("provider_data") or {}
+                account_results = state.get("account_results") or []
+                active_index = state.get("active_index")
+                title = f"🔐 Account Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
+                choices = [
+                    account_choice_label(result, active=(active_index is not None and result.index == active_index))
+                    for result in account_results
+                ] + ["← Back", "Cancel"]
+                if account_results:
+                    hint = f"Select an account/API key ({len(account_results)} available)"
+                else:
+                    hint = "No accounts listed for this provider. Use Back or Cancel."
+
+            box_width = _panel_box_width(title, [hint] + choices, min_width=54, max_width=100)
+            inner_text_width = max(8, box_width - 6)
+            selected = state.get("selected", 0)
+            try:
+                from prompt_toolkit.application import get_app
+                term_rows = get_app().output.get_size().rows
+            except Exception:
+                term_rows = shutil.get_terminal_size((100, 24)).lines
+            scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
+                selected, state.get("_scroll_offset", 0), len(choices), term_rows,
+            )
+            state["_scroll_offset"] = scroll_offset
+
+            lines = []
+            lines.append(('class:clarify-border', '╭─ '))
+            lines.append(('class:clarify-title', title))
+            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            for idx in range(scroll_offset, scroll_offset + visible):
+                choice = choices[idx]
+                style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
+                prefix = '❯ ' if idx == selected else '  '
+                for wrapped in _wrap_panel_text(prefix + choice, inner_text_width, subsequent_indent='  '):
+                    _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
+            return lines
+
+        account_picker_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_account_picker_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._account_picker_state is not None),
         )
 
         # Horizontal rules above and below the input.
@@ -12463,6 +13052,7 @@ class HermesCLI:
                     approval_widget=approval_widget,
                     clarify_widget=clarify_widget,
                     model_picker_widget=model_picker_widget,
+                    account_picker_widget=account_picker_widget,
                     spinner_widget=spinner_widget,
                     spacer=spacer,
                     status_bar=status_bar,

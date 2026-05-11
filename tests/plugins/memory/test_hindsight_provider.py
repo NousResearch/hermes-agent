@@ -849,7 +849,8 @@ class TestSyncTurn:
         """Non-ASCII text (CJK, ZWJ emoji) must survive JSON round-trip intact."""
         p = provider_with_config()
         p._client = _make_mock_client()
-        p.sync_turn("안녕 こんにちは 你好", "👨‍👩‍👧‍👦 family")
+        family = "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466"
+        p.sync_turn("안녕 こんにちは 你好", f"{family} family")
         p._retain_queue.join()
         p._client.aretain_batch.assert_called_once()
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
@@ -859,7 +860,7 @@ class TestSyncTurn:
         assert "안녕" in raw_json
         assert "こんにちは" in raw_json
         assert "你好" in raw_json
-        assert "👨‍👩‍👧‍👦" in raw_json
+        assert family in raw_json
 
 
 # ---------------------------------------------------------------------------

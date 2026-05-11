@@ -370,8 +370,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
-        # Interactive model picker state per chat
+        # Interactive model/account picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
+        self._account_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -2190,6 +2191,47 @@ class TelegramAdapter(BasePlatformAdapter):
                 return slug
 
         try:
+            initial_provider = (metadata or {}).get("initial_provider")
+            if initial_provider:
+                provider = next(
+                    (p for p in providers if p.get("slug") == initial_provider),
+                    None,
+                )
+                if provider:
+                    models = provider.get("models", [])
+                    keyboard, page_info = self._build_model_keyboard(models, 0)
+                    pname = provider.get("name", initial_provider)
+                    total = provider.get("total_models", len(models))
+                    shown = len(models)
+                    extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+                    text = (
+                        "⚙ *Model Configuration*\n\n"
+                        f"Provider: *{pname}*{page_info}\n"
+                        f"Select a model:{extra}"
+                    )
+                    thread_id = metadata.get("thread_id") if metadata else None
+                    msg = await self._bot.send_message(
+                        chat_id=int(chat_id),
+                        text=text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=keyboard,
+                        message_thread_id=int(thread_id) if thread_id else None,
+                        **self._link_preview_kwargs(),
+                    )
+                    self._model_picker_state[str(chat_id)] = {
+                        "msg_id": msg.message_id,
+                        "providers": providers,
+                        "session_key": session_key,
+                        "on_model_selected": on_model_selected,
+                        "current_model": current_model,
+                        "current_provider": current_provider,
+                        "selected_provider": initial_provider,
+                        "selected_provider_name": pname,
+                        "model_list": models,
+                        "model_page": 0,
+                    }
+                    return SendResult(success=True, message_id=str(msg.message_id))
+
             # Build provider buttons — 2 per row
             buttons: list = []
             for p in providers:
@@ -2245,6 +2287,291 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] send_model_picker failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
+
+    async def send_account_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_provider: str,
+        session_key: str,
+        on_provider_selected,
+        on_account_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive inline-keyboard account/API-key picker."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            from agent.account_usage import safe_display_text
+
+            buttons: list = []
+            for p in providers:
+                count = p.get("account_count", 0)
+                name = safe_display_text(
+                    p.get("name", p.get("slug", "Provider")),
+                    fallback="Provider",
+                    max_len=44,
+                )
+                label = f"{name} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                label = safe_display_text(label, fallback="Provider", max_len=60)
+                buttons.append(
+                    InlineKeyboardButton(label, callback_data=f"ap:{p.get('slug', '')}")
+                )
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="ax")])
+            keyboard = InlineKeyboardMarkup(rows)
+
+            current_label = safe_display_text(
+                current_provider or "unknown",
+                fallback="unknown",
+                markdown=True,
+            )
+            text = (
+                "🔐 *Hermes Account Picker*\n\n"
+                f"Current provider: `{current_label}`\n\n"
+                "Select a credential provider:"
+            )
+
+            thread_id = metadata.get("thread_id") if metadata else None
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+                message_thread_id=int(thread_id) if thread_id else None,
+                **self._link_preview_kwargs(),
+            )
+
+            self._account_picker_state[str(chat_id)] = {
+                "msg_id": msg.message_id,
+                "chat_id": str(chat_id),
+                "thread_id": str(thread_id) if thread_id is not None else None,
+                "providers": providers,
+                "session_key": session_key,
+                "on_provider_selected": on_provider_selected,
+                "on_account_selected": on_account_selected,
+                "current_provider": current_provider,
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_account_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    def _build_account_keyboard(self, account_results: list, active_index: Optional[int] = None):
+        try:
+            from agent.account_usage import account_choice_label, safe_display_text
+        except Exception:
+            account_choice_label = None
+            safe_display_text = lambda value, **kwargs: str(value or kwargs.get("fallback", ""))[: kwargs.get("max_len", 58)]
+
+        buttons: list = []
+        for result in account_results[:10]:
+            idx = getattr(result, "index", len(buttons) + 1)
+            label = getattr(result, "label", None) or f"account-{idx}"
+            if account_choice_label:
+                label = account_choice_label(result, active=(active_index is not None and idx == active_index))
+            label = safe_display_text(label, fallback=f"account-{idx}", max_len=58)
+            buttons.append(InlineKeyboardButton(label, callback_data=f"am:{idx}"))
+        rows = [[button] for button in buttons]
+        rows.append([
+            InlineKeyboardButton("◀ Back", callback_data="ab"),
+            InlineKeyboardButton("✗ Cancel", callback_data="ax"),
+        ])
+        extra = ""
+        if len(account_results) > len(buttons):
+            extra = f"\n_{len(account_results) - len(buttons)} more available — type `/account <provider> <number>` directly_"
+        return InlineKeyboardMarkup(rows), extra
+
+    async def _handle_account_picker_callback(self, query, data: str, chat_id: str) -> None:
+        """Handle account picker inline keyboard callbacks (ap:/am:/ab/ax)."""
+        state = self._account_picker_state.get(chat_id)
+        if not state:
+            await query.answer(text="Picker expired — use /account again.")
+            return
+
+        query_message = getattr(query, "message", None)
+        state_msg_id = state.get("msg_id")
+        query_msg_id = getattr(query_message, "message_id", None)
+        if state_msg_id is not None and str(query_msg_id) != str(state_msg_id):
+            await query.answer(text="Picker expired — use /account again.")
+            return
+
+        state_thread_id = state.get("thread_id")
+        query_thread_id = getattr(query_message, "message_thread_id", None)
+        if state_thread_id is not None and str(query_thread_id) != str(state_thread_id):
+            await query.answer(text="Picker expired — use /account again.")
+            return
+
+        if data.startswith("ap:"):
+            provider_slug = data[3:]
+            provider = next((p for p in state.get("providers", []) if p.get("slug") == provider_slug), None)
+            if not provider:
+                await query.answer(text="Provider not found.")
+                return
+            callback = state.get("on_provider_selected")
+            if not callback:
+                await query.answer(text="Picker expired.")
+                return
+            try:
+                await query.answer(text="Loading accounts…")
+            except Exception:
+                pass
+            try:
+                from agent.account_usage import safe_display_text
+                provider_name = safe_display_text(provider.get("name", provider_slug), fallback=provider_slug, markdown=True)
+            except Exception:
+                provider_name = str(provider.get("name", provider_slug))
+            try:
+                await query.edit_message_text(
+                    text=(
+                        "🔐 *Hermes Account Picker*\n\n"
+                        f"Provider: *{provider_name}*\n"
+                        "✦ Fetching account limits and remaining quota...\n"
+                        "`◇◇◆◇◇◇◇◇◇◇◇◇◇◇`"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            try:
+                account_results, active_index = await callback(chat_id, provider_slug)
+            except Exception as exc:
+                logger.error("Account picker provider load failed: %s", exc)
+                try:
+                    await query.edit_message_text(
+                        text="🔐 *Hermes Account Picker*\n\nCould not load accounts. Use /account again.",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+            state["selected_provider"] = provider_slug
+            state["selected_provider_name"] = provider.get("name", provider_slug)
+            state["account_results"] = account_results
+            state["active_index"] = active_index
+            keyboard, extra = self._build_account_keyboard(account_results, active_index)
+            try:
+                from agent.account_usage import render_provider_account_usage_lines, safe_display_text
+
+                detail_lines = render_provider_account_usage_lines(
+                    provider_slug,
+                    account_results,
+                    active_index=active_index,
+                    select_hint=f"/account {provider_slug} <number>",
+                )
+                detail_text = "\n".join(
+                    safe_display_text(line, fallback="", max_len=320, markdown=True)
+                    for line in detail_lines[:40]
+                )
+                if extra:
+                    detail_text = f"{detail_text}\n{safe_display_text(extra, fallback='', max_len=180, markdown=True)}"
+                body = detail_text or "Select an account/API key:"
+                provider_name = safe_display_text(provider.get("name", provider_slug), fallback=provider_slug, markdown=True)
+            except Exception:
+                provider_name = str(provider.get("name", provider_slug))
+                body = f"Select an account/API key:{extra}"
+            await query.edit_message_text(
+                text=(
+                    "🔐 *Hermes Account Picker*\n\n"
+                    f"Provider: *{provider_name}*\n\n"
+                    f"{body}"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            # Callback was already acknowledged before the usage fetch.
+
+        elif data.startswith("am:"):
+            try:
+                account_idx = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid selection.")
+                return
+            provider_slug = state.get("selected_provider", "")
+            callback = state.get("on_account_selected")
+            if not provider_slug or not callback:
+                await query.answer(text="Picker expired.")
+                return
+            try:
+                await query.answer(text="Switching account…")
+            except Exception:
+                pass
+            try:
+                await query.edit_message_text(
+                    text=(
+                        "🔐 *Hermes Account Picker*\n\n"
+                        f"Switching `{provider_slug}` account `{account_idx}`...\n"
+                        "`◇◇◇◆◇◇◇◇◇◇◇◇◇◇`"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            try:
+                result_text = await callback(chat_id, provider_slug, str(account_idx))
+            except Exception as exc:
+                logger.error("Account picker switch failed: %s", exc)
+                result_text = f"Error switching account: {exc}"
+            try:
+                await query.edit_message_text(
+                    text=result_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                try:
+                    await query.edit_message_text(
+                        text=result_text,
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            # Callback was already acknowledged before the account switch.
+            self._account_picker_state.pop(chat_id, None)
+
+        elif data == "ab":
+            try:
+                from agent.account_usage import safe_display_text
+            except Exception:
+                safe_display_text = lambda value, **kwargs: str(value or kwargs.get("fallback", ""))[: kwargs.get("max_len", 60)]
+            buttons = []
+            for p in state.get("providers", []):
+                count = p.get("account_count", 0)
+                name = safe_display_text(p.get("name", p.get("slug", "Provider")), fallback="Provider", max_len=44)
+                label = f"{name} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                label = safe_display_text(label, fallback="Provider", max_len=60)
+                buttons.append(InlineKeyboardButton(label, callback_data=f"ap:{p.get('slug', '')}"))
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="ax")])
+            await query.edit_message_text(
+                text=(
+                    "🔐 *Hermes Account Picker*\n\n"
+                    f"Current provider: `{safe_display_text(state.get('current_provider') or 'unknown', fallback='unknown', markdown=True)}`\n\n"
+                    "Select a credential provider:"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            await query.answer()
+
+        elif data == "ax":
+            self._account_picker_state.pop(chat_id, None)
+            await query.edit_message_text(
+                text="Account selection cancelled.",
+                reply_markup=None,
+            )
+            await query.answer()
+        else:
+            await query.answer()
 
     _MODEL_PAGE_SIZE = 8
 
@@ -2482,6 +2809,23 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Account picker callbacks ---
+        if data.startswith(("ap:", "am:")) or data in {"ab", "ax"}:
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to switch accounts.")
+                    return
+                await self._handle_account_picker_callback(query, data, chat_id)
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):

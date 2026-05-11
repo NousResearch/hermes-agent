@@ -95,7 +95,7 @@ def _(home, kb):
             ("设计认证模式", "implement"),
             ("אימות משתמש חדש", "auth-rtl"),  # Hebrew RTL
             ("مهمة تصحيح الأخطاء", "bug-arabic"),
-            ("👨‍👩‍👧‍👦 family emoji ZWJ sequences 🏳️‍🌈", "emoji-stress"),
+            ("\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466 family emoji ZWJ sequences 🏳️\ufe0f\u200d🌈", "emoji-stress"),
             ("control\x01chars\x02in\x03body", "ctrl"),
             ("null\x00bytes", "nullbyte"),
         ]

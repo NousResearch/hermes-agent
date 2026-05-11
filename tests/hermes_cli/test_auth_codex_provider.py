@@ -144,6 +144,49 @@ def test_save_codex_tokens_roundtrip(tmp_path, monkeypatch):
     assert data["tokens"]["refresh_token"] == "rt456"
 
 
+def test_save_codex_tokens_does_not_reuse_stale_account_metadata(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_codex_tokens({
+        "access_token": "old-access",
+        "refresh_token": "old-refresh",
+        "account_id": "acct-old",
+        "chatgpt_account_id": "acct-old",
+    })
+    _save_codex_tokens({"access_token": "new-access", "refresh_token": "new-refresh"})
+
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == "new-access"
+    assert data["tokens"]["refresh_token"] == "new-refresh"
+    assert "account_id" not in data["tokens"]
+    assert "chatgpt_account_id" not in data["tokens"]
+
+
+def test_refresh_codex_oauth_pure_returns_account_metadata(monkeypatch):
+    response = _StubHTTPResponse(
+        200,
+        {
+            "access_token": "access-new",
+            "refresh_token": "refresh-new",
+            "id_token": "id-new",
+            "account_id": "acct-new",
+            "chatgpt_account_id": "acct-new",
+        },
+    )
+    _patch_httpx(monkeypatch, response)
+
+    refreshed = refresh_codex_oauth_pure("access-old", "refresh-old")
+
+    assert refreshed["access_token"] == "access-new"
+    assert refreshed["refresh_token"] == "refresh-new"
+    assert refreshed["id_token"] == "id-new"
+    assert refreshed["account_id"] == "acct-new"
+    assert refreshed["chatgpt_account_id"] == "acct-new"
+
+
 def test_import_codex_cli_tokens(tmp_path, monkeypatch):
     codex_home = tmp_path / "codex-cli"
     codex_home.mkdir(parents=True, exist_ok=True)
@@ -335,10 +378,11 @@ def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypa
         },
     )
 
-    def _fake_save(tokens, last_refresh=None):
+    def _fake_save(tokens, last_refresh=None, **kwargs):
         called["device_login"] += 1
         called["tokens"] = dict(tokens)
         called["last_refresh"] = last_refresh
+        called["save_kwargs"] = kwargs
 
     monkeypatch.setattr("hermes_cli.auth._save_codex_tokens", _fake_save)
     monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda *args, **kwargs: "/tmp/config.yaml")

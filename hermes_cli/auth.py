@@ -2413,6 +2413,77 @@ def _is_remote_session() -> bool:
 # where one app's refresh invalidates the other's session.
 # =============================================================================
 
+def _codex_account_id_from_claims(claims: Dict[str, Any]) -> Optional[str]:
+    """Extract the ChatGPT account id OpenAI expects in ChatGPT-Account-Id."""
+    nested = claims.get("https://api.openai.com/auth")
+    if isinstance(nested, dict):
+        value = nested.get("chatgpt_account_id") or nested.get("account_id")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for key in ("chatgpt_account_id", "account_id"):
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _codex_account_id_from_jwt(token: Any) -> Optional[str]:
+    if not isinstance(token, str) or not token.strip():
+        return None
+    return _codex_account_id_from_claims(_decode_jwt_claims(token.strip()))
+
+
+def _normalize_codex_tokens(
+    tokens: Dict[str, Any],
+    *,
+    previous_tokens: Optional[Dict[str, Any]] = None,
+    preserve_previous_metadata: bool = False,
+) -> Dict[str, str]:
+    """Return Codex tokens with stable account metadata attached.
+
+    OpenAI's Codex/ChatGPT endpoints need both the bearer token and, for
+    account-scoped backend calls such as usage, the ChatGPT account id.  The
+    OAuth responses are not perfectly consistent about where that id lives
+    (access token, id token, or explicit fields), so normalize it once at the
+    auth-store boundary and let the pool seed from that canonical state.
+    """
+    previous_tokens = previous_tokens if isinstance(previous_tokens, dict) else {}
+    normalized: Dict[str, str] = {}
+    for key in ("access_token", "refresh_token", "id_token"):
+        value = tokens.get(key)
+        if isinstance(value, str) and value.strip():
+            normalized[key] = value.strip()
+        elif key == "id_token" and preserve_previous_metadata:
+            previous = previous_tokens.get(key)
+            if isinstance(previous, str) and previous.strip():
+                normalized[key] = previous.strip()
+
+    account_id = None
+    for key in ("chatgpt_account_id", "account_id"):
+        value = tokens.get(key)
+        if isinstance(value, str) and value.strip():
+            account_id = value.strip()
+            break
+    if not account_id:
+        for key in ("id_token", "access_token"):
+            account_id = _codex_account_id_from_jwt(normalized.get(key))
+            if account_id:
+                break
+    if not account_id and preserve_previous_metadata:
+        for key in ("chatgpt_account_id", "account_id"):
+            value = previous_tokens.get(key)
+            if isinstance(value, str) and value.strip():
+                account_id = value.strip()
+                break
+
+    if account_id:
+        # Store both aliases because older code/tests used account_id while
+        # OpenAI's newer JWT claims call it chatgpt_account_id.
+        normalized["account_id"] = account_id
+        normalized["chatgpt_account_id"] = account_id
+    return normalized
+
+
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
     
@@ -2459,19 +2530,42 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     return {
         "tokens": tokens,
         "last_refresh": state.get("last_refresh"),
+        "base_url": state.get("base_url"),
+        "label": state.get("label"),
+        "auth_mode": state.get("auth_mode"),
     }
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
+def _save_codex_tokens(
+    tokens: Dict[str, Any],
+    last_refresh: str = None,
+    *,
+    base_url: Optional[str] = None,
+    label: Optional[str] = None,
+    preserve_previous_metadata: bool = False,
+) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state = _load_provider_state(auth_store, "openai-codex") or {}
-        state["tokens"] = tokens
+        previous_tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else {}
+        state["tokens"] = _normalize_codex_tokens(
+            tokens,
+            previous_tokens=previous_tokens,
+            preserve_previous_metadata=preserve_previous_metadata,
+        )
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
+        if base_url is not None:
+            clean_base_url = str(base_url or "").strip().rstrip("/")
+            if clean_base_url:
+                state["base_url"] = clean_base_url
+        if label is not None:
+            clean_label = str(label or "").strip()
+            if clean_label:
+                state["label"] = clean_label
         _save_provider_state(auth_store, "openai-codex", state)
         _save_auth_store(auth_store)
 
@@ -2577,6 +2671,10 @@ def refresh_codex_oauth_pure(
     next_refresh = refresh_payload.get("refresh_token")
     if isinstance(next_refresh, str) and next_refresh.strip():
         updated["refresh_token"] = next_refresh.strip()
+    for token_key in ("id_token", "account_id", "chatgpt_account_id"):
+        value = refresh_payload.get(token_key)
+        if isinstance(value, str) and value.strip():
+            updated[token_key] = value.strip()
     return updated
 
 
@@ -2594,10 +2692,22 @@ def _refresh_codex_auth_tokens(
         timeout_seconds=timeout_seconds,
     )
     updated_tokens = dict(tokens)
-    updated_tokens["access_token"] = refreshed["access_token"]
-    updated_tokens["refresh_token"] = refreshed["refresh_token"]
+    for token_key in (
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "account_id",
+        "chatgpt_account_id",
+    ):
+        value = refreshed.get(token_key)
+        if isinstance(value, str) and value.strip():
+            updated_tokens[token_key] = value.strip()
 
-    _save_codex_tokens(updated_tokens)
+    _save_codex_tokens(
+        updated_tokens,
+        refreshed.get("last_refresh"),
+        preserve_previous_metadata=True,
+    )
     return updated_tokens
 
 
@@ -2667,8 +2777,12 @@ def resolve_codex_runtime_credentials(
 
     base_url = (
         os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+        or str(data.get("base_url") or "").strip().rstrip("/")
         or DEFAULT_CODEX_BASE_URL
     )
+    account_id = str(
+        tokens.get("chatgpt_account_id") or tokens.get("account_id") or ""
+    ).strip()
 
     return {
         "provider": "openai-codex",
@@ -2677,6 +2791,8 @@ def resolve_codex_runtime_credentials(
         "source": "hermes-auth-store",
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
+        "account_id": account_id,
+        "chatgpt_account_id": account_id,
     }
 
 
@@ -4532,8 +4648,8 @@ def _login_openai_codex(
             except (EOFError, KeyboardInterrupt):
                 do_import = "n"
             if do_import in ("y", "yes"):
-                _save_codex_tokens(cli_tokens)
                 base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+                _save_codex_tokens(cli_tokens, base_url=base_url)
                 config_path = _update_config_for_provider("openai-codex", base_url)
                 print()
                 print("Credentials imported. Note: if Codex CLI refreshes its token,")
@@ -4550,7 +4666,11 @@ def _login_openai_codex(
     creds = _codex_device_code_login()
 
     # Save tokens to Hermes auth store
-    _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))
+    _save_codex_tokens(
+        creds["tokens"],
+        creds.get("last_refresh"),
+        base_url=creds.get("base_url", DEFAULT_CODEX_BASE_URL),
+    )
     config_path = _update_config_for_provider("openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))
     print()
     print("Login successful!")
@@ -4692,11 +4812,17 @@ def _codex_device_code_login() -> Dict[str, Any]:
         or DEFAULT_CODEX_BASE_URL
     )
 
+    returned_tokens = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    }
+    for token_key in ("id_token", "account_id", "chatgpt_account_id"):
+        value = tokens.get(token_key)
+        if isinstance(value, str) and value.strip():
+            returned_tokens[token_key] = value.strip()
+
     return {
-        "tokens": {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-        },
+        "tokens": returned_tokens,
         "base_url": base_url,
         "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "auth_mode": "chatgpt",

@@ -317,20 +317,44 @@ def auth_add_command(args) -> None:
             creds["tokens"]["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
         )
-        entry = PooledCredential(
-            provider=provider,
-            id=uuid.uuid4().hex[:6],
-            label=label,
-            auth_type=AUTH_TYPE_OAUTH,
-            priority=0,
-            source=f"{SOURCE_MANUAL}:device_code",
-            access_token=creds["tokens"]["access_token"],
-            refresh_token=creds["tokens"].get("refresh_token"),
+        # Codex has a singleton Hermes auth store used by refresh/recovery and
+        # usage lookups.  Persist there first, then let load_pool() materialize
+        # the canonical device_code entry.  This avoids the old split-brain
+        # manual:device_code row that went stale after the auth store refreshed.
+        auth_mod._save_codex_tokens(
+            creds["tokens"],
+            creds.get("last_refresh"),
             base_url=creds.get("base_url"),
-            last_refresh=creds.get("last_refresh"),
+            label=label,
         )
-        pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        refreshed_pool = load_pool(provider)
+        entry = next((item for item in refreshed_pool.entries() if item.source == "device_code"), None)
+        if entry is None:
+            # Some tests and custom setups stub singleton seeding; still write
+            # the canonical device_code pool row so auth.json remains complete.
+            saved_tokens = auth_mod._read_codex_tokens().get("tokens", {})
+            extra = {
+                key: value
+                for key in ("id_token", "account_id", "chatgpt_account_id")
+                if isinstance((value := saved_tokens.get(key)), str) and value.strip()
+            }
+            entry = PooledCredential(
+                provider=provider,
+                id=uuid.uuid4().hex[:6],
+                label=label,
+                auth_type=AUTH_TYPE_OAUTH,
+                priority=0,
+                source="device_code",
+                access_token=saved_tokens.get("access_token") or creds["tokens"]["access_token"],
+                refresh_token=saved_tokens.get("refresh_token") or creds["tokens"].get("refresh_token"),
+                base_url=creds.get("base_url"),
+                last_refresh=creds.get("last_refresh"),
+                extra=extra,
+            )
+            refreshed_pool.add_entry(entry)
+        shown_label = entry.label if entry is not None else label
+        count = len(refreshed_pool.entries())
+        print(f'Saved {provider} OAuth device-code credentials #{count}: "{shown_label}"')
         return
 
     if provider == "google-gemini-cli":

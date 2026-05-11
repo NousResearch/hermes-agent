@@ -17,11 +17,10 @@ def _write_auth_store(tmp_path, payload: dict) -> None:
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
 
 
-def _jwt_with_email(email: str) -> str:
+def _jwt_with_email(email: str, **extra_claims) -> str:
     header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
-    payload = base64.urlsafe_b64encode(
-        json.dumps({"email": email}).encode()
-    ).rstrip(b"=").decode()
+    claims = {"email": email, **extra_claims}
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
     return f"{header}.{payload}.signature"
 
 
@@ -235,12 +234,14 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
     token = _jwt_with_email("codex@example.com")
+    id_token = _jwt_with_email("codex@example.com", chatgpt_account_id="acct-codex-123")
     monkeypatch.setattr(
         "hermes_cli.auth._codex_device_code_login",
         lambda: {
             "tokens": {
                 "access_token": token,
                 "refresh_token": "refresh-token",
+                "id_token": id_token,
             },
             "base_url": "https://chatgpt.com/backend-api/codex",
             "last_refresh": "2026-03-23T10:00:00Z",
@@ -258,11 +259,23 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     auth_add_command(_Args())
 
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    provider_state = payload["providers"]["openai-codex"]
+    assert provider_state["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert provider_state["tokens"]["id_token"] == id_token
+    assert provider_state["tokens"]["account_id"] == "acct-codex-123"
+    assert provider_state["tokens"]["chatgpt_account_id"] == "acct-codex-123"
+
     entries = payload["credential_pool"]["openai-codex"]
-    entry = next(item for item in entries if item["source"] == "manual:device_code")
+    device_code_entries = [item for item in entries if item["source"] == "device_code"]
+    assert len(device_code_entries) == 1, entries
+    assert not any(item["source"] == "manual:device_code" for item in entries)
+    entry = device_code_entries[0]
     assert entry["label"] == "codex@example.com"
-    assert entry["source"] == "manual:device_code"
+    assert entry["source"] == "device_code"
     assert entry["refresh_token"] == "refresh-token"
+    assert entry["id_token"] == id_token
+    assert entry["account_id"] == "acct-codex-123"
+    assert entry["chatgpt_account_id"] == "acct-codex-123"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
 
 
@@ -1125,9 +1138,10 @@ def test_auth_add_codex_clears_suppression_marker(tmp_path, monkeypatch):
     payload = json.loads((hermes_home / "auth.json").read_text())
     # Suppression marker must be cleared
     assert "openai-codex" not in payload.get("suppressed_sources", {})
-    # New pool entry must be present
+    # New canonical pool entry must be present
     entries = payload["credential_pool"]["openai-codex"]
-    assert any(e["source"] == "manual:device_code" for e in entries)
+    assert any(e["source"] == "device_code" for e in entries)
+    assert not any(e["source"] == "manual:device_code" for e in entries)
 
 
 def test_seed_from_singletons_respects_codex_suppression(tmp_path, monkeypatch):

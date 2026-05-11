@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.config import get_env_value, load_env
+from hermes_cli.config import load_env
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -86,6 +86,10 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls",
+    # Codex/ChatGPT account metadata.  These are secret-adjacent auth fields,
+    # so they belong in auth.json with the rest of the credential material and
+    # must round-trip through the pool for usage/account selection.
+    "id_token", "account_id", "chatgpt_account_id",
 })
 
 
@@ -188,6 +192,58 @@ def _next_priority(entries: List[PooledCredential]) -> int:
 def _is_manual_source(source: str) -> bool:
     normalized = (source or "").strip().lower()
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
+
+
+def _is_device_code_source(source: str) -> bool:
+    normalized = (source or "").strip().lower()
+    return normalized == "device_code" or normalized.endswith(":device_code")
+
+
+def _migrate_codex_legacy_device_code_entries(entries: List[PooledCredential]) -> bool:
+    """Collapse legacy manual:device_code Codex rows into canonical device_code."""
+    legacy_indices = [
+        idx
+        for idx, entry in enumerate(entries)
+        if entry.source != "device_code" and _is_device_code_source(entry.source)
+    ]
+    if not legacy_indices:
+        return False
+
+    changed = False
+    canonical_idx = next((idx for idx, entry in enumerate(entries) if entry.source == "device_code"), None)
+    if canonical_idx is None:
+        first_idx = legacy_indices[0]
+        entries[first_idx] = replace(entries[first_idx], source="device_code")
+        canonical_idx = first_idx
+        changed = True
+
+    legacy_label = entries[legacy_indices[0]].label if legacy_indices else None
+    canonical = entries[canonical_idx]
+    legacy_priorities = [entries[idx].priority for idx in legacy_indices]
+    target_priority = min([canonical.priority, *legacy_priorities]) if legacy_priorities else canonical.priority
+    updates: Dict[str, Any] = {}
+    if canonical.priority != target_priority:
+        updates["priority"] = target_priority
+    if legacy_label and canonical.label in {"device_code", "openai-codex"}:
+        updates["label"] = legacy_label
+    if updates:
+        entries[canonical_idx] = replace(canonical, **updates)
+        changed = True
+
+    remove_indices = {
+        idx for idx in legacy_indices if idx != canonical_idx
+    }
+    if remove_indices:
+        entries[:] = [entry for idx, entry in enumerate(entries) if idx not in remove_indices]
+        changed = True
+
+    # Keep priorities dense after removing the legacy duplicate(s).
+    ordered_indices = sorted(range(len(entries)), key=lambda idx: (entries[idx].priority, idx))
+    for priority, idx in enumerate(ordered_indices):
+        if entries[idx].priority != priority:
+            entries[idx] = replace(entries[idx], priority=priority)
+            changed = True
+    return changed
 
 
 def _exhausted_ttl(error_code: Optional[int]) -> int:
@@ -405,6 +461,56 @@ class CredentialPool:
             return None
         return next((entry for entry in self._entries if entry.id == self._current_id), None)
 
+    def select_target(self, target: str) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
+        """Make a specific pool entry current and persist it as the first priority.
+
+        ``target`` accepts the 1-based display index, full label, full id, or a
+        unique id prefix.  The returned index is the entry's index before the
+        priority move so UI commands can acknowledge exactly what the user
+        selected.
+        """
+        needle = str(target or "").strip()
+        if not needle:
+            return None, None, "missing account selection"
+        needle_lower = needle.lower()
+        with self._lock:
+            matched_index: Optional[int] = None
+            matched_entry: Optional[PooledCredential] = None
+            if needle.isdigit():
+                idx = int(needle)
+                if 1 <= idx <= len(self._entries):
+                    matched_index = idx
+                    matched_entry = self._entries[idx - 1]
+                else:
+                    return None, None, f"account number {idx} is out of range"
+            else:
+                exact_matches: list[tuple[int, PooledCredential]] = []
+                prefix_matches: list[tuple[int, PooledCredential]] = []
+                for idx, entry in enumerate(self._entries, start=1):
+                    label = str(entry.label or "").strip().lower()
+                    entry_id = str(entry.id or "").strip().lower()
+                    if needle_lower in {label, entry_id}:
+                        exact_matches.append((idx, entry))
+                    elif entry_id.startswith(needle_lower):
+                        prefix_matches.append((idx, entry))
+                matches = exact_matches or prefix_matches
+                if len(matches) == 1:
+                    matched_index, matched_entry = matches[0]
+                elif len(matches) > 1:
+                    return None, None, "account selection is ambiguous"
+                else:
+                    return None, None, "account was not found"
+
+            if matched_entry is None or matched_index is None:
+                return None, None, "account was not found"
+
+            reordered = [matched_entry] + [entry for entry in self._entries if entry.id != matched_entry.id]
+            self._entries = [replace(entry, priority=idx) for idx, entry in enumerate(reordered)]
+            self._current_id = matched_entry.id
+            self._persist()
+            selected = self.current() or self._entries[0]
+            return matched_index, selected, None
+
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
         """Swap an entry in-place by id, preserving sort order."""
         for idx, entry in enumerate(self._entries):
@@ -476,23 +582,19 @@ class CredentialPool:
         return entry
 
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a Codex device_code pool entry from auth.json if tokens differ.
+        """Sync a Codex device-code pool entry from auth.json if state differs.
 
-        When a Codex OAuth access token expires (or the ChatGPT account hits
-        its 5h/weekly quota), the pool entry gets marked ``STATUS_EXHAUSTED``
-        with a ``last_error_reset_at`` that can be many hours in the future.
-        Meanwhile the user may run ``hermes model`` / ``hermes auth`` which
-        performs a fresh device-code login and writes new tokens to
-        ``auth.json`` under ``_auth_store_lock``.  Without this sync the pool
-        entry stays frozen until ``last_error_reset_at`` elapses — even
-        though fresh credentials are sitting on disk — and every request
-        fails with "no available entries (all exhausted or empty)".
+        Codex OAuth state can be refreshed by another Hermes process through
+        ``resolve_codex_runtime_credentials()`` while an in-memory pool entry
+        still holds the old access/refresh pair.  Refresh tokens are single-use,
+        so trying the stale pair later can mark an otherwise healthy account as
+        exhausted.  Adopt the canonical auth-store state before retrying.
 
-        Mirrors the Nous/Anthropic resync paths above.  Only applies to
-        device_code-sourced entries; env/API-key-sourced entries have no
-        auth.json shadow to sync from.
+        The canonical source is ``device_code``.  Older versions of
+        ``hermes auth add openai-codex`` wrote ``manual:device_code`` rows, so
+        those legacy entries are also eligible for repair.
         """
-        if self.provider != "openai-codex" or entry.source != "device_code":
+        if self.provider != "openai-codex" or not _is_device_code_source(entry.source):
             return entry
         try:
             with _auth_store_lock():
@@ -503,34 +605,47 @@ class CredentialPool:
             tokens = state.get("tokens")
             if not isinstance(tokens, dict):
                 return entry
-            store_access = tokens.get("access_token", "")
-            store_refresh = tokens.get("refresh_token", "")
-            # Adopt auth.json tokens when either side differs.  Codex refresh
-            # tokens are single-use too, so a fresh refresh_token from
-            # another process means our entry's pair is consumed/stale.
-            entry_access = entry.access_token or ""
-            entry_refresh = entry.refresh_token or ""
-            if store_access and (
-                store_access != entry_access
-                or (store_refresh and store_refresh != entry_refresh)
-            ):
+            store_access = str(tokens.get("access_token", "") or "").strip()
+            store_refresh = str(tokens.get("refresh_token", "") or "").strip()
+            if not store_access:
+                return entry
+
+            field_updates: Dict[str, Any] = {}
+            extra_updates: Dict[str, Any] = dict(entry.extra)
+            credential_changed = False
+            if store_access != (entry.access_token or ""):
+                field_updates["access_token"] = store_access
+                credential_changed = True
+            if store_refresh and store_refresh != (entry.refresh_token or ""):
+                field_updates["refresh_token"] = store_refresh
+                credential_changed = True
+            if state.get("last_refresh") and state.get("last_refresh") != entry.last_refresh:
+                field_updates["last_refresh"] = state["last_refresh"]
+            store_base_url = str(state.get("base_url") or "").strip().rstrip("/")
+            if store_base_url and store_base_url != (entry.base_url or ""):
+                field_updates["base_url"] = store_base_url
+            for key in ("id_token", "account_id", "chatgpt_account_id"):
+                value = tokens.get(key) or state.get(key)
+                if isinstance(value, str) and value.strip() and extra_updates.get(key) != value.strip():
+                    extra_updates[key] = value.strip()
+
+            metadata_changed = extra_updates != entry.extra
+            if field_updates or metadata_changed:
                 logger.debug(
-                    "Pool entry %s: syncing Codex tokens from auth.json "
-                    "(refreshed by another process)",
+                    "Pool entry %s: syncing Codex auth/account state from auth.json",
                     entry.id,
                 )
-                field_updates: Dict[str, Any] = {
-                    "access_token": store_access,
-                    "refresh_token": store_refresh or entry.refresh_token,
-                    "last_status": None,
-                    "last_status_at": None,
-                    "last_error_code": None,
-                    "last_error_reason": None,
-                    "last_error_message": None,
-                    "last_error_reset_at": None,
-                }
-                if state.get("last_refresh"):
-                    field_updates["last_refresh"] = state["last_refresh"]
+                if credential_changed:
+                    field_updates.update({
+                        "last_status": None,
+                        "last_status_at": None,
+                        "last_error_code": None,
+                        "last_error_reason": None,
+                        "last_error_message": None,
+                        "last_error_reset_at": None,
+                    })
+                if metadata_changed:
+                    field_updates["extra"] = extra_updates
                 updated = replace(entry, **field_updates)
                 self._replace_entry(entry, updated)
                 self._persist()
@@ -606,7 +721,10 @@ class CredentialPool:
         Applies to any OAuth provider whose singleton lives in auth.json
         (currently Nous and OpenAI Codex).
         """
-        if entry.source != "device_code":
+        if self.provider == "openai-codex":
+            if not _is_device_code_source(entry.source):
+                return
+        elif entry.source != "device_code":
             return
         try:
             with _auth_store_lock():
@@ -644,8 +762,16 @@ class CredentialPool:
                     tokens["access_token"] = entry.access_token
                     if entry.refresh_token:
                         tokens["refresh_token"] = entry.refresh_token
+                    for key in ("id_token", "account_id", "chatgpt_account_id"):
+                        value = entry.extra.get(key)
+                        if isinstance(value, str) and value.strip():
+                            tokens[key] = value.strip()
                     if entry.last_refresh:
                         state["last_refresh"] = entry.last_refresh
+                    if entry.base_url:
+                        state["base_url"] = entry.base_url.rstrip("/")
+                    if entry.label:
+                        state["label"] = entry.label
                     _save_provider_state(auth_store, "openai-codex", state)
 
                 else:
@@ -693,11 +819,17 @@ class CredentialPool:
                     entry.access_token,
                     entry.refresh_token,
                 )
+                extra_updates = dict(entry.extra)
+                for key in ("id_token", "account_id", "chatgpt_account_id"):
+                    value = refreshed.get(key)
+                    if isinstance(value, str) and value.strip():
+                        extra_updates[key] = value.strip()
                 updated = replace(
                     entry,
                     access_token=refreshed["access_token"],
                     refresh_token=refreshed["refresh_token"],
                     last_refresh=refreshed.get("last_refresh"),
+                    extra=extra_updates,
                 )
             elif self.provider == "nous":
                 synced = self._sync_nous_entry_from_auth_store(entry)
@@ -777,6 +909,27 @@ class CredentialPool:
                     # Credentials file had a valid (non-expired) token — use it directly
                     logger.debug("Credentials file has valid token, using without refresh")
                     return synced
+            # For Codex: another Hermes process may have refreshed the
+            # auth-store singleton while this pool entry still has the old
+            # single-use refresh token.  Adopt the newer state instead of
+            # exhausting the account on a stale-token refresh failure.
+            if self.provider == "openai-codex":
+                synced = self._sync_codex_entry_from_auth_store(entry)
+                if synced.refresh_token != entry.refresh_token or synced.access_token != entry.access_token:
+                    logger.debug("Codex refresh failed but auth.json has newer tokens — adopting")
+                    updated = replace(
+                        synced,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(synced, updated)
+                    self._persist()
+                    self._sync_device_code_entry_to_auth_store(updated)
+                    return updated
             # For nous: another process may have consumed the refresh token
             # between our proactive sync and the HTTP call.  Re-sync from
             # auth.json and adopt the fresh tokens if available.
@@ -877,7 +1030,7 @@ class CredentialPool:
             # frozen behind last_error_reset_at (can be hours in the
             # future for ChatGPT weekly windows).
             if (self.provider == "openai-codex"
-                    and entry.source == "device_code"
+                    and _is_device_code_source(entry.source)
                     and entry.last_status == STATUS_EXHAUSTED):
                 synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced is not entry:
@@ -1112,6 +1265,7 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
     existing = entries[existing_idx]
     field_updates = {}
     extra_updates = {}
+    credential_changed = False
     _field_names = {f.name for f in fields(existing)}
     for key, value in payload.items():
         if key in {"id", "priority"} or value is None:
@@ -1121,10 +1275,21 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
         if key in _field_names:
             if getattr(existing, key) != value:
                 field_updates[key] = value
+                if key in {"access_token", "refresh_token", "agent_key"}:
+                    credential_changed = True
         elif key in _EXTRA_KEYS:
             if existing.extra.get(key) != value:
                 extra_updates[key] = value
     if field_updates or extra_updates:
+        if credential_changed:
+            field_updates.update({
+                "last_status": None,
+                "last_status_at": None,
+                "last_error_code": None,
+                "last_error_reason": None,
+                "last_error_message": None,
+                "last_error_reset_at": None,
+            })
         if extra_updates:
             field_updates["extra"] = {**existing.extra, **extra_updates}
         entries[existing_idx] = replace(existing, **field_updates)
@@ -1378,7 +1543,14 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # existing Codex CLI credentials get a one-time, explicit prompt
         # via `hermes auth openai-codex`.
         if isinstance(tokens, dict) and tokens.get("access_token"):
+            changed |= _migrate_codex_legacy_device_code_entries(entries)
             active_sources.add("device_code")
+            state_base_url = str(state.get("base_url") or "").strip().rstrip("/") or "https://chatgpt.com/backend-api/codex"
+            custom_label = str(state.get("label") or "").strip()
+            seeded_label = custom_label or label_from_token(
+                tokens.get("id_token") or tokens.get("access_token", ""),
+                "device_code",
+            )
             changed |= _upsert_entry(
                 entries,
                 provider,
@@ -1388,9 +1560,12 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "auth_type": AUTH_TYPE_OAUTH,
                     "access_token": tokens.get("access_token", ""),
                     "refresh_token": tokens.get("refresh_token"),
-                    "base_url": "https://chatgpt.com/backend-api/codex",
+                    "id_token": tokens.get("id_token"),
+                    "account_id": tokens.get("account_id"),
+                    "chatgpt_account_id": tokens.get("chatgpt_account_id"),
+                    "base_url": state_base_url,
                     "last_refresh": state.get("last_refresh"),
-                    "label": label_from_token(tokens.get("access_token", ""), "device_code"),
+                    "label": seeded_label,
                 },
             )
 

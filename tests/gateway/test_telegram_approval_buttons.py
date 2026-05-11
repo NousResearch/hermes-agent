@@ -1,6 +1,5 @@
 """Tests for Telegram inline keyboard approval buttons."""
 
-import asyncio
 import os
 import sys
 from pathlib import Path
@@ -365,6 +364,100 @@ class TestTelegramApprovalCallback:
         mock_resolve.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_account_picker_callback_not_affected(self):
+        """Ensure account picker callbacks route before approval handling."""
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "ap:openai-codex"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            with patch.object(adapter, "_handle_account_picker_callback", new_callable=AsyncMock):
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_account_picker_callback_rejects_unauthorized_user(self):
+        """Account picker callbacks must honor gateway authorization."""
+        adapter = _make_adapter()
+        runner = _AuthRunner(authorized=False)
+        adapter._message_handler = runner._handle_message
+        adapter._account_picker_state["12345"] = {
+            "msg_id": 77,
+            "providers": [{"slug": "openai-codex", "name": "OpenAI Codex"}],
+            "on_provider_selected": AsyncMock(),
+            "on_account_selected": AsyncMock(),
+        }
+
+        query = AsyncMock()
+        query.data = "ap:openai-codex"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 77
+        query.message.message_thread_id = None
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        adapter._account_picker_state["12345"]["on_provider_selected"].assert_not_called()
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert runner.last_source is not None
+        assert runner.last_source.user_id == "222"
+
+    @pytest.mark.asyncio
+    async def test_account_picker_rejects_stale_message_callback(self):
+        """Old account picker buttons must not act on the newest chat-level state."""
+        adapter = _make_adapter()
+        on_account_selected = AsyncMock()
+        adapter._account_picker_state["12345"] = {
+            "msg_id": 77,
+            "thread_id": None,
+            "selected_provider": "openai-codex",
+            "on_account_selected": on_account_selected,
+        }
+
+        query = AsyncMock()
+        query.data = "am:1"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 78
+        query.message.message_thread_id = None
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 111
+        query.from_user.first_name = "Alice"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        on_account_selected.assert_not_called()
+        query.answer.assert_called_once()
+        assert "expired" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_update_prompt_callback_not_affected(self, tmp_path):
         """Ensure update prompt callbacks still work."""
         adapter = _make_adapter()
@@ -476,3 +569,85 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+
+
+@pytest.mark.asyncio
+async def test_account_picker_callback_routing_does_not_capture_ab_prefix():
+    adapter = _make_adapter()
+
+    query = AsyncMock()
+    query.data = "abcd"
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.message.chat.type = "private"
+    query.from_user = MagicMock()
+    query.from_user.id = 111
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    with patch.object(adapter, "_handle_account_picker_callback", new_callable=AsyncMock) as account_cb:
+        await adapter._handle_callback_query(update, MagicMock())
+
+    account_cb.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_account_picker_rejects_wrong_thread_callback():
+    adapter = _make_adapter()
+    on_account_selected = AsyncMock()
+    adapter._account_picker_state["12345"] = {
+        "msg_id": 77,
+        "thread_id": "10",
+        "selected_provider": "openai-codex",
+        "on_account_selected": on_account_selected,
+    }
+
+    query = AsyncMock()
+    query.data = "am:1"
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.message.message_id = 77
+    query.message.message_thread_id = 11
+    query.message.chat.type = "supergroup"
+    query.from_user = MagicMock()
+    query.from_user.id = 111
+    query.from_user.first_name = "Alice"
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    await adapter._handle_callback_query(update, MagicMock())
+
+    on_account_selected.assert_not_called()
+    query.answer.assert_called_once()
+    assert "expired" in query.answer.call_args[1]["text"].lower()
+    query.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_account_picker_markdown_sensitive_label_renders_safely():
+    adapter = _make_adapter()
+    on_provider_selected = AsyncMock()
+    on_account_selected = AsyncMock()
+    msg = MagicMock()
+    msg.message_id = 77
+    adapter._bot.send_message = AsyncMock(return_value=msg)
+
+    result = await adapter.send_account_picker(
+        chat_id="12345",
+        providers=[{"slug": "openai-codex", "name": "main_key_*[x]`", "account_count": 1, "is_current": True}],
+        current_provider="main_key_*[x]`",
+        session_key="sk",
+        on_provider_selected=on_provider_selected,
+        on_account_selected=on_account_selected,
+    )
+
+    assert result.success is True
+    sent = adapter._bot.send_message.call_args.kwargs
+    assert r"main\_key\_\*\[x\]\`" in sent["text"]

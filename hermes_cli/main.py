@@ -9120,6 +9120,21 @@ def cmd_dashboard(args):
     if "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
+    elif getattr(args, "skip_build", False):
+        # --skip-build trusts the caller to have pre-built the web UI.
+        # Verify the dist actually exists; otherwise the server will start
+        # and serve 404s with no obvious cause (issue #23817).
+        _dist_root = (
+            Path(os.environ["HERMES_WEB_DIST"])
+            if "HERMES_WEB_DIST" in os.environ
+            else PROJECT_ROOT / "hermes_cli" / "web_dist"
+        )
+        if not (_dist_root / "index.html").exists():
+            print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
+            print("  Pre-build first:  cd web && npm install && npm run build")
+            print("  Or drop --skip-build to build automatically.")
+            sys.exit(1)
+        print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
 
     from hermes_cli.web_server import start_server
 

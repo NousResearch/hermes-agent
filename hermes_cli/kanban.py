@@ -320,7 +320,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_native_create.add_argument("--tenant", required=True, help="Tenant namespace")
     p_native_create.add_argument("--repo", dest="repo_full_name", required=True,
                                  help="Repository full name, e.g. NousResearch/hermes-agent")
-    p_native_create.add_argument("--profile", required=True, help="Hermes profile expected to execute/review")
+    p_native_create.add_argument(
+        "--profile",
+        "--worker-profile",
+        dest="profile",
+        required=True,
+        help=(
+            "Hermes profile expected to execute/review. Use --worker-profile when invoking "
+            "through the top-level `hermes kanban ...` wrapper, where global --profile "
+            "may be consumed before the kanban subcommand parser sees it."
+        ),
+    )
     p_native_create.add_argument("--executor", required=True, help="Executor intent, e.g. hermes-direct or omx")
     p_native_create.add_argument("--closeout-policy", required=True,
                                  help="Closeout policy/verifier contract name")

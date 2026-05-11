@@ -459,6 +459,29 @@ def _compute_tool_definitions(
                     }
                     break
 
+    # Strip components schema from send_message when Discord is not configured.
+    # The components property is Discord-only (buttons, select menus); including
+    # it for non-Discord users adds permanent token tax for an unusable feature.
+    if "send_message" in available_tool_names:
+        try:
+            from gateway.config import Platform, load_gateway_config
+            _cfg = load_gateway_config()
+            _discord_connected = Platform.DISCORD in _cfg.get_connected_platforms()
+        except Exception:
+            _discord_connected = False
+        if not _discord_connected:
+            for i, td in enumerate(filtered_tools):
+                if td.get("function", {}).get("name") == "send_message":
+                    props = td["function"]["parameters"].get("properties", {})
+                    if "components" in props:
+                        props.pop("components")
+                        # Also remove from required if present
+                        req = td["function"]["parameters"].get("required", [])
+                        if "components" in req:
+                            req.remove("components")
+                        filtered_tools[i] = td
+                    break
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]

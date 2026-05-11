@@ -876,8 +876,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 # to {(component_type, custom_id): Item}.  If any entry
                 # exists, a View callback will handle (or is handling) this
                 # interaction — don't interfere.
-                view_store = adapter_self._client._connection._view_store
-                if message_id and view_store._views.get(int(message_id)):
+                try:
+                    view_store = adapter_self._client._connection._view_store
+                    view_registered = (
+                        message_id
+                        and view_store._views.get(int(message_id))
+                    )
+                except (AttributeError, KeyError):
+                    # discord.py internal — may change across versions
+                    view_registered = False
+
+                if view_registered:
                     return
 
                 # Check if this is an agent component we sent via REST

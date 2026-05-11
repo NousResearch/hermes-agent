@@ -14309,14 +14309,15 @@ class GatewayRunner:
                 return
             
             # "all" / "new" modes: short preview, respects tool_preview_length
-            # config (defaults to 40 chars when unset to keep gateway messages
-            # compact — unlike CLI spinners, these persist as permanent messages).
+            # config (0 = unlimited, positive = cap at that many chars).
+            # When the user explicitly sets 0 (no limit), honour it — do not
+            # fall back to 40.  This matches build_tool_preview() and the
+            # verbose-mode branch above.
             if preview:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
+                if _pl > 0 and len(preview) > _pl:
+                    preview = preview[:_pl - 3] + "..."
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."

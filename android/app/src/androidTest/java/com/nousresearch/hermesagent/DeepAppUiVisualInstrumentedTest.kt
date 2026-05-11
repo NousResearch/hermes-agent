@@ -15,7 +15,6 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.espresso.intent.Intents
-import androidx.test.espresso.intent.Intents.intended
 import androidx.test.espresso.intent.Intents.intending
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -29,6 +28,7 @@ import com.nousresearch.hermesagent.data.LocalModelDownloadStore
 import com.nousresearch.hermesagent.ui.boot.BootUiState
 import com.nousresearch.hermesagent.ui.shell.AppShellScreen
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -44,6 +44,7 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.SocketException
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
 class DeepAppUiVisualInstrumentedTest {
@@ -150,7 +151,10 @@ class DeepAppUiVisualInstrumentedTest {
             )
         }
 
-        val qwenSetupIntent = browserChooserFor(Uri.parse("https://home.qwencloud.com/api-keys"))
+        val qwenSetupOpened = AtomicBoolean(false)
+        val qwenSetupIntent = browserChooserFor(Uri.parse("https://home.qwencloud.com/api-keys")) {
+            qwenSetupOpened.set(true)
+        }
         Intents.init()
         try {
             intending(qwenSetupIntent).respondWith(Instrumentation.ActivityResult(Activity.RESULT_OK, null))
@@ -158,13 +162,15 @@ class DeepAppUiVisualInstrumentedTest {
             composeRule.onNodeWithTag("HermesChatInput").performTextInput("/signin qwen")
             composeRule.onNodeWithText("Send").performClick()
 
-            intended(qwenSetupIntent)
-            composeRule.onAllNodesWithText("Settings")[0].assertIsDisplayed()
-            assertTrue(
-                composeRule.onAllNodesWithText("Current provider profile: Qwen Cloud / DashScope API key")
-                    .fetchSemanticsNodes()
-                    .isNotEmpty()
-            )
+            composeRule.waitUntil(timeoutMillis = 10_000) { qwenSetupOpened.get() }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                AppSettingsStore(app).load().provider == "alibaba"
+            }
+
+            val settings = AppSettingsStore(app).load()
+            assertEquals("alibaba", settings.provider)
+            assertEquals("https://dashscope-intl.aliyuncs.com/compatible-mode/v1", settings.baseUrl)
+            assertEquals("qwen3.6-plus", settings.model)
         } finally {
             Intents.release()
         }
@@ -255,7 +261,7 @@ class DeepAppUiVisualInstrumentedTest {
         }
     }
 
-    private fun browserChooserFor(uri: Uri): Matcher<Intent> {
+    private fun browserChooserFor(uri: Uri, onMatch: (() -> Unit)? = null): Matcher<Intent> {
         return object : TypeSafeMatcher<Intent>() {
             override fun describeTo(description: Description) {
                 description.appendText("browser chooser for ").appendValue(uri)
@@ -267,7 +273,11 @@ class DeepAppUiVisualInstrumentedTest {
                 }
                 @Suppress("DEPRECATION")
                 val target = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-                return target?.action == Intent.ACTION_VIEW && target.data == uri
+                val matches = target?.action == Intent.ACTION_VIEW && target.data == uri
+                if (matches) {
+                    onMatch?.invoke()
+                }
+                return matches
             }
         }
     }

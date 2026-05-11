@@ -138,6 +138,7 @@ def perform_accessibility_action(
     content_description_contains: str = "",
     view_id: str = "",
     package_name: str = "",
+    class_name: str = "",
     value: str = "",
     index: int = 0,
 ) -> dict[str, Any]:
@@ -149,6 +150,7 @@ def perform_accessibility_action(
         content_description_contains,
         view_id,
         package_name,
+        class_name,
         value,
         index,
     )

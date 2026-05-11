@@ -362,6 +362,8 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     assert 'current_app_name' in ui_bridge
     assert 'scale_factor' in ui_bridge
     assert 'normalized_coordinate_support' in ui_bridge
+    assert 'className: String' in ui_bridge
+    assert 'node.className?.toString().orEmpty().contains(className' in ui_bridge
 
     for action in [
         '"tap"',
@@ -393,6 +395,7 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
         '"duration_ms"',
         '"direction"',
         '"distance_px"',
+        '"class_name"',
     ]:
         assert argument in chat_client
 
@@ -401,3 +404,12 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     assert 'hasCoordinateGestureArguments' in chat_client
     assert 'executeAndroidSelectorAction' in chat_client
     assert 'coordinate_arguments' in chat_client
+    assert 'normalized_coordinate_support' in chat_client
+    assert 'screen_width' in chat_client
+
+    automation_bridge = (
+        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAutomationBridge.kt"
+    ).read_text(encoding="utf-8")
+    assert '"class_name"' in automation_bridge
+    assert '"className"' in automation_bridge
+    assert '"widget_class"' in automation_bridge

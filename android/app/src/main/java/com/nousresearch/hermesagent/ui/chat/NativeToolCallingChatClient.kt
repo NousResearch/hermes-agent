@@ -364,6 +364,7 @@ class NativeToolCallingChatClient(
                 contentDescriptionContains = toolCall.arguments.optString("content_description_contains"),
                 viewId = toolCall.arguments.optString("view_id"),
                 packageName = toolCall.arguments.optString("package_name"),
+                className = toolCall.arguments.optString("class_name"),
                 index = toolCall.arguments.optInt("index", 0),
             )
             "click" -> if (hasCoordinateGestureArguments(toolCall.arguments)) {
@@ -419,6 +420,7 @@ class NativeToolCallingChatClient(
             contentDescriptionContains = toolCall.arguments.optString("content_description_contains"),
             viewId = toolCall.arguments.optString("view_id"),
             packageName = toolCall.arguments.optString("package_name"),
+            className = toolCall.arguments.optString("class_name"),
             value = toolCall.arguments.optString("value"),
             index = toolCall.arguments.optInt("index", 0),
         )
@@ -450,6 +452,17 @@ class NativeToolCallingChatClient(
             .put("available_ui_actions", JSONArray(ANDROID_UI_ACTIONS))
             .put("selection_arguments", JSONArray(UI_SELECTOR_ARGUMENTS))
             .put("coordinate_arguments", JSONArray(UI_COORDINATE_ARGUMENTS))
+            .put("active_package", HermesAccessibilityController.currentForegroundPackageName())
+            .put("current_app_name", HermesAccessibilityController.currentForegroundPackageName())
+            .put("normalized_coordinate_support", true)
+            .also { json ->
+                HermesAccessibilityController.screenMetrics()?.let { metrics ->
+                    json.put("screen_width", metrics.width)
+                    json.put("screen_height", metrics.height)
+                    json.put("density", metrics.density.toDouble())
+                    json.put("scale_factor", 1.0)
+                }
+            }
             .put("message", "Enable the Hermes accessibility service before using snapshot, selector actions, coordinate tap/swipe, or global navigation actions.")
             .toString()
     }
@@ -549,6 +562,7 @@ class NativeToolCallingChatClient(
                         .put("content_description_contains", stringProp("Accessibility description selector."))
                         .put("view_id", stringProp("Android view id selector."))
                         .put("package_name", stringProp("Package filter."))
+                        .put("class_name", stringProp("Android accessibility class-name filter, such as EditText, Button, or RecyclerView."))
                         .put("value", stringProp("Text for set_text."))
                         .put("index", intProp("Zero-based match index."))
                         .put("limit", intProp("Snapshot node limit."))
@@ -592,6 +606,7 @@ class NativeToolCallingChatClient(
                         .put("progress_max", scalarProp("Notification progress max."))
                         .put("progress_indeterminate", boolProp("Indeterminate progress."))
                         .put("package_name", stringProp("Android package name."))
+                        .put("class_name", stringProp("Android class name for intents, or accessibility class-name filter for saved UI actions."))
                         .put("permission", stringProp("Android permission."))
                         .put("enabled", boolProp("Automation enabled state."))
                         .put("target_enabled", boolProp("Target enabled state."))
@@ -1124,7 +1139,7 @@ class NativeToolCallingChatClient(
                                                 "class_name",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "Activity class name for create_intent_task start_activity. Use a fully qualified class or a package-relative .ClassName."),
+                                                    .put("description", "Activity class name for create_intent_task start_activity, or accessibility class-name selector for create_ui_action_task. Use a fully qualified activity class or a package-relative .ClassName for intents; use fragments such as EditText, Button, or RecyclerView for UI selectors."),
                                             )
                                             .put(
                                                 "component",
@@ -2002,6 +2017,7 @@ class NativeToolCallingChatClient(
             "content_description_contains",
             "view_id",
             "package_name",
+            "class_name",
             "value",
             "index",
             "limit",
